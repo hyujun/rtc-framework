@@ -25,10 +25,20 @@
 /// - `accel_only = false`: the full `nu`-dim feedback is written; caller
 ///   handles both acceleration and contact-force feedforward.
 ///
+/// Only the written rows are multiplied: in accel-only mode the product is
+/// the acceleration rows of `K` times `Δx`, not the whole `nu`-row product.
+///
 /// Numerical safety:
 /// - Large state errors (e.g. during E-STOP recovery) are squashed by a
-///   `Δx` norm cap; above the cap, `u_fb` is linearly scaled down so the
-///   magnitude of the applied feedback is bounded.
+///   `Δx` cap; above it, `u_fb` is scaled down as a whole (its direction
+///   kept) so the magnitude of the applied feedback is bounded. Without
+///   @ref SetBlockCaps the cap is on @f$ \|\Delta x\| @f$; with it, each block
+///   of `Δx` (base position, base rotation, joint positions, base linear
+///   velocity, base angular velocity, joint velocities — units differ) has
+///   its own cap and the scale is the smallest `cap_b / ‖Δx_b‖` below 1.
+/// - On a floating base the rotation block is a log map, which flips its
+///   axis near a relative rotation of π: the feedback fades linearly to 0
+///   over the last @ref kRotationFadeRad before π, so the flip cannot chatter.
 ///
 /// RT-safety: all matrices and vectors are sized at @ref Init and never
 /// resized on the hot path. Eigen noalias is used for the matrix-vector
@@ -36,6 +46,7 @@
 
 #include <Eigen/Core>
 
+#include <array>
 #include <cstddef>
 
 namespace rtc::mpc {
@@ -64,6 +75,23 @@ using RiccatiGainBlockRef =
 [[nodiscard]] bool PackRiccatiGainRowMajor(const RiccatiGainBlockRef& K, double* flat,
                                            std::size_t flat_capacity) noexcept;
 
+/// Blocks of the state-tangent difference with their own cap
+/// (@ref RiccatiFeedback::SetBlockCaps). The base blocks are empty on a
+/// fixed base.
+enum class RiccatiBlock : int {
+  kBasePosition = 0,
+  kBaseOrientation,
+  kJointPosition,
+  kBaseLinearVelocity,
+  kBaseAngularVelocity,
+  kJointVelocity,
+};
+inline constexpr int kRiccatiBlockCount = 6;
+using RiccatiBlockCaps = std::array<double, kRiccatiBlockCount>;
+
+/// Width of the fade before a base rotation error of π [rad].
+inline constexpr double kRotationFadeRad = 0.2;
+
 class RiccatiFeedback {
  public:
   RiccatiFeedback() = default;
@@ -90,6 +118,14 @@ class RiccatiFeedback {
   /// @note No-op (gain cleared) if bounds are violated or the data is not
   ///       finite — a NaN in `K` would poison every output even at zero error.
   void SetGain(const double* K_data, int nu, int ndx) noexcept;
+
+  /// @brief Read the gain from @p K_data in place (same layout as
+  ///        @ref SetGain) instead of copying it — for a caller that owns the
+  ///        plan and switches between its gain nodes every tick. The data must
+  ///        stay valid and unchanged until the next @ref SetGain /
+  ///        @ref UseGain, and the caller has checked it is finite.
+  /// @note Gain cleared if bounds are violated.
+  void UseGain(const double* K_data, int nu, int ndx) noexcept;
 
   /// @brief Compute @f$ u_{fb} = s \cdot K \cdot \Delta x @f$ from the
   ///        Euclidean difference of configurations and velocities.
@@ -147,6 +183,20 @@ class RiccatiFeedback {
 
   [[nodiscard]] double MaxDeltaXNorm() const noexcept { return max_delta_x_norm_; }
 
+  /// @brief Cap each block of `Δx` on its own (see the class comment).
+  /// @param caps      one cap per @ref RiccatiBlock, each positive and finite
+  /// @param nv        tangent dim of the model (`ndx = 2·nv`)
+  /// @param floating  a free-flyer base: the base blocks are 3 entries each
+  ///                  and the rotation fade applies; otherwise they are empty
+  ///                  and their caps unused
+  /// @return false (unchanged) for a cap that is not positive and finite or
+  ///         an @p nv the workspace or the base cannot hold.
+  [[nodiscard]] bool SetBlockCaps(const RiccatiBlockCaps& caps, int nv, bool floating) noexcept;
+
+  /// @return the factor the last Compute call applied to `K·Δx`: the gain
+  ///         scale times the cap and fade factor (0 after a refused `Δx`).
+  [[nodiscard]] double LastScale() const noexcept { return last_scale_; }
+
   [[nodiscard]] bool HasGain() const noexcept { return nu_ > 0 && ndx_ > 0; }
 
  private:
@@ -154,9 +204,14 @@ class RiccatiFeedback {
   /// Zeros the output and returns false when `dx_` is not finite.
   bool Apply(Eigen::Ref<Eigen::VectorXd> u_fb_out) noexcept;
 
-  Eigen::MatrixXd K_;         // nu × ndx (allocated max_nu × max_ndx)
-  Eigen::VectorXd dx_;        // ndx    (allocated max_ndx)
-  Eigen::VectorXd u_fb_raw_;  // nu     (allocated max_nu)
+  /// The cap and fade factor for `dx_` (≤ 1), or a negative value when it is
+  /// not finite.
+  [[nodiscard]] double CapScale() const noexcept;
+
+  Eigen::MatrixXd K_;            // nu × ndx (allocated max_nu × max_ndx)
+  const double* view_{nullptr};  // UseGain: row-major nu × ndx, not owned
+  Eigen::VectorXd dx_;           // ndx    (allocated max_ndx)
+  Eigen::VectorXd u_fb_raw_;     // nu     (allocated max_nu)
 
   int max_nv_{0};
   int max_nu_{0};
@@ -170,6 +225,12 @@ class RiccatiFeedback {
   double gain_scale_{1.0};
   bool accel_only_{true};
   double max_delta_x_norm_{100.0};
+
+  bool block_caps_{false};
+  bool floating_{false};
+  RiccatiBlockCaps caps_{};
+  std::array<int, kRiccatiBlockCount + 1> block_start_{};  // block b is [start_b, start_{b+1})
+  double last_scale_{0.0};
 };
 
 }  // namespace rtc::mpc

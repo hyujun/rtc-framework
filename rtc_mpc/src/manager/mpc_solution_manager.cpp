@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string>
 
 namespace rtc::mpc {
 
@@ -13,10 +14,39 @@ void Bump(std::atomic<uint64_t>& c) noexcept {
   c.store(c.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 }
 
+/// The YAML names of the Riccati Δx blocks, in `RiccatiBlock` order.
+constexpr std::array<const char*, kRiccatiBlockCount> kBlockNames = {
+    "base_position",        "base_orientation",      "joint_position",
+    "base_linear_velocity", "base_angular_velocity", "joint_velocity"};
+
+bool IsBaseBlock(int b) noexcept {
+  return b == static_cast<int>(RiccatiBlock::kBasePosition) ||
+         b == static_cast<int>(RiccatiBlock::kBaseOrientation) ||
+         b == static_cast<int>(RiccatiBlock::kBaseLinearVelocity) ||
+         b == static_cast<int>(RiccatiBlock::kBaseAngularVelocity);
+}
+
+/// Every gain node the plan ships is finite (checked once per plan).
+bool GainsFinite(const MPCSolution& s) noexcept {
+  const std::size_t n = static_cast<std::size_t>(s.nu) * static_cast<std::size_t>(s.ndx);
+  for (int g = 0; g < s.gain_nodes; ++g) {
+    const auto& K = s.K_riccati[static_cast<std::size_t>(g)];
+    for (std::size_t i = 0; i < n; ++i) {
+      if (!std::isfinite(K[i])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
-void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout) {
+void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout,
+                              const pinocchio::Model* model) {
   layout_ = layout;
+  model_ = model;
+  config_valid_ = true;
   const int nq = layout.nq;
   const int nv = layout.nv;
   const int n_contact_vars = layout.n_contact_vars;
@@ -54,6 +84,53 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout) {
     riccati_.SetMaxDeltaXNorm(r["max_delta_x_norm"].as<double>());
   }
 
+  // Per-block Δx caps: every block on a floating base, the joint blocks on a
+  // fixed one when asked for.
+  const YAML::Node blocks = r ? r["max_delta_blocks"] : YAML::Node{};
+  if (layout.valid() && (layout.floating_base() || (blocks && blocks.IsMap()))) {
+    RiccatiBlockCaps caps{};
+    caps.fill(riccati_.MaxDeltaXNorm());
+    if (blocks && !blocks.IsMap()) {
+      config_valid_ = false;
+    } else if (blocks) {
+      for (const auto& kv : blocks) {
+        const std::string name = kv.first.as<std::string>();
+        int b = -1;
+        for (int i = 0; i < kRiccatiBlockCount; ++i) {
+          if (name == kBlockNames[static_cast<std::size_t>(i)]) {
+            b = i;
+          }
+        }
+        const double cap = kv.second.as<double>();
+        if (b < 0 || !(cap > 0.0) || !std::isfinite(cap) ||
+            (IsBaseBlock(b) && !layout.floating_base())) {
+          config_valid_ = false;
+          continue;
+        }
+        caps[static_cast<std::size_t>(b)] = cap;
+      }
+    }
+    if (config_valid_ && !riccati_.SetBlockCaps(caps, nv, layout.floating_base())) {
+      config_valid_ = false;
+    }
+  }
+
+  max_policy_age_ns_ = 0;
+  if (cfg["max_policy_age_s"]) {
+    const double age = cfg["max_policy_age_s"].as<double>();
+    if (!(age >= 0.0) || !std::isfinite(age)) {
+      config_valid_ = false;
+    } else {
+      max_policy_age_ns_ = static_cast<int64_t>(std::llround(age * 1e9));
+    }
+  }
+  if (!config_valid_) {
+    enabled_.store(false, std::memory_order_relaxed);
+  }
+
+  dx_.setZero(std::max(layout.ndx, 1));
+  u_fb_.setZero(std::max({layout.nu, nv, 1}));
+  sample_ = WbcReference{};
   stale_count_ = 0;
   has_ever_received_solution_ = false;
   state_sequence_ = 0;
@@ -64,6 +141,7 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout) {
   state_epoch_rejections_.store(0, std::memory_order_relaxed);
   policy_age_rejections_.store(0, std::memory_order_relaxed);
   dimension_rejections_.store(0, std::memory_order_relaxed);
+  gain_node_clamps_.store(0, std::memory_order_relaxed);
   seen_enable_generation_ = enable_generation_.load(std::memory_order_acquire);
   written_enable_generation_ = seen_enable_generation_;
   first_sequence_after_enable_ = 0;
@@ -173,20 +251,10 @@ void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd>& q,
   state_lock_.Store(snap);
 }
 
-bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
-                                          const Eigen::Ref<const Eigen::VectorXd>& v_curr,
-                                          uint64_t now_ns, Eigen::Ref<Eigen::VectorXd> q_ref,
-                                          Eigen::Ref<Eigen::VectorXd> v_ref,
-                                          Eigen::Ref<Eigen::VectorXd> a_ff,
-                                          Eigen::Ref<Eigen::VectorXd> lambda_ref,
-                                          Eigen::Ref<Eigen::VectorXd> u_fb,
-                                          InterpMeta& meta_out) noexcept {
-  meta_out.valid = false;
-  meta_out.beyond_horizon = false;
-  meta_out.floating_unsupported = false;
-  meta_out.progress = 0.0;
-  u_fb.setZero();
-
+bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+                              const Eigen::Ref<const Eigen::VectorXd>& v_curr, uint64_t now_ns,
+                              bool count_stale, WbcReference& out) noexcept {
+  out = WbcReference{};
   if (!enabled_.load(std::memory_order_acquire)) {
     return false;
   }
@@ -197,19 +265,12 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
     seen_enable_generation_ = generation;
     DropActivePlan();
   }
-  // The interpolator is Euclidean in q: on a floating base it would blend
-  // the quaternion with the angular velocity. Refuse explicitly rather than
-  // hand a broken q_ref to the Riccati feedback.
-  if (layout_.floating_base()) {
-    meta_out.floating_unsupported = true;
-    return false;
-  }
 
   // Try to pick up a newly published solution. One acceptance decision: the
-  // plan must be consumable (IsValid), computed against the model the RT
-  // side runs now, and laid out like this manager's layout; only an accepted
-  // plan touches the interpolator, the gain, the stale counter and the
-  // provenance.
+  // plan must be consumable (IsValid), computed against the model and from
+  // the state stream the RT side runs now, and laid out like this manager's
+  // layout; only an accepted plan touches the interpolator, the gain, the
+  // stale counter and the provenance.
   const uint32_t model_epoch = model_epoch_.load(std::memory_order_acquire);
   const uint32_t state_epoch = state_epoch_.load(std::memory_order_acquire);
   const MPCSolution* fresh = solution_buffer_.TryAcquireLatest();
@@ -224,18 +285,17 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
                fresh->nu != layout_.nu) {
       Bump(dimension_rejections_);
     } else {
-      accepted = interpolator_.SetSolution(*fresh, now_ns);
+      // Node 0 sits at the observation, moved back onto the node grid.
+      const int64_t origin = static_cast<int64_t>(fresh->observation_stamp_ns) -
+                             static_cast<int64_t>(fresh->horizon_offset_ns);
+      accepted = interpolator_.SetSolutionWithOrigin(*fresh, origin);
     }
   }
   if (accepted) {
     active_receive_stamp_ns_ = now_ns;
-    // Install the first node's gain (nearest-node policy). The column count
-    // is the state-tangent dim the writer packed with, not the state vector
-    // length — they differ as soon as a joint has nq != nv.
-    gain_installed_ = riccati_enabled_ && fresh->gain_nodes > 0;
-    if (gain_installed_) {
-      riccati_.SetGain(fresh->K_riccati[0].data(), fresh->nu, fresh->ndx);
-    }
+    // The gains are read in place from the held copy; checked once here.
+    const MPCSolution& held = *interpolator_.Solution();
+    gain_installed_ = riccati_enabled_ && held.gain_nodes > 0 && GainsFinite(held);
     stale_count_ = 0;
     has_ever_received_solution_ = true;
   } else if (has_ever_received_solution_ && stale_count_ < max_stale_solutions_) {
@@ -246,18 +306,101 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
   if (!interpolator_.HasSolution()) {
     return false;
   }
-  if (stale_count_ >= max_stale_solutions_) {
+  if (count_stale && stale_count_ >= max_stale_solutions_) {
     return false;
   }
 
-  interpolator_.Interpolate(now_ns, q_ref, v_ref, a_ff, lambda_ref, meta_out);
-  if (!meta_out.valid) {
+  const SampleSpot spot = interpolator_.Sample(static_cast<int64_t>(now_ns), layout_,
+                                               out.q_ref.data(), out.v_ref.data(), out.a_ref.data(),
+                                               out.wrench_ref.data(), out.contact_mask);
+  if (!spot.valid) {
+    out = WbcReference{};
     return false;
   }
+  const MPCSolution& s = *interpolator_.Solution();
+  out.nq = layout_.nq;
+  out.nv = layout_.nv;
+  out.n_contact_vars = std::min(layout_.n_contact_vars, s.n_contact_vars);
+  out.observation_stamp_ns = s.observation_stamp_ns;
+  out.observation_sequence = s.observation_sequence;
+  out.observation_source_sequence = s.observation_source_sequence;
+  out.receive_stamp_ns = active_receive_stamp_ns_;
+  out.plan_id = s.plan_id;
+  out.model_epoch = s.model_epoch;
+  out.state_epoch = s.state_epoch;
+  out.schedule_id = s.schedule_id;
+  out.schedule_epoch = s.schedule_epoch;
+  out.progress = spot.progress;
+  out.beyond_horizon = spot.beyond_horizon;
 
-  if (gain_installed_ && riccati_.HasGain()) {
-    riccati_.Compute(q_curr, v_curr, q_ref, v_ref, u_fb);
+  // Riccati feedback: the gain node nearest the sample time, read in place.
+  u_fb_.setZero();
+  if (gain_installed_) {
+    const int64_t nearest = (spot.tau_ns + spot.dt_ns / 2) / spot.dt_ns;
+    int g = static_cast<int>(std::min<int64_t>(nearest, kMaxGainNodes));
+    if (g > s.gain_nodes - 1) {
+      g = s.gain_nodes - 1;
+      Bump(gain_node_clamps_);
+    }
+    riccati_.UseGain(s.K_riccati[static_cast<std::size_t>(g)].data(), s.nu, s.ndx);
+    const Eigen::Map<const Eigen::VectorXd> q_ref(out.q_ref.data(), layout_.nq);
+    const Eigen::Map<const Eigen::VectorXd> v_ref(out.v_ref.data(), layout_.nv);
+    if (!layout_.floating_base()) {
+      riccati_.Compute(q_curr, v_curr, q_ref, v_ref, u_fb_);
+    } else if (model_ != nullptr &&
+               layout_.StateDifference(*model_, q_ref, v_ref, q_curr, v_curr, dx_)) {
+      (void)riccati_.ComputeFromDelta(dx_, u_fb_);
+    }
   }
+  out.valid = true;
+  return true;
+}
+
+bool MPCSolutionManager::SampleReference(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+                                         const Eigen::Ref<const Eigen::VectorXd>& v_curr,
+                                         uint64_t now_ns, WbcReference& out) noexcept {
+  if (!Tick(q_curr, v_curr, now_ns, false, out)) {
+    return false;
+  }
+  // The joint-acceleration rows of the feedback, at their tangent entries.
+  const int row0 = riccati_.AccelOnly() ? 0 : layout_.acc_u_offset;
+  const int n = std::min(layout_.n_acc, layout_.nv - layout_.n_base_v);
+  for (int i = 0; i < n; ++i) {
+    out.u_fb_acc[static_cast<std::size_t>(layout_.n_base_v + i)] = u_fb_[row0 + i];
+  }
+  return true;
+}
+
+bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+                                          const Eigen::Ref<const Eigen::VectorXd>& v_curr,
+                                          uint64_t now_ns, Eigen::Ref<Eigen::VectorXd> q_ref,
+                                          Eigen::Ref<Eigen::VectorXd> v_ref,
+                                          Eigen::Ref<Eigen::VectorXd> a_ff,
+                                          Eigen::Ref<Eigen::VectorXd> lambda_ref,
+                                          Eigen::Ref<Eigen::VectorXd> u_fb,
+                                          InterpMeta& meta_out) noexcept {
+  meta_out.valid = false;
+  meta_out.beyond_horizon = false;
+  meta_out.progress = 0.0;
+  u_fb.setZero();
+  if (!Tick(q_curr, v_curr, now_ns, true, sample_)) {
+    return false;
+  }
+  const auto copy = [](const auto& src, Eigen::Ref<Eigen::VectorXd> dst, int n) {
+    const int m = std::min(n, static_cast<int>(dst.size()));
+    for (int i = 0; i < m; ++i) {
+      dst[i] = src[static_cast<std::size_t>(i)];
+    }
+  };
+  copy(sample_.q_ref, q_ref, sample_.nq);
+  copy(sample_.v_ref, v_ref, sample_.nv);
+  copy(sample_.a_ref, a_ff, sample_.nv);
+  copy(sample_.wrench_ref, lambda_ref, sample_.n_contact_vars);
+  const int n_fb = std::min(static_cast<int>(u_fb.size()), static_cast<int>(u_fb_.size()));
+  u_fb.head(n_fb) = u_fb_.head(n_fb);
+  meta_out.valid = true;
+  meta_out.beyond_horizon = sample_.beyond_horizon;
+  meta_out.progress = sample_.progress;
   return true;
 }
 
@@ -287,7 +430,8 @@ void MPCSolutionManager::EvictIfExpired(uint64_t now_ns, uint32_t model_epoch,
   const int64_t age_ns =
       static_cast<int64_t>(now_ns) - static_cast<int64_t>(s->observation_stamp_ns);
   const double cap_ns = static_cast<double>(s->horizon_length + 1) * s->dt_node * 1e9;
-  if (std::abs(static_cast<double>(age_ns)) > cap_ns) {
+  if (std::abs(static_cast<double>(age_ns)) > cap_ns ||
+      (max_policy_age_ns_ > 0 && age_ns > max_policy_age_ns_)) {
     Bump(policy_age_rejections_);
     DropActivePlan();
   }

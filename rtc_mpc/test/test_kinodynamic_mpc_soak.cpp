@@ -13,8 +13,8 @@
 ///
 ///  - stance_static: the stance gait, the state the stand pose at rest;
 ///  - walk_rollout: stance until the first online tick, then the walk at
-///    0.5 m/s; the state is the last published plan sampled at the elapsed
-///    time (Lie-group interpolation between nodes) — a lower bound: no model
+///    0.5 m/s; the state is the reference the manager's sampler
+///    (`SampleReference`) gives at the current time — a lower bound: no model
 ///    mismatch, no delay but the plan's own;
 ///  - walk_disturbed: as walk_rollout, plus base velocity (σ 0.05 m/s) and
 ///    attitude (σ 0.01 rad) noise on every state written (seed 20261114),
@@ -725,12 +725,12 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   const int nv = model_.nv;
   Eigen::VectorXd q = stand_;
   Eigen::VectorXd v = Eigen::VectorXd::Zero(nv);
-  Eigen::VectorXd q_plan(nq);
   Eigen::VectorXd q_write(nq);
   Eigen::VectorXd v_write(nv);
   std::mt19937_64 rng(20261114);
   std::normal_distribution<double> noise(0.0, 1.0);
-  const MPCSolution* plan = nullptr;
+  rtc::mpc::WbcReference ref{};
+  std::uint64_t last_plan_id = 0;
   std::uint64_t plans = 0;
   bool window_open = false;
   Clock::time_point window_start{};
@@ -740,26 +740,15 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
     const Clock::time_point now = Clock::now();
     const auto now_ns = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
-    if (const MPCSolution* p = mgr.TryAcquireLatestSolution(); p != nullptr) {
-      plan = p;
+    // The RT side's sampler: the plan's node 0 at observation − offset.
+    const bool sampled = mgr.SampleReference(q, v, now_ns, ref);
+    if (sampled && ref.plan_id != last_plan_id) {
+      last_plan_id = ref.plan_id;
       ++plans;
     }
-    if (walk && plan != nullptr && plan->IsValid() && plan->nq == nq && plan->nv == nv) {
-      const double node0_ns = static_cast<double>(plan->observation_stamp_ns) -
-                              static_cast<double>(plan->horizon_offset_ns);
-      const double x = std::max(0.0, (static_cast<double>(now_ns) - node0_ns) * 1e-9 / dt);
-      const int last = plan->horizon_length - 1;
-      const int j = std::min(static_cast<int>(x), last);
-      const double alpha = std::min(1.0, x - static_cast<double>(j));
-      const auto ju = static_cast<std::size_t>(j);
-      pinocchio::interpolate(model_, Eigen::Map<const Eigen::VectorXd>(plan->q_traj[ju].data(), nq),
-                             Eigen::Map<const Eigen::VectorXd>(plan->q_traj[ju + 1].data(), nq),
-                             alpha, q_plan);
-      q = q_plan;
-      for (int i = 0; i < nv; ++i) {
-        const auto iu = static_cast<std::size_t>(i);
-        v[i] = (1.0 - alpha) * plan->v_traj[ju][iu] + alpha * plan->v_traj[ju + 1][iu];
-      }
+    if (walk && sampled && ref.nq == nq && ref.nv == nv) {
+      q = Eigen::Map<const Eigen::VectorXd>(ref.q_ref.data(), nq);
+      v = Eigen::Map<const Eigen::VectorXd>(ref.v_ref.data(), nv);
     }
     q_write = q;
     v_write = v;
