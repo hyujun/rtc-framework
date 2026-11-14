@@ -29,6 +29,8 @@
 //   - The loop calls subclass's OnTick() every period.
 //   - Pause() makes the loop block on a condition_variable at the top of
 //     the next iteration; Resume() / RequestStop() wake it.
+//   - OnLoopEntry() runs once per Start(), on the loop thread, after the
+//     thread config is applied and before the first deadline is anchored.
 //   - Subclasses may override WaitForNextTick (e.g. simulation CV wakeup)
 //     and OnOverrun (E-STOP trigger). Defaults preserve the
 //     deterministic clock_nanosleep + counter-only behaviour.
@@ -243,6 +245,26 @@ class PeriodicRtThread {
   /// triggers a shutdown. Default no-op.
   virtual void OnLoopAborted() noexcept {}
 
+  /// Called once per Start(), on the loop thread, right after the thread
+  /// config has been applied and before the wake schedule is anchored — so
+  /// whatever it spends is not charged to the first period. Default no-op.
+  ///
+  /// `thread_config_applied` is ApplyThreadConfigVerbose()'s result. It is
+  /// all-or-nothing: false when the name, the affinity OR the scheduling
+  /// policy did not take — including the common dev-box case of a correct pin
+  /// whose SCHED_FIFO was refused (EPERM). The base runs the loop either way
+  /// (every existing subclass relies on that). A subclass that needs to know
+  /// *which* part failed — e.g. that refuses only a misplaced thread — reads
+  /// its own affinity rather than refusing on this flag alone.
+  ///
+  /// Intended for one-time per-thread setup that must happen on this thread
+  /// and inherit its placement — threads it spawns, thread-local runtime
+  /// state. Calling RequestLoopExit() from here ends the loop before the
+  /// first tick: OnTick() runs zero times and OnLoopAborted() runs once.
+  /// The hook is not interruptible — a RequestStop() is only seen after it
+  /// returns, so Join() waits for it; keep it bounded.
+  virtual void OnLoopEntry(bool /*thread_config_applied*/) noexcept {}
+
   /// Called from RequestStop() so subclasses with custom wait primitives
   /// (CV, eventfd, …) can wake them. Runs on the thread that called
   /// RequestStop(), not the loop thread. Default no-op.
@@ -280,7 +302,8 @@ class PeriodicRtThread {
 
  private:
   void RunLoop(std::stop_token stoken) {
-    static_cast<void>(rtc::ApplyThreadConfigVerbose(cfg_.thread_config));
+    const bool thread_config_applied = rtc::ApplyThreadConfigVerbose(cfg_.thread_config);
+    OnLoopEntry(thread_config_applied);
 
     // Anchor the absolute-time wake schedule to "now".
     clock_gettime(CLOCK_MONOTONIC, &next_wake_);
@@ -350,11 +373,14 @@ class PeriodicRtThread {
       have_prev_t0_ = true;
     }
 
-    // Self-triggered terminal exit (RequestLoopExit from inside OnTick): the
-    // loop condition dropped out above; run the one-shot abort hook exactly
-    // once so subclasses can do their terminal work (e.g. the hand driver's
-    // E-Stop zero-write) on the loop thread. Not reached on stop_requested()
-    // (external Join) or the kAbort break (which already ran OnLoopAborted).
+    // Self-triggered terminal exit (RequestLoopExit from inside OnTick or
+    // OnLoopEntry): the loop condition dropped out above; run the one-shot
+    // abort hook exactly once so subclasses can do their terminal work (e.g.
+    // the hand driver's E-Stop zero-write) on the loop thread. Not reached on
+    // a plain stop_requested() (external Join) or the kAbort break (which
+    // already ran OnLoopAborted) — but a refusal in OnLoopEntry still reaches
+    // it when a stop arrived during the hook, so an OnLoopAborted that treats
+    // its call as a fault must not assume no stop was requested.
     if (exit_from_loop_.load(std::memory_order_acquire)) {
       OnLoopAborted();
       // Self-exit: the thread is about to die, so clear running_ here (Join()

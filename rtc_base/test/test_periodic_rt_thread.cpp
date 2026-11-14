@@ -18,10 +18,13 @@
 #include "rtc_base/timing/rt_tick_timing_sample.hpp"
 
 #include <gtest/gtest.h>
+#include <pthread.h>
+#include <sched.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -562,4 +565,113 @@ TEST(PeriodicRtThread, SuppressTimingThisTickSkipsPush) {
   EXPECT_EQ(samples.size(), (final_ticks + 1) / 2)
       << "suppressed (even) ticks must not emit a timing sample";
   EXPECT_LT(samples.size(), final_ticks) << "some ticks must have been suppressed";
+}
+
+namespace {
+
+// Records what OnLoopEntry saw and in which order relative to the first tick.
+// `exit_in_entry` makes the hook refuse (RequestLoopExit) — the path a subclass
+// takes when its per-thread setup fails and it must not run a single tick.
+class EntryThread : public rtc::PeriodicRtThread {
+ public:
+  std::atomic<int> entries{0};
+  std::atomic<int> ticks{0};
+  std::atomic<int> aborts{0};
+  std::atomic<bool> exit_in_entry{false};
+  // Written by the loop thread inside OnLoopEntry, read after Join() (the join
+  // is the synchronisation point).
+  std::vector<bool> applied_seen;
+  std::vector<std::string> name_seen;
+  std::vector<int> ticks_before_entry;
+
+ protected:
+  void OnLoopEntry(bool thread_config_applied) noexcept override {
+    applied_seen.push_back(thread_config_applied);
+    char name[16] = {};
+    pthread_getname_np(pthread_self(), name, sizeof(name));
+    name_seen.emplace_back(name);
+    ticks_before_entry.push_back(ticks.load());
+    entries.fetch_add(1);
+    if (exit_in_entry.load()) {
+      RequestLoopExit();
+    }
+  }
+
+  void OnTick() noexcept override { ticks.fetch_add(1); }
+
+  void OnLoopAborted() noexcept override { aborts.fetch_add(1); }
+};
+
+}  // namespace
+
+TEST(PeriodicRtThread, OnLoopEntryRunsOncePerStartAfterConfigBeforeFirstTick) {
+  EntryThread t;
+  t.Start(MakeCfg("rtc_test_en1", 200.0));
+  ASSERT_TRUE(WaitUntil([&] { return t.ticks.load() >= 3; }));
+  t.Join();
+  EXPECT_EQ(t.entries.load(), 1) << "one entry per Start(), not per tick";
+  const int first_run_ticks = t.ticks.load();
+
+  // Restart re-runs the hook on the new loop thread.
+  t.Start(MakeCfg("rtc_test_en2", 200.0));
+  ASSERT_TRUE(WaitUntil([&] { return t.ticks.load() >= first_run_ticks + 3; }));
+  t.Join();
+  ASSERT_EQ(t.entries.load(), 2);
+
+  ASSERT_EQ(t.name_seen.size(), 2U);
+  // The thread name is set by ApplyThreadConfig, so seeing it inside the hook
+  // proves the config was applied first.
+  EXPECT_EQ(t.name_seen[0], "rtc_test_en1");
+  EXPECT_EQ(t.name_seen[1], "rtc_test_en2");
+  // SCHED_OTHER on slot 0 needs no privilege, so the config reports success —
+  // unless this process may not run on slot 0's CPU at all (a container or a
+  // taskset-restricted runner), where the pin fails with EINVAL by design.
+  cpu_set_t allowed;
+  CPU_ZERO(&allowed);
+  ASSERT_EQ(sched_getaffinity(0, sizeof(allowed), &allowed), 0);
+  const int slot0_cpu = rtc::SlotToLogicalCpu(0);
+  if (slot0_cpu >= 0 && CPU_ISSET(slot0_cpu, &allowed)) {
+    EXPECT_TRUE(t.applied_seen[0]);
+    EXPECT_TRUE(t.applied_seen[1]);
+  }
+  // Before the first tick of each run.
+  EXPECT_EQ(t.ticks_before_entry[0], 0);
+  EXPECT_EQ(t.ticks_before_entry[1], first_run_ticks);
+  EXPECT_EQ(t.aborts.load(), 0);
+}
+
+TEST(PeriodicRtThread, OnLoopEntryReportsAFailedThreadConfig) {
+  // An unrepresentable slot makes ApplyThreadConfig fail on any host; the hook
+  // must be told rather than the result being discarded.
+  EntryThread t;
+  rtc::PeriodicRtThreadConfig cfg = MakeCfg("rtc_test_enf", 200.0);
+  cfg.thread_config.cpu_core = 100000;
+  t.Start(cfg);
+  ASSERT_TRUE(WaitUntil([&] { return t.ticks.load() >= 1; }))
+      << "the base keeps running the loop after a failed config";
+  t.Join();
+  ASSERT_EQ(t.applied_seen.size(), 1U);
+  EXPECT_FALSE(t.applied_seen[0]);
+}
+
+TEST(PeriodicRtThread, RequestLoopExitInOnLoopEntryRunsNoTick) {
+  EntryThread t;
+  t.exit_in_entry.store(true);
+  t.Start(MakeCfg("rtc_test_enx", 200.0));
+  ASSERT_TRUE(WaitUntil([&] { return t.aborts.load() >= 1; }));
+  EXPECT_TRUE(WaitUntil([&] { return !t.Running(); }));
+  // Give a would-be tick several periods to show up.
+  std::this_thread::sleep_for(30ms);
+  t.Join();
+  EXPECT_EQ(t.entries.load(), 1);
+  EXPECT_EQ(t.ticks.load(), 0) << "a refusal in the entry hook must precede every tick";
+  EXPECT_EQ(t.aborts.load(), 1);
+  EXPECT_EQ(t.TickCount(), 0U);
+
+  // The refusal does not poison the next Start().
+  t.exit_in_entry.store(false);
+  t.Start(MakeCfg("rtc_test_enx2", 200.0));
+  EXPECT_TRUE(WaitUntil([&] { return t.ticks.load() >= 2; }));
+  t.Join();
+  EXPECT_EQ(t.entries.load(), 2);
 }
