@@ -1207,7 +1207,8 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     if (DrainPendingObjectRefresh()) {
       continue;
     }
-    // 1. Publish current state (and sensors) for ALL robot groups
+    // 1. Publish this step's sensors, contact wrenches and state for ALL robot
+    //    groups (sensors first — see the order below)
     // Per-iteration span (one sim step of the raw sim_thread). All the
     // MuJoCoSimulator member-function spans below nest under this; the
     // sync_cv_ wait for the controller's command (sim lock-step) shows up as

@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <random>
 #include <vector>
 
 namespace rtc {
@@ -169,6 +170,31 @@ TEST(ImuNoiseModel, ZeroSeedIsResolvedOnceAndReplays) {
   const auto start = Draw(model, 100);
   model.Reset();
   EXPECT_TRUE(BitEqual(Draw(model, 100), start));
+}
+
+// The stream is tagged: the white draws of a seed are not those of a plain
+// mt19937_64 with the same seed (another simulator RNG given the same seed).
+TEST(ImuNoiseModel, SeedIsTaggedSoAnUntaggedRngDoesNotReplayIt) {
+  ImuNoiseConfig cfg;
+  cfg.seed = kSeed;
+  cfg.gyro.white_sigma = 1.0;
+  auto model = Make(cfg);
+  const auto drawn = Draw(model, 4);
+
+  std::mt19937_64 plain(kSeed);
+  std::normal_distribution<double> unit(0.0, 1.0);
+  for (std::size_t a = 0; a < kAxes; ++a) {
+    static_cast<void>(unit(plain));  // the initial bias draws (sigma 0 here)
+  }
+  bool any_differs = false;
+  for (const Sample& y : drawn) {
+    for (double v : y) {
+      const double white = unit(plain);
+      static_cast<void>(unit(plain));  // the walk draw that follows each white one
+      any_differs = any_differs || (v != white);
+    }
+  }
+  EXPECT_TRUE(any_differs);
 }
 
 TEST(ImuNoiseModel, OutOfRangeChannelIsUntouched) {

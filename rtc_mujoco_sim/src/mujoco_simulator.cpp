@@ -694,26 +694,27 @@ bool MuJoCoSimulator::ConfigureImuNoise(JointGroup& group, const ImuNoiseConfig&
     return false;
   }
 
-  std::vector<ImuNoiseKind> kinds;
-  std::size_t offset = 0;
-  for (const auto& si : group.sensor_infos) {
-    const bool gyro = si.type == mjSENS_GYRO;
-    if ((gyro || si.type == mjSENS_ACCELEROMETER) &&
-        si.dim == static_cast<int>(ImuNoiseModel::kAxes)) {
-      kinds.push_back(gyro ? ImuNoiseKind::kGyro : ImuNoiseKind::kAccel);
-      group.imu_noise_offsets.push_back(offset);
-    }
-    offset += static_cast<std::size_t>(si.dim);
-  }
-  if (kinds.empty()) {
-    fprintf(stderr,
-            "[MuJoCoSimulator] WARN: group '%s' — imu_noise.enabled but the group exports no "
-            "gyro or accelerometer; nothing to apply\n",
-            group.name.c_str());
-  }
-  // Configure allocates and, for seed 0, opens std::random_device — either
-  // can throw, and this runs inside a noexcept Initialize.
+  // The channel list and Configure allocate, and Configure opens
+  // std::random_device for seed 0 — any of them can throw, and this runs
+  // inside a noexcept Initialize.
   try {
+    std::vector<ImuNoiseKind> kinds;
+    std::size_t offset = 0;
+    for (const auto& si : group.sensor_infos) {
+      const bool gyro = si.type == mjSENS_GYRO;
+      if ((gyro || si.type == mjSENS_ACCELEROMETER) &&
+          si.dim == static_cast<int>(ImuNoiseModel::kAxes)) {
+        kinds.push_back(gyro ? ImuNoiseKind::kGyro : ImuNoiseKind::kAccel);
+        group.imu_noise_offsets.push_back(offset);
+      }
+      offset += static_cast<std::size_t>(si.dim);
+    }
+    if (kinds.empty()) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] WARN: group '%s' — imu_noise.enabled but the group exports no "
+              "gyro or accelerometer; nothing to apply\n",
+              group.name.c_str());
+    }
     group.imu_noise.Configure(cfg, xml_timestep_, std::move(kinds));
   } catch (const std::exception& e) {
     fprintf(stderr, "[MuJoCoSimulator] ERROR: group '%s' — imu_noise setup failed: %s\n",

@@ -54,7 +54,9 @@ class ImuNoiseModel {
   static constexpr std::size_t kAxes = 3;
 
   /// Build the channel list and draw the initial biases. A seed of 0 is
-  /// resolved here, once, so a later Reset replays the same realisation.
+  /// resolved here, once, so a later Reset replays the same realisation. The
+  /// seed is mixed with a stream tag of its own, so an IMU seed equal to
+  /// another simulator RNG's seed does not replay that RNG's draws.
   /// `dt` is the sample period [s] (one Apply per channel per period).
   void Configure(const ImuNoiseConfig& config, double dt, std::vector<ImuNoiseKind> channels);
 
@@ -80,6 +82,7 @@ class ImuNoiseModel {
   ImuNoiseConfig config_{};
   double sqrt_dt_{0.0};
   std::uint64_t seed_{0};
+  std::uint64_t stream_seed_{0};  // seed_ mixed with the IMU stream tag
   std::vector<ImuNoiseKind> kinds_;
   std::vector<std::array<double, kAxes>> bias_;
   std::mt19937_64 rng_;

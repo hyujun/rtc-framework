@@ -1,8 +1,10 @@
 // ── test_imu_noise_export.cpp ────────────────────────────────────────────────
 // robot_response.<group>.imu_noise inside the simulator: what reaches the
 // sensor export, and what must not move. One sample is one ReadSensors, read
-// as export − sensordata (the noise), so the determinism checks are about the
-// noise realisation and do not depend on physics being bit-reproducible.
+// as export − sensordata (the noise). In floating point (x + n) − x still
+// depends on x, so the bit-equality checks also rely on the physics itself
+// replaying bit for bit (same model, same steps); they compare the noise of
+// runs whose sensordata is the same, not noise alone.
 //   off (default)  — the export is mjData::sensordata, bit for bit
 //   on             — same seed, same noise; sensordata itself, the frame and
 //                    contact sensors in the export and the contact wrench
