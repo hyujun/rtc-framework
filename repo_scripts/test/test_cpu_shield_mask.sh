@@ -190,5 +190,32 @@ expect_eq "isolation.none" "none" "$(shield_isolation_method)"
 # 원상복구 (아래 결과 집계에 영향 없도록)
 STUB_RC=0; STUB_ACTUAL="2-9"
 
+# ── sim-only profile 은 --robot 에서 거부 ───────────────────────────────────
+# mpc_par_sim 은 driver slot 을 MPC worker 에 준다 — 로봇에서는 driver 프로세스가
+# 그 slot 에 있으므로 shield 가 그 코어를 CM cpuset 으로 끌어가면 안 된다. 거부는
+# 인자 해석 단계라 root 없이 판정할 수 있다 (root 검사는 그 뒤의 do_on).
+rc=0
+out=$(bash "${SCRIPTS_DIR}/cpu_shield.sh" on --robot --profile mpc_par_sim 2>&1) || rc=$?
+expect_eq "sim_only.robot.rc" "1" "$rc"
+if grep -q "simulation-only" <<<"$out"; then pass; else fail "[sim_only.robot.msg] 거부 사유가 없다: $out"; fi
+# 통과 쪽 두 case 는 거부 다음의 root 검사에서 멈추는 데 기대므로, root 로 돌면
+# 실제로 shield 를 켠다 — 그때는 건너뛴다.
+if [[ "$EUID" -ne 0 ]]; then
+  # --sim 은 통과해 root 검사까지 간다 (거부 문구가 없어야 한다).
+  out=$(bash "${SCRIPTS_DIR}/cpu_shield.sh" on --sim --profile mpc_par_sim 2>&1) || true
+  if grep -q "simulation-only" <<<"$out"; then
+    fail "[sim_only.sim] --sim 인데 sim-only 로 거부했다: $out"
+  else
+    pass
+  fi
+  # 로봇용 worker profile 은 --robot 에서 거부되지 않는다.
+  out=$(bash "${SCRIPTS_DIR}/cpu_shield.sh" on --robot --profile mpc_par 2>&1) || true
+  if grep -q "simulation-only" <<<"$out"; then
+    fail "[sim_only.par] mpc_par 를 sim-only 로 거부했다: $out"
+  else
+    pass
+  fi
+fi
+
 # ── 결과 ────────────────────────────────────────────────────────────────────
 summary_and_exit test_cpu_shield_mask.sh

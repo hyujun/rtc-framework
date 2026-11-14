@@ -183,7 +183,7 @@ CM (`CmTimingBuffer`), MPC (`MpcTimingBuffer`), hand (`HandTimingBuffer`) 가 `R
 
 `SystemThreadConfigs` 는 `rt_control`, `rt_callback`, `nrt_logging`, `nrt_callback`, `nrt_publish`, `arm_driver`, `hand_driver`, `sim_thread`, `viewer`, `mpc` (`MpcThreadConfig`) 를 가집니다. actuator publish 는 `rt_control` 이 tick 안에서 inline 으로 하고, hand comm thread 는 `udp_hand_driver` 내부 (`kHandCommThreadConfig`) 에 있습니다. 일반 `rtc_communication::Transceiver` 는 `kRtUdpRecvConfig` (`cpu_core=-1`) 를 호출자가 명시적으로 씁니다.
 
-`MpcThreadConfig` 의 필드는 `main` (MPC solve 스레드의 `ThreadConfig`) 하나입니다. Aligator 의 병렬화는 OpenMP 이고 자기 스레드를 직접 소유하므로 외부 핸들을 받지 않습니다. `ValidateSystemThreadConfigs()` 는 (1) MPC main priority < rt_callback priority, (2) `arm_driver` / `hand_driver` 의 `cpu_core` 가 모든 RT controller thread (rt_control/rt_callback/mpc_main) 와 disjoint, (3) `cpu_core=-1` 은 disjointness 검사에서 제외를 검증합니다.
+`MpcThreadConfig` 의 필드는 `main` (MPC solve 스레드의 `ThreadConfig`) 하나입니다. Aligator 의 병렬화는 OpenMP 이고 자기 스레드를 직접 소유하므로 외부 핸들을 받지 않습니다. 병렬 solve 의 OpenMP worker slot 은 tier 가 아니라 launch profile 이 정합니다 (`mpc_on` · `mpc_off` 는 0 개). `ValidateSystemThreadConfigs()` 는 (1) MPC main priority < rt_callback priority, (2) `arm_driver` / `hand_driver` 의 `cpu_core` 가 모든 RT controller thread (rt_control/rt_callback/mpc_main) 와 disjoint, (3) `cpu_core=-1` 은 disjointness 검사에서 제외를 검증합니다.
 
 **MuJoCo 시뮬레이션:** 모든 tier 에서 `sim_thread` / `viewer` 의 `cpu_core = -1` (no pin) 입니다. `cpu_shield.sh --sim` 은 RT cluster 코어 (Core 1-5) 만 격리하고 나머지를 해제하므로 physics 와 GLFW viewer 는 해제된 코어에서 CFS 로 roam 합니다. 같은 값이 `rtc_tools.launch.thread_layout.get_sim_core()` / `get_viewer_core()` 로 미러링됩니다.
 
@@ -199,6 +199,7 @@ CM (`CmTimingBuffer`), MPC (`MpcTimingBuffer`), hand (`HandTimingBuffer`) 가 `R
 | `CheckThreadHealth()` / `VerifyThreadConfig()` | 문자열 기반 검사 / 현재 설정 문자열 (RT 불가) |
 | `GetPhysicalCpuCount()` / `GetOnlineCpuCount()` | 물리 코어 수 (SMT 제외, sysfs) / 논리 CPU 수 |
 | `SelectThreadConfigs()` | 코어 수 기반 레이아웃 자동 선택 (`>=` 계단식) |
+| `SelectMpcWorkerSlots()` / `MpcWorkerThreadConfig()` | profile 의 MPC worker slot / worker `i` 설정 (`main` 상속, 이름 `mpc_worker_<i>`) |
 | `GetThreadStats()` / `GetThreadMetrics()` | 레이턴시 통계 (min/max/avg) / 포괄 통계 (jitter, p95, p99 포함) |
 
 `ConfigureRtHeap()` (`rt_heap.hpp`) 는 glibc `mallopt(M_TRIM_THRESHOLD, -1)` + `mallopt(M_MMAP_MAX, 0)` 로 warmup 이후의 할당·해제가 syscall 이 되지 않게 합니다. `mlockall` (RT-HOST-1) 과 함께 RT 프로세스 main 진입 직후 1회 부르며 (프로세스 전역), 실패는 `false` 이고 호출자가 경고하고 계속 돕니다. 대가는 RSS 가 최대치에 머무는 것입니다 ([invariants.md](../agent_docs/invariants.md) RT 절의 ONNX Runtime 수용 조건 1).
@@ -238,7 +239,7 @@ RT 스레드 (producer) 에서 비-RT 스레드 (consumer) 로 데이터를 넘�
 
 **CM per-tick timing** -- `cm_timing_log.csv` 의 스키마는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` 입니다 (MPC / hand 와 같은 8열). `run_id` 는 `logging/run_id.hpp` 가 `Open()` 에서 한 번 정해 매 행에 찍으므로, 같은 분에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못합니다. controller 데이터 CSV 는 `rtc_controller_interface` 의 `ControllerLogSet` 과 각 controller 의 POD 미러가 맡습니다.
 
-세 phase 열은 `t_total_us` 로 합산되지 않습니다. `PeriodicRtThread::MarkPublishDone()` 을 부르는 producer (CM) 는 남는 `t_total_us − (t_state_us + t_compute_us + t_publish_us)` 가 post-publish tail 입니다 (분석 쪽 파생 열은 `rtc_tools` `plotting/plotters/timing.py` 의 `add_tail_column`). 훅 `JitterMeaningful()` · `RequestLoopExit()` · `SuppressTimingThisTick()` 의 계약은 `periodic_rt_thread.hpp` Doxygen 을 봅니다.
+세 phase 열은 `t_total_us` 로 합산되지 않습니다. `PeriodicRtThread::MarkPublishDone()` 을 부르는 producer (CM) 는 남는 `t_total_us − (t_state_us + t_compute_us + t_publish_us)` 가 post-publish tail 입니다 (분석 쪽 파생 열은 `rtc_tools` `plotting/plotters/timing.py` 의 `add_tail_column`). 훅 `OnLoopEntry()` · `JitterMeaningful()` · `RequestLoopExit()` · `SuppressTimingThisTick()` 의 계약은 `periodic_rt_thread.hpp` Doxygen 을 봅니다.
 
 #### Generic CSV 인프라 (`thread_csv_producer.hpp` + `thread_csv_logger.hpp`)
 

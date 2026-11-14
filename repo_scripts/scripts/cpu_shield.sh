@@ -14,7 +14,9 @@
 #   shielded = RT cores (rt_control, rt_callback, mpc_main) ∪ nrt_* cores,
 #              OS slot excluded, SMT siblings added. The nrt lanes share the
 #              rt_callback slot, so this is "1-3" on a non-SMT box of any tier;
-#              a launch profile without MPC (mpc_off) drops the mpc_main core.
+#              a launch profile without MPC (mpc_off) drops the mpc_main core,
+#              and a worker profile (mpc_par, mpc_par_sim) adds the MPC OpenMP
+#              worker slots so the pool's self-pins land inside the cpuset.
 #   released = OS/DDS (Core 0), arm_driver, hand_driver,
 #              sim_thread/viewer (cpu_core=-1, no pin), spare
 #
@@ -157,10 +159,10 @@ shield_matches_desired() {
 
   # Cores agree; the marker still decides, because --sim and --robot may diverge
   # again later and a stale marker would misreport `status`. The profile rides
-  # the same marker: today every profile yields a different mask so a profile
-  # switch already fails the comparison above, but that is a property of the
-  # current layout, not a guarantee — two profiles that happened to shield the
-  # same cores would otherwise leave `status` reporting the wrong one.
+  # the same marker: two profiles can shield the same cores (a worker profile on
+  # a tier where it declares no workers matches the default exactly), and the
+  # mask comparison above cannot tell them apart — without this `status` would
+  # report the wrong one.
   local current
   current=$(shield_marker_read) || return 2
   [[ "$current" == "$mode $profile" ]] || return 2
@@ -477,6 +479,13 @@ case "$COMMAND" in
     done
     rtc_is_layout_profile "$PROFILE" ||
       error "Unknown layout profile: '${PROFILE}' (declared: $(rtc_layout_profiles))"
+    # A sim-only profile hands the driver slots to the MPC worker pool. On a
+    # robot the driver processes are pinned there, so the shield would pull
+    # their cores into the CM cpuset (their own pin then fails with EINVAL) or
+    # put them beside a FIFO worker.
+    if [[ "$MODE" == "robot" ]] && rtc_layout_profile_sim_only "$PROFILE"; then
+      error "Layout profile '${PROFILE}' is simulation-only (it takes the driver slots); use --sim, or a robot profile"
+    fi
     do_on "$MODE" "$PROFILE"
     ;;
   check)

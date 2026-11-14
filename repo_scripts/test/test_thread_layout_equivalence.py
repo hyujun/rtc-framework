@@ -37,13 +37,18 @@ sys.path.insert(0, str(REPO_ROOT / "rtc_tools"))
 
 RT_COMMON = REPO_ROOT / "repo_scripts" / "scripts" / "lib" / "rt_common.sh"
 
+# Every declared launch profile; a profile added to the manifest but not here is
+# caught by the PROFILES-vs-manifest check in main().
+PROFILES = ("mpc_on", "mpc_off", "mpc_par", "mpc_par_sim")
+
 # Sampled core counts: every value across the tier boundaries plus the clamp.
 CORE_COUNTS = list(range(1, 18)) + [24]
 
-# mpc_worker_0/1 are listed although #380 deleted them from the manifest: with
-# no spec behind them the loop below asserts they are absent from BOTH mirrors
-# on every tier, which is the regression that matters now. Reserving slots for
-# threads nothing runs is the defect #380 fixed.
+# mpc_worker_0/1 are listed although #380 deleted them from the tier table: with
+# no spec behind them the loop below asserts they are absent from BOTH mirrors'
+# role tables on every tier. The OpenMP workers that came back since live on the
+# profile axis (worker_slots), not as tier roles -- checked separately below, so
+# a worker leaking back into the tier table still shows up here.
 ROLES = (
     "rt_control",
     "rt_callback",
@@ -117,6 +122,16 @@ def shell_batch(core_counts: list[int]) -> dict[int, dict[str, str]]:
         lines.append(
             f'echo "{ncpu}|expected|$(rtc_expected_threads {ncpu} | tr "\\n" " " | sed "s/ $//")"'
         )
+        for profile in PROFILES:
+            lines.append(
+                f'echo "{ncpu}|workers:{profile}|$(get_mpc_worker_slots {ncpu} {profile})"'
+            )
+            lines.append(f'echo "{ncpu}|rt:{profile}|$(get_rt_cores {ncpu} {profile})"')
+            lines.append(f'echo "{ncpu}|mpc:{profile}|$(get_mpc_cores {ncpu} {profile})"')
+            lines.append(
+                f'echo "{ncpu}|expected:{profile}|'
+                f'$(rtc_expected_threads {ncpu} {profile} | tr "\\n" " " | sed "s/ $//")"'
+            )
 
     out = shell_query("\n".join(lines))
     table: dict[int, dict[str, str]] = {n: {} for n in core_counts}
@@ -127,16 +142,29 @@ def shell_batch(core_counts: list[int]) -> dict[int, dict[str, str]]:
 
 
 def main() -> int:
-    from gen_thread_layout import load_manifest, mpc_cores, nrt_cores, rt_cores  # noqa: PLC0415
+    from gen_thread_layout import (  # noqa: PLC0415
+        expected_rows,
+        load_manifest,
+        mpc_cores,
+        nrt_cores,
+        rt_cores,
+        worker_slots,
+    )
 
     from rtc_tools.launch.thread_layout_generated import (  # noqa: PLC0415
+        LAYOUT_PROFILES,
         ROLE_SPECS,
+        mpc_worker_slots,
         tier_for_cores,
     )
 
     manifest = load_manifest()
     shell = shell_batch(CORE_COUNTS)
     fail = Failures()
+    fail.check("profiles(test vs manifest)", tuple(p.id for p in manifest.profiles), PROFILES)
+    fail.check(
+        "profiles(python vs manifest)", tuple(p.id for p in manifest.profiles), LAYOUT_PROFILES
+    )
 
     for ncpu in CORE_COUNTS:
         tier = manifest.tier_for(ncpu)
@@ -227,6 +255,36 @@ def main() -> int:
             name = key
             rows.append(f"{name}:{spec.slot}:{spec.policy_verifier}:{spec.priority}")
         fail.check(f"ncpu={ncpu} rtc_expected_threads", " ".join(rows), shell[ncpu]["expected"])
+
+        # Profile axis: worker slots and everything they widen, three ways.
+        for profile in manifest.profiles:
+            workers = worker_slots(tier, profile) if "mpc" not in profile.drops else []
+            csv = ",".join(str(v) for v in workers)
+            fail.check(
+                f"ncpu={ncpu} {profile.id} workers shell",
+                csv,
+                shell[ncpu][f"workers:{profile.id}"],
+            )
+            fail.check(
+                f"ncpu={ncpu} {profile.id} workers python",
+                tuple(workers),
+                mpc_worker_slots(profile.id, ncpu),
+            )
+            fail.check(
+                f"ncpu={ncpu} {profile.id} get_rt_cores",
+                ",".join(str(v) for v in rt_cores(manifest, tier, profile)),
+                shell[ncpu][f"rt:{profile.id}"],
+            )
+            fail.check(
+                f"ncpu={ncpu} {profile.id} get_mpc_cores",
+                ",".join(str(v) for v in mpc_cores(manifest, tier, profile)),
+                shell[ncpu][f"mpc:{profile.id}"],
+            )
+            fail.check(
+                f"ncpu={ncpu} {profile.id} rtc_expected_threads",
+                " ".join(expected_rows(manifest, tier, profile)),
+                shell[ncpu][f"expected:{profile.id}"],
+            )
 
     return fail.report()
 

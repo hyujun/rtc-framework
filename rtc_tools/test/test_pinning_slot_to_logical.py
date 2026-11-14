@@ -207,10 +207,18 @@ _THREAD_CONFIG_HEADERS = (
 
 
 def _thread_config_names() -> set[str]:
-    """Every ``.name = "..."`` value declared across the thread config headers."""
+    """Every thread name the C++ thread config headers can apply.
+
+    The ``.name = "..."`` fields of the tier constants, plus the MPC worker
+    names (``kMpcWorkerThreadNames``), which the solve thread applies to its
+    OpenMP pool and which are not tier roles.
+    """
     names: set[str] = set()
     for header in _THREAD_CONFIG_HEADERS:
-        names |= set(re.findall(r'\.name = "([^"]+)"', header.read_text()))
+        text = header.read_text()
+        names |= set(re.findall(r'\.name = "([^"]+)"', text))
+        for block in re.findall(r"kMpcWorkerThreadNames\{([^}]*)\}", text):
+            names |= set(re.findall(r'"([^"]+)"', block))
     return names
 
 
@@ -225,6 +233,9 @@ def test_rtc_owned_names_mirror_thread_config_hpp():
     # A regex that stops matching (headers moved again, initializer restyled)
     # would make the comparison trivially wrong rather than loudly wrong.
     assert names, f"no `.name =` declarations found in {_THREAD_CONFIG_HEADERS} — regex is stale"
+    assert {n for n in names if n.startswith("mpc_worker_")}, (
+        "no kMpcWorkerThreadNames entries found — regex is stale"
+    )
     assert names == pinning.RTC_OWNED_THREAD_NAMES
 
 

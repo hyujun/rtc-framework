@@ -585,3 +585,133 @@ TEST(ThreadLayoutTiers, RuntimeWrapperAgreesWithTheExplicitOverload) {
   EXPECT_EQ(probed.arm_driver.cpu_core, explicit_count.arm_driver.cpu_core);
   EXPECT_EQ(probed.hand_driver.cpu_core, explicit_count.hand_driver.cpu_core);
 }
+
+// ── MPC worker slots (launch profile axis) ──────────────────────────────────
+// Hand-written literals, like the tier table above: the generator proves the
+// three languages agree with the manifest, not that the manifest is right.
+
+namespace {
+
+struct WorkerExpectation {
+  int ncpu;
+  const char* profile;
+  std::vector<int> slots;
+};
+
+std::vector<int> AsVector(const rtc::MpcWorkerSlots& w) {
+  return {w.slots.begin(), w.slots.begin() + w.count};
+}
+
+}  // namespace
+
+TEST(ThreadLayoutTiers, WorkerSlotsMatchTheProfileOnEveryTier) {
+  const std::vector<WorkerExpectation> cases = {
+      // The historical profiles declare no workers on any tier.
+      {1, "mpc_on", {}},
+      {12, "mpc_on", {}},
+      {16, "mpc_on", {}},
+      {12, "mpc_off", {}},
+      // Robot profile: spare block above the driver pair.
+      {4, "mpc_par", {}},
+      {6, "mpc_par", {}},
+      {7, "mpc_par", {}},
+      {8, "mpc_par", {6, 7}},
+      {9, "mpc_par", {6, 7}},
+      {10, "mpc_par", {6, 7, 8, 9}},
+      {12, "mpc_par", {6, 7, 8, 9}},
+      {14, "mpc_par", {6, 7, 8, 9}},
+      {16, "mpc_par", {6, 7, 8, 9}},
+      {64, "mpc_par", {6, 7, 8, 9}},
+      // Simulation profile: the absent drivers' slots plus 6-7.
+      {6, "mpc_par_sim", {}},
+      {7, "mpc_par_sim", {}},
+      {8, "mpc_par_sim", {4, 5, 6, 7}},
+      {12, "mpc_par_sim", {4, 5, 6, 7}},
+      {16, "mpc_par_sim", {4, 5, 6, 7}},
+      // Unknown ids reserve nothing — the caller refuses on count 0.
+      {12, "", {}},
+      {12, "mpc_par ", {}},
+      {12, "MPC_PAR", {}},
+  };
+  for (const auto& c : cases) {
+    const rtc::MpcWorkerSlots w = rtc::SelectMpcWorkerSlotsForCoreCount(c.ncpu, c.profile);
+    EXPECT_EQ(AsVector(w), c.slots) << "ncpu=" << c.ncpu << " profile='" << c.profile << "'";
+    for (int i = w.count; i < rtc::kMaxMpcWorkers; ++i) {
+      EXPECT_EQ(w.slots[static_cast<std::size_t>(i)], 0) << "unused tail must stay zero";
+    }
+  }
+}
+
+TEST(ThreadLayoutTiers, WorkerSlotsNeverTakeARunningRolesSlot) {
+  // mpc_par keeps the drivers; mpc_par_sim drops them (no driver process in
+  // simulation), so only mpc_par is checked against arm/hand.
+  for (const char* profile : {"mpc_par", "mpc_par_sim"}) {
+    const bool drivers_run = std::string(profile) == "mpc_par";
+    for (int ncpu = 1; ncpu <= 24; ++ncpu) {
+      const rtc::SystemThreadConfigs cfg = rtc::SelectThreadConfigsForCoreCount(ncpu);
+      const std::vector<int> workers =
+          AsVector(rtc::SelectMpcWorkerSlotsForCoreCount(ncpu, profile));
+      std::vector<int> owned = {rtc::kOsSlot,
+                                cfg.rt_control.cpu_core,
+                                cfg.rt_callback.cpu_core,
+                                cfg.mpc.main.cpu_core,
+                                cfg.nrt_logging.cpu_core,
+                                cfg.nrt_callback.cpu_core,
+                                cfg.nrt_publish.cpu_core};
+      if (drivers_run) {
+        owned.push_back(cfg.arm_driver.cpu_core);
+        owned.push_back(cfg.hand_driver.cpu_core);
+      }
+      for (const int slot : workers) {
+        EXPECT_EQ(std::count(owned.begin(), owned.end(), slot), 0)
+            << profile << " ncpu=" << ncpu << ": worker slot " << slot << " is taken";
+        EXPECT_EQ(std::count(workers.begin(), workers.end(), slot), 1)
+            << profile << " ncpu=" << ncpu << ": duplicate worker slot " << slot;
+        EXPECT_LT(slot, ncpu) << profile << " ncpu=" << ncpu << ": slot does not exist";
+      }
+    }
+  }
+}
+
+TEST(ThreadLayoutTiers, WorkerThreadConfigInheritsMainAndRefusesOutOfRange) {
+  const rtc::SystemThreadConfigs cfg = rtc::SelectThreadConfigsForCoreCount(12);
+  const rtc::MpcWorkerSlots w = rtc::SelectMpcWorkerSlotsForCoreCount(12, "mpc_par");
+  ASSERT_EQ(w.count, 4);
+  const std::vector<std::string> names = {"mpc_worker_0", "mpc_worker_1", "mpc_worker_2",
+                                          "mpc_worker_3"};
+  for (int i = 0; i < w.count; ++i) {
+    const rtc::ThreadConfig worker = rtc::MpcWorkerThreadConfig(cfg.mpc.main, w, i);
+    EXPECT_EQ(worker.cpu_core, w.slots[static_cast<std::size_t>(i)]);
+    EXPECT_EQ(worker.sched_policy, cfg.mpc.main.sched_policy);
+    EXPECT_EQ(worker.sched_priority, cfg.mpc.main.sched_priority);
+    EXPECT_EQ(worker.nice_value, cfg.mpc.main.nice_value);
+    ASSERT_NE(worker.name, nullptr);
+    EXPECT_EQ(std::string(worker.name), names[static_cast<std::size_t>(i)]);
+    EXPECT_LE(std::string(worker.name).size(), 15U);
+  }
+  const rtc::MpcWorkerSlots two = rtc::SelectMpcWorkerSlotsForCoreCount(8, "mpc_par");
+  for (const int bad : {-1, two.count, rtc::kMaxMpcWorkers, 100}) {
+    const rtc::ThreadConfig worker = rtc::MpcWorkerThreadConfig(cfg.mpc.main, two, bad);
+    EXPECT_EQ(worker.cpu_core, -1) << "index " << bad;
+    EXPECT_EQ(worker.name, nullptr) << "index " << bad;
+  }
+}
+
+TEST(ThreadLayoutTiers, ProfileIdsAreTheManifestsAndDefaultFirst) {
+  EXPECT_EQ(rtc::kDefaultLayoutProfileId, "mpc_on");
+  EXPECT_EQ(rtc::kLayoutProfileIds.front(), rtc::kDefaultLayoutProfileId);
+  for (const char* id : {"mpc_on", "mpc_off", "mpc_par", "mpc_par_sim"}) {
+    EXPECT_TRUE(rtc::IsLayoutProfileId(id)) << id;
+  }
+  for (const char* id : {"", "mpc", "mpc_on ", "MPC_ON", "mpc_par_robot"}) {
+    EXPECT_FALSE(rtc::IsLayoutProfileId(id)) << id;
+  }
+}
+
+TEST(ThreadLayoutTiers, WorkerRuntimeWrapperAgreesWithTheExplicitOverload) {
+  for (const char* profile : {"mpc_on", "mpc_par", "mpc_par_sim"}) {
+    EXPECT_EQ(AsVector(rtc::SelectMpcWorkerSlots(profile)),
+              AsVector(rtc::SelectMpcWorkerSlotsForCoreCount(rtc::GetPhysicalCpuCount(), profile)))
+        << profile;
+  }
+}

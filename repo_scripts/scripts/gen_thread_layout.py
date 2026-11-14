@@ -103,12 +103,25 @@ class Profile:
     """Which roles run at all on a given launch (issue #350).
 
     The second layout axis. ``drops`` names top-level role keys.
+    ``worker_slots`` pairs every tier id with that tier's MPC OpenMP worker
+    slots (already resolved through the manifest's inheritance rule); empty on
+    every tier for a profile that declares none. A tuple of pairs rather than a
+    dict so the frozen dataclass stays hashable and actually immutable.
     """
 
     id: str
     label: str
     default: bool
     drops: frozenset[str]
+    worker_slots: tuple[tuple[int, tuple[int, ...]], ...]
+    sim_only: bool = False
+
+    def workers_on(self, tier_id: int) -> tuple[int, ...]:
+        return dict(self.worker_slots)[tier_id]
+
+    @property
+    def declares_workers(self) -> bool:
+        return any(slots for _, slots in self.worker_slots)
 
 
 @dataclass(frozen=True)
@@ -122,10 +135,22 @@ class Manifest:
     outputs: dict[str, str]
     doc_blocks: list[dict]
     doc: dict
+    worker_prefix: str
 
     @property
     def default_profile(self) -> Profile:
         return self.profiles[0]
+
+    @property
+    def max_workers(self) -> int:
+        """Largest worker pool any profile declares on any tier (C++ array bound)."""
+        return max((len(slots) for p in self.profiles for _, slots in p.worker_slots), default=0)
+
+    def worker_names(self, count: int | None = None) -> list[str]:
+        """``mpc_worker_<i>`` for i in [0, count); every possible name by default."""
+        return [
+            f"{self.worker_prefix}{i}" for i in range(self.max_workers if count is None else count)
+        ]
 
     # ── convenience ────────────────────────────────────────────────────
     @property
@@ -237,6 +262,8 @@ def load_manifest(path: Path = MANIFEST) -> Manifest:
                 label=str(raw_profile["label"]),
                 default=bool(raw_profile.get("default", False)),
                 drops=drops,
+                worker_slots=_resolve_worker_slots(path, raw_profile, tiers),
+                sim_only=bool(raw_profile.get("sim_only", False)),
             )
         )
     defaults = [p for p in profiles if p.default]
@@ -245,14 +272,18 @@ def load_manifest(path: Path = MANIFEST) -> Manifest:
             f"{path.relative_to(REPO_ROOT)}: exactly one profile must carry "
             f"default: true (found {len(defaults)})"
         )
-    if defaults[0].drops:
+    if defaults[0].drops or defaults[0].declares_workers or defaults[0].sim_only:
         raise SystemExit(
             f"{path.relative_to(REPO_ROOT)}: the default profile '{defaults[0].id}' must "
-            "drop nothing -- it is the layout every profile-unaware caller gets."
+            "drop nothing and declare no workers -- it is the layout every "
+            "profile-unaware caller gets."
         )
     # Default first: every generated `case` falls back to profiles[0] and the
     # doc tables render it as the baseline column.
     profiles.sort(key=lambda p: not p.default)
+
+    mpc_entry = next(entry for entry in roles if entry.get("kind") == "mpc")
+    worker_prefix = str(mpc_entry["worker"]["thread_name_prefix"])
 
     return Manifest(
         layout_version=str(data["layout_version"]),
@@ -264,7 +295,33 @@ def load_manifest(path: Path = MANIFEST) -> Manifest:
         outputs=dict(data["outputs"]),
         doc_blocks=list(data.get("doc_blocks", [])),
         doc=dict(data.get("doc", {})),
+        worker_prefix=worker_prefix,
     )
+
+
+def _resolve_worker_slots(
+    path: Path, raw_profile: dict, tiers: list[Tier]
+) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    """Expand a profile's ``worker_slots`` to one entry per tier id.
+
+    A tier takes the list of the highest listed tier at or below it, so "10:"
+    covers 10, 12, 14 and 16. A key that names no tier is rejected: it would
+    otherwise be silently ignored and the profile would reserve nothing there.
+    """
+    raw = raw_profile.get("worker_slots") or {}
+    tier_ids = {t.id for t in tiers}
+    listed = {int(k): tuple(int(v) for v in values) for k, values in raw.items()}
+    unknown = sorted(set(listed) - tier_ids)
+    if unknown:
+        raise SystemExit(
+            f"{path.relative_to(REPO_ROOT)}: profile '{raw_profile['id']}' lists worker "
+            f"slots for undeclared tier(s): {', '.join(str(t) for t in unknown)}"
+        )
+    resolved: list[tuple[int, tuple[int, ...]]] = []
+    for tier in tiers:  # ascending
+        at_or_below = [k for k in listed if k <= tier.id]
+        resolved.append((tier.id, listed[max(at_or_below)] if at_or_below else ()))
+    return tuple(resolved)
 
 
 # ── shared helpers ──────────────────────────────────────────────────────────
@@ -308,10 +365,24 @@ def dropped_keys(m: Manifest, profile: Profile) -> frozenset[str]:
     return frozenset(keys)
 
 
+def worker_slots(tier: Tier, profile: Profile | None) -> list[int]:
+    """MPC OpenMP worker slots ``profile`` reserves on ``tier`` (none by default).
+
+    The one owner of "no MPC, no workers": every helper and emitter derives the
+    pool from here. (The self-test also rejects a profile that drops mpc while
+    declaring workers, so the guard is belt and braces.)
+    """
+    if profile is None or "mpc" in profile.drops:
+        return []
+    return list(profile.workers_on(tier.id))
+
+
 def mpc_cores(m: Manifest, tier: Tier, profile: Profile | None = None) -> list[int]:
+    """mpc_main's slot followed by the profile's worker slots (main first)."""
     keys = ["mpc_main"]
     dropped = dropped_keys(m, profile) if profile is not None else frozenset()
-    return [tier.specs[k].slot for k in keys if k not in dropped]
+    main = [tier.specs[k].slot for k in keys if k not in dropped]
+    return main + worker_slots(tier, profile)
 
 
 def rt_cores(m: Manifest, tier: Tier, profile: Profile | None = None) -> list[int]:
@@ -333,6 +404,29 @@ def nrt_cores(m: Manifest, tier: Tier) -> list[int]:
         tier.specs["nrt_publish"].slot,
     }
     return sorted(slots)
+
+
+def expected_rows(m: Manifest, tier: Tier, profile: Profile) -> list[str]:
+    """verify_rt_runtime.sh rows ("name:slot:policy:priority[:pool]") under ``profile``.
+
+    Worker rows carry a fifth field, ``pool``: the profile's worker slots are a
+    capacity and the controller YAML's ``num_threads`` decides how many of them
+    a run uses, so a missing worker is not by itself a failure. The verifier
+    still checks every worker that exists and requires the indices it finds to
+    be contiguous from 0 (libgomp numbers its team densely).
+    """
+    dropped = dropped_keys(m, profile)
+    rows: list[str] = []
+    for key in m.verifier_order:
+        spec = tier.specs.get(key)
+        if spec is None or key in dropped:
+            continue
+        rows.append(f"{_thread_name(m, key)}:{spec.slot}:{spec.policy_verifier}:{spec.priority}")
+        if key == "mpc_main":
+            workers = worker_slots(tier, profile)
+            for name, slot in zip(m.worker_names(len(workers)), workers, strict=True):
+                rows.append(f"{name}:{slot}:{spec.policy_verifier}:{spec.priority}:pool")
+    return rows
 
 
 # ── C++ emitter ─────────────────────────────────────────────────────────────
@@ -415,6 +509,45 @@ def _cpp_core_map(m: Manifest, tier: Tier) -> list[str]:
     return lines
 
 
+def _cpp_worker_dispatch(m: Manifest) -> list[str]:
+    """SelectMpcWorkerSlotsForCoreCount(ncpu, profile): pure, host-independent."""
+    out = [
+        "// MPC worker slots `profile` reserves at `ncpu` physical cores. An unknown",
+        "// profile id, or a profile that declares no workers, yields count 0 -- the",
+        "// caller that needs workers refuses on that rather than guessing a layout.",
+        "[[nodiscard]] inline MpcWorkerSlots SelectMpcWorkerSlotsForCoreCount(",
+        "    int ncpu, std::string_view profile) noexcept {",
+    ]
+    for profile in m.profiles:
+        if not profile.declares_workers:
+            continue
+        # Runs of tiers sharing one list collapse onto the run's lowest threshold.
+        runs: list[tuple[int, tuple[int, ...]]] = []
+        for tier in m.tiers:  # ascending
+            slots = profile.workers_on(tier.id)
+            if runs and runs[-1][1] == slots:
+                continue
+            runs.append((tier.min_cores, slots))
+        out.append(f'  if (profile == "{profile.id}") {{')
+        for index, (threshold, slots) in enumerate(reversed(runs)):
+            lowest = index == len(runs) - 1
+            body = (
+                f"return {{.slots = {{{', '.join(str(v) for v in slots)}}}, .count = {len(slots)}}};"
+                if slots
+                else "return {};"
+            )
+            if lowest:
+                out.append(f"    {body}")
+            else:
+                out.append(f"    if (ncpu >= {threshold}) {{")
+                out.append(f"      {body}")
+                out.append("    }")
+        out.append("  }")
+    out.append("  return {};")
+    out.append("}")
+    return out
+
+
 def emit_cpp(m: Manifest) -> str:
     out: list[str] = []
     for line in GENERATED_BANNER_LINES:
@@ -434,12 +567,50 @@ def emit_cpp(m: Manifest) -> str:
     out.append("")
     out.append("#include <sched.h>  // SCHED_FIFO, SCHED_OTHER, SCHED_RR")
     out.append("")
+    out.append("#include <array>")
+    out.append("#include <string_view>")
+    out.append("")
     out.append("namespace rtc {")
     out.append("")
     out.append("// Slot reserved for OS / DDS / NIC IRQ. ValidateSystemThreadConfigs uses it")
     out.append("// to reject an RT role parked there (issue #349 D-co); emitted from the")
     out.append("// manifest so the rule cannot drift from the layout it guards.")
     out.append(f"inline constexpr int kOsSlot = {m.os_slot};")
+    out.append("")
+    out.append("// Launch profile ids (the layout's second axis), default first. A profile")
+    out.append("// never moves a tier role; it drops roles or adds MPC OpenMP workers.")
+    ids = ", ".join(f'"{p.id}"' for p in m.profiles)
+    out.append(
+        f"inline constexpr std::array<std::string_view, {len(m.profiles)}> kLayoutProfileIds{{{ids}}};"
+    )
+    out.append(
+        f'inline constexpr std::string_view kDefaultLayoutProfileId = "{m.default_profile.id}";'
+    )
+    out.append("")
+    out.append("[[nodiscard]] constexpr bool IsLayoutProfileId(std::string_view id) noexcept {")
+    out.append("  for (const std::string_view known : kLayoutProfileIds) {")
+    out.append("    if (id == known) {")
+    out.append("      return true;")
+    out.append("    }")
+    out.append("  }")
+    out.append("  return false;")
+    out.append("}")
+    out.append("")
+    out.append("// MPC OpenMP worker pool. Thread i + 1 of the pool (thread 0 is mpc_main) is")
+    out.append("// named kMpcWorkerThreadNames[i] and pinned to the profile's slots[i] with")
+    out.append("// mpc_main's policy and priority. kMaxMpcWorkers is the largest pool any")
+    out.append("// profile declares on any tier.")
+    out.append(f"inline constexpr int kMaxMpcWorkers = {m.max_workers};")
+    names = ", ".join(f'"{n}"' for n in m.worker_names())
+    out.append(
+        "inline constexpr std::array<const char*, kMaxMpcWorkers> "
+        f"kMpcWorkerThreadNames{{{names}}};"
+    )
+    out.append("")
+    out.append("struct MpcWorkerSlots {")
+    out.append("  std::array<int, kMaxMpcWorkers> slots{};  // slot indices, worker 0 first")
+    out.append("  int count{0};                             // valid prefix of `slots`")
+    out.append("};")
 
     for tier in m.tiers:
         out.append("")
@@ -511,6 +682,8 @@ def emit_cpp(m: Manifest) -> str:
             out.append(f"    return {{{body}}};")
             out.append("  }")
     out.append("}")
+    out.append("")
+    out.extend(_cpp_worker_dispatch(m))
     out.append("")
     out.append("}  // namespace rtc")
     out.append("")
@@ -657,6 +830,16 @@ def emit_shell(m: Manifest) -> str:
         f'  echo "{m.default_profile.id}"',
         "}",
         "",
+        "# Zero for a profile that is only sound in simulation (it hands slots of",
+        "# processes that exist only on a robot to another role). cpu_shield.sh",
+        "# refuses such a profile in --robot mode.",
+        "rtc_layout_profile_sim_only() {",
+        '  case "$1" in',
+        *[f"    {p.id}) return 0 ;;" for p in m.profiles if p.sim_only],
+        "    *) return 1 ;;",
+        "  esac",
+        "}",
+        "",
         "# Non-zero for a profile id this layout does not declare. Callers that",
         "# accept a profile from a CLI flag or a marker file validate here first --",
         '# the per-tier lookups below reject it too, but "get_rt_cores returned',
@@ -694,6 +877,17 @@ def emit_shell(m: Manifest) -> str:
         ],
         lambda t, p: _csv(rt_cores(m, t, p)),
     )
+    out += _tier_profile_case(
+        "get_mpc_worker_slots",
+        [
+            "MPC OpenMP worker slots as CSV, worker 0 first. Empty on every tier",
+            "for a profile that declares no workers (mpc_on, mpc_off) and below",
+            "the lowest tier a worker profile lists. get_mpc_cores / get_rt_cores",
+            "already include these under the same profile; this is the list on",
+            "its own, in the order mpc_main assigns them to OpenMP threads 1..n.",
+        ],
+        lambda t, p: _csv(worker_slots(t, p)),
+    )
     out += _tier_case(
         "get_nrt_cores",
         [
@@ -724,11 +918,14 @@ def emit_shell(m: Manifest) -> str:
         "",
         "# Expected in-process controller threads for verify_rt_runtime.sh, one",
         '# "name:slot:policy:priority" per line. policy: 1=SCHED_FIFO,',
-        "# 0=SCHED_OTHER. Every row is required: a missing thread is a FAIL. The",
-        '# former ":optional" suffix went with the mpc_worker slots (#380) -- it',
-        "# existed to excuse threads that applied a config and exited immediately.",
+        "# 0=SCHED_OTHER. Every row is required (a missing thread is a FAIL) except",
+        '# the ":pool" rows: MPC OpenMP workers, of which num_threads - 1 run out of',
+        "# the slots the profile reserves -- present ones are checked, absent ones",
+        "# are counted, and a gap in their indices is a FAIL.",
         "# $2 selects the launch profile; roles it drops move to",
-        "# rtc_forbidden_threads() below.",
+        "# rtc_forbidden_threads() below, and the MPC OpenMP workers it declares",
+        "# follow mpc_main as mpc_worker_<i> :pool rows (mpc_main's policy and",
+        "# priority, which libgomp threads inherit; the slot is the profile's).",
         "rtc_expected_threads() {",
         '  local ncpu="${1:-$(get_physical_cores)}"',
         f'  local profile="${{2:-{m.default_profile.id}}}"',
@@ -740,11 +937,7 @@ def emit_shell(m: Manifest) -> str:
         for profile in m.profiles:
             dropped = dropped_keys(m, profile)
             out.append(f'    "{tier.id}|{profile.id}")')
-            for key in m.verifier_order:
-                spec = tier.specs.get(key)
-                if spec is None or key in dropped:
-                    continue
-                row = f"{_thread_name(m, key)}:{spec.slot}:{spec.policy_verifier}:{spec.priority}"
+            for row in expected_rows(m, tier, profile):
                 out.append(f'      echo "{row}"')
             out.append("      ;;")
     out += ["    *) return 1 ;;", "  esac", "}", ""]
@@ -777,6 +970,13 @@ def emit_shell(m: Manifest) -> str:
 
 
 # ── Python emitter ──────────────────────────────────────────────────────────
+
+
+def _py_int_tuple(values: tuple[int, ...]) -> str:
+    """ruff-stable tuple literal: no magic trailing comma except for one element."""
+    if len(values) == 1:
+        return f"({values[0]},)"
+    return "(" + ", ".join(str(v) for v in values) + ")"
 
 
 def emit_python(m: Manifest) -> str:
@@ -837,6 +1037,27 @@ def emit_python(m: Manifest) -> str:
     out += [
         "}",
         "",
+        "# Launch profiles, default first (the layout's second axis).",
+        "LAYOUT_PROFILES: tuple[str, ...] = (",
+        *[f'    "{p.id}",' for p in m.profiles],
+        ")",
+        f'DEFAULT_PROFILE = "{m.default_profile.id}"',
+        "",
+        "# MPC OpenMP worker pool: worker i is named MPC_WORKER_THREAD_NAMES[i] and",
+        "# pinned to WORKER_SLOTS[profile][tier][i]. Every profile and tier is listed.",
+        "MPC_WORKER_THREAD_NAMES: tuple[str, ...] = (",
+        *[f'    "{n}",' for n in m.worker_names()],
+        ")",
+        "WORKER_SLOTS: dict[str, dict[int, tuple[int, ...]]] = {",
+    ]
+    for profile in m.profiles:
+        out.append(f'    "{profile.id}": {{')
+        for tier in m.tiers:
+            out.append(f"        {tier.id}: {_py_int_tuple(profile.workers_on(tier.id))},")
+        out.append("    },")
+    out += [
+        "}",
+        "",
         "",
         "def tier_for_cores(physical_cores: int) -> int:",
         '    """Return the tier id used for ``physical_cores`` physical cores."""',
@@ -849,6 +1070,11 @@ def emit_python(m: Manifest) -> str:
         "def role_spec(role: str, physical_cores: int) -> RoleSpec | None:",
         '    """Placement of ``role`` at ``physical_cores``; ``None`` if absent there."""',
         "    return ROLE_SPECS[tier_for_cores(physical_cores)].get(role)",
+        "",
+        "",
+        "def mpc_worker_slots(profile: str, physical_cores: int) -> tuple[int, ...]:",
+        '    """Worker slots ``profile`` reserves at ``physical_cores``; ``()`` if none."""',
+        "    return WORKER_SLOTS.get(profile, {}).get(tier_for_cores(physical_cores), ())",
     ]
     return "\n".join(out) + "\n"
 
@@ -1214,23 +1440,52 @@ def run_self_test(m: Manifest) -> int:
                     f"({', '.join(sorted(keys))})"
                 )
 
-    # 5. Profile invariants (issue #350). A profile may only ever *free* cores:
-    #    it selects which declared roles run, it never moves one or invents a
-    #    slot. Asserted per tier because a drop that emptied the RT set (or that
-    #    somehow widened it) would still generate valid-looking shell.
+    # 5. Profile invariants (issue #350). A profile never moves a role: it
+    #    selects which declared roles run, and the only slots it may add are its
+    #    own MPC worker slots. Asserted per tier because a drop that emptied the
+    #    RT set (or a widening nobody declared) would still generate
+    #    valid-looking shell.
     for profile in m.profiles:
         dropped = dropped_keys(m, profile)
         for required in ("rt_control", "rt_callback"):
             if required in dropped:
                 failures.append(f"profile {profile.id}: drops {required}; the RT loop must run")
+        if "mpc" in profile.drops and profile.declares_workers:
+            failures.append(f"profile {profile.id}: drops mpc but declares MPC workers")
         for tier in m.tiers:
+            workers = worker_slots(tier, profile)
             base = set(rt_cores(m, tier))
             scoped = set(rt_cores(m, tier, profile))
-            if not scoped <= base:
+            if not scoped <= base | set(workers):
                 failures.append(
                     f"profile {profile.id}, tier {tier.id}: RT slots {sorted(scoped - base)} "
-                    "are not in the default profile's set; a profile may only free cores"
+                    "are neither in the default profile's set nor declared workers"
                 )
+            # Workers take spare slots only. The tier id is its slot count, so a
+            # slot at or above it does not exist on the smallest box of the tier;
+            # a slot a running role owns would put two threads on one core, and
+            # the OS slot is never a pin target. Enforced here rather than in
+            # ValidateSystemThreadConfigs because that validator only sees the
+            # tiers the running host can represent.
+            if len(set(workers)) != len(workers):
+                failures.append(
+                    f"profile {profile.id}, tier {tier.id}: duplicate worker slots {workers}"
+                )
+            holders: dict[int, list[str]] = {m.os_slot: ["os_slot"]}
+            for key, spec in tier.specs.items():
+                if key not in dropped and spec.slot >= 0:
+                    holders.setdefault(spec.slot, []).append(key)
+            for slot in workers:
+                if not 0 <= slot < tier.id:
+                    failures.append(
+                        f"profile {profile.id}, tier {tier.id}: worker slot {slot} is outside "
+                        f"the tier's slots 0-{tier.id - 1}"
+                    )
+                if slot in holders:
+                    failures.append(
+                        f"profile {profile.id}, tier {tier.id}: worker slot {slot} is taken by "
+                        f"{', '.join(sorted(holders[slot]))}"
+                    )
             if not scoped:
                 failures.append(f"profile {profile.id}, tier {tier.id}: empty RT slot set")
             # The verifier's two tables must partition the in-process roles:
@@ -1244,6 +1499,16 @@ def run_self_test(m: Manifest) -> int:
                     f"profile {profile.id}, tier {tier.id}: expected/forbidden thread tables "
                     "do not partition the in-process roles"
                 )
+
+    # 6. Worker names fit pthread_setname_np (15 chars + NUL) and are unique.
+    names = m.worker_names()
+    if len(set(names)) != len(names) or any(len(name) > 15 for name in names):
+        failures.append(f"worker thread names must be unique and <= 15 chars: {names}")
+    known_names = {_thread_name(m, key) for key in _thread_role_keys(m)}
+    if known_names & set(names):
+        failures.append(
+            f"worker names collide with role names: {sorted(known_names & set(names))}"
+        )
 
     if failures:
         print("self-test FAILED:", file=sys.stderr)

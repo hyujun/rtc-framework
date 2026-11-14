@@ -28,8 +28,15 @@ struct ThreadConfig {
 // Holds the MPC solve thread. Worker slots lived here until #380: their
 // threads applied a config and exited immediately, and no solver could have
 // used them anyway — Aligator parallelises through OpenMP, which spawns and
-// owns its own threads and accepts no external handles. Reintroducing
-// parallel MPC means pinning that pool, not adding thread configs here.
+// owns its own threads and accepts no external handles.
+//
+// Parallel solves pin that pool instead, and the pool is not a tier role. Its
+// slots come from the launch profile (MpcWorkerSlots /
+// SelectMpcWorkerSlotsForCoreCount in the generated header — none under the
+// default profile), and each worker runs at `main`'s policy and priority,
+// which libgomp threads inherit from the thread that creates them; the solve
+// thread renames and pins each one itself (MpcWorkerThreadConfig in
+// thread_utils.hpp). Nothing about the workers belongs in this aggregate.
 //
 // Invariant (checked by ValidateSystemThreadConfigs):
 //   * `main.sched_priority` < rt_callback thread priority (rt_callback preempts MPC).
@@ -46,8 +53,8 @@ struct ThreadConfig {
 // collapsing the aggregate ad hoc during unrelated work.
 //
 // One argument does NOT support keeping it — "parallel MPC will re-add slots
-// here". Per the paragraph above that path pins an OpenMP pool and adds no
-// ThreadConfig, so it would not restore this aggregate.
+// here". It did not: per the paragraph above the pool's slots live on the
+// profile axis, so they never restored this aggregate.
 
 struct MpcThreadConfig {
   ThreadConfig main{};
