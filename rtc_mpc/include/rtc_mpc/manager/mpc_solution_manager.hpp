@@ -223,8 +223,9 @@ class MPCSolutionManager {
   /// at their tangent entries (the base rows 0); `receive_stamp_ns` is the
   /// @p now_ns the plan was taken at.
   /// @return true with `out.valid`; false (`out.valid` false, the rest of
-  ///         @p out zero) when disabled, without a plan or with the plan
-  ///         evicted — not on a stale-tick count.
+  ///         @p out zero) when disabled, without a plan, with the plan
+  ///         evicted or with a sample that is not finite — not on a
+  ///         stale-tick count.
   /// @note Consumer thread. Allocation-free.
   [[nodiscard]] bool SampleReference(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
                                      const Eigen::Ref<const Eigen::VectorXd>& v_curr,

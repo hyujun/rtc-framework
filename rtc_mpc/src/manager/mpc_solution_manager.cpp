@@ -86,13 +86,15 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout,
 
   // Per-block Δx caps: every block on a floating base, the joint blocks on a
   // fixed one when asked for.
-  const YAML::Node blocks = r ? r["max_delta_blocks"] : YAML::Node{};
-  if (layout.valid() && (layout.floating_base() || (blocks && blocks.IsMap()))) {
+  // (A default-constructed YAML::Node is a defined Null node: test the key.)
+  const bool have_blocks = r && r["max_delta_blocks"];
+  const YAML::Node blocks = have_blocks ? r["max_delta_blocks"] : YAML::Node{};
+  if (have_blocks && !blocks.IsMap()) {
+    config_valid_ = false;
+  } else if (layout.valid() && (layout.floating_base() || have_blocks)) {
     RiccatiBlockCaps caps{};
     caps.fill(riccati_.MaxDeltaXNorm());
-    if (blocks && !blocks.IsMap()) {
-      config_valid_ = false;
-    } else if (blocks) {
+    if (have_blocks) {
       for (const auto& kv : blocks) {
         const std::string name = kv.first.as<std::string>();
         int b = -1;
@@ -313,7 +315,17 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
   const SampleSpot spot = interpolator_.Sample(static_cast<int64_t>(now_ns), layout_,
                                                out.q_ref.data(), out.v_ref.data(), out.a_ref.data(),
                                                out.wrench_ref.data(), out.contact_mask);
-  if (!spot.valid) {
+  // The producer ships finite plans; a non-finite sample still never leaves.
+  const auto finite = [](const auto& a, int n) {
+    for (int i = 0; i < n; ++i) {
+      if (!std::isfinite(a[static_cast<std::size_t>(i)])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!spot.valid || !finite(out.q_ref, layout_.nq) || !finite(out.v_ref, layout_.nv) ||
+      !finite(out.a_ref, layout_.nv) || !finite(out.wrench_ref, layout_.n_contact_vars)) {
     out = WbcReference{};
     return false;
   }
