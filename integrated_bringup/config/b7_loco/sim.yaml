@@ -54,16 +54,25 @@
           # Read from the simulator's SimSensorState topic of this group
           # (mujoco_simulator.yaml robot_response.b7.sensor_topic). Names are
           # the MJCF's: the pelvis frame sensors are `objtype="xbody"` (body
-          # frame), and the two IMU lists are parallel (index = site). This
-          # robot has ONE IMU site, on the torso.
+          # frame).
           base_state:
             sensor_topic: "/b7/sim_sensors"
             pos: "pelvis_pos"
             quat: "pelvis_quat"
             linvel: "pelvis_linvel"
             angvel: "pelvis_angvel"
-            imu_gyro: ["imu_torso_angular_velocity"]
-            imu_accel: ["imu_torso_linear_acceleration"]
+          # ── Raw IMU, per site ───────────────────────────────────────────────
+          # Its own lane with its own per-site verdict, stamp and counter; on
+          # the same topic as the base lane, so one subscription decodes both.
+          # This robot has ONE IMU site, on the torso. site_names must equal
+          # locomotion_controller model.imu.sites (controllers/locomotion/
+          # model.yaml); gyro / accel are the MJCF sensor names, passed through
+          # raw in the site frame.
+          imu_state:
+            sensor_topic: "/b7/sim_sensors"
+            site_names: ["torso"]
+            gyro: ["imu_torso_angular_velocity"]
+            accel: ["imu_torso_linear_acceleration"]
         # The mujoco backend synthesizes neither a contact probability nor a
         # displacement vector; consumers derive contact from |force|.
         sensor_layout:

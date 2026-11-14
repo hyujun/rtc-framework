@@ -133,11 +133,12 @@ mujoco_simulator:
         # ── Sensors ──────────────────────────────────────────────────────────
         # Every sensor of the MJCF, by name (not "auto", so a sensor added to
         # the scene later does not silently widen the topic): the pelvis ground
-        # truth and the torso IMU feed the controller's base_state lane
-        # (sim.yaml), the two sole contact sensors are picked up by the contact
-        # wrench lane below and also published raw here (17 values each:
-        # found, force[3], torque[3], dist, pos[3], normal[3], tangent[3]),
-        # and the two sole framepos give the foot positions for slip metrics.
+        # truth feeds the controller's base_state lane and the torso IMU its
+        # imu_state lane (sim.yaml), the two sole contact sensors are picked
+        # up by the contact wrench lane below and also published raw here (17
+        # values each: found, force[3], torque[3], dist, pos[3], normal[3],
+        # tangent[3]), and the two sole framepos give the foot positions for
+        # slip metrics.
         sensor_topic: "/b7/sim_sensors"
         sensor_names:
           - "pelvis_pos"
