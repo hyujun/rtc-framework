@@ -33,7 +33,13 @@ import os
 import subprocess
 from dataclasses import dataclass
 
-from rtc_tools.launch.thread_layout_generated import OS_SLOT, ROLE_SPECS, tier_for_cores
+from rtc_tools.launch.thread_layout_generated import (
+    LAYOUT_PROFILES,
+    OS_SLOT,
+    ROLE_SPECS,
+    mpc_worker_slots,
+    tier_for_cores,
+)
 
 
 @dataclass(frozen=True)
@@ -130,3 +136,18 @@ def get_os_slot() -> int:
     tier table says, whatever the hand YAML contains.
     """
     return OS_SLOT
+
+
+def get_mpc_worker_slots(profile: str, physical_cores: int | None = None) -> tuple[int, ...]:
+    """MPC OpenMP worker slots the launch ``profile`` reserves (``()`` for none).
+
+    Mirrors ``rt_common.sh::get_mpc_worker_slots`` and the C++
+    ``SelectMpcWorkerSlotsForCoreCount``. An undeclared profile id raises rather
+    than reading as "no workers": a misspelt profile on a launch line would
+    otherwise quietly reserve nothing while the controller asks for a pool.
+    """
+    if profile not in LAYOUT_PROFILES:
+        raise ValueError(f"unknown layout profile {profile!r}; declared: {LAYOUT_PROFILES}")
+    if physical_cores is None:
+        physical_cores = get_physical_cpu_count()
+    return mpc_worker_slots(profile, physical_cores)

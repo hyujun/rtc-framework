@@ -179,7 +179,7 @@ detect_hybrid_capability
 # the runtime affinity check agree by construction. (Previously duplicated here.)
 
 # ── 기대값 테이블 (생성물 소비) ──────────────────────────────────────────────
-# 형식: "thread_name:expected_slot:expected_policy:expected_priority"
+# 형식: "thread_name:expected_slot:expected_policy:expected_priority[:pool]"
 # policy: 1=SCHED_FIFO, 0=SCHED_OTHER
 #
 # IMPORTANT: expected_slot 은 ThreadConfig::cpu_core 와 동일한 *slot index*
@@ -190,20 +190,55 @@ detect_hybrid_capability
 # 환경 모두에서 올바르게 동작.
 #
 # 이 표는 컨트롤러의 **in-process 스레드만** 담는다 (rt_control, rt_callback,
-# mpc_main, nrt_logging, nrt_callback) — 전부 pthread_setname_np
-# 되어 /proc/<controller>/task 에 보인다. arm_driver / hand_driver 는 launch 가
-# taskset 으로 pin 하는 **별도 프로세스**라 여기 있으면 항상 false-WARN 이었고,
+# mpc_main, nrt_logging, nrt_callback, nrt_publish, 그리고 worker profile 에서는
+# mpc_worker_<i>) — 전부 pthread_setname_np 되어 /proc/<controller>/task 에
+# 보인다. mpc_worker_<i> 는 MPC solver 의 OpenMP pool 이다: libgomp 가 mpc_main
+# 에서 만들어 그 comm 과 policy 를 물려받고, mpc_main 이 각자를 이름 붙인 뒤 profile
+# 의 worker 슬롯에 고정한다. 그래서 행의 policy · priority 는 mpc_main 의 것이고
+# slot 만 profile 이 정한다. worker 를 선언하지 않는 profile (mpc_on · mpc_off) 에는
+# 그 행이 없다. arm_driver / hand_driver 는 launch 가 taskset 으로 pin 하는
+# **별도 프로세스**라 여기 있으면 항상 false-WARN 이었고,
 # build_external_drivers() + discover_external_drivers() 가 PID 로 발견한다.
 #
 # 이 표의 모든 행은 **필수**다. 미발견 시 SKIP 으로 넘기는 5번째 `optional`
 # 필드가 있었으나, 유일한 생산자가 `mpc_worker_*` 였고 그 슬롯이 사라지면서
 # (#380) 함께 제거했다 — 그 필드의 존재 이유 자체가 "설정만 적용하고 즉시
-# 죽는 스레드를 미발견 처리한다" 였다. hand_driver 프로세스 내부의
-# `hand_comm` 는 이 표가 아니라 EXTERNAL_DRIVER_THREAD_LAYOUT 에 있고
+# 죽는 스레드를 미발견 처리한다" 였다. 지금의 mpc_worker_<i> 는 그 옛 스레드가
+# 아니다 — solver 가 살아 있는 동안 OpenMP pool 로 남는다. 다만 profile 의 worker
+# slot 은 **용량**이고 몇 개를 쓸지는 controller YAML 의 num_threads 가 정하므로
+# (num_threads − 1 개), worker 행은 5번째 필드 `pool` 을 단다: 있는 worker 는 다른
+# 행과 똑같이 slot · policy 를 검사하고, 없는 worker 는 FAIL 이 아니라 개수로
+# 보고하며, 찾은 index 가 0 부터 연속이 아니면 FAIL 이다 (libgomp 는 team 을 빈틈
+# 없이 번호 매기므로 빈틈은 이름 붙이기 실패다). pool 을 아예 못 만든 경우는 MPC
+# thread 자신이 첫 tick 전에 거부한다 — 이 검증기는 num_threads 를 모른다.
+# hand_driver 프로세스 내부의 `hand_comm` 는 이 표가 아니라
+# EXTERNAL_DRIVER_THREAD_LAYOUT 에 있고
 # 그쪽은 이 필드를 쓰지 않는다. 다시 optional 이 필요해지면 그때는 "왜 없어도
 # 되는가" 를 manifest 에 근거로 남기고 되살릴 것.
 declare -a EXPECTED_THREADS
 declare -a FORBIDDEN_THREADS
+
+# MPC OpenMP worker pool (`:pool` rows of EXPECTED_THREADS) against THREAD_TIDS.
+# Echoes "<found> <reserved> <first_missing|-> <present_after_gap_csv|->". A
+# pool row may be absent (num_threads decides how many workers run), but libgomp
+# numbers its team densely, so a worker present after a missing index means a
+# worker failed to rename itself. Pure over the two arrays so the test sources
+# it without a process to inspect.
+mpc_pool_summary() {
+  local found=0 reserved=0 first_missing="" gap="" entry ename
+  for entry in "${EXPECTED_THREADS[@]}"; do
+    [[ "$(echo "$entry" | cut -d: -f5)" == "pool" ]] || continue
+    ename=$(echo "$entry" | cut -d: -f1)
+    ((reserved++)) || true
+    if [[ -n "${THREAD_TIDS[$ename]:-}" ]]; then
+      ((found++)) || true
+      [[ -n "$first_missing" ]] && gap="${gap:+$gap,}${ename}"
+    else
+      first_missing="${first_missing:-$ename}"
+    fi
+  done
+  echo "$found $reserved ${first_missing:--} ${gap:--}"
+}
 
 build_expected_threads() {
   # 표 자체는 rt_common.sh 가 source 하는 thread_layout_generated.sh 의
@@ -472,18 +507,32 @@ check_process_discovery() {
   # 여럿인 상황은 가정이 아니라 아래 진단 dump 가 이미 dedupe 로 다루고 있다.
   local required_count=0
   local required_found=0
+  local pool_found pool_reserved pool_first_missing pool_gap
+  read -r pool_found pool_reserved pool_first_missing pool_gap <<<"$(mpc_pool_summary)"
   for entry in "${EXPECTED_THREADS[@]}"; do
     local ename
     ename=$(echo "$entry" | cut -d: -f1)
+    [[ "$(echo "$entry" | cut -d: -f5)" == "pool" ]] && continue
     ((required_count++)) || true
     if [[ -n "${THREAD_TIDS[$ename]:-}" ]]; then
       ((required_found++)) || true
     fi
   done
 
+  # MPC OpenMP worker pool (`:pool` 행). 몇 개가 떠야 하는지는 num_threads 의 몫이라
+  # 개수 자체는 판정하지 않는다 — 연속성만 판정한다.
+  if (( pool_reserved > 0 )); then
+    if [[ "$pool_gap" != "-" ]]; then
+      _fail "MPC worker pool index 가 비연속: ${pool_first_missing} 없이 ${pool_gap//,/ } 존재 — worker 이름 붙이기 실패 의심"
+      _category_update "process_discovery" "FAIL"
+    else
+      _pass "MPC worker pool: ${pool_found}/${pool_reserved} 예약 slot 사용 (num_threads − 1 개가 정상)"
+    fi
+  fi
+
   # 같은 comm 을 가진 스레드가 여럿이면 두 축이 갈라진다. 그 자체는 FAIL 이 아니지만
   # (아래 dump 도 dedupe 로 이미 다룬다) 판정 축이 무엇인지 로그에 남겨둔다.
-  if (( known_count > required_found )); then
+  if (( known_count > required_found + pool_found )); then
     _warn "같은 이름의 스레드가 여럿이다 (매칭 TID ${known_count} > 고유 이름 ${required_found}) — 판정은 이름 축 기준"
   fi
 
@@ -495,6 +544,7 @@ check_process_discovery() {
     for entry in "${EXPECTED_THREADS[@]}"; do
       local ename
       ename=$(echo "$entry" | cut -d: -f1)
+      [[ "$(echo "$entry" | cut -d: -f5)" == "pool" ]] && continue
       if [[ -z "${THREAD_TIDS[$ename]:-}" ]]; then
         _fail "  미발견: ${ename}"
         ((_missing_required++)) || true
@@ -522,6 +572,7 @@ check_process_discovery() {
       local _missing_mpc_only=1 _m
       for entry in "${EXPECTED_THREADS[@]}"; do
         _m=$(echo "$entry" | cut -d: -f1)
+        [[ "$(echo "$entry" | cut -d: -f5)" == "pool" ]] && continue
         if [[ -z "${THREAD_TIDS[$_m]:-}" && "$_m" != mpc_* ]]; then
           _missing_mpc_only=0
           break

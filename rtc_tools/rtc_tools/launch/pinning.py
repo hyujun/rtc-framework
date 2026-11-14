@@ -44,6 +44,8 @@ from launch.actions import ExecuteProcess
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 
+from rtc_tools.launch.thread_layout_generated import MPC_WORKER_THREAD_NAMES
+
 # ``cpu_core == -1``: "do not pin" sentinel from ``select_thread_layout``.
 NO_PIN_SENTINEL = -1
 
@@ -74,6 +76,13 @@ RTC_OWNED_THREAD_NAMES = frozenset(
         "sim_thread",
         "viewer",
     }
+    # The MPC OpenMP workers (mpc_worker_<i>). libgomp creates them from
+    # mpc_main, so they start with mpc_main's comm, and each renames itself
+    # before pinning to its slot. Named here so the sweep cannot drag one onto
+    # the rt_callback core: on a box without RT permissions they run
+    # SCHED_OTHER like mpc_main, and the FIFO guard does not protect them.
+    # Generated, like the C++ kMpcWorkerThreadNames the drift test reads.
+    | set(MPC_WORKER_THREAD_NAMES)
 )
 
 # CycloneDDS' own threads, as they appear in ``/proc/*/comm``.

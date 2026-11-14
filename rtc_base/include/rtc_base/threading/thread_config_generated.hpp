@@ -19,12 +19,43 @@
 
 #include <sched.h>  // SCHED_FIFO, SCHED_OTHER, SCHED_RR
 
+#include <array>
+#include <string_view>
+
 namespace rtc {
 
 // Slot reserved for OS / DDS / NIC IRQ. ValidateSystemThreadConfigs uses it
 // to reject an RT role parked there (issue #349 D-co); emitted from the
 // manifest so the rule cannot drift from the layout it guards.
 inline constexpr int kOsSlot = 0;
+
+// Launch profile ids (the layout's second axis), default first. A profile
+// never moves a tier role; it drops roles or adds MPC OpenMP workers.
+inline constexpr std::array<std::string_view, 4> kLayoutProfileIds{"mpc_on", "mpc_off", "mpc_par",
+                                                                   "mpc_par_sim"};
+inline constexpr std::string_view kDefaultLayoutProfileId = "mpc_on";
+
+[[nodiscard]] constexpr bool IsLayoutProfileId(std::string_view id) noexcept {
+  for (const std::string_view known : kLayoutProfileIds) {
+    if (id == known) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// MPC OpenMP worker pool. Thread i + 1 of the pool (thread 0 is mpc_main) is
+// named kMpcWorkerThreadNames[i] and pinned to the profile's slots[i] with
+// mpc_main's policy and priority. kMaxMpcWorkers is the largest pool any
+// profile declares on any tier.
+inline constexpr int kMaxMpcWorkers = 4;
+inline constexpr std::array<const char*, kMaxMpcWorkers> kMpcWorkerThreadNames{
+    "mpc_worker_0", "mpc_worker_1", "mpc_worker_2", "mpc_worker_3"};
+
+struct MpcWorkerSlots {
+  std::array<int, kMaxMpcWorkers> slots{};  // slot indices, worker 0 first
+  int count{0};                             // valid prefix of `slots`
+};
 
 // ── 4-core fallback (layout v6) ──
 //   Slot 0: OS / DDS / IRQ + arm_driver (CFS 0) + hand_driver (CFS 0) + nrt_callback (CFS 0)
@@ -685,6 +716,29 @@ inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
           .sim_thread = kSimThreadConfig4Core,
           .viewer = kViewerConfig4Core,
           .mpc = kMpcConfig4Core};
+}
+
+// MPC worker slots `profile` reserves at `ncpu` physical cores. An unknown
+// profile id, or a profile that declares no workers, yields count 0 -- the
+// caller that needs workers refuses on that rather than guessing a layout.
+[[nodiscard]] inline MpcWorkerSlots SelectMpcWorkerSlotsForCoreCount(
+    int ncpu, std::string_view profile) noexcept {
+  if (profile == "mpc_par") {
+    if (ncpu >= 10) {
+      return {.slots = {6, 7, 8, 9}, .count = 4};
+    }
+    if (ncpu >= 8) {
+      return {.slots = {6, 7}, .count = 2};
+    }
+    return {};
+  }
+  if (profile == "mpc_par_sim") {
+    if (ncpu >= 8) {
+      return {.slots = {4, 5, 6, 7}, .count = 4};
+    }
+    return {};
+  }
+  return {};
 }
 
 }  // namespace rtc

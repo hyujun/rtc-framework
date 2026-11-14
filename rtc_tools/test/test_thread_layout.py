@@ -33,6 +33,7 @@ from rtc_tools.launch.thread_layout import (
     ThreadLayout,
     get_arm_driver_core,
     get_hand_driver_core,
+    get_mpc_worker_slots,
     get_physical_cpu_count,
     get_rt_callback_core,
     get_sim_core,
@@ -137,3 +138,36 @@ def test_helper_accessors_agree_with_layout() -> None:
 def test_physical_cpu_count_is_positive() -> None:
     """The runtime probe returns a sane positive count on the test host."""
     assert get_physical_cpu_count() >= 1
+
+
+# MPC OpenMP worker slots per launch profile -- hand-written like _EXPECTED.
+_EXPECTED_WORKERS: dict[tuple[str, int], tuple[int, ...]] = {
+    ("mpc_on", 4): (),
+    ("mpc_on", 12): (),
+    ("mpc_on", 24): (),
+    ("mpc_off", 12): (),
+    ("mpc_par", 6): (),
+    ("mpc_par", 7): (),
+    ("mpc_par", 8): (6, 7),
+    ("mpc_par", 9): (6, 7),
+    ("mpc_par", 10): (6, 7, 8, 9),
+    ("mpc_par", 12): (6, 7, 8, 9),
+    ("mpc_par", 16): (6, 7, 8, 9),
+    ("mpc_par", 32): (6, 7, 8, 9),
+    ("mpc_par_sim", 6): (),
+    ("mpc_par_sim", 7): (),
+    ("mpc_par_sim", 8): (4, 5, 6, 7),
+    ("mpc_par_sim", 12): (4, 5, 6, 7),
+    ("mpc_par_sim", 16): (4, 5, 6, 7),
+}
+
+
+@pytest.mark.parametrize("key, expected", sorted(_EXPECTED_WORKERS.items()))
+def test_mpc_worker_slots_match_the_profile(key: tuple[str, int], expected: tuple) -> None:
+    profile, ncpu = key
+    assert get_mpc_worker_slots(profile, ncpu) == expected
+
+
+def test_mpc_worker_slots_reject_an_unknown_profile() -> None:
+    with pytest.raises(ValueError, match="unknown layout profile"):
+        get_mpc_worker_slots("mpc_parr", 12)

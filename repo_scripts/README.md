@@ -228,27 +228,28 @@ source setup_env.sh
 |------|------|
 | `get_role_slot` · `get_role_policy` · `get_role_priority` | `<role> [ncpu]` 로 한 role 의 배치 조회 (그 tier 에 없는 role 은 **비0 종료**) |
 | `get_rt_cores` · `get_mpc_cores` · `get_nrt_cores` · `get_os_cores` · `get_arm_driver_slot` · `get_hand_driver_slot` | RT 그룹 · MPC · nrt lane · OS/DDS/IRQ 코어 (Core 0) · 외부 driver 프로세스의 slot |
+| `get_mpc_worker_slots` | profile 의 MPC OpenMP worker slot (없으면 빈 값) |
 | `rtc_expected_threads` · `rtc_forbidden_threads` | `verify_rt_runtime.sh` 의 기대 스레드 · profile 이 떨어뜨려 존재하면 FAIL 인 스레드 |
 | `rtc_layout_profiles` · `rtc_default_profile` · `rtc_is_layout_profile` | launch profile 목록 · 기본값 (`mpc_on`) · 유효성 (모르는 id 는 비0) |
 | `get_rt_cores_with_siblings` | `nohz_full` / `rcu_nocbs` 값 (SMT 형제 포함, profile 을 타지 않는 최광 집합) |
 | `get_rt_shield_cpus` · `get_cm_shield_cpus` | RT 만 / CM 프로세스 전체 (RT ∪ nrt) 의 **logical CPU** 격리 범위 |
 
-profile 은 `get_rt_cores` · `get_mpc_cores` · `rtc_*_threads` 에서 `$2`, shield 계열에서 `$1` 로 받는다. 표의 `(mpc_off)` 열은 MPC 를 쓰지 않는 launch 에서 `mpc_main` 코어가 빠진 결과다.
+profile 은 `get_rt_cores` · `get_mpc_cores` · `get_mpc_worker_slots` · `rtc_*_threads` 에서 `$2`, shield 계열에서 `$1` 로 받는다. 표의 `(mpc_off)` 열은 MPC 를 쓰지 않는 launch 에서 `mpc_main` 코어가 빠진 결과다. `(mpc_par)` · `(mpc_par_sim)` 열은 병렬 MPC profile 로, OpenMP worker slot 이 RT 집합 (shield) 과 기대 표 (`mpc_worker_<i>`) 에 더해진다. 근거는 manifest 주석.
 
 tier 별 값 (SSoT: `repo_scripts/config/thread_layout.yaml` — 아래 표는 그 manifest 에서 생성된다):
 
 <!-- BEGIN GENERATED: thread-layout-tiers -->
 <!-- Generated from repo_scripts/config/thread_layout.yaml by repo_scripts/scripts/gen_thread_layout.py. Do not edit by hand. -->
 
-| tier (물리 코어) | `get_rt_cores()` | `get_rt_cores()` (mpc_off) | `get_mpc_cores()` | `get_nrt_cores()` | `get_os_cores()` | arm / hand slot |
-|---|---|---|---|---|---|---|
-| ≤5 | `1,2,3` | `1,2` | `3` | `0` | `0` | 0 / 0 |
-| 6–7 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 4 |
-| 8–9 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 5 |
-| 10–11 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 5 |
-| 12–13 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 5 |
-| 14–15 | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 5 |
-| 16+ | `1,2,3` | `1,2` | `3` | `2` | `0` | 4 / 5 |
+| tier (물리 코어) | `get_rt_cores()` | `get_rt_cores()` (mpc_off) | `get_rt_cores()` (mpc_par) | `get_rt_cores()` (mpc_par_sim) | `get_mpc_cores()` | `get_nrt_cores()` | `get_os_cores()` | arm / hand slot |
+|---|---|---|---|---|---|---|---|---|
+| ≤5 | `1,2,3` | `1,2` | `1,2,3` | `1,2,3` | `3` | `0` | `0` | 0 / 0 |
+| 6–7 | `1,2,3` | `1,2` | `1,2,3` | `1,2,3` | `3` | `2` | `0` | 4 / 4 |
+| 8–9 | `1,2,3` | `1,2` | `1,2,3,6,7` | `1,2,3,4,5,6,7` | `3` | `2` | `0` | 4 / 5 |
+| 10–11 | `1,2,3` | `1,2` | `1,2,3,6,7,8,9` | `1,2,3,4,5,6,7` | `3` | `2` | `0` | 4 / 5 |
+| 12–13 | `1,2,3` | `1,2` | `1,2,3,6,7,8,9` | `1,2,3,4,5,6,7` | `3` | `2` | `0` | 4 / 5 |
+| 14–15 | `1,2,3` | `1,2` | `1,2,3,6,7,8,9` | `1,2,3,4,5,6,7` | `3` | `2` | `0` | 4 / 5 |
+| 16+ | `1,2,3` | `1,2` | `1,2,3,6,7,8,9` | `1,2,3,4,5,6,7` | `3` | `2` | `0` | 4 / 5 |
 
 <!-- END GENERATED: thread-layout-tiers -->
 

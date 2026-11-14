@@ -147,11 +147,21 @@ get_role_nice() {
 # profile-aware helper takes it as $2 and defaults to the profile below,
 # so a profile-unaware caller keeps the historical layout verbatim.
 rtc_layout_profiles() {
-  echo "mpc_on mpc_off"
+  echo "mpc_on mpc_off mpc_par mpc_par_sim"
 }
 
 rtc_default_profile() {
   echo "mpc_on"
+}
+
+# Zero for a profile that is only sound in simulation (it hands slots of
+# processes that exist only on a robot to another role). cpu_shield.sh
+# refuses such a profile in --robot mode.
+rtc_layout_profile_sim_only() {
+  case "$1" in
+    mpc_par_sim) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Non-zero for a profile id this layout does not declare. Callers that
@@ -178,18 +188,32 @@ get_mpc_cores() {
   case "$tier|$profile" in
     "4|mpc_on") echo "3" ;;
     "4|mpc_off") echo "" ;;
+    "4|mpc_par") echo "3" ;;
+    "4|mpc_par_sim") echo "3" ;;
     "6|mpc_on") echo "3" ;;
     "6|mpc_off") echo "" ;;
+    "6|mpc_par") echo "3" ;;
+    "6|mpc_par_sim") echo "3" ;;
     "8|mpc_on") echo "3" ;;
     "8|mpc_off") echo "" ;;
+    "8|mpc_par") echo "3,6,7" ;;
+    "8|mpc_par_sim") echo "3,4,5,6,7" ;;
     "10|mpc_on") echo "3" ;;
     "10|mpc_off") echo "" ;;
+    "10|mpc_par") echo "3,6,7,8,9" ;;
+    "10|mpc_par_sim") echo "3,4,5,6,7" ;;
     "12|mpc_on") echo "3" ;;
     "12|mpc_off") echo "" ;;
+    "12|mpc_par") echo "3,6,7,8,9" ;;
+    "12|mpc_par_sim") echo "3,4,5,6,7" ;;
     "14|mpc_on") echo "3" ;;
     "14|mpc_off") echo "" ;;
+    "14|mpc_par") echo "3,6,7,8,9" ;;
+    "14|mpc_par_sim") echo "3,4,5,6,7" ;;
     "16|mpc_on") echo "3" ;;
     "16|mpc_off") echo "" ;;
+    "16|mpc_par") echo "3,6,7,8,9" ;;
+    "16|mpc_par_sim") echo "3,4,5,6,7" ;;
     *) return 1 ;;
   esac
 }
@@ -209,18 +233,75 @@ get_rt_cores() {
   case "$tier|$profile" in
     "4|mpc_on") echo "1,2,3" ;;
     "4|mpc_off") echo "1,2" ;;
+    "4|mpc_par") echo "1,2,3" ;;
+    "4|mpc_par_sim") echo "1,2,3" ;;
     "6|mpc_on") echo "1,2,3" ;;
     "6|mpc_off") echo "1,2" ;;
+    "6|mpc_par") echo "1,2,3" ;;
+    "6|mpc_par_sim") echo "1,2,3" ;;
     "8|mpc_on") echo "1,2,3" ;;
     "8|mpc_off") echo "1,2" ;;
+    "8|mpc_par") echo "1,2,3,6,7" ;;
+    "8|mpc_par_sim") echo "1,2,3,4,5,6,7" ;;
     "10|mpc_on") echo "1,2,3" ;;
     "10|mpc_off") echo "1,2" ;;
+    "10|mpc_par") echo "1,2,3,6,7,8,9" ;;
+    "10|mpc_par_sim") echo "1,2,3,4,5,6,7" ;;
     "12|mpc_on") echo "1,2,3" ;;
     "12|mpc_off") echo "1,2" ;;
+    "12|mpc_par") echo "1,2,3,6,7,8,9" ;;
+    "12|mpc_par_sim") echo "1,2,3,4,5,6,7" ;;
     "14|mpc_on") echo "1,2,3" ;;
     "14|mpc_off") echo "1,2" ;;
+    "14|mpc_par") echo "1,2,3,6,7,8,9" ;;
+    "14|mpc_par_sim") echo "1,2,3,4,5,6,7" ;;
     "16|mpc_on") echo "1,2,3" ;;
     "16|mpc_off") echo "1,2" ;;
+    "16|mpc_par") echo "1,2,3,6,7,8,9" ;;
+    "16|mpc_par_sim") echo "1,2,3,4,5,6,7" ;;
+    *) return 1 ;;
+  esac
+}
+
+# MPC OpenMP worker slots as CSV, worker 0 first. Empty on every tier
+# for a profile that declares no workers (mpc_on, mpc_off) and below
+# the lowest tier a worker profile lists. get_mpc_cores / get_rt_cores
+# already include these under the same profile; this is the list on
+# its own, in the order mpc_main assigns them to OpenMP threads 1..n.
+get_mpc_worker_slots() {
+  local ncpu="${1:-$(get_physical_cores)}"
+  local profile="${2:-mpc_on}"
+  local tier
+  tier=$(_rtc_layout_tier "$ncpu")
+  case "$tier|$profile" in
+    "4|mpc_on") echo "" ;;
+    "4|mpc_off") echo "" ;;
+    "4|mpc_par") echo "" ;;
+    "4|mpc_par_sim") echo "" ;;
+    "6|mpc_on") echo "" ;;
+    "6|mpc_off") echo "" ;;
+    "6|mpc_par") echo "" ;;
+    "6|mpc_par_sim") echo "" ;;
+    "8|mpc_on") echo "" ;;
+    "8|mpc_off") echo "" ;;
+    "8|mpc_par") echo "6,7" ;;
+    "8|mpc_par_sim") echo "4,5,6,7" ;;
+    "10|mpc_on") echo "" ;;
+    "10|mpc_off") echo "" ;;
+    "10|mpc_par") echo "6,7,8,9" ;;
+    "10|mpc_par_sim") echo "4,5,6,7" ;;
+    "12|mpc_on") echo "" ;;
+    "12|mpc_off") echo "" ;;
+    "12|mpc_par") echo "6,7,8,9" ;;
+    "12|mpc_par_sim") echo "4,5,6,7" ;;
+    "14|mpc_on") echo "" ;;
+    "14|mpc_off") echo "" ;;
+    "14|mpc_par") echo "6,7,8,9" ;;
+    "14|mpc_par_sim") echo "4,5,6,7" ;;
+    "16|mpc_on") echo "" ;;
+    "16|mpc_off") echo "" ;;
+    "16|mpc_par") echo "6,7,8,9" ;;
+    "16|mpc_par_sim") echo "4,5,6,7" ;;
     *) return 1 ;;
   esac
 }
@@ -284,11 +365,14 @@ get_os_cores() {
 
 # Expected in-process controller threads for verify_rt_runtime.sh, one
 # "name:slot:policy:priority" per line. policy: 1=SCHED_FIFO,
-# 0=SCHED_OTHER. Every row is required: a missing thread is a FAIL. The
-# former ":optional" suffix went with the mpc_worker slots (#380) -- it
-# existed to excuse threads that applied a config and exited immediately.
+# 0=SCHED_OTHER. Every row is required (a missing thread is a FAIL) except
+# the ":pool" rows: MPC OpenMP workers, of which num_threads - 1 run out of
+# the slots the profile reserves -- present ones are checked, absent ones
+# are counted, and a gap in their indices is a FAIL.
 # $2 selects the launch profile; roles it drops move to
-# rtc_forbidden_threads() below.
+# rtc_forbidden_threads() below, and the MPC OpenMP workers it declares
+# follow mpc_main as mpc_worker_<i> :pool rows (mpc_main's policy and
+# priority, which libgomp threads inherit; the slot is the profile's).
 rtc_expected_threads() {
   local ncpu="${1:-$(get_physical_cores)}"
   local profile="${2:-mpc_on}"
@@ -310,6 +394,22 @@ rtc_expected_threads() {
       echo "nrt_callback:0:0:0"
       echo "nrt_publish:0:0:0"
       ;;
+    "4|mpc_par")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:0:0"
+      echo "nrt_logging:0:0:0"
+      echo "nrt_callback:0:0:0"
+      echo "nrt_publish:0:0:0"
+      ;;
+    "4|mpc_par_sim")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:0:0"
+      echo "nrt_logging:0:0:0"
+      echo "nrt_callback:0:0:0"
+      echo "nrt_publish:0:0:0"
+      ;;
     "6|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
@@ -321,6 +421,22 @@ rtc_expected_threads() {
     "6|mpc_off")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "6|mpc_par")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "6|mpc_par_sim")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
       echo "nrt_logging:2:0:0"
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
@@ -340,6 +456,28 @@ rtc_expected_threads() {
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
       ;;
+    "8|mpc_par")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:6:1:60:pool"
+      echo "mpc_worker_1:7:1:60:pool"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "8|mpc_par_sim")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:4:1:60:pool"
+      echo "mpc_worker_1:5:1:60:pool"
+      echo "mpc_worker_2:6:1:60:pool"
+      echo "mpc_worker_3:7:1:60:pool"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
     "10|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
@@ -351,6 +489,30 @@ rtc_expected_threads() {
     "10|mpc_off")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "10|mpc_par")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:6:1:60:pool"
+      echo "mpc_worker_1:7:1:60:pool"
+      echo "mpc_worker_2:8:1:60:pool"
+      echo "mpc_worker_3:9:1:60:pool"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "10|mpc_par_sim")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:4:1:60:pool"
+      echo "mpc_worker_1:5:1:60:pool"
+      echo "mpc_worker_2:6:1:60:pool"
+      echo "mpc_worker_3:7:1:60:pool"
       echo "nrt_logging:2:0:0"
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
@@ -370,6 +532,30 @@ rtc_expected_threads() {
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
       ;;
+    "12|mpc_par")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:6:1:60:pool"
+      echo "mpc_worker_1:7:1:60:pool"
+      echo "mpc_worker_2:8:1:60:pool"
+      echo "mpc_worker_3:9:1:60:pool"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "12|mpc_par_sim")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:4:1:60:pool"
+      echo "mpc_worker_1:5:1:60:pool"
+      echo "mpc_worker_2:6:1:60:pool"
+      echo "mpc_worker_3:7:1:60:pool"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
     "14|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
@@ -385,6 +571,30 @@ rtc_expected_threads() {
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
       ;;
+    "14|mpc_par")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:6:1:60:pool"
+      echo "mpc_worker_1:7:1:60:pool"
+      echo "mpc_worker_2:8:1:60:pool"
+      echo "mpc_worker_3:9:1:60:pool"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "14|mpc_par_sim")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:4:1:60:pool"
+      echo "mpc_worker_1:5:1:60:pool"
+      echo "mpc_worker_2:6:1:60:pool"
+      echo "mpc_worker_3:7:1:60:pool"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
     "16|mpc_on")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
@@ -396,6 +606,30 @@ rtc_expected_threads() {
     "16|mpc_off")
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "16|mpc_par")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:6:1:60:pool"
+      echo "mpc_worker_1:7:1:60:pool"
+      echo "mpc_worker_2:8:1:60:pool"
+      echo "mpc_worker_3:9:1:60:pool"
+      echo "nrt_logging:2:0:0"
+      echo "nrt_callback:2:0:0"
+      echo "nrt_publish:2:0:0"
+      ;;
+    "16|mpc_par_sim")
+      echo "rt_control:1:1:90"
+      echo "rt_callback:2:1:70"
+      echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:4:1:60:pool"
+      echo "mpc_worker_1:5:1:60:pool"
+      echo "mpc_worker_2:6:1:60:pool"
+      echo "mpc_worker_3:7:1:60:pool"
       echo "nrt_logging:2:0:0"
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
@@ -422,35 +656,63 @@ rtc_forbidden_threads() {
     "4|mpc_off")
       echo "mpc_main"
       ;;
+    "4|mpc_par")
+      ;;
+    "4|mpc_par_sim")
+      ;;
     "6|mpc_on")
       ;;
     "6|mpc_off")
       echo "mpc_main"
+      ;;
+    "6|mpc_par")
+      ;;
+    "6|mpc_par_sim")
       ;;
     "8|mpc_on")
       ;;
     "8|mpc_off")
       echo "mpc_main"
       ;;
+    "8|mpc_par")
+      ;;
+    "8|mpc_par_sim")
+      ;;
     "10|mpc_on")
       ;;
     "10|mpc_off")
       echo "mpc_main"
+      ;;
+    "10|mpc_par")
+      ;;
+    "10|mpc_par_sim")
       ;;
     "12|mpc_on")
       ;;
     "12|mpc_off")
       echo "mpc_main"
       ;;
+    "12|mpc_par")
+      ;;
+    "12|mpc_par_sim")
+      ;;
     "14|mpc_on")
       ;;
     "14|mpc_off")
       echo "mpc_main"
       ;;
+    "14|mpc_par")
+      ;;
+    "14|mpc_par_sim")
+      ;;
     "16|mpc_on")
       ;;
     "16|mpc_off")
       echo "mpc_main"
+      ;;
+    "16|mpc_par")
+      ;;
+    "16|mpc_par_sim")
       ;;
     *) return 1 ;;
   esac

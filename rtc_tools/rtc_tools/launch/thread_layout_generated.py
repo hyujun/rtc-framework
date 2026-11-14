@@ -127,6 +127,62 @@ ROLE_SPECS: dict[int, dict[str, RoleSpec]] = {
     },
 }
 
+# Launch profiles, default first (the layout's second axis).
+LAYOUT_PROFILES: tuple[str, ...] = (
+    "mpc_on",
+    "mpc_off",
+    "mpc_par",
+    "mpc_par_sim",
+)
+DEFAULT_PROFILE = "mpc_on"
+
+# MPC OpenMP worker pool: worker i is named MPC_WORKER_THREAD_NAMES[i] and
+# pinned to WORKER_SLOTS[profile][tier][i]. Every profile and tier is listed.
+MPC_WORKER_THREAD_NAMES: tuple[str, ...] = (
+    "mpc_worker_0",
+    "mpc_worker_1",
+    "mpc_worker_2",
+    "mpc_worker_3",
+)
+WORKER_SLOTS: dict[str, dict[int, tuple[int, ...]]] = {
+    "mpc_on": {
+        4: (),
+        6: (),
+        8: (),
+        10: (),
+        12: (),
+        14: (),
+        16: (),
+    },
+    "mpc_off": {
+        4: (),
+        6: (),
+        8: (),
+        10: (),
+        12: (),
+        14: (),
+        16: (),
+    },
+    "mpc_par": {
+        4: (),
+        6: (),
+        8: (6, 7),
+        10: (6, 7, 8, 9),
+        12: (6, 7, 8, 9),
+        14: (6, 7, 8, 9),
+        16: (6, 7, 8, 9),
+    },
+    "mpc_par_sim": {
+        4: (),
+        6: (),
+        8: (4, 5, 6, 7),
+        10: (4, 5, 6, 7),
+        12: (4, 5, 6, 7),
+        14: (4, 5, 6, 7),
+        16: (4, 5, 6, 7),
+    },
+}
+
 
 def tier_for_cores(physical_cores: int) -> int:
     """Return the tier id used for ``physical_cores`` physical cores."""
@@ -139,3 +195,8 @@ def tier_for_cores(physical_cores: int) -> int:
 def role_spec(role: str, physical_cores: int) -> RoleSpec | None:
     """Placement of ``role`` at ``physical_cores``; ``None`` if absent there."""
     return ROLE_SPECS[tier_for_cores(physical_cores)].get(role)
+
+
+def mpc_worker_slots(profile: str, physical_cores: int) -> tuple[int, ...]:
+    """Worker slots ``profile`` reserves at ``physical_cores``; ``()`` if none."""
+    return WORKER_SLOTS.get(profile, {}).get(tier_for_cores(physical_cores), ())

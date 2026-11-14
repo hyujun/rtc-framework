@@ -870,6 +870,36 @@ inline SystemThreadConfigs SelectThreadConfigs() noexcept {
   return SelectThreadConfigsForCoreCount(GetPhysicalCpuCount());
 }
 
+// MPC OpenMP worker slots the launch profile `profile` reserves on this
+// machine. Same split as SelectThreadConfigs(): the table and the tier
+// breakpoints are generated (SelectMpcWorkerSlotsForCoreCount), this wrapper
+// only supplies the runtime physical core count. count == 0 means the profile
+// reserves no workers here — a caller that wants a parallel solve refuses.
+[[nodiscard]] inline MpcWorkerSlots SelectMpcWorkerSlots(std::string_view profile) noexcept {
+  return SelectMpcWorkerSlotsForCoreCount(GetPhysicalCpuCount(), profile);
+}
+
+// ThreadConfig for MPC OpenMP worker `index` (0-based; OpenMP thread index + 1
+// is the pool thread it describes). A worker runs at mpc_main's policy,
+// priority and nice — libgomp creates it from mpc_main and it inherits those —
+// and differs only in its slot and its name. `index` outside
+// [0, slots.count) yields cpu_core = -1 and a null name, which
+// ApplyThreadConfig rejects, so a caller that indexes past the pool cannot pin
+// a thread anywhere by accident.
+[[nodiscard]] inline ThreadConfig MpcWorkerThreadConfig(const ThreadConfig& main,
+                                                        const MpcWorkerSlots& slots,
+                                                        int index) noexcept {
+  ThreadConfig cfg = main;
+  if (index < 0 || index >= slots.count || index >= kMaxMpcWorkers) {
+    cfg.cpu_core = -1;
+    cfg.name = nullptr;
+    return cfg;
+  }
+  cfg.cpu_core = slots.slots[static_cast<std::size_t>(index)];
+  cfg.name = kMpcWorkerThreadNames[static_cast<std::size_t>(index)];
+  return cfg;
+}
+
 }  // namespace rtc
 
 #endif  // RTC_BASE_THREAD_UTILS_HPP_

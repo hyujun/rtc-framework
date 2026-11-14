@@ -1269,6 +1269,80 @@ test_get_cm_shield_cpus_degraded_drops_os_slot() {
 # 집합에서 mpc_main 슬롯 3 을 뺀다 → 남는 슬롯 {1,2} → logical 번역 + HT sibling.
 # 두 함수의 기대값이 같은 것은 우연이 아니라 v5 이후 nrt ⊂ RT 라서이며, 위
 # cm_shield 블록 주석이 그 관계를 이미 설명한다.
+test_layout_profile_workers_take_spare_slots_only() {
+  # MPC OpenMP worker profiles. 값은 손으로 박는다 (생성물끼리 대조하면 틀린 표가
+  # 세 언어에서 사이좋게 일치한다).
+  local n
+  # 역사적 두 profile 은 worker 가 없다 — 있으면 byte-identical 약속이 깨진다.
+  for n in 1 4 6 8 10 12 16 24; do
+    expect_eq "worker.on.${n}"  "" "$(get_mpc_worker_slots "$n" mpc_on)"
+    expect_eq "worker.off.${n}" "" "$(get_mpc_worker_slots "$n" mpc_off)"
+    expect_eq "worker.default.${n}" "" "$(get_mpc_worker_slots "$n")"
+  done
+  for n in 1 4 5 6 7; do
+    expect_eq "worker.par.${n}"     "" "$(get_mpc_worker_slots "$n" mpc_par)"
+    expect_eq "worker.par_sim.${n}" "" "$(get_mpc_worker_slots "$n" mpc_par_sim)"
+    expect_eq "rt.par.${n}" "$(get_rt_cores "$n")" "$(get_rt_cores "$n" mpc_par)"
+  done
+  for n in 8 9; do
+    expect_eq "worker.par.${n}" "6,7" "$(get_mpc_worker_slots "$n" mpc_par)"
+    expect_eq "rt.par.${n}"     "1,2,3,6,7" "$(get_rt_cores "$n" mpc_par)"
+  done
+  for n in 10 11 12 13 14 15 16 17 24; do
+    expect_eq "worker.par.${n}" "6,7,8,9" "$(get_mpc_worker_slots "$n" mpc_par)"
+    expect_eq "rt.par.${n}"     "1,2,3,6,7,8,9" "$(get_rt_cores "$n" mpc_par)"
+    expect_eq "mpc.par.${n}"    "3,6,7,8,9" "$(get_mpc_cores "$n" mpc_par)"
+  done
+  for n in 8 9 10 12 16 24; do
+    expect_eq "worker.par_sim.${n}" "4,5,6,7" "$(get_mpc_worker_slots "$n" mpc_par_sim)"
+    expect_eq "rt.par_sim.${n}"     "1,2,3,4,5,6,7" "$(get_rt_cores "$n" mpc_par_sim)"
+  done
+  # mpc_main 은 worker profile 에서도 첫 항이다 (get_mpc_main_core = 첫 항).
+  expect_eq "worker.main_first" "3" "$(get_mpc_main_core 12 mpc_par)"
+  # worker 행: mpc_main 바로 뒤, mpc_main 의 policy · priority, profile 의 slot.
+  expect_eq "worker.exp.12" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:6:1:60:pool mpc_worker_1:7:1:60:pool mpc_worker_2:8:1:60:pool mpc_worker_3:9:1:60:pool nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
+    "$(rtc_expected_threads 12 mpc_par | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "worker.exp.8" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:6:1:60:pool mpc_worker_1:7:1:60:pool nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
+    "$(rtc_expected_threads 8 mpc_par | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "worker.exp.sim.8" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:60:pool mpc_worker_1:5:1:60:pool mpc_worker_2:6:1:60:pool mpc_worker_3:7:1:60:pool nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
+    "$(rtc_expected_threads 8 mpc_par_sim | tr '\n' ' ' | sed 's/ $//')"
+  # worker 가 없는 tier 의 worker profile 기대 표는 default 와 같다.
+  expect_eq "worker.exp.6" "$(rtc_expected_threads 6)" "$(rtc_expected_threads 6 mpc_par)"
+  # 역사적 profile 의 기대 표에는 worker 행이 없다 — 출하 run 의 검증 결과 불변.
+  for n in 4 6 8 10 12 16; do
+    if rtc_expected_threads "$n" mpc_on | grep -q '^mpc_worker_' ||
+      rtc_expected_threads "$n" mpc_off | grep -q '^mpc_worker_'; then
+      fail "[worker.exp.historical.${n}] mpc_on/mpc_off 기대 표에 worker 행이 있다"
+    else
+      pass
+    fi
+    expect_eq "worker.forbidden.par.${n}" "" "$(rtc_forbidden_threads "$n" mpc_par)"
+  done
+  # 로봇 profile 의 worker 는 driver 슬롯 (4, 5) 과 겹치지 않는다; sim profile 은
+  # driver 프로세스가 없어 그 슬롯을 쓴다.
+  for n in 8 10 12 16; do
+    local w
+    for w in $(get_mpc_worker_slots "$n" mpc_par | tr ',' ' '); do
+      if [[ "$w" == "$(get_arm_driver_slot "$n")" || "$w" == "$(get_hand_driver_slot "$n")" ]]; then
+        fail "[worker.driver_clash.${n}] mpc_par worker slot ${w} 가 driver 슬롯이다"
+      else
+        pass
+      fi
+    done
+  done
+  if get_mpc_worker_slots 12 mpc_parr >/dev/null 2>&1; then
+    fail "[worker.unknown] 알 수 없는 profile 을 받아들였다 — 비0 이어야 한다"
+  else
+    pass
+  fi
+  # GRUB 은 worker profile 에서도 default 집합이다 (boot-static).
+  expect_eq "worker.grub.profile_blind" \
+    "$(get_rt_cores_with_siblings)" "$(get_rt_cores_with_siblings mpc_par)"
+}
+
 test_shield_helpers_follow_the_layout_profile() {
   # ① NUC13 Pro (4P+8E, HT on) tier 12 — primary target.
   #    mpc_on : 슬롯 1,2,3 → logical 2,4,6 + sibling 3,5,7 → "2-7"
@@ -1300,6 +1374,18 @@ test_shield_helpers_follow_the_layout_profile() {
   expect_eq "profile.shield.cm.nuc13.off" "2-5" \
     "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
        RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus mpc_off)"
+  #    mpc_par    : + worker 슬롯 6-9 → E-core logical 10-13 (SMT 없음)
+  #    mpc_par_sim: + worker 슬롯 4-7 → E-core logical 8-11
+  #    worker 가 self-pin 할 코어가 CM cpuset 밖이면 EINVAL 이다 (#151).
+  expect_eq "profile.shield.cm.nuc13.par" "2-7,10-13" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus mpc_par)"
+  expect_eq "profile.shield.cm.nuc13.par_sim" "2-11" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_cm_shield_cpus mpc_par_sim)"
+  expect_eq "profile.shield.rt.nuc13.par" "2-7,10-13" \
+    "$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$ci" \
+       RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus mpc_par)"
 
   # ② 무인자 == mpc_on. 이게 갈리면 profile 을 모르는 기존 호출자
   #    (cpu_shield.sh 의 legacy 경로, check_rt_setup.sh) 가 조용히 다른 shield 를
@@ -2011,6 +2097,45 @@ _verifier_tables() {
     echo "forbidden=$(printf '%s,' "${FORBIDDEN_THREADS[@]}")"
   )
   rm -f "$marker"
+}
+
+_verifier_pool_summary() {
+  # $1 = ncpu, $2 = profile, 나머지 = 살아 있다고 칠 worker 이름들.
+  local ncpu="$1" profile="$2"
+  shift 2
+  local verifier="${SCRIPT_DIR}/../scripts/verify_rt_runtime.sh"
+  (
+    set +eu
+    local present=("$@")
+    set --
+    # shellcheck disable=SC1090
+    source "$verifier" >/dev/null 2>&1
+    mapfile -t EXPECTED_THREADS < <(rtc_expected_threads "$ncpu" "$profile")
+    THREAD_TIDS=()
+    local name tid=1000
+    for name in rt_control rt_callback mpc_main nrt_logging nrt_callback nrt_publish "${present[@]}"; do
+      THREAD_TIDS["$name"]=$((tid++))
+    done
+    mpc_pool_summary
+  )
+}
+
+test_verifier_pool_rows_count_and_require_contiguity() {
+  # worker profile 의 slot 은 용량이다 — 몇 개가 뜨는지는 num_threads 의 몫이라
+  # 없는 worker 는 FAIL 이 아니다. 단 libgomp 는 team 을 빈틈없이 번호 매기므로
+  # 있는 index 에 빈틈이 있으면 (worker 이름 붙이기 실패) 잡아야 한다.
+  expect_eq "pool.none"  "0 4 mpc_worker_0 -" "$(_verifier_pool_summary 12 mpc_par)"
+  expect_eq "pool.two"   "2 4 mpc_worker_2 -" \
+    "$(_verifier_pool_summary 12 mpc_par mpc_worker_0 mpc_worker_1)"
+  expect_eq "pool.full"  "4 4 - -" \
+    "$(_verifier_pool_summary 12 mpc_par mpc_worker_0 mpc_worker_1 mpc_worker_2 mpc_worker_3)"
+  expect_eq "pool.gap"   "2 4 mpc_worker_0 mpc_worker_1,mpc_worker_3" \
+    "$(_verifier_pool_summary 12 mpc_par mpc_worker_1 mpc_worker_3)"
+  expect_eq "pool.sim8"  "3 4 mpc_worker_3 -" \
+    "$(_verifier_pool_summary 8 mpc_par_sim mpc_worker_0 mpc_worker_1 mpc_worker_2)"
+  # worker 를 선언하지 않는 profile 은 pool 행이 없다.
+  expect_eq "pool.on"    "0 0 - -" "$(_verifier_pool_summary 12 mpc_on)"
+  expect_eq "pool.par6"  "0 0 - -" "$(_verifier_pool_summary 6 mpc_par)"
 }
 
 test_verifier_follows_the_shield_marker_profile() {
@@ -2808,6 +2933,7 @@ test_print_thread_layout_uses_the_slot_helpers
 test_verifier_expected_slots_track_the_helpers
 test_verifier_is_sourceable_without_running
 test_verifier_follows_the_shield_marker_profile
+test_verifier_pool_rows_count_and_require_contiguity
 test_kernel_has_cpuset_fs_reads_the_registered_types
 test_newest_file_matching_prefers_the_latest_build
 test_check_cpu_isolation_sees_a_live_cset_shield
@@ -2819,6 +2945,7 @@ test_layout_worker_roles_absent_on_every_tier
 test_rtc_expected_threads_table_per_tier
 test_layout_profile_mpc_off_frees_the_mpc_slots
 test_layout_profile_verifier_tables_partition
+test_layout_profile_workers_take_spare_slots_only
 test_rtc_expected_threads_tracks_the_role_helpers
 test_print_thread_layout_derives_every_core_number
 
