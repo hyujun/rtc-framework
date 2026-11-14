@@ -591,6 +591,7 @@ constexpr const char* kLinvelName = "root_linvel";
 constexpr const char* kAngvelName = "root_angvel";
 const std::vector<std::string> kGyroNames = {"imu_a_gyro", "imu_b_gyro"};
 const std::vector<std::string> kAccelNames = {"imu_a_accel", "imu_b_accel"};
+const std::vector<std::string> kSiteNames = {"site_a", "site_b"};
 
 struct BaseInputs {
   std::array<double, 3> pos{0.1, -0.2, 0.75};
@@ -642,8 +643,10 @@ class MujocoBaseLaneTest : public ::testing::Test {
         rclcpp::Parameter(prefix + ".base_state.quat", std::string(kQuatName)),
         rclcpp::Parameter(prefix + ".base_state.linvel", std::string(kLinvelName)),
         rclcpp::Parameter(prefix + ".base_state.angvel", std::string(kAngvelName)),
-        rclcpp::Parameter(prefix + ".base_state.imu_gyro", kGyroNames),
-        rclcpp::Parameter(prefix + ".base_state.imu_accel", kAccelNames),
+        rclcpp::Parameter(prefix + ".imu_state.sensor_topic", std::string(kBaseTopic)),
+        rclcpp::Parameter(prefix + ".imu_state.site_names", kSiteNames),
+        rclcpp::Parameter(prefix + ".imu_state.gyro", kGyroNames),
+        rclcpp::Parameter(prefix + ".imu_state.accel", kAccelNames),
     });
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_mujoco_base_lane", options);
     state_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -711,6 +714,7 @@ TEST_F(MujocoBaseLaneTest, BeforeAnyMessage_IdentityPoseInvalidNoReceipt) {
   EXPECT_FALSE(cache.base_valid);
   EXPECT_EQ(cache.base_sequence, 0U);
   EXPECT_EQ(cache.base_recv_steady_ns, 0);
+  backend_->ReadImuState(cache);
   EXPECT_EQ(cache.num_imu_sites, 0);
   // The mirror's default is the identity pose, the same no-claim default
   // DeviceState documents: a consumer that copies before checking the flag
@@ -721,8 +725,9 @@ TEST_F(MujocoBaseLaneTest, BeforeAnyMessage_IdentityPoseInvalidNoReceipt) {
   }
 }
 
-// 1 message → pose · twist · imu equal the header's conversion to 1e-12,
-// base_valid true, sequence 1, receipt stamped on the steady clock.
+// 1 message → pose · twist equal the header's conversion to 1e-12, base_valid
+// true, sequence 1, receipt stamped on the steady clock; the IMU lane of the
+// same message carries the raw values.
 TEST_F(MujocoBaseLaneTest, OneMessage_ConvertedValuesValidSequenceAndStamp) {
   const BaseInputs in;
   const int64_t before = rtc::SteadyNowNs();
@@ -751,6 +756,7 @@ TEST_F(MujocoBaseLaneTest, OneMessage_ConvertedValuesValidSequenceAndStamp) {
                 std::abs(cache.base_twist[1] - in.linvel_w[1]),
             1e-3);
 
+  backend_->ReadImuState(cache);
   ASSERT_EQ(cache.num_imu_sites, 2);
   for (std::size_t s = 0; s < 2; ++s) {
     for (std::size_t i = 0; i < 3; ++i) {
@@ -804,8 +810,10 @@ TEST_F(MujocoBaseLaneTest, Stale_AfterMaxMissedTicks_ClearsValidKeepsValues) {
   EXPECT_EQ(cache.base_sequence, 2U);
 }
 
-// A non-finite component anywhere in the sample drops the WHOLE sample:
-// values, stamp and counter stay those of the last accepted one.
+// A non-finite component anywhere in the base sample drops the WHOLE base
+// sample: values, stamp and counter stay those of the last accepted one. A
+// non-finite IMU value is the IMU lane's, not the base's: the base of that
+// message is accepted and only the offending IMU site is dropped.
 TEST_F(MujocoBaseLaneTest, NonFiniteSample_DroppedValuesAndStampUnchanged) {
   const BaseInputs good;
   Publish(BaseMessage(good), true);
@@ -818,18 +826,27 @@ TEST_F(MujocoBaseLaneTest, NonFiniteSample_DroppedValuesAndStampUnchanged) {
   bad.linvel_w[1] = std::numeric_limits<double>::quiet_NaN();  // … but this refuses it
   Publish(BaseMessage(bad), /*expect_accept=*/false);
 
-  BaseInputs bad_imu = good;
-  bad_imu.pos[0] = 8.0;
-  bad_imu.gyro[1][2] = std::numeric_limits<double>::infinity();
-  Publish(BaseMessage(bad_imu), false);
-
   rtc::DeviceStateCache after{};
   backend_->ReadBaseState(after);
   EXPECT_EQ(after.base_sequence, before.base_sequence);
   EXPECT_EQ(after.base_recv_steady_ns, before.base_recv_steady_ns);
   EXPECT_EQ(after.base_pose, before.base_pose);
   EXPECT_EQ(after.base_twist, before.base_twist);
-  EXPECT_EQ(after.imu, before.imu);
+
+  backend_->ReadImuState(before);
+  BaseInputs bad_imu = good;
+  bad_imu.pos[0] = 8.0;
+  bad_imu.gyro[1][2] = std::numeric_limits<double>::infinity();
+  Publish(BaseMessage(bad_imu), /*expect_accept=*/true);
+
+  rtc::DeviceStateCache after_imu{};
+  backend_->ReadBaseState(after_imu);
+  EXPECT_EQ(after_imu.base_sequence, before.base_sequence + 1);
+  EXPECT_DOUBLE_EQ(after_imu.base_pose[0], 8.0);
+  backend_->ReadImuState(after_imu);
+  EXPECT_EQ(after_imu.imu[1], before.imu[1]);
+  EXPECT_EQ(after_imu.imu_sequence[1], before.imu_sequence[1]);
+  EXPECT_EQ(after_imu.imu_recv_steady_ns[1], before.imu_recv_steady_ns[1]);
 }
 
 TEST_F(MujocoBaseLaneTest, ZeroQuaternion_Dropped) {
@@ -844,12 +861,14 @@ TEST_F(MujocoBaseLaneTest, ZeroQuaternion_Dropped) {
   EXPECT_DOUBLE_EQ(cache.base_pose[6], 0.8);
 }
 
-// A configured name the message does not carry: nothing is accepted, so the
-// lane never becomes valid and the counter never moves (plus a one-shot WARN
-// that this test cannot observe — it is for the launch log).
+// A configured base name the message does not carry: nothing is accepted, so
+// the base lane never becomes valid and the counter never moves (plus a
+// throttled WARN that this test cannot observe — it is for the launch log).
 TEST_F(MujocoBaseLaneTest, MissingConfiguredName_LaneStaysInvalid) {
   const BaseInputs in;
-  auto msg = BaseMessage(in);
+  // Without IMU sensors, so the IMU lane has received nothing when the last
+  // case below runs (the IMU is a lane of its own on this topic).
+  auto msg = BaseMessage(in, /*num_imu=*/0);
   // Remove the linvel sensor.
   for (auto it = msg.sensors.begin(); it != msg.sensors.end(); ++it) {
     if (it->name == kLinvelName) {
@@ -866,7 +885,7 @@ TEST_F(MujocoBaseLaneTest, MissingConfiguredName_LaneStaysInvalid) {
   EXPECT_EQ(cache.base_recv_steady_ns, 0);
 
   // A wrong dimension under the right name is the same failure.
-  auto msg2 = BaseMessage(in);
+  auto msg2 = BaseMessage(in, /*num_imu=*/0);
   for (auto& s : msg2.sensors) {
     if (s.name == kQuatName)
       s.values = {1.0, 0.0, 0.0};  // 3 values, not 4
@@ -876,12 +895,16 @@ TEST_F(MujocoBaseLaneTest, MissingConfiguredName_LaneStaysInvalid) {
   EXPECT_FALSE(cache.base_valid);
   EXPECT_EQ(cache.base_sequence, 0U);
 
-  // And a missing IMU sensor refuses the sample as a whole, not just the IMU.
+  // A missing IMU sensor is the IMU lane's: the base of that message is
+  // accepted, and the site whose sensors are absent never becomes valid.
   auto msg3 = BaseMessage(in, /*num_imu=*/1);
-  Publish(msg3, false);
+  Publish(msg3, /*expect_accept=*/true);
   backend_->ReadBaseState(cache);
-  EXPECT_FALSE(cache.base_valid);
-  EXPECT_EQ(cache.base_sequence, 0U);
+  EXPECT_TRUE(cache.base_valid);
+  EXPECT_EQ(cache.base_sequence, 1U);
+  backend_->ReadImuState(cache);
+  EXPECT_FALSE(cache.imu_valid[1]);
+  EXPECT_EQ(cache.imu_sequence[1], 0U);
 }
 
 // `base_state.max_consecutive_missed_ticks` is the base lane's OWN budget:
