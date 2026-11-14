@@ -87,15 +87,15 @@ auto snapshot = state_lock.Load();            // 다른 스레드, lock-free
 | `CommandType` | `kPosition`, `kTorque`, `kPdFeedforward` (PD 위치 서보 + `DeviceOutput::feedforward` 오버레이) |
 | `GoalType` | `kJoint`, `kTask` |
 | `PublishRole` | `kRobotTransforms` (`tf2_msgs/TFMessage`). 구독 역할은 `target` 하나뿐이라 enum 이 없다 |
-| `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference`, `kFloatingBase` (비트마스크) |
+| `DeviceCapability` | `kNone`, `kJointState`, `kMotorState`, `kSensorData`, `kInference`, `kFloatingBase`, `kImuState` (비트마스크) |
 | `StateLane` · `IsLaneReadable` · `IsDeviceReadable` | lane 별 hole_mask 로 슬롯 freshness 판정 |
-| `SteadyNowNs` · `SensorGroupAgeNs` · `IsSensorGroupFresh` · `BaseAgeNs` · `IsBaseFresh` | 수신축 (`steady_clock`) 나이·freshness. 판정 규범은 [invariants.md](../agent_docs/invariants.md) |
+| `SteadyNowNs` · `SensorGroupAgeNs` · `IsSensorGroupFresh` · `BaseAgeNs` · `IsBaseFresh` · `ImuSiteAgeNs` · `IsImuSiteFresh` · `JointAgeNs` | 수신축 (`steady_clock`) 나이·freshness. 판정 규범은 [invariants.md](../agent_docs/invariants.md) |
 
 `GoalTypeToString()` / `CommandTypeToString()` / `PublishRoleToString()` 는 `constexpr` 이고, `CommandTypeToString()` 은 `JointCommand.command_type` 와 같은 와이어 문자열 (`"position"` / `"torque"` / `"pd_feedforward"`) 을 반환합니다.
 
 | 구조체 | 역할 |
 |--------|------|
-| `DeviceState` / `ControllerState` | 가변 채널 디바이스 상태 (position·velocity·effort, motor, sensor, inference, 부동 베이스 `base_*`) / `devices[8]` + `dt`, `iteration`, `t_relative_s` |
+| `DeviceState` / `ControllerState` | 가변 채널 디바이스 상태 (position·velocity·effort, motor, sensor, inference, 부동 베이스 `base_*`, site 별 IMU `imu*`, joint 수신 시각·순번) / `devices[8]` + `dt`, `iteration`, `t_relative_s` |
 | `DeviceOutput` / `ControllerOutput` | 디바이스별 command·goal·target·trajectory·feedforward / `devices[8]` + task-space 값 + TF 발행용 SE3 |
 | `Pose` | RT-safe SE3 (`position[3]`, Hamilton quaternion w,x,y,z) |
 | `DeviceNameConfig` | 디바이스 이름·joint/sensor 이름·`DeviceUrdfConfig`·`DeviceJointLimits`·`DeviceSensorLayout`·`safe_position` |
