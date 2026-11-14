@@ -358,4 +358,7 @@ if(BUILD_TESTING)
   rtc_base_isolate_test_sessions()
 endif()
 
-ament_package()
+# Baked into the CONFIG_EXTRAS template (@ONLY): the real source location of
+# rtc_mpc's never-installed test headers, for consumers' test suites.
+set(RTC_MPC_TEST_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/test")
+ament_package(CONFIG_EXTRAS "cmake/rtc_mpc-test-include.cmake.in")

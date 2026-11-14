@@ -1,0 +1,27 @@
+# Consumed by every find_package(rtc_mpc) via ament_package(CONFIG_EXTRAS),
+# configured at rtc_mpc's own configure time (@ONLY) — the same arrangement as
+# rtc_base/cmake/rtc_base-test-include.cmake.in, whose header gives the why.
+#
+# rtc_mpc/test holds test-only headers that are never installed. One of them,
+# test_utils/shipped_walk_yaml.hpp, is the copy of a shipped profile's walk that
+# rtc_mpc's suites measure on; a package that reads that profile holds the
+# copy to it, so it needs the header by source-tree path.
+
+set(rtc_mpc_TEST_INCLUDE_DIRS "@RTC_MPC_TEST_INCLUDE_DIR@")
+
+# Attach rtc_mpc's never-installed test headers to one or more targets. Fails
+# loudly when the source tree is not reachable (an installed-only rtc_mpc).
+function(rtc_mpc_add_test_includes)
+  if(NOT EXISTS "${rtc_mpc_TEST_INCLUDE_DIRS}")
+    message(FATAL_ERROR
+      "rtc_mpc_add_test_includes(): rtc_mpc's test-only include dir is not reachable at "
+      "'${rtc_mpc_TEST_INCLUDE_DIRS}'. These headers are never installed, so the "
+      "consumer needs rtc_mpc as a sibling SOURCE package, not merely an installed one.")
+  endif()
+  foreach(target ${ARGV})
+    if(NOT TARGET ${target})
+      message(FATAL_ERROR "rtc_mpc_add_test_includes(): no such target '${target}'")
+    endif()
+    target_include_directories(${target} PRIVATE "${rtc_mpc_TEST_INCLUDE_DIRS}")
+  endforeach()
+endfunction()
