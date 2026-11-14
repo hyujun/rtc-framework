@@ -126,4 +126,34 @@ TEST(WbcLayoutProfileGate, ProfileIsNotLatchedByARefusal) {
   EXPECT_NE(ctrl.on_activate(InactiveState()), RTControllerInterface::CallbackReturn::FAILURE);
 }
 
+// ── A multi-threaded solver (the OpenMP worker pool) ───────────────────────
+//
+// `mpc.solver.num_threads` > 1 needs a worker slot per extra thread from the
+// launch profile. A factory refusal of such a solver fails the activation and
+// is never handed to the mock engine, which would make the controller look
+// active with no solver behind it; every other failure keeps the mock
+// fallback. (The arm-only fixture above never reaches the handler engine — its
+// RobotModelHandler cannot initialise — so the rule is pinned on its own.)
+TEST(WbcLayoutProfileGate, OnlyARefusedThreadedSolverSkipsTheMockFallback) {
+  rtc::mpc::MPCFactoryStatus refused{};
+  refused.error = rtc::mpc::MPCFactoryError::kHandlerInitFailed;
+  refused.init_error = rtc::mpc::MPCInitError::kInvalidSolverConfig;
+  refused.requested_threads = 2;
+  EXPECT_TRUE(DemoWbcController::MpcFactoryFailureRefusesActivation(refused, false));
+
+  rtc::mpc::MPCFactoryStatus one_thread = refused;
+  one_thread.requested_threads = 1;
+  EXPECT_FALSE(DemoWbcController::MpcFactoryFailureRefusesActivation(one_thread, false))
+      << "a one-thread failure keeps the mock fallback";
+
+  rtc::mpc::MPCFactoryStatus other = refused;
+  other.init_error = rtc::mpc::MPCInitError::kOCPBuildFailed;
+  EXPECT_FALSE(DemoWbcController::MpcFactoryFailureRefusesActivation(other, false))
+      << "a failure that is not the solver config keeps the mock fallback";
+
+  rtc::mpc::MPCFactoryStatus ok{};
+  ok.requested_threads = 4;
+  EXPECT_FALSE(DemoWbcController::MpcFactoryFailureRefusesActivation(ok, true));
+}
+
 }  // namespace

@@ -21,6 +21,7 @@ bool DemoWbcController::LayoutProfileDropsMpc(std::string_view profile) noexcept
 
 void DemoWbcController::SetLayoutProfile(std::string_view profile) noexcept {
   layout_profile_drops_mpc_ = LayoutProfileDropsMpc(profile);
+  mpc_worker_slots_ = rtc::SelectMpcWorkerSlots(profile);
 }
 
 // ── Phase 4: controller-owned topic lifecycle ─────────────────────────────
@@ -344,7 +345,10 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
   // failed on_activate the controller manager leaves the previous controller
   // active and never calls on_deactivate for this one, so anything that runs
   // before a FAILURE leaks half-activated — publishers enabled on a controller
-  // that is not, in fact, active.
+  // that is not, in fact, active. (The one later refusal, a multi-threaded
+  // solver the profile cannot host, needs the factory and the MPC thread to
+  // decide, so it undoes the owned-topic activation itself; the rest of what
+  // runs before it is idempotent or latched once per lifetime.)
   //
   // Refusing is the safe direction. Under a profile that dropped the MPC cores
   // the cset shield has already handed them back to the system cpuset;
@@ -400,7 +404,12 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
   // the RT path). Idempotent — re-activation reuses the existing thread.
   // Trajectory / FSM / target-slot init happens lazily in Compute() via
   // DrainTargetSlot's first-tick path (needs the current device state).
-  SpawnMpcThreadIfNeeded();
+  if (!SpawnMpcThreadIfNeeded()) {
+    // A refused parallel solver configuration (logged at the refusal). Undo the
+    // one step above that outlives a FAILURE, the owned-topic activation.
+    DeactivateOwnedTopics(prev, owned_topics_);
+    return CallbackReturn::FAILURE;
+  }
 
   // Base bumps the activation generation + calls ResetTargetInitialization().
   const auto rc = RTControllerInterface::on_activate(prev);

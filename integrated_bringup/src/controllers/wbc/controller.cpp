@@ -13,10 +13,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #pragma GCC diagnostic push
@@ -1060,6 +1062,9 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
 // failure; mpc_enabled_/TSID self-hold semantics preserved bit-exactly when
 // `mpc:` is absent or disabled.
 void DemoWbcController::ConfigureMpc(const YAML::Node& cfg) {
+  // A reconfigure rebuilds what a refused spawn consumed — whether or not this
+  // config still has an mpc: block.
+  mpc_spawn_refused_ = false;
   // If `mpc.enabled: true`, size the reference buffers and initialise the
   // MPC solution manager. The thread itself is spawned in
   // SpawnMpcThreadIfNeeded (called from on_activate on the aux thread) so the
@@ -2003,10 +2008,58 @@ bool DemoWbcController::ApplyCommandedSe3IfPresent() noexcept {
   return true;
 }
 
+namespace {
+
+// `solver.num_threads` of a factory YAML (root with `mpc:` or the nested map),
+// or 0 when it has no parsable solver block.
+[[nodiscard]] int ConfiguredSolverThreads(const YAML::Node& cfg) noexcept {
+  try {
+    if (!cfg.IsDefined() || cfg.IsNull() || !cfg.IsMap()) {
+      return 0;
+    }
+    const YAML::Node mpc = cfg["mpc"] && cfg["mpc"].IsMap() ? cfg["mpc"] : cfg;
+    rtc::mpc::MPCSolverConfig s;
+    return rtc::mpc::MPCFactory::LoadSolverConfig(mpc["solver"], s) ? s.num_threads : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+// The MPC thread's verdict on its solver pool, awaited from on_activate (aux
+// thread). The set-up is one parallel region before the first tick, so it
+// settles within milliseconds; the ceiling only bounds a thread that never
+// reaches its loop entry, which is a refusal too.
+[[nodiscard]] bool AwaitMpcPool(const rtc::mpc::MPCThread& thread) noexcept {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < deadline) {
+    switch (thread.PoolState()) {
+      case rtc::mpc::SolverPoolState::kReady:
+        return true;
+      case rtc::mpc::SolverPoolState::kFailed:
+        return false;
+      case rtc::mpc::SolverPoolState::kPending:
+        break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return false;
+}
+
+}  // namespace
+
 // Aux-thread spawn of MPC thread. Called from on_activate (heap-allocating;
 // must not run on the RT path). Idempotent — re-activation reuses the
 // existing thread.
-void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
+bool DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
+  if (mpc_spawn_refused_) {
+    // Latched by an earlier refusal: its handler and phase manager are gone,
+    // so a retry would find nothing to build and fall through to the mock
+    // engine. Only a reconfigure (LoadConfig) clears this.
+    RCLCPP_ERROR(logger_,
+                 "[wbc] the multi-threaded MPC solver was refused at an earlier activation — "
+                 "reconfigure the controller (or fix the profile / num_threads) first");
+    return false;
+  }
   if (mpc_enabled_ && !mpc_thread_) {
     const auto thread_configs = rtc::SelectThreadConfigs();
     const int nq = static_cast<int>(combined_cache_.q().size());
@@ -2031,9 +2084,23 @@ void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
           phase_manager_owned_->Update(q_zero, v_zero, sensor_zero, tcp_identity, /*t=*/0.0);
 
       std::unique_ptr<rtc::mpc::MPCHandlerBase> handler;
-      const auto status =
-          rtc::mpc::MPCFactory::Create(mpc_light_cfg_, *mpc_model_handler_, initial_ctx, handler);
+      const auto status = rtc::mpc::MPCFactory::Create(
+          mpc_light_cfg_, *mpc_model_handler_, initial_ctx, handler, mpc_worker_slots_.count);
 
+      if (MpcFactoryFailureRefusesActivation(status, handler != nullptr)) {
+        mpc_spawn_refused_ = true;
+        // A parallel solver that cannot run as configured is refused outright:
+        // the mock engine would let the controller look active with no solver.
+        RCLCPP_ERROR(
+            logger_,
+            "[wbc] MPCFactory::Create refused the %d-thread solver config (err=%d, init=%d); "
+            "this run's layout profile reserves %d MPC worker slot(s). Launch with a "
+            "worker profile that has num_threads - 1 slots, or set "
+            "mpc.solver.num_threads: 1.",
+            status.requested_threads, static_cast<int>(status.error),
+            static_cast<int>(status.init_error), mpc_worker_slots_.count);
+        return false;
+      }
       if (status.error != rtc::mpc::MPCFactoryError::kNoError || !handler) {
         RCLCPP_ERROR(logger_,
                      "[wbc] MPCFactory::Create failed (err=%d, init=%d) — "
@@ -2041,11 +2108,39 @@ void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
                      static_cast<int>(status.error), static_cast<int>(status.init_error));
         mpc_engine_ = MpcEngine::kMock;
       } else {
+        launch.solver_threads = handler->solver_config().num_threads;
+        launch.workers = mpc_worker_slots_;
+        // A cross-mode swap re-creates the handler from the rich config on the
+        // MPC thread and refuses a thread count other than this one; check it
+        // now rather than at the first closure phase.
+        if (const int rich = ConfiguredSolverThreads(mpc_rich_cfg_);
+            rich > 0 && rich != launch.solver_threads) {
+          // Nothing consumed yet: no latch, a retry re-checks the same files.
+          RCLCPP_ERROR(logger_,
+                       "[wbc] the contact_rich solver has num_threads %d, the contact_light one %d "
+                       "— the MPC thread's pool serves one count; activation refused",
+                       rich, launch.solver_threads);
+          return false;
+        }
         auto hthread = std::make_unique<rtc::mpc::HandlerMPCThread>();
         hthread->Configure(*mpc_model_handler_, std::move(handler), std::move(phase_manager_owned_),
                            mpc_light_cfg_, mpc_rich_cfg_);
         hthread->Init(mpc_manager_, launch);
         hthread->Start();
+        // One thread keeps the historical start (no wait): only a pool has a
+        // verdict worth blocking the activation on.
+        if (launch.solver_threads > 1 && !AwaitMpcPool(*hthread)) {
+          RCLCPP_ERROR(logger_,
+                       "[wbc] the MPC thread refused its %d-thread solver pool before its first "
+                       "tick (reason on stderr) — activation refused",
+                       launch.solver_threads);
+          hthread->StopAndJoin();
+          // The handler and the phase manager went into the refused thread;
+          // the borrowed pointer must not outlive them.
+          phase_manager_ptr_ = nullptr;
+          mpc_spawn_refused_ = true;
+          return false;
+        }
         mpc_thread_ = std::move(hthread);
         mpc_manager_.SetEnabled(true);
         thread_started = true;
@@ -2067,6 +2162,7 @@ void DemoWbcController::SpawnMpcThreadIfNeeded() noexcept {
                   launch.main.cpu_core, launch.main.sched_priority, launch.target_frequency_hz);
     }
   }
+  return true;
 }
 
 // ── E-STOP ───────────────────────────────────────────────────────────────────
