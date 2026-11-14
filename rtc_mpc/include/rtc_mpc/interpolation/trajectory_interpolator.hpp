@@ -126,9 +126,12 @@ class TrajectoryInterpolator {
   /// @param wrench    out: `n_contact_vars` entries
   /// @param mask      out: the interval's contact mode (0 without a plan)
   /// @return where the sample landed; `valid == false` (outputs untouched)
-  ///         without a plan, with a node spacing that is not a positive,
-  ///         finite number of nanoseconds, or on a floating @p layout whose
-  ///         base block the plan cannot hold.
+  ///         without a plan, with a node spacing that is not between 1 ns
+  ///         and 1e16 ns, or on a floating @p layout whose base block the
+  ///         plan cannot hold or whose joints have a configuration entry
+  ///         without a tangent one (or the reverse). The wrench is masked
+  ///         only when @p layout has the per-contact split (`n_contacts >
+  ///         0`, e.g. `WbLayout::FromHandler`); `FromModel` leaves it raw.
   SampleSpot Sample(int64_t now_ns, const WbLayout& layout, double* q, double* v, double* a,
                     double* wrench, uint32_t& mask) const noexcept;
 

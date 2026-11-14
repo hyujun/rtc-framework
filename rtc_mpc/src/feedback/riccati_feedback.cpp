@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace rtc::mpc {
 
@@ -35,6 +36,9 @@ void RiccatiFeedback::Init(int max_nv, int max_nu, int max_ndx) {
   max_nv_ = max_nv;
   max_nu_ = max_nu;
   max_ndx_ = max_ndx;
+  view_ = nullptr;
+  block_caps_ = false;
+  floating_ = false;
   K_.setZero(max_nu, max_ndx);
   dx_.setZero(max_ndx);
   u_fb_raw_.setZero(max_nu);
@@ -64,7 +68,7 @@ bool RiccatiFeedback::SetBlockCaps(const RiccatiBlockCaps& caps, int nv, bool fl
     }
   }
   const int nb = floating ? 3 : 0;
-  if (nv <= 2 * nb || 2 * nv > max_ndx_) {
+  if (nv < 2 * nb || nv <= 0 || 2 * nv > max_ndx_) {
     return false;
   }
   caps_ = caps;
@@ -165,7 +169,7 @@ double RiccatiFeedback::CapScale() const noexcept {
   if (floating_) {
     // The rotation block is a log map: its norm is at most π, where its
     // axis flips.
-    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kPi = std::numbers::pi;
     const auto rot = static_cast<std::size_t>(RiccatiBlock::kBaseOrientation);
     const double theta = dx_.segment(block_start_[rot], 3).norm();
     if (theta > kPi - kRotationFadeRad) {

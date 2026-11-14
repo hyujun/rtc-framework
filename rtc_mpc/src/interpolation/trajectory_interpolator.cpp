@@ -57,8 +57,9 @@ int64_t NodeSpacingNs(double dt_node) noexcept {
   if (!std::isfinite(dt_node)) {
     return 0;
   }
+  // Bounded so that (horizon + 1) node spacings fit an int64 for any horizon.
   const double ns = std::round(dt_node * 1e9);
-  return (ns >= 1.0 && ns < 1e18) ? static_cast<int64_t>(ns) : 0;
+  return (ns >= 1.0 && ns <= 1e16) ? static_cast<int64_t>(ns) : 0;
 }
 
 }  // namespace
@@ -106,7 +107,8 @@ SampleSpot TrajectoryInterpolator::Sample(int64_t now_ns, const WbLayout& layout
                                           double* v, double* a, double* wrench,
                                           uint32_t& mask) const noexcept {
   SampleSpot spot{};
-  if (!has_solution_ || q == nullptr || v == nullptr || a == nullptr) {
+  // A refused Init leaves no dimensions: nothing to sample into.
+  if (!has_solution_ || nq_ <= 0 || nv_ <= 0 || q == nullptr || v == nullptr || a == nullptr) {
     return spot;
   }
   const MPCSolution& s = *sol_;
@@ -125,6 +127,10 @@ SampleSpot TrajectoryInterpolator::Sample(int64_t now_ns, const WbLayout& layout
   }
   const int nbq = floating ? kFreeFlyerNq : 0;
   const int nbv = floating ? kFreeFlyerNv : 0;
+  // A floating base pairs joint configuration and tangent entries one to one.
+  if (floating && nq - nbq != nv - nbv) {
+    return spot;
+  }
 
   const int64_t tau = std::max<int64_t>(0, now_ns - origin_ns_);
   const int64_t horizon_ns = static_cast<int64_t>(horizon) * dt_ns;
@@ -175,7 +181,7 @@ SampleSpot TrajectoryInterpolator::Sample(int64_t now_ns, const WbLayout& layout
   const int64_t rem = tau - static_cast<int64_t>(k) * dt_ns;
   const double alpha = static_cast<double>(rem) / static_cast<double>(dt_ns);
   const HermiteBasis b(alpha);
-  const double dt = s.dt_node;
+  const double dt = static_cast<double>(dt_ns) * 1e-9;  // the spacing α is measured in
   const double inv_dt = 1.0 / dt;
   const double inv_dt2 = inv_dt * inv_dt;
   const auto kk = static_cast<std::size_t>(k);
@@ -228,8 +234,10 @@ SampleSpot TrajectoryInterpolator::Sample(int64_t now_ns, const WbLayout& layout
       q[kQ + 3] = r.w();
     }
     // World-frame slopes of the base position: R · v_lin of each node.
-    const Eigen::Vector3d pd0 = r0.toRotationMatrix() * Eigen::Vector3d(v0[0], v0[1], v0[2]);
-    const Eigen::Vector3d pd1 = r1.toRotationMatrix() * Eigen::Vector3d(v1[0], v1[1], v1[2]);
+    const Eigen::Vector3d pd0 =
+        r0.normalized().toRotationMatrix() * Eigen::Vector3d(v0[0], v0[1], v0[2]);
+    const Eigen::Vector3d pd1 =
+        r1.normalized().toRotationMatrix() * Eigen::Vector3d(v1[0], v1[1], v1[2]);
     for (int j = 0; j < 3; ++j) {
       const auto jj = static_cast<std::size_t>(j);
       q[j] = EvalHermite(b, q0[jj], q1[jj], pd0[j], pd1[j], dt, inv_dt, inv_dt2).x;

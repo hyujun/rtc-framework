@@ -84,12 +84,15 @@ class MPCSolutionManager {
   ///                `joint_velocity`) to its own cap; a floating base caps
   ///                every block (default `max_delta_x_norm` each), a fixed
   ///                base only when the map is given (joint blocks only).
+  ///                A plan whose `gain_nodes`, `nu` or `ndx` exceed the
+  ///                capacities is refused as a dimension mismatch.
   /// @param layout  state / input layout of the model the consumer runs
   ///                (`WbLayout::FromModel` or `FromHandler`). A layout that
   ///                is not `valid()` (a failed factory) leaves the manager
   ///                disabled.
   /// @param model   the model of @p layout, for the floating-base Riccati
-  ///                `Δx` (non-owning, must outlive the manager); optional.
+  ///                `Δx` — non-owning, read on the RT tick, so it must stay
+  ///                where it is and unchanged until the next Init; optional.
   /// @note A value out of range — a negative or non-finite age, a cap that
   ///       is not positive and finite, an unknown block name, a base block
   ///       on a fixed base — leaves the manager disabled (@ref ConfigValid).
@@ -108,11 +111,16 @@ class MPCSolutionManager {
   /// @brief Runtime toggle for MPC consumption. When false,
   ///        @ref ComputeReference reports invalid immediately; after a switch
   ///        back to true the consumer samples no plan computed from a state
-  ///        written before it (see the file comment). One setter thread at a
-  ///        time (parameter or lifecycle callbacks); the RT tick reads it.
+  ///        written before it (see the file comment). `true` is ignored
+  ///        after an @ref Init that refused its layout or YAML. One setter
+  ///        thread at a time (parameter or lifecycle callbacks); the RT tick
+  ///        reads it.
   ///        Two setters racing can merge a short disable into none — the
   ///        consumer then never stopped, and the age rules still apply.
   void SetEnabled(bool enabled) noexcept {
+    if (enabled && (!config_valid_ || !layout_.valid())) {
+      return;  // a refused configuration stays off until a valid Init
+    }
     if (enabled && !enabled_.load(std::memory_order_acquire)) {
       // Ordered before the flag: a consumer that sees `true` from this call
       // sees the new generation too.
@@ -221,7 +229,8 @@ class MPCSolutionManager {
   ///
   /// `u_fb_acc` holds the joint-acceleration rows of the Riccati feedback
   /// at their tangent entries (the base rows 0); `receive_stamp_ns` is the
-  /// @p now_ns the plan was taken at.
+  /// @p now_ns the plan was taken at. @p out must not alias @p q_curr or
+  /// @p v_curr (it is cleared first).
   /// @return true with `out.valid`; false (`out.valid` false, the rest of
   ///         @p out zero) when disabled, without a plan, with the plan
   ///         evicted or with a sample that is not finite — not on a
@@ -237,8 +246,9 @@ class MPCSolutionManager {
   /// true. On fallback (MPC disabled, no solution yet, the plan evicted —
   /// see the file comment — or too many stale cycles) returns false and sets
   /// @p meta_out.valid = false. The same sample as @ref SampleReference;
-  /// `u_fb` gets the written feedback rows at its front (the accel rows in
-  /// accel-only mode).
+  /// in accel-only mode `u_fb` gets the joint-acceleration rows at their
+  /// tangent entries (the front on a fixed base), otherwise the input-sized
+  /// feedback at its front.
   ///
   /// @param q_curr     current position (size nq)
   /// @param v_curr     current velocity (size nv)
@@ -295,6 +305,14 @@ class MPCSolutionManager {
   ///         shipped gain node (the last one was used). Any thread.
   [[nodiscard]] uint64_t GainNodeClamps() const noexcept {
     return gain_node_clamps_.load(std::memory_order_relaxed);
+  }
+
+  /// @return samples with a gain but no feedback: a floating base without
+  ///         the model given to @ref Init, a state `WbLayout::StateDifference`
+  ///         refused (a non-unit quaternion on either side), or a non-finite
+  ///         state. The reference is still valid. Any thread.
+  [[nodiscard]] uint64_t FeedbackSkips() const noexcept {
+    return feedback_skips_.load(std::memory_order_relaxed);
   }
 
   [[nodiscard]] uint64_t ActiveObservationStampNs() const noexcept {
@@ -388,6 +406,7 @@ class MPCSolutionManager {
   std::atomic<uint64_t> policy_age_rejections_{0};
   std::atomic<uint64_t> dimension_rejections_{0};
   std::atomic<uint64_t> gain_node_clamps_{0};
+  std::atomic<uint64_t> feedback_skips_{0};
 
   const pinocchio::Model* model_{nullptr};  // Init's; floating-base Riccati Δx
   int64_t max_policy_age_ns_{0};            // 0 = off

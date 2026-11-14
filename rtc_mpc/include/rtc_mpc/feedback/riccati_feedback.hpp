@@ -35,7 +35,9 @@
 ///   @ref SetBlockCaps the cap is on @f$ \|\Delta x\| @f$; with it, each block
 ///   of `Δx` (base position, base rotation, joint positions, base linear
 ///   velocity, base angular velocity, joint velocities — units differ) has
-///   its own cap and the scale is the smallest `cap_b / ‖Δx_b‖` below 1.
+///   its own cap and the scale is the smallest `cap_b / ‖Δx_b‖` below 1 (the
+///   single norm cap is then not applied; a gain whose column count is not
+///   the caps' `2·nv` falls back to it). @ref Init clears the block caps.
 /// - On a floating base the rotation block is a log map, which flips its
 ///   axis near a relative rotation of π: the feedback fades linearly to 0
 ///   over the last @ref kRotationFadeRad before π, so the flip cannot chatter.

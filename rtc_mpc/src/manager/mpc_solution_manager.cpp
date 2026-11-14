@@ -144,6 +144,7 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout,
   policy_age_rejections_.store(0, std::memory_order_relaxed);
   dimension_rejections_.store(0, std::memory_order_relaxed);
   gain_node_clamps_.store(0, std::memory_order_relaxed);
+  feedback_skips_.store(0, std::memory_order_relaxed);
   seen_enable_generation_ = enable_generation_.load(std::memory_order_acquire);
   written_enable_generation_ = seen_enable_generation_;
   first_sequence_after_enable_ = 0;
@@ -284,7 +285,8 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
                fresh->observation_sequence < first_sequence_after_enable_) {
       Bump(state_epoch_rejections_);
     } else if (fresh->nq != layout_.nq || fresh->nv != layout_.nv || fresh->ndx != layout_.ndx ||
-               fresh->nu != layout_.nu) {
+               fresh->nu != layout_.nu || fresh->gain_nodes < 0 ||
+               fresh->gain_nodes > kMaxGainNodes || fresh->nu > kMaxNu || fresh->ndx > kMaxNdx) {
       Bump(dimension_rejections_);
     } else {
       // Node 0 sits at the observation, moved back onto the node grid.
@@ -316,16 +318,11 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
                                                out.q_ref.data(), out.v_ref.data(), out.a_ref.data(),
                                                out.wrench_ref.data(), out.contact_mask);
   // The producer ships finite plans; a non-finite sample still never leaves.
-  const auto finite = [](const auto& a, int n) {
-    for (int i = 0; i < n; ++i) {
-      if (!std::isfinite(a[static_cast<std::size_t>(i)])) {
-        return false;
-      }
-    }
-    return true;
-  };
-  if (!spot.valid || !finite(out.q_ref, layout_.nq) || !finite(out.v_ref, layout_.nv) ||
-      !finite(out.a_ref, layout_.nv) || !finite(out.wrench_ref, layout_.n_contact_vars)) {
+  using ConstMap = Eigen::Map<const Eigen::VectorXd>;
+  if (!spot.valid || !ConstMap(out.q_ref.data(), layout_.nq).allFinite() ||
+      !ConstMap(out.v_ref.data(), layout_.nv).allFinite() ||
+      !ConstMap(out.a_ref.data(), layout_.nv).allFinite() ||
+      !ConstMap(out.wrench_ref.data(), layout_.n_contact_vars).allFinite()) {
     out = WbcReference{};
     return false;
   }
@@ -349,19 +346,24 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
   u_fb_.setZero();
   if (gain_installed_) {
     const int64_t nearest = (spot.tau_ns + spot.dt_ns / 2) / spot.dt_ns;
-    int g = static_cast<int>(std::min<int64_t>(nearest, kMaxGainNodes));
-    if (g > s.gain_nodes - 1) {
-      g = s.gain_nodes - 1;
+    int g = static_cast<int>(std::min<int64_t>(nearest, kMaxGainNodes - 1));
+    if (nearest > s.gain_nodes - 1) {
       Bump(gain_node_clamps_);
     }
+    g = std::min(g, s.gain_nodes - 1);
     riccati_.UseGain(s.K_riccati[static_cast<std::size_t>(g)].data(), s.nu, s.ndx);
     const Eigen::Map<const Eigen::VectorXd> q_ref(out.q_ref.data(), layout_.nq);
     const Eigen::Map<const Eigen::VectorXd> v_ref(out.v_ref.data(), layout_.nv);
+    bool fed_back = false;
     if (!layout_.floating_base()) {
+      fed_back = q_curr.allFinite() && v_curr.allFinite();
       riccati_.Compute(q_curr, v_curr, q_ref, v_ref, u_fb_);
     } else if (model_ != nullptr &&
                layout_.StateDifference(*model_, q_ref, v_ref, q_curr, v_curr, dx_)) {
-      (void)riccati_.ComputeFromDelta(dx_, u_fb_);
+      fed_back = riccati_.ComputeFromDelta(dx_, u_fb_);
+    }
+    if (!fed_back) {
+      Bump(feedback_skips_);
     }
   }
   out.valid = true;
@@ -398,18 +400,20 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
   if (!Tick(q_curr, v_curr, now_ns, true, sample_)) {
     return false;
   }
-  const auto copy = [](const auto& src, Eigen::Ref<Eigen::VectorXd> dst, int n) {
+  const auto copy = [](const double* src, Eigen::Ref<Eigen::VectorXd> dst, int n) {
     const int m = std::min(n, static_cast<int>(dst.size()));
-    for (int i = 0; i < m; ++i) {
-      dst[i] = src[static_cast<std::size_t>(i)];
-    }
+    dst.head(m) = Eigen::Map<const Eigen::VectorXd>(src, m);
   };
-  copy(sample_.q_ref, q_ref, sample_.nq);
-  copy(sample_.v_ref, v_ref, sample_.nv);
-  copy(sample_.a_ref, a_ff, sample_.nv);
-  copy(sample_.wrench_ref, lambda_ref, sample_.n_contact_vars);
-  const int n_fb = std::min(static_cast<int>(u_fb.size()), static_cast<int>(u_fb_.size()));
-  u_fb.head(n_fb) = u_fb_.head(n_fb);
+  copy(sample_.q_ref.data(), q_ref, sample_.nq);
+  copy(sample_.v_ref.data(), v_ref, sample_.nv);
+  copy(sample_.a_ref.data(), a_ff, sample_.nv);
+  copy(sample_.wrench_ref.data(), lambda_ref, sample_.n_contact_vars);
+  // Accel-only feedback goes to the joints' tangent entries (the front on a
+  // fixed base); the full input-sized feedback to the front.
+  const int at = riccati_.AccelOnly() ? layout_.n_base_v : 0;
+  const int n_fb =
+      std::max(0, std::min(static_cast<int>(u_fb.size()) - at, static_cast<int>(u_fb_.size())));
+  u_fb.segment(at, n_fb) = u_fb_.head(n_fb);
   meta_out.valid = true;
   meta_out.beyond_horizon = sample_.beyond_horizon;
   meta_out.progress = sample_.progress;

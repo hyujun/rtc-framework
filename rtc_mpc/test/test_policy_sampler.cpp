@@ -344,6 +344,72 @@ TEST_F(SamplerTest, TheBasePositionFollowsAConstantWorldVelocity) {
   }
 }
 
+// A base whose LOCAL linear velocity and angular rate change node to node:
+// the position is the cubic Hermite of the node positions with the world
+// slopes R_k · v_lin_k, written out here.
+TEST_F(SamplerTest, TheBasePositionIsTheHermiteOfTheWorldSlopes) {
+  MPCSolution plan = FloatingPlan();
+  for (int k = 0; k <= kH; ++k) {
+    const auto kk = static_cast<std::size_t>(k);
+    for (int j = 0; j < 6; ++j) {
+      plan.v_traj[kk][static_cast<std::size_t>(j)] += 0.1 * std::sin(0.7 * k + j);
+    }
+  }
+  mgr_.PublishSolution(plan);
+  for (int64_t tau = 1; tau < kH * kDtNs; tau += 2'345'671) {
+    ASSERT_TRUE(Sample(kOrigin + tau));
+    const int k = static_cast<int>(tau / kDtNs);
+    const double s = static_cast<double>(tau % kDtNs) / static_cast<double>(kDtNs);
+    const auto kk = static_cast<std::size_t>(k);
+    const auto slope = [&](std::size_t n) {
+      const Eigen::Quaterniond r(plan.q_traj[n][6], plan.q_traj[n][3], plan.q_traj[n][4],
+                                 plan.q_traj[n][5]);
+      return Eigen::Vector3d(r.toRotationMatrix() * Eigen::Vector3d(plan.v_traj[n][0],
+                                                                    plan.v_traj[n][1],
+                                                                    plan.v_traj[n][2]));
+    };
+    const Eigen::Vector3d m0 = slope(kk);
+    const Eigen::Vector3d m1 = slope(kk + 1);
+    for (int j = 0; j < 3; ++j) {
+      const auto jj = static_cast<std::size_t>(j);
+      const double want = (2 * s * s * s - 3 * s * s + 1) * plan.q_traj[kk][jj] +
+                          (s * s * s - 2 * s * s + s) * kDt * m0[j] +
+                          (-2 * s * s * s + 3 * s * s) * plan.q_traj[kk + 1][jj] +
+                          (s * s * s - s * s) * kDt * m1[j];
+      EXPECT_NEAR(ref_.q_ref[jj], want, 1e-12) << "tau " << tau;
+    }
+  }
+}
+
+// Consecutive node quaternions on opposite hemispheres (a producer that did
+// not canonicalise): the slerp still takes the short way and stays unit.
+TEST_F(SamplerTest, AnOppositeHemispherePairStillTakesTheShortWay) {
+  MPCSolution plan = FloatingPlan();
+  for (std::size_t j = 3; j < 7; ++j) {
+    plan.q_traj[3][j] = -plan.q_traj[3][j];
+  }
+  mgr_.PublishSolution(plan);
+  ASSERT_TRUE(Sample(kOrigin + 2 * kDtNs + kDtNs / 2));
+  const Eigen::Vector4d a(plan.q_traj[2][3], plan.q_traj[2][4], plan.q_traj[2][5],
+                          plan.q_traj[2][6]);
+  const Eigen::Vector4d b(-plan.q_traj[3][3], -plan.q_traj[3][4], -plan.q_traj[3][5],
+                          -plan.q_traj[3][6]);  // the stored node, back on a's hemisphere
+  const Eigen::Vector4d want = ReferenceSlerp(a, b, 0.5);
+  const Eigen::Vector4d got(ref_.q_ref[3], ref_.q_ref[4], ref_.q_ref[5], ref_.q_ref[6]);
+  EXPECT_LE(std::abs(got.norm() - 1.0), 1e-12);
+  EXPECT_LE(std::min((got - want).norm(), (got + want).norm()), 1e-12) << "the short-way rotation";
+  EXPECT_GE(got.dot(a), 0.0);
+}
+
+// A node spacing whose horizon would not fit an int64 of nanoseconds is
+// refused, not sampled with an overflowed horizon.
+TEST_F(SamplerTest, ANodeSpacingTooLargeForTheClockIsRefused) {
+  MPCSolution plan = FloatingPlan();
+  plan.dt_node = 2e8;  // s
+  mgr_.PublishSolution(plan);
+  EXPECT_FALSE(Sample(kOrigin));
+}
+
 // The joint rows of a floating plan come out of the same arithmetic as a
 // fixed-base plan with the same joint values.
 TEST_F(SamplerTest, JointRowsAreBitEqualToTheFixedBasePath) {
@@ -482,6 +548,61 @@ TEST_F(SamplerTest, BothPublicPathsSampleTheOnePlan) {
   ASSERT_TRUE(mgr_.ComputeReference(q_, v_, At(kOrigin + 2 * kDtNs), q_ref, v_ref, a_ff, lambda,
                                     u_fb, meta));
   EXPECT_EQ(mgr_.ActivePlanId(), taken) << "a plan taken by one path is the other's";
+}
+
+// A plan that claims more gain nodes, or a larger gain, than the payload
+// holds is refused as a dimension mismatch.
+TEST_F(SamplerTest, APlanBeyondTheGainCapacityIsRefused) {
+  MPCSolution plan = FloatingPlan();
+  plan.gain_nodes = kMaxGainNodes + 1;
+  mgr_.PublishSolution(plan);
+  EXPECT_FALSE(Sample(kOrigin));
+  EXPECT_EQ(mgr_.DimensionRejections(), 1u);
+  plan.gain_nodes = 0;  // pass control
+  mgr_.PublishSolution(plan);
+  EXPECT_TRUE(Sample(kOrigin));
+}
+
+// A configuration Init refused stays off: SetEnabled(true) does not turn it on.
+TEST(SamplerConfig, ARefusedConfigCannotBeReEnabled) {
+  MPCSolutionManager mgr;
+  mgr.Init(YAML::Load("{enabled: true, max_policy_age_s: -1.0}"), FloatingLayout());
+  ASSERT_FALSE(mgr.ConfigValid());
+  mgr.SetEnabled(true);
+  EXPECT_FALSE(mgr.Enabled());
+  mgr.Init(YAML::Load("{enabled: false}"), FloatingLayout());  // pass control
+  mgr.SetEnabled(true);
+  EXPECT_TRUE(mgr.Enabled());
+}
+
+// A re-Init clears what the earlier one set: the block caps of a floating
+// layout do not stay on the Riccati of a fixed one, and an interpolator
+// whose re-Init was refused samples nothing.
+TEST(SamplerReInit, ReInitClearsTheBlockCapsAndARefusedInterpolatorSamplesNothing) {
+  RiccatiFeedback fb;
+  fb.Init(9, 15, 18);
+  RiccatiBlockCaps caps{};
+  caps.fill(1e-3);
+  ASSERT_TRUE(fb.SetBlockCaps(caps, 9, true));
+  fb.Init(9, 9, 18);
+  fb.SetMaxDeltaXNorm(10.0);
+  std::vector<double> K(9 * 18, 1.0);
+  fb.SetGain(K.data(), 9, 18);
+  Eigen::VectorXd dx = Eigen::VectorXd::Constant(18, 0.01);
+  Eigen::VectorXd u(9);
+  ASSERT_TRUE(fb.ComputeFromDelta(dx, u));
+  EXPECT_EQ(fb.LastScale(), 1.0) << "the single norm cap of the new Init, not the old block caps";
+
+  TrajectoryInterpolator interp;
+  interp.Init(kNj, kNj, 0);
+  interp.Init(kMaxNq + 1, kNj, 0);
+  (void)interp.SetSolution(FixedFromFloating(FloatingPlan()), 0);
+  double q[kNj] = {7.0, 7.0, 7.0};
+  double v[kNj] = {};
+  double a[kNj] = {};
+  uint32_t mask = 0;
+  EXPECT_FALSE(interp.Sample(0, WbLayout::FixedBase(kNj, kNj, 0), q, v, a, nullptr, mask).valid);
+  EXPECT_EQ(q[0], 7.0) << "nothing written";
 }
 
 TEST(SamplerProvenance, TheReferenceCarriesThePlansProvenance) {
@@ -713,19 +834,79 @@ TEST_F(FloatingRiccatiTest, ARotationErrorNearPiFadesTheFeedbackOut) {
     ASSERT_TRUE(mgr_.SampleReference(q, v, At(kObs), ref_));
     Expect(0, dx, std::max(0.0, (kPi - th) / kRotationFadeRad), ref_, "near pi");
   }
-  // Either side of π: both faded to at most 0.5 %, so the jump is that small.
-  ASSERT_TRUE(mgr_.SampleReference(rotated(kPi - 1e-3), v, At(kObs), ref_));
+  // Either side of π the log flips its axis; each side is faded by its own
+  // factor, so the jump across π is bounded by the two faded magnitudes.
+  const Eigen::VectorXd q_below = rotated(kPi - 1e-3);
+  const Eigen::VectorXd q_above = rotated(kPi + 1e-3);
+  const Eigen::VectorXd dx_below = OracleDx(q_below, v);
+  const Eigen::VectorXd dx_above = OracleDx(q_above, v);
+  const double f_below = (kPi - dx_below.segment<3>(3).norm()) / kRotationFadeRad;
+  const double f_above = (kPi - dx_above.segment<3>(3).norm()) / kRotationFadeRad;
+  ASSERT_TRUE(mgr_.SampleReference(q_below, v, At(kObs), ref_));
+  Expect(0, dx_below, f_below, ref_, "below pi");
   const WbcReference below = ref_;
-  ASSERT_TRUE(mgr_.SampleReference(rotated(kPi + 1e-3), v, At(kObs), ref_));
-  double jump = 0.0;
-  double full = 0.0;
-  const Eigen::VectorXd dx_full = OracleDx(rotated(kPi - 1e-3), v);
+  ASSERT_TRUE(mgr_.SampleReference(q_above, v, At(kObs), ref_));
+  Expect(0, dx_above, f_above, ref_, "above pi");
   for (int i = 0; i < layout_.n_acc; ++i) {
     const auto ii = static_cast<std::size_t>(layout_.n_base_v + i);
-    jump = std::max(jump, std::abs(below.u_fb_acc[ii] - ref_.u_fb_acc[ii]));
-    full = std::max(full, std::abs((K_[0].row(layout_.acc_u_offset + i) * dx_full)(0)));
+    const int row = layout_.acc_u_offset + i;
+    const double bound = f_below * std::abs((K_[0].row(row) * dx_below)(0)) +
+                         f_above * std::abs((K_[0].row(row) * dx_above)(0));
+    EXPECT_LE(std::abs(below.u_fb_acc[ii] - ref_.u_fb_acc[ii]), bound + 1e-12) << "row " << i;
   }
-  EXPECT_LE(jump, 0.011 * full);
+}
+
+// Two blocks over their caps: the smaller of the two ratios wins.
+TEST_F(FloatingRiccatiTest, TwoBlocksOverTheirCapsTakeTheSmallerRatio) {
+  Eigen::VectorXd dq = Eigen::VectorXd::Zero(model_.nv);
+  dq[1] = 0.02;   // base position
+  dq[10] = 0.05;  // a joint
+  Eigen::VectorXd q(model_.nq);
+  pinocchio::integrate(model_, q_ref_, dq, q);
+  const Eigen::VectorXd v = Eigen::VectorXd::Zero(model_.nv);
+  const Eigen::VectorXd dx = OracleDx(q, v);
+  Init("{max_delta_x_norm: 1.0e6, max_delta_blocks: {base_position: 0.01, joint_position: 0.01}}");
+  ASSERT_TRUE(mgr_.SampleReference(q, v, At(kObs), ref_));
+  const double s_pos = 0.01 / dx.segment<3>(0).norm();
+  const double s_joint = 0.01 / dx.segment(6, model_.nv - 6).norm();
+  ASSERT_LT(s_joint, s_pos);
+  Expect(0, dx, s_joint, ref_, "two blocks");
+}
+
+// The floating ComputeReference puts the joint feedback at the joints'
+// tangent entries, as SampleReference does — not on the base rows.
+TEST_F(FloatingRiccatiTest, ComputeReferencePutsTheJointFeedbackOnTheJointRows) {
+  Init();
+  const Eigen::VectorXd q = Perturbed(q_ref_, model_);
+  const Eigen::VectorXd v = Eigen::VectorXd::Zero(model_.nv);
+  Eigen::VectorXd q_ref(model_.nq), v_ref(model_.nv), a(model_.nv), lambda(12), u_fb(model_.nv);
+  InterpMeta meta{};
+  ASSERT_TRUE(mgr_.ComputeReference(q, v, At(kObs), q_ref, v_ref, a, lambda, u_fb, meta));
+  ASSERT_TRUE(mgr_.SampleReference(q, v, At(kObs), ref_));
+  for (int i = 0; i < model_.nv; ++i) {
+    EXPECT_EQ(u_fb[i], ref_.u_fb_acc[static_cast<std::size_t>(i)]) << "row " << i;
+  }
+}
+
+// A node quaternion off unit length (beyond the layout's tolerance): the
+// reference samples, the feedback is skipped and counted.
+TEST_F(FloatingRiccatiTest, ANonUnitNodeQuaternionSkipsTheFeedbackCounted) {
+  Init();
+  MPCSolution plan = Plan();
+  for (std::size_t j = 3; j < 7; ++j) {
+    plan.q_traj[0][j] *= 1.001;
+  }
+  mgr_.PublishSolution(plan);
+  const Eigen::VectorXd q = Perturbed(q_ref_, model_);
+  const Eigen::VectorXd v = Eigen::VectorXd::Zero(model_.nv);
+  ASSERT_TRUE(mgr_.SampleReference(q, v, At(kObs), ref_));
+  EXPECT_EQ(mgr_.FeedbackSkips(), 1u);
+  for (double u : ref_.u_fb_acc) {
+    EXPECT_EQ(u, 0.0);
+  }
+  mgr_.PublishSolution(Plan());  // pass control
+  ASSERT_TRUE(mgr_.SampleReference(q, v, At(kObs), ref_));
+  EXPECT_EQ(mgr_.FeedbackSkips(), 1u);
 }
 
 TEST_F(FloatingRiccatiTest, AZeroGainScaleGivesNoFeedback) {
