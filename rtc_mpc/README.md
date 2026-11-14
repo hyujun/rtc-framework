@@ -82,6 +82,8 @@ CSV 는 MPC tick 마다 한 행이고 CM RT loop 와 같은 8열 스키마다: `
 
 `mpc.solver:` 키 (standing · online iteration 예산, rollout, LQ backend, thread 수, publish 규칙 `publish_deadline_ms` · `publish_prim_tol` — 0 이면 끔, 관측마다 한 번 푸는 `require_fresh_state`) 의 스키마는 `mpc_factory.hpp` 가, 소비자 키 (`max_policy_age_s` · `riccati.*`) 는 `mpc_solution_manager.hpp` 가 갖는다. non-monotone line search · Gauss-Newton Hessian 은 Aligator 기본값이다 (키 없음).
 
+**병렬 solve** (`num_threads` > 1): stage 병렬만 (serial 과 bit 동일), `linear_solver: parallel` 은 거부. 수락 조건 · pool 고정 · 거부는 `mpc_handler_base.hpp` · `mpc_thread.hpp` 가 갖는다.
+
 ## 문제 해결
 
 | 증상 | 원인 | 조치 |
