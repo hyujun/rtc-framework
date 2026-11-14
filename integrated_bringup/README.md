@@ -172,10 +172,10 @@ ros2 service call /sim/reset std_srvs/srv/Trigger                               
 ```
 
 - 보행 MPC 의 plant 다. device group 이 둘이다: `g1` (왼다리 6 + 오른다리 6 + 허리 3 + 왼팔 4 + 오른팔 4 = 23 관절, 이 순서 — 손목은 강체) 과 `p1b` (합성 손 10 관절, sim 에서는 `fake_response` LPF). 모델은 공개 `robot_descriptions` 의 `robots/g1` 부동 MJCF 와 `g1_29dof_floating_with_p1b_surrogate` xacro 다 — 비공개 패키지가 필요 없다.
-- `controllers/locomotion_controller.yaml` (+ `locomotion/` 의 조각 하나씩) 은 보행 컨트롤러 (미등록 — W6) 의 `model.*` · `command.*` (명령 필터) · `gait.*` (gait 표) · `swing.*` · `terrain.*` (swing 발 참조 · 지면) · `reference.*` (q_default · arm swing) · `whole_body_qp.*` · `mpc.*` 계약이다: 발 접촉 `left_sole` · `right_sole`, 양팔 끝 `left_wrist_yaw_link` · `base_adapter`, 몸통 `torso_link`.
-  - 스키마 · 거부 규칙은 `model.*` 이 `controllers/locomotion/humanoid_model_config.hpp`, `whole_body_qp.*` 가 `rtc_tsid` 의 builder 헤더, `mpc.*` 가 `rtc_mpc` `ocp/kinodynamic_ocp_config.hpp` · `handler/mpc_factory.hpp` (`solver:`), 나머지가 `rtc_mpc` `reference/` 헤더가 갖고, 위 관절 순서 (모델 = `joint_state_names` = MJCF actuator) 는 `test_g1_loco_joint_order` 가 본다.
+- `controllers/locomotion_controller.yaml` (+ `locomotion/` 의 조각 하나씩) 은 보행 컨트롤러 (미등록 — W6) 의 `model.*` · `command.*` (명령 필터) · `gait.*` (gait 표) · `swing.*` · `terrain.*` (swing 발 참조 · 지면) · `reference.*` (q_default · arm swing) · `whole_body_qp.*` · `mpc.*` 계약이다: 발 접촉 `left_sole` · `right_sole`, 양팔 끝 `left_wrist_yaw_link` · `base_adapter`, 몸통 `torso_link`, IMU site `pelvis` · `torso` (`model.imu`, primary `pelvis`).
+  - 스키마 · 거부 규칙은 `model.*` 이 `controllers/locomotion/humanoid_model_config.hpp`, `whole_body_qp.*` 가 `rtc_tsid` 의 builder 헤더, `mpc.*` 가 `rtc_mpc` `ocp/kinodynamic_ocp_config.hpp` · `handler/mpc_factory.hpp` (`solver:`), 나머지가 `rtc_mpc` `reference/` 헤더가 갖고, 위 관절 순서 (모델 = `joint_state_names` = MJCF actuator) 는 `test_g1_loco_joint_order` 가, `model.imu.sites` = `imu_state.site_names` (순서 포함) 는 `test_loco_imu_lane_shipped` 가 본다.
 - 서 있는 것은 sim 의 `stand` keyframe (`reset_keyframe`) + MJCF `<position>` servo 다. `demo_joint_controller` (유일한 컨트롤러) 는 측정 자세를 `pd_feedforward` 로 hold 하고 feedforward 는 0 이다 — 첫 명령에서 sim 이 `g1` 군을 PD-feedforward 모드로 바꾸고 중력 보상을 끄므로 그 뒤의 자세는 servo 의 것이다. 지표 (`run_stance_metrics`, [rtc_tools README](../rtc_tools/README.md)) 는 그 전환 뒤부터 잰다.
-- 컨트롤러 모델의 root 는 **부동** (`urdf.root_joint_type: "floating"`) 이다. full · actuated 모델이 pelvis 에 free-flyer 를 갖고, tree 모델은 그것을 잠그며, 손의 폐쇄 체인 handle 은 seed (단위) 자세로 hold 한다 — 손끝 FK 와 관절 블록은 고정 root 모델과 같다 (`test_g1_loco_configure` 가 대조한다). 부동 베이스의 ground truth 는 `devices.g1.backend.base_state` lane ([기구학 모델 설정](#기구학-모델-설정) 의 `base_state` 키) 으로 들어오지만 아직 모델의 base 로 배선되지 않는다. 발 접촉은 `fingertip_wrench_topics` 의 두 sole 토픽 (`/g1/{left,right}_sole_contact/contact_wrench`) 이다.
+- 컨트롤러 모델의 root 는 **부동** (`urdf.root_joint_type: "floating"`) 이다. full · actuated 모델이 pelvis 에 free-flyer 를 갖고, tree 모델은 그것을 잠그며, 손의 폐쇄 체인 handle 은 seed (단위) 자세로 hold 한다 — 손끝 FK 와 관절 블록은 고정 root 모델과 같다 (`test_g1_loco_configure` 가 대조한다). 부동 베이스의 ground truth 는 `devices.g1.backend.base_state` lane, 두 IMU 는 `imu_state` lane ([기구학 모델 설정](#기구학-모델-설정) 의 두 키, 같은 토픽) 으로 들어오지만 아직 모델의 base 로 배선되지 않는다. 발 접촉은 `fingertip_wrench_topics` 의 두 sole 토픽 (`/g1/{left,right}_sole_contact/contact_wrench`) 이다.
 - MJCF 의 `<option timestep>` 0.002 는 **제어 주기**다 (sim 이 `n_substeps` 3 으로 나눈다). `use_yaml_servo_gains` 는 `false` 가 기본이고 YAML 은 `servo_kp` / `servo_kd` 를 싣지 않는다.
 - `enable_mpc` 는 CPU layout 만 고른다 (기본 `false`). `mpc_engine` 인자는 없다.
 
@@ -191,9 +191,9 @@ ros2 service call /sim/reset std_srvs/srv/Trigger                               
 
 - 보행 MPC 의 둘째 plant 다 (결정 · 측정 이슈는 [더 읽기](#더-읽기)). device group 이 **셋**이다: `b7` (왼다리 6 + 오른다리 6 + 왼팔 7 + 오른팔 7 = 26 관절, 이 순서 — 허리는 강체) 과 `p2_right` · `p2_left` (proto2 손, 각 10 관절 — `config/b7_p2/udp_hand_node_p2.yaml` 과 같은 이름 · 순서, 토픽은 그 드라이버의 `/p2/<side>/…`). 두 손 다 sim 의 물리 (MJCF `<position>` servo) 라 `fake_response` 군이 없고 `sim_sync_tick_devices` 도 비워 세 군 전부를 기다린다.
 - 모델 (URDF · MJCF · closure sidecar) 은 **비공개 `hand_description` 패키지**의 것이다 (`g1_p1b` 와 같은 방식 — 출하 YAML 의 `package://` URI 가 가리키고 이 패키지는 의존하지 않는다). 그 패키지가 없으면 두 노드가 뜨지 않는 것이 의도다 — 공개 대리 모델은 아직 없다. 그래서 `test_shipped_initial_qpos` 의 keyframe lane 은 이 profile 을 skip 하고, 출하 profile 의 configure gtest (`test_g1_loco_configure` 류) 도 없다.
-- `controllers/locomotion_controller.yaml` (+ `locomotion/model.yaml`) 은 g1_loco 와 같은 `model.*` 계약이다: 발 접촉 `*_toe_link` (이 모델의 발바닥), 양팔 끝 `*_hand_palm`, 몸통 `torso_link`. 모델이 비공개라 in-repo test 는 이 파일을 모델에 대 보지 않는다 — configure 때의 검사가 본다.
+- `controllers/locomotion_controller.yaml` (+ `locomotion/model.yaml`) 은 g1_loco 와 같은 `model.*` 계약이다: 발 접촉 `*_toe_link` (이 모델의 발바닥), 양팔 끝 `*_hand_palm`, 몸통 `torso_link`, IMU site `torso` 하나. 모델이 비공개라 in-repo test 는 이 파일을 모델에 대 보지 않는다 — configure 때의 검사가 본다.
 - 서 있는 것은 sim 의 `stand` keyframe (`reset_keyframe`) + MJCF `<position>` servo 다. `demo_joint_controller` (유일한 컨트롤러) 는 세 군의 측정 자세를 `pd_feedforward` 로 hold 하고 feedforward 는 0 이다. 손은 군마다 자기 `<hand>/joint_goal` 을 따르고 자기 측정값으로 hold · E-STOP 한다; 손끝 FK · TF · grasp state 는 **첫 손 (`p2_right`) 만** 이다 ([controllers.md](../docs/controllers.md)).
-- 컨트롤러 모델의 root 는 **부동** (`urdf.root_joint_type: "floating"`) 이고 부동 베이스의 ground truth 는 `devices.b7.backend.base_state` lane (IMU site 하나) 으로, 발 접촉은 `fingertip_wrench_topics` 의 두 sole 토픽 (`/b7/{left,right}_sole_contact/contact_wrench`) 으로 들어온다 — `g1_loco` 와 같다.
+- 컨트롤러 모델의 root 는 **부동** (`urdf.root_joint_type: "floating"`) 이고 부동 베이스의 ground truth 는 `devices.b7.backend.base_state` lane, torso IMU 는 `imu_state` lane 으로, 발 접촉은 `fingertip_wrench_topics` 의 두 sole 토픽 (`/b7/{left,right}_sole_contact/contact_wrench`) 으로 들어온다 — `g1_loco` 와 같다.
 - MJCF 의 `<option timestep>` 0.002 는 **제어 주기**다 (sim 이 `n_substeps` 3 으로 나눈다). `use_yaml_servo_gains` 는 `false` 가 기본이고 YAML 은 `servo_kp` / `servo_kd` 를 싣지 않는다.
 - `enable_mpc` 는 CPU layout 만 고른다 (기본 `false`). `mpc_engine` 인자는 없다.
 
@@ -361,12 +361,14 @@ ros2 run integrated_bringup motion_editor_gui
 | `urdf:` · `devices:` roster · limits | `_base.yaml` |
 | `devices.<g>.backend` · `has_native_*` · `joint_command_names` | `robot.yaml` / `sim.yaml` |
 | `devices.<g>.backend.base_state.*` — 부동 베이스 군의 ground-truth lane (mujoco_native 만, 아래; `g1_loco` · `b7_loco`) | `sim.yaml` |
+| `devices.<g>.backend.imu_state.*` — site 별 raw IMU lane (mujoco_native 만, 아래; `g1_loco` · `b7_loco`) | `sim.yaml` |
 | 컨트롤러 게인 · 토픽 · 공통 파라미터 | `controllers/demo_*_controller.yaml` · `demo_shared.yaml` |
 | 충돌 capsule spec (포구 MPC 의 `collision.capsules_file` · dual-arm 의 `collision_damper.capsules_file` 가 같이 읽음) | `collision_capsules.yaml` (g1_p1b) |
 
 `sub_models` / `tree_models` 의 map 키는 `devices` 의 디바이스 그룹 이름과 같아야 합니다 (예: sub_model `ur5e` = device `ur5e`).
 
-- `base_state` 키: `sensor_topic` (sim 군의 `sensor_topic`) · `pos` · `quat` · `linvel` · `angvel` (base body 의 **`objtype="xbody"`** frame sensor 이름) · `imu_gyro` / `imu_accel` (site 순서의 평행 목록) · `max_consecutive_missed_ticks` (기본 = 군의 값). 비면 lane 을 쓰지 않습니다. MuJoCo ↔ pinocchio 변환은 [floating_base_conventions.hpp](include/integrated_bringup/backends/floating_base_conventions.hpp) 한 곳입니다.
+- `base_state` 키: `sensor_topic` (sim 군의 `sensor_topic`) · `pos` · `quat` · `linvel` · `angvel` (base body 의 **`objtype="xbody"`** frame sensor 이름) · `max_consecutive_missed_ticks` (기본 = 군의 값). 비면 lane 을 쓰지 않습니다. MuJoCo ↔ pinocchio 변환은 [floating_base_conventions.hpp](include/integrated_bringup/backends/floating_base_conventions.hpp) 한 곳입니다. 예전 키 `imu_gyro` / `imu_accel` 이 남아 있으면 ERROR 로 **두 lane 모두** 거부합니다.
+- `imu_state` 키: `sensor_topic` · `site_names` (site label, index = IMU site — 보행 컨트롤러의 `model.imu.sites` 와 같은 순서) · `gyro` / `accel` (site 마다 MJCF gyro · accelerometer sensor 이름) · `max_consecutive_missed_ticks` (기본 = 군의 값). 값은 site frame 그대로 (변환 없음), valid · stamp · sequence 는 site 마다입니다. `base_state` 와 토픽이 같으면 구독 하나가 두 lane 을 풀고, 다르면 lane 마다 구독입니다. 한 lane 의 설정 오류 (이름 누락 · site 중복 · site 가 `kMaxImuSites` (2) 초과 · 목록 길이 불일치) 는 그 lane 만 거부합니다.
 
 ```yaml
 urdf:
