@@ -26,6 +26,7 @@
 #include "test_utils/kinodynamic_ocp_fixture.hpp"
 #include "test_utils/panda_fixture.hpp"
 
+#include <omp.h>
 #include <yaml-cpp/yaml.h>
 
 #include <filesystem>
@@ -316,6 +317,89 @@ INSTANTIATE_TEST_SUITE_P(Values, MPCSolverConfigRefusal,
                                            "max_initial_iters: 29", "max_initial_iters: -1",
                                            "max_online_al_iters: -1", "prim_tol: 0.0",
                                            "prim_tol: .nan", "max_al_iters: 0"));
+
+// ── Solver threads ──────────────────────────────────────────────────────────
+//
+// More than one solver thread needs a worker slot for every thread past the
+// first (the factory's worker capacity, which the YAML never carries).
+
+YAML::Node LightWithSolver(const std::string& solver) {
+  return YAML::Load("mpc:\n  ocp_type: contact_light\n  solver:\n    max_iters: 30\n    " + solver);
+}
+
+TEST_F(MPCFactoryTest, AcceptsAThreadCountTheWorkerCapacityCovers) {
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  const auto status = rtc::mpc::MPCFactory::Create(LightWithSolver("num_threads: 3"), handler_,
+                                                   MakeLightContext(), h, /*worker_capacity=*/2);
+  ASSERT_EQ(status.error, rtc::mpc::MPCFactoryError::kNoError);
+  ASSERT_NE(h, nullptr);
+  EXPECT_EQ(h->solver_config().num_threads, 3);
+  EXPECT_EQ(h->solver_config().worker_capacity, 2);
+  EXPECT_EQ(status.requested_threads, 3);
+}
+
+TEST_F(MPCFactoryTest, RefusesMoreThreadsThanTheWorkerCapacityAndSaysHowMany) {
+  for (const int capacity : {0, 1}) {
+    std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+    const auto status = rtc::mpc::MPCFactory::Create(LightWithSolver("num_threads: 3"), handler_,
+                                                     MakeLightContext(), h, capacity);
+    EXPECT_EQ(status.init_error, rtc::mpc::MPCInitError::kInvalidSolverConfig) << capacity;
+    EXPECT_EQ(status.requested_threads, 3) << "a caller tells a refused pool by this";
+    EXPECT_EQ(h, nullptr);
+  }
+}
+
+TEST_F(MPCFactoryTest, TheParallelLqBackendStaysRefusedWhateverTheCapacity) {
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  const auto status =
+      rtc::mpc::MPCFactory::Create(LightWithSolver("num_threads: 2\n    linear_solver: parallel"),
+                                   handler_, MakeLightContext(), h, /*worker_capacity=*/4);
+  EXPECT_EQ(status.init_error, rtc::mpc::MPCInitError::kInvalidSolverConfig);
+  EXPECT_EQ(h, nullptr);
+}
+
+TEST_F(MPCFactoryTest, RefusesAThreadedSolverFromInsideAParallelRegion) {
+  rtc::mpc::MPCInitError seen = rtc::mpc::MPCInitError::kNoError;
+  int team = 0;
+#pragma omp parallel num_threads(2)
+  {
+    if (omp_get_thread_num() == 0) {
+      team = omp_get_num_threads();
+      std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+      seen = rtc::mpc::MPCFactory::Create(LightWithSolver("num_threads: 2"), handler_,
+                                          MakeLightContext(), h, 1)
+                 .init_error;
+    }
+  }
+  if (team < 2) {
+    GTEST_SKIP() << "the runtime gave a team of " << team << "; no parallel region to test from";
+  }
+  EXPECT_EQ(seen, rtc::mpc::MPCInitError::kInvalidSolverConfig)
+      << "a nested team is not the pool the MPC thread pins";
+}
+
+// Init configures the solver, not the thread that calls it: Aligator's own
+// thread-count setter writes the caller's OpenMP ICVs, and Init must leave
+// them as it found them — on the one-thread path (which never calls the
+// setter) and on the threaded one.
+TEST_F(MPCFactoryTest, InitLeavesTheCallersOpenMpIcvsAsItFoundThem) {
+  const int max_before = omp_get_max_threads();
+  const int dyn_before = omp_get_dynamic();
+  omp_set_num_threads(5);
+  omp_set_dynamic(0);
+  for (const char* solver : {"num_threads: 1", "num_threads: 3"}) {
+    std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+    ASSERT_EQ(
+        rtc::mpc::MPCFactory::Create(LightWithSolver(solver), handler_, MakeLightContext(), h, 2)
+            .error,
+        rtc::mpc::MPCFactoryError::kNoError)
+        << solver;
+    EXPECT_EQ(omp_get_max_threads(), 5) << solver;
+    EXPECT_EQ(omp_get_dynamic(), 0) << solver;
+  }
+  omp_set_num_threads(max_before);
+  omp_set_dynamic(dyn_before);
+}
 
 // The publish rules: off (0) by default, read when present, a negative or
 // non-finite value refused at Init; the handler hands back what Init took.

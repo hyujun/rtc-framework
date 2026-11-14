@@ -76,6 +76,11 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   has_prev_out_ = false;
 }
 
+bool HandlerMPCThread::SolverThreadsMatch() const noexcept {
+  return handler_ == nullptr ||
+         handler_->solver_config().num_threads == LaunchConfig().solver_threads;
+}
+
 bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext& ctx) {
   // Pick the matching pre-built YAML node. Baseline Phase 6 passes both as
   // Null, so this method is only reached from the cross-mode stretch test.
@@ -92,8 +97,16 @@ bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext& ctx) {
   }
 
   std::unique_ptr<MPCHandlerBase> new_handler;
-  const MPCFactoryStatus status = MPCFactory::Create(cfg, *model_, ctx, new_handler);
-  if (status.error != MPCFactoryError::kNoError || new_handler == nullptr) {
+  // The new handler gets this thread's worker capacity, and must keep the
+  // thread count the pool was built for: a different count would run its
+  // parallel regions on a team the loop entry never named or pinned.
+  const MPCFactoryStatus status =
+      MPCFactory::Create(cfg, *model_, ctx, new_handler, LaunchConfig().workers.count);
+  // Init restores the ICVs it touched; re-stating them is the cheap guarantee
+  // that a rebuild on this thread leaves the pool's team size as it was.
+  ApplySolverThreadIcvs();
+  if (status.error != MPCFactoryError::kNoError || new_handler == nullptr ||
+      new_handler->solver_config().num_threads != LaunchConfig().solver_threads) {
     return false;
   }
 

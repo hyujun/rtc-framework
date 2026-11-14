@@ -2175,6 +2175,9 @@ if(BUILD_TESTING)
     pinocchio
     Eigen3
   )
+  # The walk rtc_mpc's suites measure on (test_utils/shipped_walk_yaml.hpp),
+  # held to the installed profile by this test.
+  rtc_mpc_add_test_includes(test_locomotion_mpc_config)
 
   # g1_loco body joint order: CM tree model == device rosters == MJCF actuators
   # (W1-F03 WG-1), through the same comparison ValidateDevices refuses with.

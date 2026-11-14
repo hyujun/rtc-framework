@@ -48,7 +48,11 @@
 /// Default (colcon test): a 3 s window per combination, warm-up 1 s. Armed
 /// with `RTC_RUN_MPC_SOAK=1`: `RTC_MPC_SOAK_SECONDS` (default 600) per
 /// combination, warm-up `RTC_MPC_SOAK_WARMUP_SECONDS` (default 60). Other
-/// knobs: `RTC_MPC_SOAK_CPU` (pin the MPC thread to that core; −1 none),
+/// knobs: `RTC_MPC_SOAK_SLOTS` (comma-separated layout slots — the MPC thread's,
+/// then one per OpenMP worker; slot meaning, translated as the launch layout
+/// does) with `RTC_MPC_SOAK_THREADS` (solver threads, default the slot count or
+/// 1; a slot list of another length is refused), `RTC_MPC_SOAK_CPU` (the
+/// MPC thread's slot alone; −1 none — the first entry of the slot list),
 /// `RTC_MPC_SOAK_FIFO_PRIORITY` (SCHED_FIFO at that priority; 0 =
 /// SCHED_OTHER — FIFO needs a pinned MPC core), `RTC_MPC_SOAK_WRITER_CPU`
 /// (pin this test's state / command writer; by default, under FIFO, the first
@@ -63,8 +67,11 @@
 /// docs/testing.md.
 ///
 /// Not in the mimalloc LD_PRELOAD list: this binary defines the C allocator
-/// (rtc_base/testing/malloc_gate.hpp) to count allocations. A pinned MPC core
-/// requires OMP_NUM_THREADS=1 (the solver's OpenMP pool would share it).
+/// (rtc_base/testing/malloc_gate.hpp) to count allocations — on the thread
+/// that runs the solve only (the gate is thread-local), so a multi-threaded
+/// run's allocation counts are the MPC thread's, not its workers'. The MPC
+/// thread sets its own OpenMP team size, so OMP_NUM_THREADS no longer matters;
+/// OMP_PROC_BIND / OMP_PLACES make a multi-threaded run refuse its pool.
 
 #include "rtc_base/testing/malloc_gate.hpp"  // one TU per binary: defines malloc & co.
 #include "rtc_mpc/handler/kinodynamic_mpc.hpp"
@@ -93,6 +100,7 @@
 #include <gtest/gtest.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/utsname.h>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -149,7 +157,10 @@ struct Settings {
   bool armed{false};
   double seconds{3.0};
   double warmup{1.0};
-  int cpu{-1};
+  int cpu{-1};             ///< the MPC thread's slot (the first of `slots`)
+  std::vector<int> slots;  ///< MPC thread then workers; empty = only `cpu`
+  int threads{1};          ///< solver threads
+  bool slots_malformed{false};
   int fifo_priority{0};
   int writer_cpu{-1};  ///< −1: chosen under FIFO, else not pinned
   int max_iters{10};
@@ -165,6 +176,23 @@ Settings ReadSettings() {
   s.seconds = EnvDouble("RTC_MPC_SOAK_SECONDS", s.armed ? 600.0 : 3.0);
   s.warmup = EnvDouble("RTC_MPC_SOAK_WARMUP_SECONDS", s.armed ? 60.0 : 1.0);
   s.cpu = static_cast<int>(EnvDouble("RTC_MPC_SOAK_CPU", -1.0));
+  if (const char* list = std::getenv("RTC_MPC_SOAK_SLOTS"); list != nullptr && *list != '\0') {
+    std::stringstream ss(list);
+    for (std::string item; std::getline(ss, item, ',');) {
+      char* end = nullptr;
+      const long v = std::strtol(item.c_str(), &end, 10);
+      if (end == item.c_str() || *end != '\0' || v < 0) {
+        s.slots_malformed = true;
+        break;
+      }
+      s.slots.push_back(static_cast<int>(v));
+    }
+    if (!s.slots.empty()) {
+      s.cpu = s.slots.front();
+    }
+  }
+  s.threads = static_cast<int>(EnvDouble(
+      "RTC_MPC_SOAK_THREADS", s.slots.empty() ? 1.0 : static_cast<double>(s.slots.size())));
   s.fifo_priority = static_cast<int>(EnvDouble("RTC_MPC_SOAK_FIFO_PRIORITY", 0.0));
   s.writer_cpu = static_cast<int>(EnvDouble("RTC_MPC_SOAK_WRITER_CPU", -1.0));
   s.max_iters = static_cast<int>(EnvDouble("RTC_MPC_SOAK_MAX_ITERS", 10.0));
@@ -451,6 +479,12 @@ struct Summary {
   std::string applied_cpus;
   int writer_cpu{-1};
   std::string omp_threads;
+  int solver_threads{1};
+  std::string worker_slots{"-"};     ///< requested, ';'-joined
+  std::string worker_cpus{"-"};      ///< read back per worker, ';'-joined
+  std::string worker_policies{"-"};  ///< read back per worker, ';'-joined
+  std::string pool_state{"-"};
+  std::string host;  ///< HostFacts(), ','-free
   double mallocs_per_iteration{0.0};
   double heap_warm{0.0};
   double heap_end{0.0};
@@ -491,6 +525,129 @@ std::vector<Summary>& Summaries() {
   return s;
 }
 
+/// Host facts recorded with every row (one value each, no ','; lists use ';').
+constexpr const char* kHostFactKeys =
+    "commit,build_type,kernel,physical_core_slots,sched_rt_runtime_us,fair_server_runtime_ns,"
+    "omp_wait_policy,gomp_spincount,omp_proc_bind,shield_marker";
+
+/// The CSV columns that hold text; everything else is a number in the JSON.
+[[nodiscard]] bool IsTextColumn(const std::string& key) {
+  static const char* const kText[] = {
+      "applied_policy",     "applied_cpus",    "omp_num_threads",     "worker_slots",
+      "worker_cpus",        "worker_policies", "pool_state",          "commit",
+      "build_type",         "kernel",          "physical_core_slots", "fair_server_runtime_ns",
+      "omp_wait_policy",    "gomp_spincount",  "omp_proc_bind",       "shield_marker",
+      "sched_rt_runtime_us"};
+  for (const char* t : kText) {
+    if (key == t) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// `s` with ',' and newlines replaced, so a free-text fact stays one CSV cell.
+[[nodiscard]] std::string Cell(std::string s) {
+  for (char& c : s) {
+    if (c == ',' || c == '\n' || c == '\r') {
+      c = ';';
+    }
+  }
+  while (!s.empty() && s.back() == ';') {
+    s.pop_back();
+  }
+  return s.empty() ? "-" : s;
+}
+
+[[nodiscard]] std::string ReadFirstLine(const std::string& path) {
+  std::ifstream in(path);
+  std::string line;
+  if (!in || !std::getline(in, line)) {
+    return "na";
+  }
+  return line;
+}
+
+[[nodiscard]] std::string EnvOr(const char* key, const char* fallback) {
+  const char* v = std::getenv(key);
+  return v != nullptr && *v != '\0' ? v : fallback;
+}
+
+/// The run's host facts, in kHostFactKeys order. `mpc_cpu` is the MPC thread's
+/// logical CPU (its fair-server runtime; root-only debugfs, else "na").
+[[nodiscard]] std::string HostFacts(int mpc_cpu) {
+  utsname u{};
+  const std::string kernel = uname(&u) == 0 ? u.release : "na";
+  std::string slots;
+  for (const int c : rtc::GetCpuTopology().physical_core_slots) {
+    slots += (slots.empty() ? "" : ";") + std::to_string(c);
+  }
+  const std::string fair = mpc_cpu >= 0 ? ReadFirstLine("/sys/kernel/debug/sched/fair_server/cpu" +
+                                                        std::to_string(mpc_cpu) + "/runtime")
+                                        : "na";
+#ifdef RTC_SOAK_BUILD_TYPE
+  const std::string build_type = RTC_SOAK_BUILD_TYPE;
+#else
+  const std::string build_type = "unknown";
+#endif
+  const std::vector<std::string> facts = {
+      EnvOr("RTC_MPC_SOAK_COMMIT", "unknown"),
+      build_type,
+      kernel,
+      slots,
+      ReadFirstLine("/proc/sys/kernel/sched_rt_runtime_us"),
+      fair,
+      EnvOr("OMP_WAIT_POLICY", "unset"),
+      EnvOr("GOMP_SPINCOUNT", "unset"),
+      EnvOr("OMP_PROC_BIND", "unset"),
+      ReadFirstLine(EnvOr("RTC_SHIELD_MARKER_FILE", "/tmp/cpu_shield_mode"))};
+  std::string out;
+  for (std::size_t i = 0; i < facts.size(); ++i) {
+    out += (i > 0 ? "," : "") + Cell(facts[i]);
+  }
+  return out;
+}
+
+/// The process's `mpc_worker_<i>` threads, by name: their CPUs and policies,
+/// ';'-joined in worker order. Read from this (writer) thread through /proc
+/// while the pool is alive.
+void ReadWorkers(std::string& cpus, std::string& policies) {
+  std::map<std::string, std::pair<std::string, std::string>> found;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task", ec)) {
+    const std::string comm = ReadFirstLine(entry.path().string() + "/comm");
+    if (comm.rfind("mpc_worker_", 0) != 0) {
+      continue;
+    }
+    const auto tid = static_cast<pid_t>(std::stol(entry.path().filename().string()));
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    std::string mask;
+    if (sched_getaffinity(tid, sizeof(set), &set) == 0) {
+      for (int c = 0; c < CPU_SETSIZE; ++c) {
+        if (CPU_ISSET(c, &set)) {
+          mask += (mask.empty() ? "" : "+") + std::to_string(c);
+        }
+      }
+    }
+    const int policy = sched_getscheduler(tid);
+    found[comm] = {mask.empty() ? "?" : mask, policy == SCHED_FIFO    ? "SCHED_FIFO"
+                                              : policy == SCHED_RR    ? "SCHED_RR"
+                                              : policy == SCHED_OTHER ? "SCHED_OTHER"
+                                                                      : "?"};
+  }
+  cpus.clear();
+  policies.clear();
+  for (const auto& [name, v] : found) {
+    cpus += (cpus.empty() ? "" : ";") + v.first;
+    policies += (policies.empty() ? "" : ";") + v.second;
+  }
+  if (cpus.empty()) {
+    cpus = "-";
+    policies = "-";
+  }
+}
+
 std::string CsvHeader() {
   return "combination,window_s,online_ticks,solve_p50_ms,solve_p99_ms,solve_max_ms,over_period,"
          "online_overruns,standing_overruns,deadline_misses,withheld,cold_withheld,initial_ticks,"
@@ -501,7 +658,9 @@ std::string CsvHeader() {
          "end_B,heap_growth_B,"
          "heap_excursion_B,heap_judged,prim_med_first,prim_med_second,consumed_med,consumed_max,"
          "friction_margin_first,friction_margin_second,cop_margin_first,cop_margin_second,"
-         "applied_policy,applied_priority,applied_cpus,writer_cpu,omp_num_threads";
+         "applied_policy,applied_priority,applied_cpus,writer_cpu,omp_num_threads,"
+         "solver_threads,worker_slots,worker_cpus,worker_policies,pool_state," +
+         std::string(kHostFactKeys);
 }
 
 std::string CsvRow(const Summary& s) {
@@ -519,7 +678,8 @@ std::string CsvRow(const Summary& s) {
     << s.consumed_med << ',' << s.consumed_max << ',' << s.friction_first << ','
     << s.friction_second << ',' << s.cop_first << ',' << s.cop_second << ',' << s.applied_policy
     << ',' << s.applied_priority << ',' << s.applied_cpus << ',' << s.writer_cpu << ','
-    << s.omp_threads;
+    << s.omp_threads << ',' << s.solver_threads << ',' << s.worker_slots << ',' << s.worker_cpus
+    << ',' << s.worker_policies << ',' << s.pool_state << ',' << s.host;
   return o.str();
 }
 
@@ -544,7 +704,16 @@ class SummaryWriter : public ::testing::Environment {
          << ", \"warmup\": " << set.warmup << ", \"cpu\": " << set.cpu
          << ", \"fifo_priority\": " << set.fifo_priority << ", \"max_iters\": " << set.max_iters
          << ", \"al_iters\": " << set.al_iters << ", \"deadline_ms\": " << set.deadline_ms
-         << ", \"prim_tol\": " << set.prim_tol << ", \"combinations\": [";
+         << ", \"prim_tol\": " << set.prim_tol << ", \"threads\": " << set.threads
+         << ", \"slots\": \"" <<
+        [&set] {
+          std::string l;
+          for (const int v : set.slots) {
+            l += (l.empty() ? "" : ";") + std::to_string(v);
+          }
+          return l;
+        }()
+         << "\", \"combinations\": [";
     const std::string header = CsvHeader();
     for (std::size_t i = 0; i < Summaries().size(); ++i) {
       std::vector<std::string> keys;
@@ -559,8 +728,7 @@ class SummaryWriter : public ::testing::Environment {
       }
       json << (i > 0 ? ", " : "") << '{';
       for (std::size_t k = 0; k < keys.size() && k < values.size(); ++k) {
-        const bool text = k == 0 || keys[k] == "applied_policy" || keys[k] == "applied_cpus" ||
-                          keys[k] == "omp_num_threads" || values[k] == "nan" ||
+        const bool text = k == 0 || IsTextColumn(keys[k]) || values[k] == "nan" ||
                           values[k] == "inf" || values[k] == "-inf";
         json << (k > 0 ? ", " : "") << '"' << keys[k]
              << "\": " << (text ? "\"" + values[k] + "\"" : values[k]);
@@ -629,25 +797,44 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   ASSERT_TRUE(set.fifo_priority <= 0 || set.cpu >= 0)
       << "RTC_MPC_SOAK_FIFO_PRIORITY needs RTC_MPC_SOAK_CPU (a pinned MPC core)";
   // The solver's OpenMP pool inherits the MPC thread's affinity: on one core
-  // its default thread count spins against itself (a 140 ms solve took 11 s).
+  // a team spins against itself (a 140 ms solve took 11 s). Every solver
+  // thread therefore gets its own slot — the MPC thread sets its team size to
+  // the thread count, whatever OMP_NUM_THREADS says — and a run with more
+  // threads than listed slots is refused rather than left to share one.
   const char* omp = std::getenv("OMP_NUM_THREADS");
   const std::string omp_threads = omp != nullptr ? omp : "unset";
-  ASSERT_TRUE(set.cpu < 0 || omp_threads == "1")
-      << "a pinned MPC core needs OMP_NUM_THREADS=1 (is " << omp_threads << ")";
+  ASSERT_FALSE(set.slots_malformed) << "RTC_MPC_SOAK_SLOTS must be comma-separated slots >= 0";
+  ASSERT_GE(set.threads, 1) << "RTC_MPC_SOAK_THREADS must be at least 1";
+  ASSERT_TRUE(set.slots.empty() || static_cast<int>(set.slots.size()) == set.threads)
+      << "RTC_MPC_SOAK_SLOTS lists " << set.slots.size() << " slot(s) for " << set.threads
+      << " solver thread(s); list one per thread, the MPC thread's first";
+  ASSERT_TRUE(set.threads == 1 || static_cast<int>(set.slots.size()) == set.threads)
+      << "a multi-threaded solve needs RTC_MPC_SOAK_SLOTS (one slot per solver thread)";
+  ASSERT_LE(set.threads - 1, rtc::kMaxMpcWorkers) << "more workers than the layout can name";
+  // The writer avoids every solver thread's CPU, not just the MPC thread's.
+  std::vector<int> solver_cpus;
+  for (const int slot : set.slots.empty() ? std::vector<int>{set.cpu} : set.slots) {
+    if (slot >= 0) {
+      solver_cpus.push_back(rtc::SlotToLogicalCpu(slot));
+    }
+  }
+  const auto is_solver_cpu = [&solver_cpus](int c) {
+    return std::find(solver_cpus.begin(), solver_cpus.end(), c) != solver_cpus.end();
+  };
   cpu_set_t original_mask;
   CPU_ZERO(&original_mask);
   ASSERT_EQ(pthread_getaffinity_np(pthread_self(), sizeof(original_mask), &original_mask), 0);
   int writer_cpu = set.writer_cpu;
   if (writer_cpu < 0 && set.fifo_priority > 0) {
     for (int c = 0; c < CPU_SETSIZE && writer_cpu < 0; ++c) {
-      if (c != set.cpu && CPU_ISSET(c, &original_mask)) {
+      if (!is_solver_cpu(c) && CPU_ISSET(c, &original_mask)) {
         writer_cpu = c;
       }
     }
-    ASSERT_GE(writer_cpu, 0) << "no core for the writer besides the MPC core " << set.cpu;
+    ASSERT_GE(writer_cpu, 0) << "no core for the writer besides the solver's";
   }
-  ASSERT_TRUE(writer_cpu < 0 || writer_cpu != set.cpu)
-      << "the writer and the MPC thread must not share core " << set.cpu;
+  ASSERT_TRUE(writer_cpu < 0 || !is_solver_cpu(writer_cpu))
+      << "the writer must not share a solver thread's core (" << writer_cpu << ")";
   if (writer_cpu >= 0) {
     cpu_set_t mask;
     CPU_ZERO(&mask);
@@ -673,6 +860,8 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   solver.max_online_al_iters = set.al_iters;
   solver.publish_deadline_ms = set.deadline_ms;
   solver.publish_prim_tol = set.prim_tol;
+  solver.num_threads = set.threads;
+  solver.worker_capacity = set.threads - 1;
 
   const Clock::time_point t0 = Clock::now();
   const auto period_ns = static_cast<std::uint64_t>(1e9 / hz + 0.5);
@@ -718,6 +907,14 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   launch.main.sched_priority = set.fifo_priority;
   launch.main.name = "mpc_soak";
   launch.target_frequency_hz = hz;
+  launch.solver_threads = set.threads;
+  std::string worker_slots;
+  for (int i = 1; i < set.threads; ++i) {
+    launch.workers.slots[static_cast<std::size_t>(i - 1)] = set.slots[static_cast<std::size_t>(i)];
+    worker_slots +=
+        (worker_slots.empty() ? "" : ";") + std::to_string(set.slots[static_cast<std::size_t>(i)]);
+  }
+  launch.workers.count = set.threads - 1;
   thread.Init(mgr, launch);
 
   // The RT side: write the state every 2 ms.
@@ -791,8 +988,25 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
         std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(kWriterPeriodS));
     std::this_thread::sleep_until(next);
   }
+  // The pool lives as long as the MPC thread: read it back before the join.
+  std::string worker_cpus = "-";
+  std::string worker_policies = "-";
+  ReadWorkers(worker_cpus, worker_policies);
+  const rtc::mpc::SolverPoolState pool_state = thread.PoolState();
   thread.StopAndJoin();
   pthread_setaffinity_np(pthread_self(), sizeof(original_mask), &original_mask);
+  ASSERT_EQ(pool_state, rtc::mpc::SolverPoolState::kReady)
+      << name << ": the MPC thread refused its solver pool (reason on stderr)";
+  // The pool the loop entry pinned is the pool the run ended with: libgomp
+  // retires and respawns pool threads when a region's team size changes, and
+  // a respawned worker would sit unpinned on the MPC thread's core.
+  std::string expected_cpus;
+  for (int i = 1; i < set.threads; ++i) {
+    expected_cpus += (expected_cpus.empty() ? "" : ";") +
+                     std::to_string(rtc::SlotToLogicalCpu(set.slots[static_cast<std::size_t>(i)]));
+  }
+  EXPECT_EQ(worker_cpus, expected_cpus.empty() ? std::string("-") : expected_cpus)
+      << name << ": the workers at the end of the run are not the pinned pool";
   ASSERT_TRUE(window_open) << name << ": no online tick within " << kStandingTimeoutS << " s";
 
   // ── Metrics over the window ──────────────────────────────────────────────
@@ -813,6 +1027,12 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   s.applied_cpus = soak_raw->AppliedCpus();
   s.writer_cpu = writer_cpu;
   s.omp_threads = omp_threads;
+  s.solver_threads = set.threads;
+  s.worker_slots = worker_slots.empty() ? "-" : worker_slots;
+  s.worker_cpus = worker_cpus;
+  s.worker_policies = worker_policies;
+  s.pool_state = "ready";
+  s.host = HostFacts(set.cpu >= 0 ? rtc::SlotToLogicalCpu(set.cpu) : -1);
   s.published = plans;
   std::vector<double> solve_ms;
   std::vector<double> prim_first;
@@ -939,7 +1159,8 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
       "%.1f ms, prim tol %.3g):\n"
       "[report]   online ticks %zu, solve p50 %.1f ms p99 %.1f ms max %.1f ms, over the %.1f ms "
       "period %zu\n"
-      "[report]   MPC thread %s priority %d on cpus %s, writer cpu %d, OMP_NUM_THREADS %s\n"
+      "[report]   MPC thread %s priority %d on cpus %s, writer cpu %d, OMP_NUM_THREADS %s; "
+      "%d solver thread(s), workers on cpus %s (%s)\n"
       "[report]   overruns online %llu standing %llu; deadline misses %llu, withheld %llu (cold "
       "%llu), "
       "standing ticks %llu, failed %llu%s, published %llu\n"
@@ -955,6 +1176,7 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
       set.fifo_priority, set.max_iters, set.al_iters, set.deadline_ms, set.prim_tol, s.online_ticks,
       s.p50_ms, s.p99_ms, s.max_ms, period_ms, s.over_period, s.applied_policy.c_str(),
       s.applied_priority, s.applied_cpus.c_str(), s.writer_cpu, s.omp_threads.c_str(),
+      s.solver_threads, s.worker_cpus.c_str(), s.worker_policies.c_str(),
       static_cast<unsigned long long>(s.online_overruns),
       static_cast<unsigned long long>(s.standing_overruns),
       static_cast<unsigned long long>(s.deadline_misses),

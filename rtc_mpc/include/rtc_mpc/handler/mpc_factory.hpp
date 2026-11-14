@@ -20,7 +20,7 @@
 ///     max_online_al_iters: 0    # once converged; 0 = max_al_iters
 ///     rollout_type: "linear"    # or "nonlinear"
 ///     linear_solver: "serial"   # "parallel" is refused at Init
-///     num_threads: 1            # anything else is refused at Init
+///     num_threads: 1            # > 1 needs num_threads - 1 worker slots (Create's arg)
 ///     force_initial_condition: true   # false is refused at Init
 ///     verbose: false
 ///     publish_deadline_ms: 0.0  # >= 0; 0 = off — the MPC thread's publish rules
@@ -72,6 +72,10 @@ struct MPCFactoryStatus {
   MPCInitError init_error{MPCInitError::kNoError};  ///< set on kHandlerInitFailed
   /// Set on kInvalidOcpConfig.
   KinodynamicOCPConfigError ocp_config_error{KinodynamicOCPConfigError::kNoError};
+  /// The YAML's `solver.num_threads` once the solver block parsed (1 before).
+  /// Lets a caller tell a refused parallel configuration — which must not fall
+  /// back to anything that runs — from an ordinary failure.
+  int requested_threads{1};
 };
 
 /// @brief Static factory — no state, no instance.
@@ -101,10 +105,16 @@ class MPCFactory {
   ///                      the YAML's `ocp_type` (guard against config
   ///                      drift between phase manager and solver).
   /// @param handler_out   out-param: the created handler on success.
+  /// @param worker_capacity  OpenMP worker slots the launch profile reserves
+  ///                      (`rtc::SelectMpcWorkerSlots(profile).count`), written
+  ///                      into `MPCSolverConfig::worker_capacity`. 0 admits a
+  ///                      one-thread solver only; the YAML never carries it.
   /// @return              structured status; `kNoError` on success.
-  [[nodiscard]] static MPCFactoryStatus Create(
-      const YAML::Node& cfg, const RobotModelHandler& model, const PhaseContext& initial_ctx,
-      std::unique_ptr<MPCHandlerBase>& handler_out) noexcept;
+  [[nodiscard]] static MPCFactoryStatus Create(const YAML::Node& cfg,
+                                               const RobotModelHandler& model,
+                                               const PhaseContext& initial_ctx,
+                                               std::unique_ptr<MPCHandlerBase>& handler_out,
+                                               int worker_capacity = 0) noexcept;
 };
 
 }  // namespace rtc::mpc

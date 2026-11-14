@@ -15,12 +15,23 @@
 /// Threading model:
 /// - The solve thread is owned by @ref rtc::PeriodicRtThread; affinity /
 ///   priority come from the caller-supplied @ref rtc::ThreadConfig.
-/// - Solve() runs single-threaded. Parallel solving, if ever introduced,
-///   goes through the solver's own OpenMP pool
-///   (`aligator::SolverProxDDP::setNumThreads`) — OpenMP owns and spawns
-///   its threads, so externally owned thread handles cannot serve it
-///   (#380 removed the earlier span-of-jthreads worker frame for exactly
-///   that reason).
+/// - Solve() runs on this thread, plus — when `solver_threads` > 1 — the
+///   solver's OpenMP pool. OpenMP creates that pool from this thread, so its
+///   workers start with this thread's affinity, policy and name; at loop
+///   entry, before the first tick, the thread runs one parallel region in
+///   which each worker renames itself `mpc_worker_<i>` and pins itself to
+///   `workers.slots[i]`. libgomp keeps the same pool for later regions of the
+///   same size, so the solver's regions run on those pinned threads. A pool
+///   that does not come up exactly as configured is a refusal: the loop ends
+///   before its first tick and @ref PoolState reports `kFailed` — never a
+///   solve on a misplaced pool.
+/// - Every MPC thread sets its OpenMP ICVs at loop entry — dynamic off,
+///   default team size 1 — the one-thread case included. Only regions that
+///   name their team size (the loop entry's, the solver's) use the pool; a
+///   region sized by default (Eigen's own products) stays serial. That keeps
+///   the layout's thread set exact: libgomp retires surplus pool threads when
+///   a smaller team runs and spawns fresh, unpinned ones for the next full
+///   one, so a default-sized region would undo the pinning.
 ///
 /// Lifecycle:
 ///   1. Construct subclass.
@@ -33,6 +44,9 @@
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
+#include <sys/types.h>
+
+#include <array>
 #include <atomic>
 #include <cstdint>
 
@@ -46,6 +60,19 @@ struct MpcThreadLaunchConfig {
   rtc::ThreadConfig main{};
   /// Target solve frequency in Hz.
   double target_frequency_hz{20.0};
+  /// Solver threads, this one included — must equal the handler's
+  /// `MPCSolverConfig::num_threads`. 1 = no pool.
+  int solver_threads{1};
+  /// Slots for the pool's `solver_threads - 1` workers
+  /// (`rtc::SelectMpcWorkerSlots(profile)`); worker i takes `slots[i]`.
+  rtc::MpcWorkerSlots workers{};
+};
+
+/// @brief Whether the MPC thread's OpenMP pool came up as configured.
+enum class SolverPoolState : std::uint8_t {
+  kPending,  ///< not started, or the loop entry has not finished
+  kReady,    ///< pool (or the single thread) set up; ticks run
+  kFailed,   ///< refused before the first tick; the loop has ended
 };
 
 class MPCThread : public rtc::PeriodicRtThread {
@@ -70,6 +97,13 @@ class MPCThread : public rtc::PeriodicRtThread {
 
   /// @brief Stop and join the main loop. Idempotent.
   void StopAndJoin() noexcept;
+
+  /// @brief The loop entry's verdict on the solver pool (acquire). Reset to
+  ///        `kPending` by @ref Start. `Running()` is not a substitute: it is
+  ///        true from Start until a refused loop has finished unwinding.
+  [[nodiscard]] SolverPoolState PoolState() const noexcept {
+    return pool_state_.load(std::memory_order_acquire);
+  }
 
   // ── Per-tick timing producer ───────────────────────────────────────────
   //
@@ -129,6 +163,27 @@ class MPCThread : public rtc::PeriodicRtThread {
   // PeriodicRtThread hook: attribute the overrun to the tick before it.
   void OnOverrun(std::uint64_t consecutive) noexcept override;
 
+  // PeriodicRtThread hook: set the OpenMP ICVs and, with solver_threads > 1,
+  // create, name, pin and check the pool before the first tick.
+  void OnLoopEntry(bool thread_config_applied) noexcept override;
+
+  /// @brief Whether the solver this thread drives runs as many threads as the
+  ///        launch config's `solver_threads` (the pool is built for that
+  ///        count). Checked at loop entry; a mismatch refuses the loop.
+  ///        Default true — a thread without a solver has nothing to match.
+  [[nodiscard]] virtual bool SolverThreadsMatch() const noexcept { return true; }
+
+  /// @brief The launch config given to @ref Init.
+  [[nodiscard]] const MpcThreadLaunchConfig& LaunchConfig() const noexcept {
+    return launch_config_;
+  }
+
+  /// @brief Write this thread's OpenMP ICVs (dynamic off, default team size
+  ///        1). Loop thread only; no allocation. For a code path that may
+  ///        have run something writing ICVs on this thread (a handler rebuilt
+  ///        in place).
+  static void ApplySolverThreadIcvs() noexcept;
+
  private:
   MPCSolutionManager* manager_{nullptr};
   MpcThreadLaunchConfig launch_config_{};
@@ -146,6 +201,21 @@ class MPCThread : public rtc::PeriodicRtThread {
   bool standing_tick_{false};
   std::atomic<std::uint64_t> online_overruns_{0};
   std::atomic<std::uint64_t> standing_overruns_{0};
+
+  // What each worker found after naming and pinning itself, written inside
+  // the loop entry's parallel region (relaxed) and read by this thread after
+  // the region's implicit barrier.
+  struct WorkerReport {
+    std::atomic<int> apply_rc{-1};  // 0 = ApplyThreadConfig succeeded
+    std::atomic<int> on_slot{0};    // 1 = affinity is exactly the slot's CPU
+    std::atomic<int> policy{-1};    // sched policy after the pin
+    std::atomic<pid_t> tid{0};
+  };
+
+  std::array<WorkerReport, rtc::kMaxMpcWorkers> worker_reports_{};
+  std::atomic<SolverPoolState> pool_state_{SolverPoolState::kPending};
+
+  [[nodiscard]] bool SetUpPool(bool thread_config_applied) noexcept;
 };
 
 }  // namespace rtc::mpc

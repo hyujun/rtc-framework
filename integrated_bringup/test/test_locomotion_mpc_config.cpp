@@ -13,6 +13,7 @@
 #include "rtc_mpc/ocp/kinodynamic_ocp_config.hpp"
 #include "rtc_mpc/phase/phase_context.hpp"
 #include "shipped_catching_bringup_fixture.hpp"
+#include "test_utils/shipped_walk_yaml.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -276,6 +277,110 @@ TEST_F(LocomotionMpcConfig, TheInstalledConstraintsAreTheReferenceTasks) {
     EXPECT_LE((got.offset_b - ob).cwiseAbs().maxCoeff(), 1e-12) << "pair " << i;
     EXPECT_EQ(got.radius_a, ra) << "pair " << i;
     EXPECT_EQ(got.radius_b, rb) << "pair " << i;
+  }
+}
+
+/// Whether two YAML trees carry the same values: numbers compared as doubles
+/// (so `0.10` and `0.1` agree, a changed digit does not), other scalars as
+/// text, sequences element-wise, maps key for key. Appends the first
+/// difference to `where`.
+bool SameValues(const YAML::Node& a, const YAML::Node& b, std::string& where) {
+  if (a.Type() != b.Type()) {
+    where += ": node kinds differ";
+    return false;
+  }
+  if (a.IsScalar()) {
+    double x = 0.0;
+    double y = 0.0;
+    if (YAML::convert<double>::decode(a, x) && YAML::convert<double>::decode(b, y)) {
+      if (x == y) {
+        return true;
+      }
+    } else if (a.Scalar() == b.Scalar()) {
+      return true;
+    }
+    where += ": " + a.Scalar() + " vs " + b.Scalar();
+    return false;
+  }
+  if (a.IsSequence()) {
+    if (a.size() != b.size()) {
+      where += ": sequence lengths differ";
+      return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      std::string at = where + "[" + std::to_string(i) + "]";
+      if (!SameValues(a[i], b[i], at)) {
+        where = at;
+        return false;
+      }
+    }
+    return true;
+  }
+  if (a.IsMap()) {
+    if (a.size() != b.size()) {
+      where += ": key counts differ";
+      return false;
+    }
+    for (const auto& kv : a) {
+      const std::string key = kv.first.as<std::string>();
+      std::string at = where + "." + key;
+      if (!b[key]) {
+        where = at + ": missing";
+        return false;
+      }
+      if (!SameValues(kv.second, b[key], at)) {
+        where = at;
+        return false;
+      }
+    }
+    return true;
+  }
+  return true;  // null on both sides
+}
+
+// rtc_mpc's suites measure the walk on a copy of these four sections (it reads
+// no profile file): the stage-parallel equivalence, the speed-up and the
+// receding bounds are numbers about the shipped walk only while the copy is
+// the installed profile. Same values, every key, both directions.
+TEST_F(LocomotionMpcConfig, TheWalkRtcMpcMeasuresOnIsTheInstalledOne) {
+  namespace tu = rtc::mpc::test_utils;
+  const std::pair<const char*, const char*> sections[] = {
+      {"gait", tu::kShippedGaitYaml},
+      {"reference", tu::kShippedReferenceYaml},
+      {"swing", tu::kShippedSwingYaml},
+      {"terrain", tu::kShippedTerrainYaml},
+  };
+  for (const auto& [key, copy] : sections) {
+    ASSERT_TRUE(root_[key].IsDefined()) << "the installed profile has no " << key << " section";
+    YAML::Node installed = YAML::Clone(root_[key]);
+    const YAML::Node copied = YAML::Load(copy);
+    if (std::string(key) == "reference") {
+      // q_default also names the joints the MPC model locks (the hand), which
+      // the copy's model does not have: compare the body joints, and require
+      // every other installed entry to be a joint outside the MPC model.
+      const YAML::Node q_inst = installed["q_default"];
+      const YAML::Node q_copy = copied["q_default"];
+      ASSERT_TRUE(q_inst.IsMap() && q_copy.IsMap());
+      EXPECT_EQ(q_copy.size(), body_.size()) << "the copy covers the body joints";
+      for (const std::string& j : body_) {
+        ASSERT_TRUE(q_inst[j] && q_copy[j]) << "q_default." << j;
+        EXPECT_EQ(q_inst[j].as<double>(), q_copy[j].as<double>()) << "q_default." << j;
+      }
+      for (const auto& kv : q_inst) {
+        const std::string j = kv.first.as<std::string>();
+        if (std::find(body_.begin(), body_.end(), j) == body_.end()) {
+          EXPECT_FALSE(model_.existJointName(j)) << "q_default." << j << " is in the MPC model";
+        }
+      }
+      installed.remove("q_default");
+      YAML::Node rest = YAML::Clone(copied);
+      rest.remove("q_default");
+      std::string where = key;
+      EXPECT_TRUE(SameValues(installed, rest, where)) << where;
+      continue;
+    }
+    std::string where = key;
+    EXPECT_TRUE(SameValues(installed, copied, where)) << where;
   }
 }
 

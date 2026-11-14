@@ -20,11 +20,14 @@
 #include "rtc_mpc/feedback/riccati_feedback.hpp"
 #include "rtc_mpc/reference/stage_reference.hpp"
 
+#include <omp.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 namespace rtc::mpc::internal {
@@ -45,6 +48,21 @@ using Solver = aligator::SolverProxDDPTpl<double>;
   return std::isfinite(dt) && dt > 0.0;
 }
 
+/// @brief Whether `cfg.num_threads` (> 1) can run as an OpenMP team: the
+///        profile reserves a slot for every worker, Aligator was built with
+///        its OpenMP paths, the runtime admits that many threads, and this is
+///        not already a parallel region (a nested team would not be the pool
+///        the MPC thread pins).
+[[nodiscard]] bool SolverThreadsAvailable(const MPCSolverConfig& cfg) noexcept {
+#ifdef ALIGATOR_MULTITHREADING
+  return cfg.num_threads - 1 <= cfg.worker_capacity && cfg.num_threads <= omp_get_thread_limit() &&
+         omp_in_parallel() == 0;
+#else
+  static_cast<void>(cfg);
+  return false;
+#endif
+}
+
 /// @brief The ranges of `MPCSolverConfig` (its field comments). A NaN
 ///        tolerance fails the `> 0` tests.
 [[nodiscard]] bool SolverConfigValid(const MPCSolverConfig& cfg) noexcept {
@@ -61,9 +79,39 @@ using Solver = aligator::SolverProxDDPTpl<double>;
       !std::isfinite(cfg.publish_prim_tol) || cfg.publish_prim_tol < 0.0) {
     return false;
   }
-  return cfg.linear_solver == MPCLinearSolver::kSerial && cfg.num_threads == 1 &&
-         cfg.force_initial_condition;
+  if (cfg.linear_solver != MPCLinearSolver::kSerial || !cfg.force_initial_condition ||
+      cfg.num_threads < 1 || cfg.worker_capacity < 0) {
+    return false;
+  }
+  return cfg.num_threads == 1 || SolverThreadsAvailable(cfg);
 }
+
+/// @brief Restores the calling thread's OpenMP ICVs on scope exit.
+///
+/// Aligator's `setNumThreads` writes `omp_set_num_threads(n)` and
+/// `omp_set_dynamic(true)` into the ICVs of whichever thread calls it — Init's
+/// caller (a lifecycle thread, a test's main thread, or the MPC thread during
+/// a cross-mode swap) — while the solver itself only needs its stored count.
+/// Restoring keeps Init from changing how that thread's own parallel code (and
+/// Eigen, which sizes its pool from these ICVs) behaves.
+class OmpIcvGuard {
+ public:
+  OmpIcvGuard() noexcept : max_threads_(omp_get_max_threads()), dynamic_(omp_get_dynamic()) {}
+
+  ~OmpIcvGuard() {
+    omp_set_num_threads(max_threads_);
+    omp_set_dynamic(dynamic_);
+  }
+
+  OmpIcvGuard(const OmpIcvGuard&) = delete;
+  OmpIcvGuard& operator=(const OmpIcvGuard&) = delete;
+  OmpIcvGuard(OmpIcvGuard&&) = delete;
+  OmpIcvGuard& operator=(OmpIcvGuard&&) = delete;
+
+ private:
+  int max_threads_;
+  int dynamic_;
+};
 
 }  // namespace
 
@@ -134,8 +182,16 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
     solver_->setDualTolerance(solver_cfg.dual_tol);
     solver_->max_al_iters = static_cast<std::size_t>(solver_cfg.max_al_iters);
     solver_->verbose_ = solver_cfg.verbose ? aligator::VERBOSE : aligator::QUIET;
-    // Set before setup(), which picks the LQ backend; the thread count stays
-    // Aligator's default of one (the config check refused anything else).
+    // The thread count is set before setup(), which sizes the per-thread
+    // workspaces. One thread leaves Aligator at its default (no call at all),
+    // so the serial solve is exactly what it was before threads existed.
+    // The guard spans setup() too, so nothing Aligator does while sizing those
+    // workspaces outlives Init in the caller's ICVs.
+    std::optional<OmpIcvGuard> icv_guard;
+    if (solver_cfg.num_threads > 1) {
+      icv_guard.emplace();
+      solver_->setNumThreads(static_cast<std::size_t>(solver_cfg.num_threads));
+    }
     solver_->rollout_type_ = solver_cfg.rollout_type == MPCRolloutType::kNonlinear
                                  ? aligator::RolloutType::NONLINEAR
                                  : aligator::RolloutType::LINEAR;

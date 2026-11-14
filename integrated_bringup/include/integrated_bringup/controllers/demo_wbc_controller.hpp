@@ -491,6 +491,18 @@ class DemoWbcController final : public RTControllerInterface {
   /// on_activate, so a controller switch can turn it on mid-session.
   void SetLayoutProfile(std::string_view profile) noexcept;
 
+  /// Whether a failed `MPCFactory::Create` must fail the activation instead of
+  /// falling back to the mock engine: a multi-threaded solver refused for its
+  /// solver config (`kInvalidSolverConfig` — more threads than the launch
+  /// profile reserves worker slots for, among others). Every other failure,
+  /// and any one-thread failure, keeps the historical mock fallback.
+  [[nodiscard]] static bool MpcFactoryFailureRefusesActivation(
+      const rtc::mpc::MPCFactoryStatus& status, bool handler_created) noexcept {
+    const bool failed = status.error != rtc::mpc::MPCFactoryError::kNoError || !handler_created;
+    return failed && status.requested_threads > 1 &&
+           status.init_error == rtc::mpc::MPCInitError::kInvalidSolverConfig;
+  }
+
   /// True when `profile` returns the MPC cores to the system cpuset.
   ///
   /// Anything other than a recognised opt-out — including an empty or
@@ -1164,7 +1176,14 @@ class DemoWbcController final : public RTControllerInterface {
   // the heap-allocating Factory::Create + thread.Start happen off the RT
   // path. MPCFactory is given a zero-initialised PhaseContext, matching the
   // legacy InitializeHoldPosition semantics.
-  void SpawnMpcThreadIfNeeded() noexcept;
+  //
+  // Returns false only for a multi-threaded solver (`solver.num_threads` > 1)
+  // that could not run as configured — the factory refused it (more threads
+  // than the layout profile reserves worker slots for) or the MPC thread
+  // refused its pool before the first tick. That case gets no mock fallback:
+  // the caller fails the activation. Every other failure keeps the historical
+  // mock fallback and returns true.
+  [[nodiscard]] bool SpawnMpcThreadIfNeeded() noexcept;
 
   // LoadConfig section 7: parse `mpc:` and pre-build the handler-mode model /
   // phase-manager preconditions. Self-contained (reads cfg, sets mpc_* members);
@@ -1247,6 +1266,15 @@ class DemoWbcController final : public RTControllerInterface {
   // (`mpc.enabled: false`) activates normally, which is the whole point of the
   // profile.
   bool layout_profile_drops_mpc_{false};
+  // MPC OpenMP worker slots this run's layout profile reserves, set with the
+  // flag above. Bounds the solver's thread count (MPCFactory::Create's worker
+  // capacity) and is where the MPC thread pins its pool.
+  rtc::MpcWorkerSlots mpc_worker_slots_{};
+  // Set when SpawnMpcThreadIfNeeded refused a multi-threaded solver after the
+  // factory or the thread consumed what it needs (the handler, the phase
+  // manager): a later activation must refuse again instead of reaching the
+  // mock fallback. The next ConfigureMpc (LoadConfig) clears it.
+  bool mpc_spawn_refused_{false};
   MpcEngine mpc_engine_{MpcEngine::kMock};
   // MPC solve-loop frequency (Hz). Loaded from YAML `mpc.target_frequency_hz`
   // and forwarded to MpcThreadLaunchConfig in SpawnMpcThreadIfNeeded. Default
