@@ -285,6 +285,11 @@ if(BUILD_TESTING)
   # It defines the C allocator to count allocations, so it stays out of the
   # mimalloc preload list below.
   add_mpc_gtest(test_kinodynamic_mpc_soak)
+  if(TARGET test_kinodynamic_mpc_soak)
+    # Recorded in the summary next to the timings it qualifies.
+    target_compile_definitions(test_kinodynamic_mpc_soak PRIVATE
+        RTC_SOAK_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+  endif()
   if(TEST test_kinodynamic_mpc_soak)
     set_tests_properties(test_kinodynamic_mpc_soak PROPERTIES TIMEOUT 10800)
   endif()
