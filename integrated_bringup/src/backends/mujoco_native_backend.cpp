@@ -124,97 +124,175 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
     }
   }
 
-  // Floating-base lane (WD-16, #976): `devices.<group>.backend.base_state.*`.
-  // Same parameter channel as the wrench topics; absent → lane not claimed.
-  const std::string base_prefix = param_prefix + ".base_state.";
-  const auto read_string = [node, &base_prefix](const char* key) {
-    const std::string full = base_prefix + key;
+  // Floating-base and IMU lanes: `devices.<group>.backend.base_state.*` and
+  // `.imu_state.*`. Same parameter channel as the wrench topics; a lane whose
+  // `sensor_topic` is absent is not claimed.
+  const auto read_string = [node](const std::string& full) {
     if (node->has_parameter(full)) {
       return node->get_parameter(full).as_string();
     }
     return node->declare_parameter<std::string>(full, std::string{});
   };
-  const auto read_string_array = [node, &base_prefix](const char* key) {
-    const std::string full = base_prefix + key;
+  const auto read_string_array = [node](const std::string& full) {
     if (node->has_parameter(full)) {
       return node->get_parameter(full).as_string_array();
     }
     return node->declare_parameter<std::vector<std::string>>(full, std::vector<std::string>{});
   };
-  const std::string base_topic = read_string("sensor_topic");
-  {
-    // Own tick budget: the SimSensorState topic need not run at the wrench
-    // lane's rate. Defaults to the shared value so a bringup that sets only
-    // `max_consecutive_missed_ticks` keeps one number for both.
-    const std::string key = base_prefix + "max_consecutive_missed_ticks";
-    int base_miss = max_missed_ticks_;
-    if (node->has_parameter(key)) {
-      base_miss = static_cast<int>(node->get_parameter(key).as_int());
+  // Each lane has its own tick budget: its topic need not run at the wrench
+  // lane's rate. Defaults to the shared value so a bringup that sets only
+  // `max_consecutive_missed_ticks` keeps one number for all.
+  const auto read_budget = [node, this](const std::string& full) {
+    int miss = max_missed_ticks_;
+    if (node->has_parameter(full)) {
+      miss = static_cast<int>(node->get_parameter(full).as_int());
     } else {
-      base_miss = static_cast<int>(node->declare_parameter<int>(key, base_miss));
+      miss = static_cast<int>(node->declare_parameter<int>(full, miss));
     }
-    base_max_missed_ticks_ = std::max(1, base_miss);
-  }
-  base_names_.pos = read_string("pos");
-  base_names_.quat = read_string("quat");
-  base_names_.linvel = read_string("linvel");
-  base_names_.angvel = read_string("angvel");
-  const std::vector<std::string> imu_gyro = read_string_array("imu_gyro");
-  const std::vector<std::string> imu_accel = read_string_array("imu_accel");
+    return std::max(1, miss);
+  };
+  // Given in the node's parameters at all, declared or not — for keys this
+  // backend no longer reads but must not let pass in silence.
+  const auto given = [node](const std::string& full) {
+    if (node->has_parameter(full)) {
+      return true;
+    }
+    const auto& overrides = node->get_node_parameters_interface()->get_parameter_overrides();
+    return overrides.find(full) != overrides.end();
+  };
 
-  if (base_topic.empty()) {
-    return;  // Fixed-base group (the default): nothing more to bind.
+  const std::string base_prefix = param_prefix + ".base_state.";
+  const std::string base_topic = read_string(base_prefix + "sensor_topic");
+  base_max_missed_ticks_ = read_budget(base_prefix + "max_consecutive_missed_ticks");
+  base_names_.pos = read_string(base_prefix + "pos");
+  base_names_.quat = read_string(base_prefix + "quat");
+  base_names_.linvel = read_string(base_prefix + "linvel");
+  base_names_.angvel = read_string(base_prefix + "angvel");
+
+  const std::string imu_prefix = param_prefix + ".imu_state.";
+  const std::string imu_topic = read_string(imu_prefix + "sensor_topic");
+  imu_max_missed_ticks_ = read_budget(imu_prefix + "max_consecutive_missed_ticks");
+  const std::vector<std::string> site_names = read_string_array(imu_prefix + "site_names");
+  const std::vector<std::string> gyro_names = read_string_array(imu_prefix + "gyro");
+  const std::vector<std::string> accel_names = read_string_array(imu_prefix + "accel");
+
+  if (given(base_prefix + "imu_gyro") || given(base_prefix + "imu_accel")) {
+    // The IMU left the base lane. A profile that still lists it there meant
+    // the IMU to be read; claiming the base alone would lose it without a
+    // word, so neither lane is claimed until the lists move to imu_state.
+    RCLCPP_ERROR(logger_,
+                 "[mujoco_native:%s] base_state.imu_gyro / imu_accel are no longer read — move "
+                 "the IMU lists to imu_state.{site_names, gyro, accel}; floating-base and IMU "
+                 "lanes NOT claimed",
+                 config_.group_name.c_str());
+    return;
   }
-  if (base_names_.pos.empty() || base_names_.quat.empty() || base_names_.linvel.empty() ||
-      base_names_.angvel.empty()) {
+
+  bool base_ok = !base_topic.empty();
+  if (base_ok && (base_names_.pos.empty() || base_names_.quat.empty() ||
+                  base_names_.linvel.empty() || base_names_.angvel.empty())) {
     // Refused at configure rather than discovered per message: a lane that
     // can never become valid would otherwise look like a quiet publisher.
     RCLCPP_ERROR(logger_,
                  "[mujoco_native:%s] base_state.sensor_topic is set but pos/quat/linvel/angvel "
                  "sensor names are not all given — floating-base lane NOT claimed",
                  config_.group_name.c_str());
-    return;
-  }
-  if (imu_gyro.size() != imu_accel.size()) {
-    RCLCPP_ERROR(logger_,
-                 "[mujoco_native:%s] base_state.imu_gyro (%zu) and imu_accel (%zu) must be "
-                 "parallel lists (index = IMU site) — floating-base lane NOT claimed",
-                 config_.group_name.c_str(), imu_gyro.size(), imu_accel.size());
-    return;
-  }
-  if (imu_gyro.size() > static_cast<std::size_t>(kMaxImuSites)) {
-    RCLCPP_WARN(logger_,
-                "[mujoco_native:%s] base_state lists %zu IMU sites, DeviceState carries %d — "
-                "the rest are ignored",
-                config_.group_name.c_str(), imu_gyro.size(), kMaxImuSites);
-  }
-  base_names_.num_imu_sites =
-      static_cast<int>(std::min(imu_gyro.size(), static_cast<std::size_t>(kMaxImuSites)));
-  for (int s = 0; s < base_names_.num_imu_sites; ++s) {
-    const auto su = static_cast<std::size_t>(s);
-    base_names_.imu_gyro[su] = imu_gyro[su];
-    base_names_.imu_accel[su] = imu_accel[su];
+    base_ok = false;
   }
 
+  bool imu_ok = !imu_topic.empty();
+  if (imu_ok) {
+    // Every way the lists can fail to describe a site refuses the lane (and
+    // only this lane): a truncated or ambiguous list would hand a consumer a
+    // site index that does not mean what its configuration says.
+    const std::size_t n = site_names.size();
+    const char* why = nullptr;
+    if (n == 0) {
+      why = "site_names is empty";
+    } else if (n > static_cast<std::size_t>(kMaxImuSites)) {
+      why = "more sites than DeviceState carries";
+    } else if (gyro_names.size() != n || accel_names.size() != n) {
+      why = "gyro / accel are not one name per site";
+    } else {
+      for (std::size_t i = 0; i < n && why == nullptr; ++i) {
+        if (site_names[i].empty() || gyro_names[i].empty() || accel_names[i].empty()) {
+          why = "a site, gyro or accel name is empty";
+        } else if (gyro_names[i] == accel_names[i]) {
+          why = "a gyro and an accel name are the same sensor";
+        }
+        for (std::size_t j = 0; j < i && why == nullptr; ++j) {
+          if (site_names[j] == site_names[i]) {
+            why = "a site name is listed twice";
+          } else if (gyro_names[j] == gyro_names[i] || accel_names[j] == accel_names[i] ||
+                     gyro_names[j] == accel_names[i] || accel_names[j] == gyro_names[i]) {
+            // Both are 3-vectors, so a reused name would be read without
+            // complaint — as the wrong quantity, or as another site's.
+            why = "a gyro or accel name is listed twice";
+          }
+        }
+      }
+    }
+    if (why != nullptr) {
+      RCLCPP_ERROR(logger_,
+                   "[mujoco_native:%s] imu_state: %s (site_names %zu, gyro %zu, accel %zu, at "
+                   "most %d sites) — IMU lane NOT claimed",
+                   config_.group_name.c_str(), why, n, gyro_names.size(), accel_names.size(),
+                   kMaxImuSites);
+      imu_ok = false;
+    } else {
+      imu_names_.num_sites = static_cast<int>(n);
+      for (std::size_t i = 0; i < n; ++i) {
+        imu_names_.gyro[i] = gyro_names[i];
+        imu_names_.accel[i] = accel_names[i];
+      }
+    }
+  }
+
+  if (!base_ok && !imu_ok) {
+    return;  // Fixed-base group without an IMU (the default): nothing more to bind.
+  }
   if (!single_writer_group) {
     RCLCPP_WARN(logger_,
-                "[mujoco_native:%s] base_state cb_group is not MutuallyExclusive — the base "
-                "mirror's single-writer SeqLock guarantee is broken; concurrent callbacks may "
-                "tear it",
+                "[mujoco_native:%s] base_state / imu_state cb_group is not MutuallyExclusive — "
+                "the mirrors' single-writer SeqLock guarantee is broken; concurrent callbacks "
+                "may tear them",
                 config_.group_name.c_str());
   }
   base_sensor_idx_.fill(-1);
-  rclcpp::SubscriptionOptions base_opts;
-  base_opts.callback_group = state_cb_group;  // rt_callback lane, like the two above.
-  base_sub_ = node->create_subscription<rtc_msgs::msg::SimSensorState>(
-      base_topic, qos, GuardStateLane([this](rtc_msgs::msg::SimSensorState::ConstSharedPtr msg) {
-        OnSimSensorState(std::move(msg));
-      }),
-      base_opts);
-  base_lane_enabled_ = true;
-  RCLCPP_INFO(logger_, "[mujoco_native:%s] floating-base lane on '%s' (%d IMU site%s)",
-              config_.group_name.c_str(), base_topic.c_str(), base_names_.num_imu_sites,
-              base_names_.num_imu_sites == 1 ? "" : "s");
+  imu_sensor_idx_.fill(-1);
+  rclcpp::SubscriptionOptions lane_opts;
+  lane_opts.callback_group = state_cb_group;  // rt_callback lane, like the subs above.
+  const auto subscribe = [&](const std::string& topic, bool decode_base, bool decode_imu) {
+    return node->create_subscription<rtc_msgs::msg::SimSensorState>(
+        topic, qos,
+        GuardStateLane(
+            [this, decode_base, decode_imu](rtc_msgs::msg::SimSensorState::ConstSharedPtr msg) {
+              OnSimSensorState(*msg, decode_base, decode_imu);
+            }),
+        lane_opts);
+  };
+  const bool shared = base_ok && imu_ok && base_topic == imu_topic;
+  if (shared) {
+    base_sub_ = subscribe(base_topic, true, true);
+  } else {
+    if (base_ok) {
+      base_sub_ = subscribe(base_topic, true, false);
+    }
+    if (imu_ok) {
+      imu_sub_ = subscribe(imu_topic, false, true);
+    }
+  }
+  base_lane_enabled_ = base_ok;
+  imu_lane_enabled_ = imu_ok;
+  if (base_ok) {
+    RCLCPP_INFO(logger_, "[mujoco_native:%s] floating-base lane on '%s'",
+                config_.group_name.c_str(), base_topic.c_str());
+  }
+  if (imu_ok) {
+    RCLCPP_INFO(logger_, "[mujoco_native:%s] IMU lane on '%s' (%d site%s%s)",
+                config_.group_name.c_str(), imu_topic.c_str(), imu_names_.num_sites,
+                imu_names_.num_sites == 1 ? "" : "s", shared ? ", shared subscription" : "");
+  }
 }
 
 namespace {
@@ -263,17 +341,32 @@ template <std::size_t Dim>
 
 }  // namespace
 
-void MujocoNativeBackend::OnSimSensorState(
-    rtc_msgs::msg::SimSensorState::ConstSharedPtr msg) noexcept {
-  // L2 under the rt_callback executor's ros2:callback_* (L1) — the base-lane
-  // decode + SeqLock write on the rt_callback lane. Same CSV as the joint and
+void MujocoNativeBackend::OnSimSensorState(const rtc_msgs::msg::SimSensorState& msg,
+                                           bool decode_base, bool decode_imu) noexcept {
+  // L2 under the rt_callback executor's ros2:callback_* (L1) — the base / IMU
+  // decode + SeqLock writes on the rt_callback lane. Same CSV as the joint and
   // wrench lanes (#349): it is load on the same FIFO thread.
   RTC_TRACE_SCOPE("MujocoNativeBackend::OnSimSensorState");
   StateLaneTimingScope timing_scope(*this);
+  // One receipt time per message, for both lanes: both record the same stamp
+  // for one message. The RT side reads the two mirrors with separate Loads, so
+  // one tick may still see the base of one message and the IMU of the next —
+  // the stamps and counters are what tell a consumer which.
+  const int64_t recv_steady_ns = rtc::SteadyNowNs();
+  // Both decoders run whatever the first one decided — no early return.
+  if (decode_base) {
+    DecodeBase(msg, recv_steady_ns);
+  }
+  if (decode_imu) {
+    DecodeImu(msg, recv_steady_ns);
+  }
+}
 
+void MujocoNativeBackend::DecodeBase(const rtc_msgs::msg::SimSensorState& msg,
+                                     int64_t recv_steady_ns) noexcept {
   // Slot k of base_sensor_idx_ caches where name k was last found.
   auto lookup = [&](std::size_t slot, const std::string& name) {
-    base_sensor_idx_[slot] = FindSensor(*msg, name, base_sensor_idx_[slot]);
+    base_sensor_idx_[slot] = FindSensor(msg, name, base_sensor_idx_[slot]);
     return base_sensor_idx_[slot];
   };
 
@@ -282,24 +375,10 @@ void MujocoNativeBackend::OnSimSensorState(
   std::array<double, 3> linvel{};
   std::array<double, 3> angvel{};
   bool non_finite = false;
-  bool found =
-      CopySensorAt(*msg, lookup(kBaseSlotPos, base_names_.pos), pos, non_finite) &&
-      CopySensorAt(*msg, lookup(kBaseSlotQuat, base_names_.quat), quat, non_finite) &&
-      CopySensorAt(*msg, lookup(kBaseSlotLinvel, base_names_.linvel), linvel, non_finite) &&
-      CopySensorAt(*msg, lookup(kBaseSlotAngvel, base_names_.angvel), angvel, non_finite);
-  std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
-  for (int s = 0; found && s < base_names_.num_imu_sites; ++s) {
-    const auto su = static_cast<std::size_t>(s);
-    std::array<double, 3> gyro{};
-    std::array<double, 3> accel{};
-    found = CopySensorAt(*msg, lookup(kBaseSlotImu + 2 * su, base_names_.imu_gyro[su]), gyro,
-                         non_finite) &&
-            CopySensorAt(*msg, lookup(kBaseSlotImu + 2 * su + 1, base_names_.imu_accel[su]), accel,
-                         non_finite);
-    if (found) {
-      imu[su] = {gyro[0], gyro[1], gyro[2], accel[0], accel[1], accel[2]};
-    }
-  }
+  bool found = CopySensorAt(msg, lookup(kBaseSlotPos, base_names_.pos), pos, non_finite) &&
+               CopySensorAt(msg, lookup(kBaseSlotQuat, base_names_.quat), quat, non_finite) &&
+               CopySensorAt(msg, lookup(kBaseSlotLinvel, base_names_.linvel), linvel, non_finite) &&
+               CopySensorAt(msg, lookup(kBaseSlotAngvel, base_names_.angvel), angvel, non_finite);
   if (found && !IsUnitQuaternionWxyz(quat)) {
     non_finite = true;  // A zero quaternion is not a rotation (NUM-2) — same verdict.
     found = false;
@@ -321,37 +400,85 @@ void MujocoNativeBackend::OnSimSensorState(
       // shows it.
       RCLCPP_WARN_THROTTLE(logger_, clock_, 5000,
                            "[mujoco_native:%s] base_state sensor names not all found in "
-                           "SimSensorState (pos='%s' quat='%s' linvel='%s' angvel='%s', %d IMU "
-                           "site(s)) — lane stays invalid",
+                           "SimSensorState (pos='%s' quat='%s' linvel='%s' angvel='%s') — lane "
+                           "stays invalid",
                            config_.group_name.c_str(), base_names_.pos.c_str(),
                            base_names_.quat.c_str(), base_names_.linvel.c_str(),
-                           base_names_.angvel.c_str(), base_names_.num_imu_sites);
+                           base_names_.angvel.c_str());
     }
     return;
   }
 
-  BaseMirror mirror;
+  // Load → update → Store: this decoder is the mirror's only writer, so the
+  // Load sees its own last Store and the counter continues from it.
+  BaseMirror mirror = base_mirror_.Load();
   mirror.sample = MujocoFrameToPinocchio(pos, quat, linvel, angvel);
-  mirror.imu = imu;
-  mirror.num_imu_sites = base_names_.num_imu_sites;
   mirror.received_at_least_once = true;
-  // Stamped here, for an ACCEPTED sample only (see BaseMirror::recv_steady_ns).
-  mirror.recv_steady_ns = rtc::SteadyNowNs();
+  // Stamped for an ACCEPTED sample only (see BaseMirror::recv_steady_ns).
+  mirror.recv_steady_ns = recv_steady_ns;
+  mirror.sequence += 1;
   base_mirror_.Store(mirror);
-  base_seq_.fetch_add(1, std::memory_order_release);
+}
+
+void MujocoNativeBackend::DecodeImu(const rtc_msgs::msg::SimSensorState& msg,
+                                    int64_t recv_steady_ns) noexcept {
+  ImuMirror mirror = imu_mirror_.Load();
+  bool accepted_any = false;
+  bool non_finite = false;
+  bool missing = false;
+  for (int s = 0; s < imu_names_.num_sites; ++s) {
+    const auto su = static_cast<std::size_t>(s);
+    int& gyro_idx = imu_sensor_idx_[2 * su];
+    int& accel_idx = imu_sensor_idx_[(2 * su) + 1];
+    gyro_idx = FindSensor(msg, imu_names_.gyro[su], gyro_idx);
+    accel_idx = FindSensor(msg, imu_names_.accel[su], accel_idx);
+    std::array<double, 3> gyro{};
+    std::array<double, 3> accel{};
+    bool site_non_finite = false;
+    const bool found = CopySensorAt(msg, gyro_idx, gyro, site_non_finite) &&
+                       CopySensorAt(msg, accel_idx, accel, site_non_finite);
+    if (!found) {
+      // This site only: its values, stamp and counter stay those of its last
+      // accepted sample while the other site and the base lane move on.
+      non_finite = non_finite || site_non_finite;
+      missing = missing || !site_non_finite;
+      continue;
+    }
+    // Raw, in the site's own frame — no conversion (DeviceState::imu).
+    mirror.imu[su] = {gyro[0], gyro[1], gyro[2], accel[0], accel[1], accel[2]};
+    mirror.recv_steady_ns[su] = recv_steady_ns;
+    mirror.sequence[su] += 1;
+    mirror.received[su] = true;
+    accepted_any = true;
+  }
+  if (accepted_any) {
+    mirror.num_sites = imu_names_.num_sites;
+    imu_mirror_.Store(mirror);
+  }
+  if (non_finite) {
+    RCLCPP_WARN_THROTTLE(logger_, clock_, 1000,
+                         "[mujoco_native:%s] non-finite IMU sample, dropping that site",
+                         config_.group_name.c_str());
+  }
+  if (missing) {
+    // Same reading as the base lane's missing-name line: configuration, not
+    // a transient — that site never becomes valid.
+    RCLCPP_WARN_THROTTLE(logger_, clock_, 5000,
+                         "[mujoco_native:%s] imu_state gyro / accel names not all found in "
+                         "SimSensorState (%d site(s)) — the missing site stays invalid",
+                         config_.group_name.c_str(), imu_names_.num_sites);
+  }
 }
 
 void MujocoNativeBackend::ReadBaseState(DeviceStateCache& cache) noexcept {
   // L3 under CM::ReadDeviceState — RT-tick base-mirror load.
   RTC_TRACE_SCOPE("MujocoNativeBackend::ReadBaseState");
-  // Counter BEFORE mirror — the same ordering argument as ReadSensorState:
-  // the writer stores the payload then bumps the counter, so reading the
-  // counter first can only pair it with a payload at least as new.
-  const uint64_t cur_seq = base_seq_.load(std::memory_order_acquire);
+  // One Load: the counter is part of the payload, so it is always the count
+  // of the sample it is read with.
   const BaseMirror mirror = base_mirror_.Load();
 
-  if (cur_seq != rt_base_last_seen_seq_) {
-    rt_base_last_seen_seq_ = cur_seq;
+  if (mirror.sequence != rt_base_last_seen_seq_) {
+    rt_base_last_seen_seq_ = mirror.sequence;
     rt_base_miss_count_ = 0;
   } else if (rt_base_miss_count_ < base_max_missed_ticks_) {
     ++rt_base_miss_count_;  // saturates — no overflow on a long silence.
@@ -363,17 +490,33 @@ void MujocoNativeBackend::ReadBaseState(DeviceStateCache& cache) noexcept {
   // it is, and `base_recv_steady_ns` / `base_sequence` carry that).
   cache.base_pose = mirror.sample.pose;
   cache.base_twist = mirror.sample.twist;
-  cache.imu = mirror.imu;
-  cache.num_imu_sites = mirror.num_imu_sites;
   cache.base_recv_steady_ns = mirror.recv_steady_ns;
-  cache.base_sequence = cur_seq;
-  // `cur_seq != 0` closes the one-tick window in which the first sample's
-  // Store has landed but its counter bump has not: the mirror would already
-  // say "received" while `base_sequence` still reads the "never received"
-  // 0 the DeviceState contract documents. Valid and sequence 0 must not be
-  // reported together, so the verdict waits for the counter.
-  cache.base_valid = mirror.received_at_least_once && cur_seq != 0 &&
-                     (rt_base_miss_count_ < base_max_missed_ticks_);
+  cache.base_sequence = mirror.sequence;
+  cache.base_valid =
+      mirror.received_at_least_once && (rt_base_miss_count_ < base_max_missed_ticks_);
+}
+
+void MujocoNativeBackend::ReadImuState(DeviceStateCache& cache) noexcept {
+  // L3 under CM::ReadDeviceState — RT-tick IMU-mirror load.
+  RTC_TRACE_SCOPE("MujocoNativeBackend::ReadImuState");
+  const ImuMirror mirror = imu_mirror_.Load();
+
+  cache.num_imu_sites = mirror.num_sites;
+  for (std::size_t s = 0; s < static_cast<std::size_t>(kMaxImuSites); ++s) {
+    // Per-site miss counter: a site that stopped being accepted goes stale on
+    // its own while the other one stays fresh.
+    if (mirror.sequence[s] != rt_imu_last_seen_seq_[s]) {
+      rt_imu_last_seen_seq_[s] = mirror.sequence[s];
+      rt_imu_miss_count_[s] = 0;
+    } else if (rt_imu_miss_count_[s] < imu_max_missed_ticks_) {
+      ++rt_imu_miss_count_[s];  // saturates — no overflow on a long silence.
+    }
+    // Values held under a false flag, as on the base lane.
+    cache.imu[s] = mirror.imu[s];
+    cache.imu_recv_steady_ns[s] = mirror.recv_steady_ns[s];
+    cache.imu_sequence[s] = mirror.sequence[s];
+    cache.imu_valid[s] = mirror.received[s] && (rt_imu_miss_count_[s] < imu_max_missed_ticks_);
+  }
 }
 
 void MujocoNativeBackend::OnWrench(int finger_idx,
@@ -511,12 +654,10 @@ void MujocoNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr m
 
   auto ds = state_cache_.Load();
   WriteJointStateToCache(*msg, state_reorder_, ds);
+  const int64_t recv_steady_ns = StampJointReceipt(ds);
   state_cache_.Store(ds);
 
-  last_state_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch())
-                           .count(),
-                       std::memory_order_release);
+  last_state_ns_.store(recv_steady_ns, std::memory_order_release);
 
   NotifyStateReady();
 }

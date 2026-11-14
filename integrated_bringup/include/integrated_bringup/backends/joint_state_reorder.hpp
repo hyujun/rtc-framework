@@ -145,6 +145,19 @@ inline void WriteJointStateToCache(const sensor_msgs::msg::JointState& msg,
   ds.valid = true;
 }
 
+// Joint-lane receipt of the message just written by WriteJointStateToCache:
+// stamps `joint_recv_steady_ns` and advances `joint_sequence`, and returns
+// the stamp so the caller feeds its watchdog from the SAME clock read (the
+// two never disagree). The counter counts every message written — one whose
+// slots were all holes included, and with no finiteness check (the hole
+// masks carry those verdicts, not this counter).
+inline int64_t StampJointReceipt(DeviceStateCache& ds) noexcept {
+  const int64_t recv_steady_ns = SteadyNowNs();
+  ds.joint_recv_steady_ns = recv_steady_ns;
+  ds.joint_sequence += 1;
+  return recv_steady_ns;
+}
+
 }  // namespace rtc
 
 #endif  // INTEGRATED_BRINGUP_BACKENDS_JOINT_STATE_REORDER_H_

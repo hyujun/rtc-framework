@@ -11,6 +11,10 @@
 //       contacts:                      # order = rtc_mpc contact index
 //         - {name: "<n>", frame: "<f>", dim: 6}  # dim: 3 (point) | 6 (surface)
 //       hand_groups: ["<device group>"]  # held at the hold pose (WD-12); [] = no hand
+//       imu:
+//         sites: ["<label>"]           # the body group's IMU sites, in its backend's
+//                                      #   imu_state.site_names order (1 to 2)
+//         primary_site: "<label>"      # one of sites
 //
 // The three frame roles are separate on purpose (WD-35): contacts carry the load
 // (feet now, a braced hand later), end_effectors are what manipulation moves, the
@@ -57,6 +61,17 @@ struct ContactSpec {
   int dim{6};         ///< 3 = point (force), 6 = surface (wrench)
 };
 
+/// @brief The `model.imu` section: which IMU sites the controller knows and which one
+///        it propagates on.
+///
+/// Labels, not sensor names: the device backend maps each label to its own sensors
+/// (`imu_state.site_names` lists the same labels in the same order, so index s here is
+/// DeviceState IMU site s), and the controller never sees a simulator's names.
+struct ImuSitesSpec {
+  std::vector<std::string> sites;  ///< 1 to rtc::kMaxImuSites unique labels, site order
+  std::string primary_site;        ///< one of `sites`
+};
+
 /// @brief The parsed `model` section.
 struct HumanoidModelConfig {
   std::string body_group;
@@ -65,6 +80,7 @@ struct HumanoidModelConfig {
   std::vector<NamedFrame> end_effectors;
   std::vector<ContactSpec> contacts;
   std::vector<std::string> hand_groups;
+  ImuSitesSpec imu;
 };
 
 /// @brief Pass 1, schema only: parse the `model` section.
@@ -74,8 +90,10 @@ struct HumanoidModelConfig {
 ///         an empty or over-capacity list (end_effectors ≤ kMaxEndEffectors; contacts
 ///         ≤ rtc_mpc kMaxContacts and Σ dim ≤ kMaxContactVars), a dim not in {3, 6}, a
 ///         name / frame used twice (contacts and end_effectors share one name and one
-///         frame space), a torso frame that is also one of those frames, or a device
-///         group named twice (hand_groups and body_group share one space).
+///         frame space), a torso frame that is also one of those frames, a device
+///         group named twice (hand_groups and body_group share one space), or an
+///         `imu` whose sites are empty, over rtc::kMaxImuSites, or name a label twice,
+///         or whose primary_site is not one of them.
 [[nodiscard]] HumanoidModelConfig LoadHumanoidModelConfig(const YAML::Node& model,
                                                           const std::string& context);
 

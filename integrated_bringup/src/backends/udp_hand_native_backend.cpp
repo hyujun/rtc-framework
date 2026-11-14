@@ -97,12 +97,10 @@ void UdpHandNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr 
 
   auto ds = joint_cache_.Load();
   WriteJointStateToCache(*msg, state_reorder_, ds);
+  const int64_t recv_steady_ns = StampJointReceipt(ds);
   joint_cache_.Store(ds);
 
-  last_state_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch())
-                           .count(),
-                       std::memory_order_release);
+  last_state_ns_.store(recv_steady_ns, std::memory_order_release);
 
   NotifyStateReady();
 }

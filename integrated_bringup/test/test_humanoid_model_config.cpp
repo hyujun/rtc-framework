@@ -64,6 +64,9 @@ contacts:
   - {name: "left_foot", frame: "left_sole", dim: 6}
   - {name: "right_foot", frame: "right_sole", dim: 6}
 hand_groups: ["p1b"]
+imu:
+  sites: ["pelvis", "torso"]
+  primary_site: "pelvis"
 )";
 
 YAML::Node Rig() {
@@ -248,6 +251,36 @@ TEST(HumanoidModelConfig, RefusesADeviceGroupNamedTwice) {
                 "model.hand_groups[0]: device group 'g1' is used twice");
   ExpectRefused([](YAML::Node& n) { n["hand_groups"] = YAML::Load("[p1b, p1b]"); },
                 "model.hand_groups[1]: device group 'p1b' is used twice");
+}
+
+TEST(HumanoidModelConfig, RefusesAnImuSectionThatDoesNotNameItsSites) {
+  ExpectRefused([](YAML::Node& n) { n.remove("imu"); }, "model: required key 'imu' is missing");
+  ExpectRefused([](YAML::Node& n) { n["imu"]["primary_site"] = "head"; },
+                "model.imu.primary_site: 'head' is not one of model.imu.sites");
+  ExpectRefused([](YAML::Node& n) { n["imu"]["sites"] = YAML::Load("[]"); },
+                "model.imu.sites: expected 1 to 2 entries, got 0");
+  ExpectRefused([](YAML::Node& n) { n["imu"]["sites"] = YAML::Load("[pelvis, pelvis]"); },
+                "model.imu.sites[1]: IMU site 'pelvis' is used twice");
+  ExpectRefused([](YAML::Node& n) { n["imu"]["sites"] = YAML::Load("[pelvis, torso, head]"); },
+                "model.imu.sites: expected 1 to 2 entries, got 3");
+}
+
+TEST(HumanoidModelConfig, AcceptsAnImuSectionAndKeepsItsSiteOrder) {
+  // The refusals' passing twins: the rig's two sites in order, a primary that is
+  // the second site, and a single site.
+  const loco::HumanoidModelConfig rig = loco::LoadHumanoidModelConfig(Rig(), kContext);
+  EXPECT_EQ(rig.imu.sites, (std::vector<std::string>{"pelvis", "torso"}));
+  EXPECT_EQ(rig.imu.primary_site, "pelvis");
+
+  YAML::Node second = Rig();
+  second["imu"]["primary_site"] = "torso";
+  EXPECT_EQ(loco::LoadHumanoidModelConfig(second, kContext).imu.primary_site, "torso");
+
+  YAML::Node one = Rig();
+  one["imu"] = YAML::Load(R"({sites: ["torso"], primary_site: "torso"})");
+  EXPECT_EQ(loco::LoadHumanoidModelConfig(one, kContext).imu.sites,
+            std::vector<std::string>{"torso"});
+  EXPECT_NO_THROW(RunAll(one, ShippedRosters()));
 }
 
 // ── Pass 1, model-derived ───────────────────────────────────────────────────

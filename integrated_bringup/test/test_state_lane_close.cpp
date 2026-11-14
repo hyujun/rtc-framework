@@ -14,11 +14,17 @@
 // the executor has received it, so "the cache did not change" means the lane
 // rejected it, not that nothing arrived.
 //
-// Lanes (one subscription each, all on the state callback group):
+// Lanes (one subscription each, all on the state callback group) — 8:
 //   mujoco_native     joint (/joint_states)           wrench (fingertip topics)
 //                     base (base_state.sensor_topic — SimSensorState)
+//                     IMU (imu_state.sensor_topic — SimSensorState; a topic of
+//                     its own here, the subscription shape that adds a lane)
 //   ur_driver_native  joint
 //   udp_hand_native   joint · motor · sensor
+//
+// The joint cases also pin that the joint lane's receipt stamp and message
+// counter do not move after close, and the UR harness carries that backend's
+// receipt-stamp case (it has no test file of its own).
 
 #include "integrated_bringup/backends/mujoco_native_backend.hpp"
 #include "integrated_bringup/backends/udp_hand_native_backend.hpp"
@@ -183,6 +189,8 @@ void ExpectJointLaneClosed(Harness& h, BackendT& backend, const std::string& top
   rtc::DeviceStateCache before{};
   ASSERT_TRUE(backend.ReadState(before));
   ASSERT_DOUBLE_EQ(before.positions[0], 1.0);
+  ASSERT_EQ(before.joint_sequence, 1U);
+  ASSERT_GT(before.joint_recv_steady_ns, 0);
   const auto stamp_before = backend.LastStateStamp();
   ASSERT_NE(stamp_before, std::chrono::steady_clock::time_point{});
 
@@ -194,6 +202,9 @@ void ExpectJointLaneClosed(Harness& h, BackendT& backend, const std::string& top
   static_cast<void>(backend.ReadState(after));
   EXPECT_DOUBLE_EQ(after.positions[0], 1.0) << "closed joint lane still wrote the cache (#941)";
   EXPECT_EQ(backend.LastStateStamp(), stamp_before) << "closed joint lane still stamped (#941)";
+  EXPECT_EQ(after.joint_sequence, before.joint_sequence) << "closed joint lane still counted";
+  EXPECT_EQ(after.joint_recv_steady_ns, before.joint_recv_steady_ns)
+      << "closed joint lane still stamped the cache";
 }
 
 // ── mujoco_native ────────────────────────────────────────────────────────────
@@ -258,7 +269,7 @@ TEST(StateLaneClose, MujocoWrenchLaneIgnoresMessagesAfterClose) {
       << "closed wrench lane still wrote the mirror (#941)";
 }
 
-// Floating-base lane (WD-16, #976): base_state.sensor_topic → SimSensorState.
+// Floating-base lane: base_state.sensor_topic → SimSensorState.
 constexpr const char* kMujocoBaseTopic = "/sl_mj/base/sim_sensors";
 
 rclcpp::NodeOptions MujocoBaseOptions() {
@@ -317,6 +328,65 @@ TEST(StateLaneClose, MujocoBaseLaneIgnoresMessagesAfterClose) {
   EXPECT_DOUBLE_EQ(after.base_pose[0], 1.0) << "closed base lane still wrote the mirror (#941)";
 }
 
+// IMU lane: imu_state.sensor_topic → SimSensorState, on a topic of its own.
+constexpr const char* kMujocoImuTopic = "/sl_mj/imu/sim_sensors";
+
+rclcpp::NodeOptions MujocoImuOptions() {
+  rclcpp::NodeOptions options;
+  const std::string prefix = std::string("devices.") + kMujocoGroup + ".backend";
+  options.parameter_overrides({
+      rclcpp::Parameter(prefix + ".max_consecutive_missed_ticks", static_cast<int64_t>(1000)),
+      rclcpp::Parameter(prefix + ".imu_state.sensor_topic", std::string(kMujocoImuTopic)),
+      rclcpp::Parameter(prefix + ".imu_state.site_names", std::vector<std::string>{"s0"}),
+      rclcpp::Parameter(prefix + ".imu_state.gyro", std::vector<std::string>{"s0_gyro"}),
+      rclcpp::Parameter(prefix + ".imu_state.accel", std::vector<std::string>{"s0_accel"}),
+  });
+  return options;
+}
+
+rtc_msgs::msg::SimSensorState ImuSampleAtGyroX(double wx) {
+  rtc_msgs::msg::SimSensorState msg;
+  rtc_msgs::msg::SimSensor gyro;
+  gyro.name = "s0_gyro";
+  gyro.values = {wx, 0.0, 0.0};
+  rtc_msgs::msg::SimSensor accel;
+  accel.name = "s0_accel";
+  accel.values = {0.0, 0.0, 9.81};
+  msg.sensors.push_back(gyro);
+  msg.sensors.push_back(accel);
+  return msg;
+}
+
+TEST(StateLaneClose, MujocoImuLaneIgnoresMessagesAfterClose) {
+  Harness h("mj_imu", MujocoImuOptions());
+  rtc::MujocoNativeBackend backend;
+  backend.Configure(h.node.get(), MujocoConfig("imu"), h.group);
+  ASSERT_TRUE(backend.HasImuState()) << "fixture did not claim the lane";
+
+  auto lane = h.OpenLane<rtc_msgs::msg::SimSensorState>(kMujocoImuTopic);
+  ASSERT_TRUE(h.DeliverUntil(*lane, ImuSampleAtGyroX(1.0), [&backend] {
+    rtc::DeviceStateCache c{};
+    backend.ReadImuState(c);
+    return c.imu_sequence[0] == 1U;
+  })) << "open IMU lane never decoded the first message";
+  rtc::DeviceStateCache before{};
+  backend.ReadImuState(before);
+  ASSERT_EQ(before.imu_sequence[0], 1U);
+  ASSERT_GT(before.imu_recv_steady_ns[0], 0);
+  ASSERT_DOUBLE_EQ(before.imu[0][0], 1.0);
+
+  ASSERT_TRUE(backend.CloseStateLane());
+
+  ASSERT_TRUE(h.DeliverToClosedLane(*lane, ImuSampleAtGyroX(10.0)))
+      << "second IMU sample never delivered";
+  rtc::DeviceStateCache after{};
+  backend.ReadImuState(after);
+  EXPECT_EQ(after.imu_sequence[0], 1U) << "closed IMU lane still counted a sample";
+  EXPECT_EQ(after.imu_recv_steady_ns[0], before.imu_recv_steady_ns[0])
+      << "closed IMU lane still stamped the mirror";
+  EXPECT_DOUBLE_EQ(after.imu[0][0], 1.0) << "closed IMU lane still wrote the mirror";
+}
+
 // ── ur_driver_native ─────────────────────────────────────────────────────────
 
 TEST(StateLaneClose, UrJointLaneIgnoresMessagesAfterClose) {
@@ -330,6 +400,53 @@ TEST(StateLaneClose, UrJointLaneIgnoresMessagesAfterClose) {
   rtc::UrDriverNativeBackend backend;
   backend.Configure(h.node.get(), cfg, h.group);
   ExpectJointLaneClosed(h, backend, cfg.state_topic);
+}
+
+// The joint lane's receipt stamp and message counter on this backend: 1 then 2
+// after two messages, from the watchdog stamp's clock read, and unchanged by
+// RT reads without a message.
+TEST(StateLaneClose, UrJointLaneStampsReceiptAndCountsMessages) {
+  Harness h("ur_receipt");
+  rtc::DeviceBackendConfig cfg;
+  cfg.group_name = "sl_ur_receipt";
+  cfg.type = "ur_driver_native";
+  cfg.state_topic = "/sl_ur_receipt/joint_states";
+  cfg.command_topic = "/sl_ur_receipt/forward_position_controller/commands";
+  cfg.joint_command_names = kJointNames;
+  rtc::UrDriverNativeBackend backend;
+  backend.Configure(h.node.get(), cfg, h.group);
+
+  rtc::DeviceStateCache none{};
+  static_cast<void>(backend.ReadState(none));
+  EXPECT_EQ(none.joint_sequence, 0U);
+  EXPECT_EQ(none.joint_recv_steady_ns, 0);
+
+  auto lane = h.OpenLane<sensor_msgs::msg::JointState>(cfg.state_topic);
+  const auto sequence_is = [&backend](uint64_t want) {
+    return [&backend, want] {
+      rtc::DeviceStateCache c{};
+      static_cast<void>(backend.ReadState(c));
+      return c.joint_sequence == want;
+    };
+  };
+  ASSERT_TRUE(h.DeliverUntil(*lane, JointStateAt(1.0), sequence_is(1U)));
+  rtc::DeviceStateCache first{};
+  static_cast<void>(backend.ReadState(first));
+  EXPECT_GT(first.joint_recv_steady_ns, 0);
+  EXPECT_EQ(first.joint_recv_steady_ns, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            backend.LastStateStamp().time_since_epoch())
+                                            .count());
+
+  ASSERT_TRUE(h.DeliverUntil(*lane, JointStateAt(2.0), sequence_is(2U)));
+  rtc::DeviceStateCache second{};
+  static_cast<void>(backend.ReadState(second));
+  EXPECT_GE(second.joint_recv_steady_ns, first.joint_recv_steady_ns);
+  for (int i = 0; i < 2; ++i) {
+    rtc::DeviceStateCache read{};
+    static_cast<void>(backend.ReadState(read));
+    EXPECT_EQ(read.joint_sequence, 2U) << "read " << i;
+    EXPECT_EQ(read.joint_recv_steady_ns, second.joint_recv_steady_ns) << "read " << i;
+  }
 }
 
 // ── udp_hand_native ──────────────────────────────────────────────────────────

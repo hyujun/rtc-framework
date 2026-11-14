@@ -18,6 +18,9 @@
 // (the DeviceStateCache → DeviceState copy) is spanned by
 // rtc_controller_manager's test_rt_loop_pipeline.
 //
+// The joint-lane receipt case at the bottom pins the stamp and message counter
+// this backend fills beside the watchdog stamp.
+//
 // The command-lane suite at the bottom pins the feedforward field: a
 // pd_feedforward command carries slot.feedforward (N·m) name-aligned with
 // values, every other mode carries zeros of the same length (the driver treats
@@ -30,6 +33,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 
 #include <gtest/gtest.h>
 
@@ -393,6 +397,71 @@ TEST(UdpHandNativeBackendCommandTypes, AcceptsPositionAndPdFeedforwardOnly) {
   EXPECT_TRUE(backend.AcceptsCommandType(rtc::CommandType::kPosition));
   EXPECT_TRUE(backend.AcceptsCommandType(rtc::CommandType::kPdFeedforward));
   EXPECT_FALSE(backend.AcceptsCommandType(rtc::CommandType::kTorque));
+}
+
+// ── Joint-lane receipt stamp and counter ─────────────────────────────────────
+//
+// The joint lane's twins of the sensor lane's receipt fields: stamped and
+// counted once per message that reaches the cache, from the same clock read as
+// the watchdog stamp, and left alone by an RT read.
+TEST(UdpHandNativeBackendJointReceipt, StampsReceiptAndCountsEveryMessage) {
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_udp_hand_joint_receipt");
+  auto group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rtc::DeviceBackendConfig cfg;
+  cfg.group_name = "test_hand_joint_receipt";
+  cfg.type = "udp_hand_native";
+  cfg.state_topic = "/test_udp_hand_joint_receipt/joint_states";
+  cfg.command_topic = "/test_udp_hand_joint_receipt/joint_command";
+  cfg.joint_command_names = {"j0", "j1"};
+  rtc::UdpHandNativeBackend backend;
+  backend.Configure(node.get(), cfg, group);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  auto pub = node->create_publisher<sensor_msgs::msg::JointState>(cfg.state_topic,
+                                                                  rclcpp::QoS(1).reliable());
+  pub->on_activate();
+
+  sensor_msgs::msg::JointState msg;
+  msg.name = {"j0", "j1"};
+  msg.position = {1.0, 2.0};
+  const auto deliver = [&](uint64_t want) {
+    rtc::DeviceStateCache c{};
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    pub->publish(msg);
+    while (std::chrono::steady_clock::now() < deadline) {
+      exec.spin_some(20ms);
+      static_cast<void>(backend.ReadState(c));
+      if (c.joint_sequence >= want) {
+        break;
+      }
+    }
+    return c;
+  };
+
+  rtc::DeviceStateCache before{};
+  static_cast<void>(backend.ReadState(before));
+  EXPECT_EQ(before.joint_sequence, 0U);
+  EXPECT_EQ(before.joint_recv_steady_ns, 0);
+
+  const rtc::DeviceStateCache first = deliver(1);
+  ASSERT_EQ(first.joint_sequence, 1U);
+  EXPECT_GT(first.joint_recv_steady_ns, 0);
+  EXPECT_EQ(first.joint_recv_steady_ns, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            backend.LastStateStamp().time_since_epoch())
+                                            .count());
+
+  const rtc::DeviceStateCache second = deliver(2);
+  ASSERT_EQ(second.joint_sequence, 2U);
+  EXPECT_GE(second.joint_recv_steady_ns, first.joint_recv_steady_ns);
+
+  for (int i = 0; i < 2; ++i) {
+    rtc::DeviceStateCache read{};
+    static_cast<void>(backend.ReadState(read));
+    EXPECT_EQ(read.joint_sequence, 2U) << "read " << i;
+    EXPECT_EQ(read.joint_recv_steady_ns, second.joint_recv_steady_ns) << "read " << i;
+  }
+
+  exec.remove_node(node->get_node_base_interface());
 }
 
 }  // namespace
