@@ -60,7 +60,7 @@ const rtc::tsid::CommandOutput out =
 | `ActivateContact(idx)` · `DeactivateContact(idx)` | 접촉점 활성화·비활성화 (`noexcept`) |
 | `Formulation()` | 내부 formulation 참조 |
 
-`CommandOutput` 은 `tau` (구동 토크) · `a_opt` · `lambda_opt` (고정 크기, 접촉 없는 slot 은 0) · `qp_converged` · `solve_time_us` · `solve_levels` (WQP 1, HQP N) · `qp_status` · `qp_iterations` · `qp_non_finite` 를 갖는다. 입력 타입은 `types/wbc_types.hpp`.
+`CommandOutput` 은 `tau` (구동 토크) · `a_opt` · `lambda_opt` (고정 크기, 접촉 없는 slot 은 0) · `qp_converged` · `solve_time_us` · `solve_levels` (WQP 1, HQP N) · `qp_status` · `qp_iterations` · `qp_non_finite` 와 마지막 시도의 `qp_warm_started` · `qp_pri_res` · `qp_dua_res` · `eom_residual_inf` (풀지 않았으면 NaN) 를 갖는다. 입력 타입은 `types/wbc_types.hpp`.
 
 ### Formulation
 
@@ -116,7 +116,7 @@ QP 행은 등록한 제약의 `MaxEqDim`·`MaxIneqDim` 합이다. 넘치면 풀�
 
 ### QPSolverWrapper
 
-`solver/qp_solver_wrapper.hpp`. ProxSuite dense QP 래퍼로 `Init()` 에서 한 번 할당하고 `Solve()` 는 `operator new` · Eigen 할당이 없다 (ProxQP 내부의 C 수준 할당은 남는다). 비유한 해는 `converged = false` 로 보고하고 다음 solve 를 cold start 한다. `ResetWarmStart()` · `EqualityDual()` · `InequalityDual()` 과 opt-in 설정 (`update_preconditioner` · `dense_backend` · `eps_primal_inf`) 의 의미는 헤더 주석을 본다.
+`solver/qp_solver_wrapper.hpp`. ProxSuite dense QP 래퍼로 `Init()` 에서 한 번 할당하고 `Solve()` 는 `operator new` · Eigen 할당이 없다 (ProxQP 내부의 C 수준 할당은 남는다). 비유한 해는 `converged = false` 로 보고하고 다음 solve 를 cold start 한다. `ResetWarmStart()` · `EqualityDual()` · `InequalityDual()` · `Primal()` 과 opt-in 설정 (`update_preconditioner` · `dense_backend` · `eps_primal_inf` · `warm_start`) 의 의미는 헤더 주석을 본다. 테스트는 `WQPFormulation::LastQpForTesting()` · `SolverForTesting()` 로 마지막 QP 와 그 solver 를 본다.
 
 ## 설정
 
@@ -137,9 +137,10 @@ tsid:
       update_preconditioner: false   # 매 Solve 에 Ruiz 재평형 (헤더 주석)
       dense_backend: Automatic       # Automatic | PrimalDualLDLT | PrimalLDLT — 부등식 행 > 변수면 명시 (#627)
       eps_primal_inf: 1.0e-4         # ≥ 0; 0 = 정확한 Farkas 증명만
+      warm_start: previous_result    # | previous_result_reset_mu — 접촉이 바뀌는 QP 열에서 비최적 SOLVED 방지 (헤더 주석)
 ```
 
-8개 키는 `ParseQPSolverConfig` 가 읽고 (WQP `wqp.solver` · HQP `hqp.solver_per_level`), 누락하면 코드 기본값을 쓴다. 모르는 backend 이름 · 음수 `eps_primal_inf` 는 init 에서 throw.
+이 키들은 `ParseQPSolverConfig` 가 읽고 (WQP `wqp.solver` · HQP `hqp.solver_per_level`), 누락하면 코드 기본값을 쓴다. 모르는 backend · `warm_start` 이름 · 음수 `eps_primal_inf` 는 init 에서 throw.
 
 ### 태스크 키
 
@@ -173,6 +174,7 @@ torque_limit:
 contact_accel:
   baumgarte: {kp: [..6], kd: [..6]}   # 선택 — a_c* = −Kp⊙e − Kd⊙v_c, anchor 는 접촉 활성화 edge 에 latch (Reset · preset 재활성에 재 latch, 헤더)
   terrain_height: 0.0    # 선택 [m] — anchor z 를 이 값으로
+  inactive_lambda: regularize   # | zero — 비활성 접촉의 예약 행에 I·λ = 0 (warm_start: previous_result_reset_mu 필요); 모르는 키는 throw
 ```
 
 Free-flyer root 의 6 DoF 는 행이 없다. margin 은 관절별로 clamp 하므로 범위가 좁은 관절 (gripper finger) 에서도 안전하다. 선택 키는 키가 없으면 행을 더하지 않고 기존 바이트 그대로다; preset 으로 `torque_limit` 을 끄면 rate 도 꺼진다. 접촉 활성화 ramp 시간의 기본값 `tsid.contacts_default_ramp_sec` 은 rtc_tsid 가 아니라 소비 컨트롤러가 읽는다.
