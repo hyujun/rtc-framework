@@ -312,6 +312,10 @@ void CommandOutput::ResetDiagnostics() noexcept {
   n_ineq_used = 0;
   rows_dropped = 0;
   outer_iterations = 0;
+  qp_warm_started = false;
+  qp_pri_res = std::numeric_limits<double>::quiet_NaN();
+  qp_dua_res = std::numeric_limits<double>::quiet_NaN();
+  eom_residual_inf = std::numeric_limits<double>::quiet_NaN();
 }
 
 // ════════════════════════════════════════════════

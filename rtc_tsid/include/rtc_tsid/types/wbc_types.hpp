@@ -257,6 +257,14 @@ struct CommandOutput {
   int n_ineq_used{0};
   int rows_dropped{0};
   int outer_iterations{0};
+  // Copied from SolveResult (HQP: the last level tried): where the solve
+  // started, ProxQP's primal / dual residuals and the equations-of-motion rows'
+  // residual at the iterate it stopped at — on every attempt, converged or
+  // not. NaN / false when nothing was solved.
+  bool qp_warm_started{false};
+  double qp_pri_res{std::numeric_limits<double>::quiet_NaN()};
+  double qp_dua_res{std::numeric_limits<double>::quiet_NaN()};
+  double eom_residual_inf{std::numeric_limits<double>::quiet_NaN()};
 
   void Init(int nv, int n_actuated, int max_contact_vars);
 

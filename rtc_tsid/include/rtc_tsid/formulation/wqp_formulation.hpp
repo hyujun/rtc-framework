@@ -39,6 +39,13 @@ class WQPFormulation final : public FormulationBase {
   // The solver settings Init read (the `wqp.solver` keys over the defaults).
   [[nodiscard]] const QPSolverConfig& SolverConfig() const noexcept { return solver_cfg_; }
 
+  // Tests: the QP the last Solve() assembled (n_eq / n_ineq = the rows used)
+  // and the solver that solved it (its iterate and multipliers). References
+  // into the formulation, valid until the next Solve().
+  [[nodiscard]] const QPData& LastQpForTesting() const noexcept { return qp_data_; }
+
+  [[nodiscard]] const QPSolverWrapper& SolverForTesting() const noexcept { return qp_solver_; }
+
  private:
   // (Re)allocate the QP data and solver at the current row budget (init only).
   void ResizeQp();
@@ -53,6 +60,10 @@ class WQPFormulation final : public FormulationBase {
 
   ContactManagerConfig contact_cfg_;  // the contact set the Max*Dim are taken over
   QPSolverConfig solver_cfg_;
+  // The constraint named "eom" (if added) and its rows on the last Solve().
+  const ConstraintBase* eom_{nullptr};
+  int eom_row_{0};
+  int eom_dim_{0};
 
   QPData qp_data_;
   QPSolverWrapper qp_solver_;

@@ -10,7 +10,10 @@
 
 #include "g1_fixture.hpp"
 #include "panda_fixture.hpp"
+#include "rtc_tsid/types/qp_types.hpp"
 #include "rtc_tsid/types/wbc_types.hpp"
+
+#include <cmath>
 
 namespace rtc::tsid {
 namespace {
@@ -365,6 +368,41 @@ TEST(IOTest, CommandOutputInit) {
   EXPECT_EQ(out.a_opt.size(), 9);
   EXPECT_EQ(out.lambda_opt.size(), 6);
   EXPECT_FALSE(out.qp_converged);
+}
+
+// Init and ResetDiagnostics put every diagnostic back to "nothing solved",
+// the solve report included.
+TEST(CommandOutputTest, InitAndResetDiagnosticsClearTheSolveReport) {
+  CommandOutput o;
+  o.Init(3, 2, 6);
+  for (int k = 0; k < 2; ++k) {
+    EXPECT_FALSE(o.qp_converged);
+    EXPECT_FALSE(o.tau_valid);
+    EXPECT_EQ(o.qp_status, -1);
+    EXPECT_FALSE(o.qp_warm_started);
+    EXPECT_TRUE(std::isnan(o.qp_pri_res));
+    EXPECT_TRUE(std::isnan(o.qp_dua_res));
+    EXPECT_TRUE(std::isnan(o.eom_residual_inf));
+    o.qp_converged = o.tau_valid = o.qp_warm_started = true;
+    o.qp_status = 0;
+    o.qp_pri_res = o.qp_dua_res = o.eom_residual_inf = 1e-9;
+    o.ResetDiagnostics();
+  }
+}
+
+// MarkNotSolved clears the solve report of SolveResult the same way.
+TEST(SolveResultTest, MarkNotSolvedClearsTheSolveReport) {
+  SolveResult r;
+  r.Init(4);
+  r.converged = r.warm_started = true;
+  r.pri_res = r.dua_res = r.eom_residual_inf = 1e-9;
+  r.MarkNotSolved(kRowBudgetExceeded);
+  EXPECT_FALSE(r.converged);
+  EXPECT_FALSE(r.warm_started);
+  EXPECT_EQ(r.status, kRowBudgetExceeded);
+  EXPECT_TRUE(std::isnan(r.pri_res));
+  EXPECT_TRUE(std::isnan(r.dua_res));
+  EXPECT_TRUE(std::isnan(r.eom_residual_inf));
 }
 
 }  // namespace

@@ -637,6 +637,58 @@ TEST(LocomotionFormulation, ARefusedReferenceSkipsTheSolveAndKeepsTheLastTorque)
   EXPECT_FALSE(f.b.Kinematics().valid());
 }
 
+// The solve report on CommandOutput: the residuals are the solver's at the
+// iterate it returned, the equations-of-motion residual is the base rows of
+// M a + h − Jcᵀ λ recomputed from the published a and λ (within its rounding
+// bound), and it is part of the primal residual. Every way of not solving
+// clears the report.
+TEST(LocomotionFormulation, TheSolveReportIsTheReturnedIteratesAndEveryResetClearsIt) {
+  for (const char* formulation : {"wqp", "hqp"}) {
+    SCOPED_TRACE(formulation);
+    YAML::Node n = YAML::Load(kLocoWbq);
+    n["formulation_type"] = formulation;
+    LocoRig r(n);
+    const auto nan_or_clear = [](const CommandOutput& o) {
+      EXPECT_FALSE(o.qp_warm_started);
+      EXPECT_TRUE(std::isnan(o.qp_pri_res));
+      EXPECT_TRUE(std::isnan(o.qp_dua_res));
+      EXPECT_TRUE(std::isnan(o.eom_residual_inf));
+    };
+    nan_or_clear(r.b.Controller().SkipTick());  // after Init, nothing solved
+    r.Set(QStand(*r.model), Eigen::VectorXd::Zero(r.model->nv));
+    r.WeightOn({0});
+    r.Release(1);
+    r.ref.v_des(6 + 9) = 0.3;
+    for (int k = 0; k < 3; ++k) {
+      const CommandOutput& o = r.Solve();
+      ASSERT_TRUE(o.tau_valid) << k;
+      EXPECT_TRUE(o.qp_warm_started) << "the shipped warm start, every solve";
+      EXPECT_LE(o.qp_pri_res, kEpsAbs);
+      EXPECT_LE(o.qp_dua_res, kEpsAbs);
+      // M a + h − Jcᵀ λ on the base rows, from the published solution.
+      const int nv = r.model->nv;
+      Eigen::VectorXd jt = Eigen::VectorXd::Zero(nv);
+      for (std::size_t c = 0; c < 2; ++c) {
+        if (r.contacts.contacts[c].active) {
+          jt.noalias() += r.cache.contact_frames[c].J.transpose() *
+                          o.lambda_opt.segment(6 * static_cast<int>(c), 6);
+        }
+      }
+      const Eigen::VectorXd dyn = r.cache.M * o.a_opt + r.cache.h - jt;
+      const double tol =
+          64.0 * (2 * nv + 12) * kEps *
+          (r.cache.M.cwiseAbs().rowwise().sum().maxCoeff() * o.a_opt.lpNorm<Eigen::Infinity>() +
+           r.cache.h.lpNorm<Eigen::Infinity>() +
+           6.0 * r.cache.contact_frames[0].J.cwiseAbs().maxCoeff() *
+               o.lambda_opt.lpNorm<Eigen::Infinity>());
+      EXPECT_LE(std::abs(o.eom_residual_inf - dyn.head(6).lpNorm<Eigen::Infinity>()), tol);
+      EXPECT_LE(o.eom_residual_inf, o.qp_pri_res + tol) << "the EOM rows are among the rows";
+      EXPECT_GT(o.eom_residual_inf, 0.0) << "premise: not trivially zero";
+    }
+    nan_or_clear(r.b.Controller().SkipTick());
+  }
+}
+
 TEST(LocomotionFormulation, AReInitDropsTheTermsOfTheLastOne) {
   YAML::Node with_com = YAML::Load(kLocoWbq);
   with_com["tasks"]["com"] = YAML::Load("{kp: [30, 30, 30], kd: [8, 8, 8], weight: 5.0}");

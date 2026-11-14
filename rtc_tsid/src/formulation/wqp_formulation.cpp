@@ -1,5 +1,7 @@
 #include "rtc_tsid/formulation/wqp_formulation.hpp"
 
+#include "row_residual.hpp"
+
 #include <algorithm>
 #include <limits>
 
@@ -45,6 +47,9 @@ void WQPFormulation::AddTask(std::unique_ptr<TaskBase> task) {
 void WQPFormulation::AddConstraint(std::unique_ptr<ConstraintBase> constraint) {
   max_n_eq_ += std::max(0, constraint->MaxEqDim(contact_cfg_));
   max_n_ineq_ += std::max(0, constraint->MaxIneqDim(contact_cfg_));
+  if (constraint->Name() == "eom") {
+    eom_ = constraint.get();
+  }
   constraints_.push_back(std::move(constraint));
   ResizeQp();
 }
@@ -134,6 +139,7 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
   // not solved — one without those rows is not the problem the caller posed.
   int rows_dropped = 0;
   int n_eq_used = 0;
+  eom_dim_ = 0;
   for (const auto& con : constraints_) {
     if (!con->IsActive())
       continue;
@@ -148,6 +154,10 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
     auto A_view = qp_data_.A.block(n_eq_used, 0, ed, n_vars);
     auto b_view = qp_data_.b.segment(n_eq_used, ed);
     con->ComputeEquality(cache, contacts, robot_info, n_vars, A_view, b_view);
+    if (con.get() == eom_) {
+      eom_row_ = n_eq_used;
+      eom_dim_ = ed;
+    }
     n_eq_used += ed;
   }
 
@@ -204,6 +214,8 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
   result_.warm_started = solver_result.warm_started;
   result_.pri_res = solver_result.pri_res;
   result_.dua_res = solver_result.dua_res;
+  result_.eom_residual_inf =
+      EqualityRowResidualInf(qp_data_, eom_row_, eom_dim_, qp_solver_.Primal());
   result_.levels_solved = 1;
 
   return result_;

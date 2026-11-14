@@ -56,6 +56,10 @@ const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
   output_.n_ineq_used = result.n_ineq_used;
   output_.rows_dropped = result.rows_dropped;
   output_.outer_iterations = result.outer_iterations;
+  output_.qp_warm_started = result.warm_started;
+  output_.qp_pri_res = result.pri_res;
+  output_.qp_dua_res = result.dua_res;
+  output_.eom_residual_inf = result.eom_residual_inf;
   // Until the torque below is known to be finite, this tick's outputs are the
   // last valid ones (WD-60). An HQP's solution is that of the last level it
   // solved, so a lower level failing still leaves a usable torque.

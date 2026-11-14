@@ -699,6 +699,10 @@ TEST_F(FloatingBounds, ANonValidTickKeepsTheLastValidOutputsAndReportsWhy) {
   EXPECT_EQ(b1.qp_status, kRowBudgetExceeded);
   EXPECT_EQ(b1.rows_dropped, 1);
   EXPECT_TRUE(SameBytes(b1.tau, tau_b));
+  EXPECT_FALSE(b1.qp_warm_started);  // the solve report of a tick that solved nothing
+  EXPECT_TRUE(std::isnan(b1.qp_pri_res));
+  EXPECT_TRUE(std::isnan(b1.qp_dua_res));
+  EXPECT_TRUE(std::isnan(b1.eom_residual_inf));
   // (d) max_iter 1 on a cold start → MAX_ITER_REACHED (1), the premise of the
   // registered max_iter-hit path
   Options one;
@@ -716,6 +720,13 @@ TEST_F(FloatingBounds, ANonValidTickKeepsTheLastValidOutputsAndReportsWhy) {
   EXPECT_EQ(again.rows_dropped, sr.rows_dropped);
   EXPECT_EQ(again.outer_iterations, sr.outer_iterations);
   EXPECT_EQ(again.qp_status, sr.status);
+  EXPECT_EQ(again.qp_warm_started, sr.warm_started);
+  EXPECT_EQ(again.qp_pri_res, sr.pri_res);
+  EXPECT_EQ(again.qp_dua_res, sr.dua_res);
+  EXPECT_EQ(again.eom_residual_inf, sr.eom_residual_inf);
+  // A failed solve still reports how far it got.
+  EXPECT_TRUE(std::isfinite(c1.qp_pri_res));
+  EXPECT_TRUE(std::isfinite(c1.eom_residual_inf));
 }
 
 // A solve that converges but whose torque recovery overflows (the solve does

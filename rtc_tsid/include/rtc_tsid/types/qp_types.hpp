@@ -73,6 +73,11 @@ struct SolveResult {
   // tells how far it got). NaN when no solve ran.
   double pri_res{std::numeric_limits<double>::quiet_NaN()};
   double dua_res{std::numeric_limits<double>::quiet_NaN()};
+  // max |A x − b| over the rows of the constraint named "eom" (the floating
+  // base's equations of motion) at the same iterate — what a dynamics check
+  // reads, apart from the contact and task rows pri_res mixes in. 0 when the
+  // QP has no such rows; NaN when no solve ran or the iterate is not finite.
+  double eom_residual_inf{std::numeric_limits<double>::quiet_NaN()};
   int levels_solved{0};  // WQP: 항상 1, HQP: 실제 solve한 level 수
   // Constraint rows assembled this tick (HQP: the shared constraints, without
   // the cascaded rows of earlier levels), and the rows of active constraints
@@ -96,6 +101,7 @@ struct SolveResult {
     warm_started = false;
     pri_res = std::numeric_limits<double>::quiet_NaN();
     dua_res = std::numeric_limits<double>::quiet_NaN();
+    eom_residual_inf = std::numeric_limits<double>::quiet_NaN();
     levels_solved = 0;
   }
 };
