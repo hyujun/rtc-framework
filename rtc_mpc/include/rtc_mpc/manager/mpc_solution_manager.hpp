@@ -19,10 +19,13 @@
 /// Eviction: the plan being sampled is dropped — the consumer falls back
 /// until the next accepted plan — at the first @ref ComputeReference that
 /// finds (1) its `model_epoch` or `state_epoch` no longer the current one,
-/// (2) its age past the horizon by more than one node
-/// (`now − observation_stamp_ns > (horizon_length + 1) · dt_node`), or (3)
-/// that @ref SetEnabled disabled the manager since the previous enabled call
-/// — then a plan published before is dropped too.
+/// (2) its age past the horizon by more than one node either way
+/// (`|now − observation_stamp_ns| > (horizon_length + 1) · dt_node`; a
+/// stamp that far ahead means the consumer's clock went back), or (3) that
+/// @ref SetEnabled re-enabled the manager since the previous call. After a
+/// re-enable, a plan whose observation predates the first @ref WriteState
+/// after it is refused (counted with the state-epoch rejections: another
+/// state stream) — whether it was published before or after the re-enable.
 ///
 /// Threads: @ref Init runs before the producer and consumer start.
 
@@ -76,14 +79,16 @@ class MPCSolutionManager {
   [[nodiscard]] const WbLayout& Layout() const noexcept { return layout_; }
 
   /// @brief Runtime toggle for MPC consumption. When false,
-  ///        @ref ComputeReference reports invalid immediately, and the first
-  ///        sample after the manager is enabled again drops the plan it held
-  ///        and any published before — a re-enabled consumer never samples
-  ///        them. Any thread (parameter callbacks); the RT tick reads it.
+  ///        @ref ComputeReference reports invalid immediately; after a switch
+  ///        back to true the consumer samples no plan computed from a state
+  ///        written before it (see the file comment). One setter thread at a
+  ///        time (parameter or lifecycle callbacks); the RT tick reads it.
+  ///        Two setters racing can merge a short disable into none — the
+  ///        consumer then never stopped, and the age rules still apply.
   void SetEnabled(bool enabled) noexcept {
-    if (!enabled) {
-      // Ordered before the flag: whenever the consumer next sees `true`, it
-      // sees that a disable came first.
+    if (enabled && !enabled_.load(std::memory_order_acquire)) {
+      // Ordered before the flag: a consumer that sees `true` from this call
+      // sees the new generation too.
       enable_generation_.fetch_add(1, std::memory_order_release);
     }
     enabled_.store(enabled, std::memory_order_release);
@@ -314,7 +319,9 @@ class MPCSolutionManager {
  private:
   std::atomic<bool> enabled_{false};
   std::atomic<uint64_t> enable_generation_{0};  // SetEnabled false → true transitions
-  uint64_t seen_enable_generation_{0};          // consumer thread only
+  uint64_t seen_enable_generation_{0};          // consumer thread only (ComputeReference)
+  uint64_t written_enable_generation_{0};       // consumer thread only (WriteState)
+  uint64_t first_sequence_after_enable_{0};     // plans observed before it are refused
   bool riccati_enabled_{true};
   bool gain_installed_{false};  // the active plan's gain is in riccati_ (consumer thread)
   int max_stale_solutions_{5};

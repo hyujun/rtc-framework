@@ -341,6 +341,33 @@ TEST_F(MPCHandlerCoreFloatingTest, AStateEpochChangeStartsTheSolveCold) {
   EXPECT_FALSE(out.cold_start);
 }
 
+// A warm start seeded from another handler's plan (a cross-mode swap) is of
+// that plan's state stream: a snapshot of another epoch still starts cold,
+// one of the same epoch warm-starts from the seed.
+TEST_F(MPCHandlerCoreFloatingTest, ASeedOfAnotherStateEpochDoesNotWarmStart) {
+  ASSERT_EQ(core_.Init(solver_cfg_, handler_, limits_, ctx_, ocp_), MPCInitError::kNoError);
+  MPCSolution prev{};
+  ASSERT_EQ(core_.Solve(ctx_, state_, ocp_, prev), MPCSolveError::kNoError);
+  ASSERT_EQ(prev.state_epoch, 0u);
+
+  rtc::mpc::internal::MPCHandlerCore swapped;
+  KinodynamicStubOCP ocp(kHorizon, kMode);
+  ASSERT_EQ(swapped.Init(solver_cfg_, handler_, limits_, ctx_, ocp), MPCInitError::kNoError);
+  swapped.SeedWarmStart(prev, ocp);
+  MPCStateSnapshot reset = state_;
+  reset.state_epoch = 1;
+  MPCSolution out{};
+  ASSERT_EQ(swapped.Solve(ctx_, reset, ocp, out), MPCSolveError::kNoError);
+  EXPECT_TRUE(out.cold_start);
+
+  rtc::mpc::internal::MPCHandlerCore same;
+  KinodynamicStubOCP ocp2(kHorizon, kMode);
+  ASSERT_EQ(same.Init(solver_cfg_, handler_, limits_, ctx_, ocp2), MPCInitError::kNoError);
+  same.SeedWarmStart(prev, ocp2);
+  ASSERT_EQ(same.Solve(ctx_, state_, ocp2, out), MPCSolveError::kNoError);
+  EXPECT_FALSE(out.cold_start) << "pass control: the seed's own epoch warm-starts";
+}
+
 TEST_F(MPCHandlerCoreFloatingTest, ControlModelMustMatchTheBase) {
   // The shipped joint-torque OCPs refuse a floating model.
   rtc::mpc::PhaseContext light = ctx_;

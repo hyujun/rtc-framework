@@ -80,7 +80,9 @@ class MPCHandlerCore {
 
   /// @brief Copy xs/us from @p prev into the solver's `results_` so the
   ///        next `Solve` warm-starts from it. Used by `MPCFactory` to
-  ///        transfer a trajectory across a cross-mode handler swap.
+  ///        transfer a trajectory across a cross-mode handler swap. The next
+  ///        solve still starts cold when its snapshot's state epoch is not
+  ///        @p prev's.
   void SeedWarmStart(const MPCSolution& prev, OCPHandlerBase& ocp) noexcept;
 
   [[nodiscard]] bool Initialised() const noexcept { return initialised_; }

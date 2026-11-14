@@ -1,11 +1,12 @@
 /// @file test_mpc_state_epoch_threads.cpp
-/// @brief A state-epoch bump racing a producer and a consumer: once the
-///        consumer has seen a bump (acquire), no reference it gets in a
-///        later tick comes from a plan of an older state epoch — the plan
-///        being sampled is evicted, not kept until a newer one arrives.
-///        Three threads: the MPC-side producer publishes a plan per
-///        snapshot it reads (carrying that snapshot's epochs), the bumper
-///        raises the state epoch, the consumer writes states and samples.
+/// @brief Epoch bumps racing a producer and a consumer: no reference the
+///        consumer gets after a bump comes from a plan of an older epoch —
+///        the plan being sampled is evicted, not kept until a newer one
+///        arrives. Three threads: the MPC-side producer publishes a plan per
+///        snapshot it reads (carrying that snapshot's epochs); the consumer
+///        writes states, samples and, as the state-epoch contract says,
+///        bumps the state epoch itself between two of its writes; a third
+///        thread bumps the model epoch (any thread may).
 
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 
@@ -44,7 +45,7 @@ MPCSolution PlanFor(const MPCStateSnapshot& s) {
   return sol;
 }
 
-TEST(MpcStateEpochThreads, NoTickAfterASeenBumpSamplesAPlanOfAnOlderEpoch) {
+TEST(MpcStateEpochThreads, NoSampleAfterABumpComesFromAPlanOfAnOlderEpoch) {
   MPCSolutionManager mgr;
   YAML::Node cfg;
   cfg["enabled"] = true;
@@ -53,7 +54,7 @@ TEST(MpcStateEpochThreads, NoTickAfterASeenBumpSamplesAPlanOfAnOlderEpoch) {
   mgr.Init(cfg, kN, kN, 0);
 
   std::atomic<bool> stop{false};
-  std::atomic<std::uint32_t> bumped{0};
+  std::atomic<std::uint32_t> model_bumped{0};
 
   std::thread producer([&] {
     std::uint64_t last = 0;
@@ -66,11 +67,11 @@ TEST(MpcStateEpochThreads, NoTickAfterASeenBumpSamplesAPlanOfAnOlderEpoch) {
       std::this_thread::yield();
     }
   });
-  std::thread bumper([&] {
+  std::thread model_bumper([&] {
     for (std::uint32_t e = 1; e <= kBumps; ++e) {
-      std::this_thread::sleep_for(std::chrono::microseconds(500));
-      mgr.SetStateEpoch(e);
-      bumped.store(e, std::memory_order_release);
+      std::this_thread::sleep_for(std::chrono::microseconds(700));
+      mgr.SetModelEpoch(e);
+      model_bumped.store(e, std::memory_order_release);
     }
   });
 
@@ -78,34 +79,39 @@ TEST(MpcStateEpochThreads, NoTickAfterASeenBumpSamplesAPlanOfAnOlderEpoch) {
   const Eigen::VectorXd v = Eigen::VectorXd::Zero(kN);
   Eigen::VectorXd q_ref(kN), v_ref(kN), a_ff(kN), lambda(1), u_fb(kN);
   InterpMeta meta{};
-  std::uint64_t violations = 0;
-  std::uint64_t valid_ticks = 0;
-  std::uint64_t valid_after_a_bump = 0;
+  std::uint64_t state_violations = 0;
+  std::uint64_t model_violations = 0;
+  std::uint64_t valid_after_a_state_bump = 0;
+  std::uint64_t valid_after_a_model_bump = 0;
+  std::uint32_t state_epoch = 0;
   std::uint64_t tick = 0;
   // The consumer clock: 1 µs a tick — far inside the age cap.
-  while (bumped.load(std::memory_order_acquire) < kBumps || tick < 1000) {
+  while (model_bumped.load(std::memory_order_acquire) < kBumps || state_epoch < kBumps) {
     ++tick;
-    const std::uint32_t seen = bumped.load(std::memory_order_acquire);
+    if (tick % 50 == 0 && state_epoch < kBumps) {
+      mgr.SetStateEpoch(++state_epoch);  // between two writes, on this thread
+    }
+    const std::uint32_t model_seen = model_bumped.load(std::memory_order_acquire);
     const std::uint64_t now = tick * 1000;
     mgr.WriteState(q, v, now);
     if (mgr.ComputeReference(q, v, now, q_ref, v_ref, a_ff, lambda, u_fb, meta)) {
-      ++valid_ticks;
-      if (mgr.ActiveStateEpoch() < seen) {
-        ++violations;
-      }
-      if (seen > 0) {
-        ++valid_after_a_bump;
-      }
+      state_violations += mgr.ActiveStateEpoch() != state_epoch ? 1U : 0U;
+      model_violations += mgr.ActiveModelEpoch() < model_seen ? 1U : 0U;
+      valid_after_a_state_bump += state_epoch > 0 ? 1U : 0U;
+      valid_after_a_model_bump += model_seen > 0 ? 1U : 0U;
     }
   }
   stop.store(true, std::memory_order_relaxed);
   producer.join();
-  bumper.join();
+  model_bumper.join();
 
-  EXPECT_EQ(violations, 0U) << "of " << valid_ticks << " valid ticks";
+  EXPECT_EQ(state_violations, 0U);
+  EXPECT_EQ(model_violations, 0U);
   // Pass controls: plans were sampled across the bumps, and some were evicted.
-  EXPECT_GT(valid_after_a_bump, 0U);
+  EXPECT_GT(valid_after_a_state_bump, 0U);
+  EXPECT_GT(valid_after_a_model_bump, 0U);
   EXPECT_GT(mgr.StateEpochRejections(), 0U);
+  EXPECT_GT(mgr.EpochRejections(), 0U);
 }
 
 }  // namespace

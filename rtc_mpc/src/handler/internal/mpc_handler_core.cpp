@@ -337,10 +337,10 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   const bool state_epoch_changed = have_state_epoch_ && state.state_epoch != last_state_epoch_;
   have_state_epoch_ = true;
   last_state_epoch_ = state.state_epoch;
-  if (state_epoch_changed && !first_solve_after_build_) {
-    ClearDuals();
-  }
   if (state_epoch_changed) {
+    if (!first_solve_after_build_) {
+      ClearDuals();
+    }
     initial_solve_pending_ = true;
   }
 
@@ -587,9 +587,12 @@ void MPCHandlerCore::SeedWarmStart(const MPCSolution& prev, OCPHandlerBase& ocp)
   }
 
   // Skip the cold-seed on the very next Solve — we have a warm trajectory
-  // (of another handler: no node grid index to shift by).
+  // (of another handler: no node grid index to shift by). The seed's state
+  // stream is the iterates' now: a snapshot of another one still starts cold.
   first_solve_after_build_ = false;
   have_node_index_ = false;
+  have_state_epoch_ = true;
+  last_state_epoch_ = prev.state_epoch;
   (void)ocp;
 }
 
@@ -682,14 +685,15 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const PhaseContext&
   // the same rotation, and the solver's iterates may hold either. Node 0 is
   // the measured state and stays as measured.
   if (model_->layout().floating_base()) {
-    constexpr std::size_t kQuat = 3;  // `[p_xyz, quaternion_xyzw]`
+    constexpr auto kQuat = static_cast<std::size_t>(kFreeFlyerQuatOffset);
+    constexpr auto kQuatN = static_cast<std::size_t>(kFreeFlyerQuatSize);
     for (std::size_t k = 1; k <= H && k < xs.size(); ++k) {
       double dot = 0.0;
-      for (std::size_t j = 0; j < 4; ++j) {
+      for (std::size_t j = 0; j < kQuatN; ++j) {
         dot += out.q_traj[k - 1][kQuat + j] * out.q_traj[k][kQuat + j];
       }
       if (dot < 0.0) {
-        for (std::size_t j = 0; j < 4; ++j) {
+        for (std::size_t j = 0; j < kQuatN; ++j) {
           out.q_traj[k][kQuat + j] = -out.q_traj[k][kQuat + j];
         }
       }

@@ -64,6 +64,11 @@ class RobotModelHandler;
 ///         this name for the callers here.
 [[nodiscard]] bool IsFloatingBaseModel(const pinocchio::Model& model) noexcept;
 
+/// Where the quaternion sits in a free-flyer configuration
+/// `[p_xyz, quaternion_xyzw]`, and its size.
+inline constexpr int kFreeFlyerQuatOffset = 3;
+inline constexpr int kFreeFlyerQuatSize = kFreeFlyerNq - kFreeFlyerQuatOffset;
+
 /// Most contact frames a layout can describe (each contact has at least a
 /// point-contact's dimension, so this bounds the per-contact tables).
 inline constexpr int kMaxContacts = kMaxContactVars / 3;

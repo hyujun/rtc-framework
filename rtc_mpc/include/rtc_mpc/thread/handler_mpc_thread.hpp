@@ -42,7 +42,9 @@
 /// the phase time never goes back. The publish deadline stays on the steady
 /// clock.
 ///
-/// Repeated observations — with `MPCSolverConfig::require_fresh_state`, a
+/// Repeated observations — with `MPCSolverConfig::require_fresh_state` of
+/// the handler given to @ref Configure (a handler swapped in later does not
+/// change it), a
 /// tick whose snapshot `sequence` is the last attempted one returns before
 /// FK and the solve (@ref RepeatedObservationSkips; not a solve, not
 /// failed), unless the handler's standing solve is pending and the last
@@ -254,7 +256,8 @@ class HandlerMPCThread final : public MPCThread {
   double time_base_s_{0.0};
   double last_phase_t_{0.0};
 
-  // Repeated-observation rule (loop thread only).
+  // Repeated-observation rule (loop thread only; the switch set at Configure).
+  bool require_fresh_state_{false};
   std::uint64_t last_attempted_sequence_{0};  // 0: none (sequences start at 1)
   bool last_attempt_returned_iterates_{false};
 

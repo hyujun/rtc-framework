@@ -60,6 +60,7 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   last_phase_t_ = 0.0;
   last_attempted_sequence_ = 0;
   last_attempt_returned_iterates_ = false;
+  require_fresh_state_ = handler_ != nullptr && handler_->solver_config().require_fresh_state;
 
   last_err_.store(0, std::memory_order_relaxed);
   last_phase_id_.store(-1, std::memory_order_relaxed);
@@ -129,7 +130,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   }
   // One solve per observation: decided before any work, recorded at the
   // attempt so a withheld or failed solve is not retried on the same state.
-  if (handler_->solver_config().require_fresh_state && state.sequence == last_attempted_sequence_) {
+  if (require_fresh_state_ && state.sequence == last_attempted_sequence_) {
     if (!(handler_->InitialSolvePending() && last_attempt_returned_iterates_)) {
       repeated_skips_.fetch_add(1, std::memory_order_relaxed);
       return false;

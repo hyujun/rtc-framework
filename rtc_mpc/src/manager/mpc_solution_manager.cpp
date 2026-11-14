@@ -1,6 +1,7 @@
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace rtc::mpc {
@@ -64,6 +65,8 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout) {
   policy_age_rejections_.store(0, std::memory_order_relaxed);
   dimension_rejections_.store(0, std::memory_order_relaxed);
   seen_enable_generation_ = enable_generation_.load(std::memory_order_acquire);
+  written_enable_generation_ = seen_enable_generation_;
+  first_sequence_after_enable_ = 0;
 }
 
 void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
@@ -155,6 +158,13 @@ void MPCSolutionManager::WriteState(const Eigen::Ref<const Eigen::VectorXd>& q,
   snap.nv = nv;
   snap.timestamp_ns = timestamp_ns;
   snap.sequence = ++state_sequence_;
+  // The first state written after a re-enable fences off the plans of the
+  // states before it.
+  const uint64_t generation = enable_generation_.load(std::memory_order_acquire);
+  if (generation != written_enable_generation_) {
+    written_enable_generation_ = generation;
+    first_sequence_after_enable_ = snap.sequence;
+  }
   snap.source_sequence = source_sequence;
   snap.model_epoch = model_epoch_.load(std::memory_order_acquire);
   snap.state_epoch = state_epoch_.load(std::memory_order_acquire);
@@ -180,14 +190,12 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
   if (!enabled_.load(std::memory_order_acquire)) {
     return false;
   }
-  // Disabled since the last enabled call: the held plan and any published
-  // meanwhile predate the re-enable.
+  // Re-enabled since the last call: the held plan predates it (the plans
+  // still to come from older states are fenced at acceptance).
   const uint64_t generation = enable_generation_.load(std::memory_order_acquire);
   if (generation != seen_enable_generation_) {
     seen_enable_generation_ = generation;
     DropActivePlan();
-    (void)solution_buffer_.TryAcquireLatest();
-    return false;
   }
   // The interpolator is Euclidean in q: on a floating base it would blend
   // the quaternion with the angular velocity. Refuse explicitly rather than
@@ -209,7 +217,8 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
   if (fresh != nullptr) {
     if (fresh->model_epoch != model_epoch) {
       Bump(epoch_rejections_);
-    } else if (fresh->state_epoch != state_epoch) {
+    } else if (fresh->state_epoch != state_epoch ||
+               fresh->observation_sequence < first_sequence_after_enable_) {
       Bump(state_epoch_rejections_);
     } else if (fresh->nq != layout_.nq || fresh->nv != layout_.nv || fresh->ndx != layout_.ndx ||
                fresh->nu != layout_.nu) {
@@ -273,12 +282,12 @@ void MPCSolutionManager::EvictIfExpired(uint64_t now_ns, uint32_t model_epoch,
     DropActivePlan();
     return;
   }
-  // Integer age: the two stamps are in one clock; a stamp ahead of `now`
-  // is a negative age, never past the cap.
+  // Integer age: the two stamps are in one clock, so a stamp ahead of `now`
+  // by more than the cap means that clock went back.
   const int64_t age_ns =
       static_cast<int64_t>(now_ns) - static_cast<int64_t>(s->observation_stamp_ns);
   const double cap_ns = static_cast<double>(s->horizon_length + 1) * s->dt_node * 1e9;
-  if (static_cast<double>(age_ns) > cap_ns) {
+  if (std::abs(static_cast<double>(age_ns)) > cap_ns) {
     Bump(policy_age_rejections_);
     DropActivePlan();
   }

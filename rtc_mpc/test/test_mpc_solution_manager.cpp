@@ -647,21 +647,48 @@ TEST_F(MpcSolutionManagerTest, ReEnablingDropsThePlanHeldFromBefore) {
       << "the plan taken after the re-enable is kept";
 }
 
-// A plan published while disabled — the triple buffer keeps it — is not
-// taken after the re-enable, with no enabled sample in between either.
-TEST_F(MpcSolutionManagerTest, APlanPublishedBeforeTheReEnableIsNotTaken) {
+// After a re-enable, a plan computed from a state written before it is not
+// taken — one published while disabled (the triple buffer keeps it) nor one
+// the MPC side publishes afterwards from the frozen snapshot; a plan of the
+// first state written after the re-enable is.
+TEST_F(MpcSolutionManagerTest, APlanOfAStateFromBeforeTheReEnableIsNotTaken) {
   mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.WriteState(q_curr_, v_curr_, 1);
+  const uint64_t before = mgr_.ReadState().sequence;
+  MPCSolution old_plan = MakeSolution(1);
+  old_plan.observation_sequence = before;
   mgr_.SetEnabled(false);
-  mgr_.PublishSolution(MakeSolution());
+  mgr_.PublishSolution(old_plan);  // published while disabled
   mgr_.SetEnabled(true);
+  mgr_.WriteState(q_curr_, v_curr_, 2);  // the consumer's order: state, then sample
+  const uint64_t after = mgr_.ReadState().sequence;
   EXPECT_FALSE(
-      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
+  mgr_.PublishSolution(old_plan);  // the frozen snapshot, solved again after the re-enable
   EXPECT_FALSE(
-      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_))
-      << "the dropped plan does not come back on a later tick";
-  mgr_.PublishSolution(MakeSolution());
-  EXPECT_TRUE(
       mgr_.ComputeReference(q_curr_, v_curr_, 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 2u);
+
+  MPCSolution fresh = MakeSolution(2);
+  fresh.observation_sequence = after;
+  mgr_.PublishSolution(fresh);
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 4, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+}
+
+// A plan observed far ahead of `now` — the consumer's clock went back (a
+// reset that restarts its tick count) — is dropped, not held at node 0.
+TEST_F(MpcSolutionManagerTest, APlanFromAheadOfAClockThatWentBackIsDropped) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  const uint64_t cap = static_cast<uint64_t>(kHorizon + 1) * 10'000'000ULL;
+  mgr_.PublishSolution(MakeSolution(5'000'000'000ULL));
+  ASSERT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, 5'000'000'000ULL - cap, q_ref_, v_ref_, a_ff_,
+                                    lambda_ref_, u_fb_, meta_))
+      << "at the cap ahead the plan still samples";
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, 5'000'000'000ULL - cap - 1, q_ref_, v_ref_,
+                                     a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
 }
 
 // An evicted plan's gain is not applied to the next plan when that one
