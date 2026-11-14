@@ -78,12 +78,17 @@ void UrDriverNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr
 
   auto ds = state_cache_.Load();
   WriteJointStateToCache(*msg, state_reorder_, ds);
+  // Joint-lane receipt: ONE clock read feeds both this stamp and the watchdog
+  // stamp below, so the two never disagree. The counter counts every message
+  // that reached WriteJointStateToCache — one whose slots were all holes
+  // included, and with no finiteness check (the hole masks carry those
+  // verdicts, not this counter).
+  const int64_t recv_steady_ns = rtc::SteadyNowNs();
+  ds.joint_recv_steady_ns = recv_steady_ns;
+  ds.joint_sequence += 1;
   state_cache_.Store(ds);
 
-  last_state_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch())
-                           .count(),
-                       std::memory_order_release);
+  last_state_ns_.store(recv_steady_ns, std::memory_order_release);
 
   NotifyStateReady();
 }
