@@ -199,7 +199,8 @@ if(BUILD_TESTING)
   add_tsid_gtest(test_locomotion_formulation)
 
   # The same QP over a walking-like contact schedule (test/loco_gait.hpp): the
-  # default settings' trace digest.
+  # default settings' trace digest, and the reset-mu warm start with zero
+  # inactive forces against the defaults and a cold reference.
   add_tsid_gtest(test_locomotion_gait)
 
   # Stage B-1..B-3: ObjectFrame + grasp matrix G + ContactManager, GraspCache
