@@ -159,12 +159,13 @@ class PipelineTestController : public RTControllerInterface {
   // that copies a scalar instead of the array, is visible.
   static inline std::atomic<int64_t> observed_inference_recv_ns_g1{0};
   static inline std::atomic<uint64_t> observed_inference_sequence_g1{0};
-  // The floating-base lane as seen by Compute (WD-16, #976) — the read end of
-  // PipelineStubBackend::kBasePose / kBaseTwist / kImuSite1 and the base_*
-  // knobs. EVERY field, not a sample of them: this seam fails one field at a
-  // time, and a dropped field reads as 0 / false here, so only an assertion on
-  // that field at this end can see it. IMU site 1 rather than site 0 for the
-  // same reason the fingertip observers read group 1.
+  // The floating-base and IMU lanes as seen by Compute — the read end of
+  // PipelineStubBackend::kBasePose / kBaseTwist / kImuSite1 and the base_* /
+  // imu_* knobs. EVERY field, not a sample of them: this seam fails one field
+  // at a time, and a dropped field reads as 0 / false here, so only an
+  // assertion on that field at this end can see it. IMU site 1's values
+  // rather than site 0's for the same reason the fingertip observers read
+  // group 1.
   static inline std::array<std::atomic<double>, kBasePoseDim> observed_base_pose{};
   static inline std::array<std::atomic<double>, kBaseTwistDim> observed_base_twist{};
   static inline std::array<std::atomic<double>, kImuChannelsPerSite> observed_imu_site1{};
@@ -172,6 +173,16 @@ class PipelineTestController : public RTControllerInterface {
   static inline std::atomic<int64_t> observed_base_recv_ns{0};
   static inline std::atomic<uint64_t> observed_base_sequence{0};
   static inline std::atomic<bool> observed_base_valid{false};
+  // The IMU lane as seen by Compute — the read end of the stub's imu_* knobs,
+  // every field of BOTH sites: the stub gives each site its own stamp, counter
+  // and flag, so a copy that crosses sites or stops at one is visible here.
+  static inline std::array<std::atomic<double>, kImuChannelsPerSite> observed_imu_site0{};
+  static inline std::array<std::atomic<int64_t>, kMaxImuSites> observed_imu_recv_ns{};
+  static inline std::array<std::atomic<uint64_t>, kMaxImuSites> observed_imu_sequence{};
+  static inline std::array<std::atomic<bool>, kMaxImuSites> observed_imu_valid{};
+  // The joint lane's receipt stamp and counter as seen by Compute.
+  static inline std::atomic<int64_t> observed_joint_recv_ns{0};
+  static inline std::atomic<uint64_t> observed_joint_sequence{0};
 
   // Not noexcept: the base RTControllerInterface ctor is not, and marking this
   // one noexcept would turn a throwing base subobject into std::terminate
@@ -216,6 +227,16 @@ class PipelineTestController : public RTControllerInterface {
     observed_base_recv_ns.store(0, std::memory_order_relaxed);
     observed_base_sequence.store(0, std::memory_order_relaxed);
     observed_base_valid.store(false, std::memory_order_relaxed);
+    for (auto& v : observed_imu_site0)
+      v.store(0.0, std::memory_order_relaxed);
+    for (auto& v : observed_imu_recv_ns)
+      v.store(0, std::memory_order_relaxed);
+    for (auto& v : observed_imu_sequence)
+      v.store(0, std::memory_order_relaxed);
+    for (auto& v : observed_imu_valid)
+      v.store(false, std::memory_order_relaxed);
+    observed_joint_recv_ns.store(0, std::memory_order_relaxed);
+    observed_joint_sequence.store(0, std::memory_order_relaxed);
   }
 
   CallbackReturn on_configure(const rclcpp_lifecycle::State& prev,
@@ -300,6 +321,16 @@ class PipelineTestController : public RTControllerInterface {
     observed_base_recv_ns.store(dev0.base_recv_steady_ns, std::memory_order_relaxed);
     observed_base_sequence.store(dev0.base_sequence, std::memory_order_relaxed);
     observed_base_valid.store(dev0.base_valid, std::memory_order_relaxed);
+    for (std::size_t i = 0; i < observed_imu_site0.size(); ++i) {
+      observed_imu_site0[i].store(dev0.imu[0][i], std::memory_order_relaxed);
+    }
+    for (std::size_t s = 0; s < observed_imu_recv_ns.size(); ++s) {
+      observed_imu_recv_ns[s].store(dev0.imu_recv_steady_ns[s], std::memory_order_relaxed);
+      observed_imu_sequence[s].store(dev0.imu_sequence[s], std::memory_order_relaxed);
+      observed_imu_valid[s].store(dev0.imu_valid[s], std::memory_order_relaxed);
+    }
+    observed_joint_recv_ns.store(dev0.joint_recv_steady_ns, std::memory_order_relaxed);
+    observed_joint_sequence.store(dev0.joint_sequence, std::memory_order_relaxed);
     const int sleep_us = compute_sleep_us.load(std::memory_order_relaxed);
     if (sleep_us > 0) {
       std::this_thread::sleep_for(std::chrono::microseconds(sleep_us));
@@ -467,7 +498,12 @@ class PipelineStubBackend : public DeviceBackend {
   static inline std::atomic<int64_t> sensor_recv_steady_ns_g1{0};
   static inline std::atomic<uint64_t> sensor_sequence_g1{0};
 
-  // Floating-base lane (WD-16, #976). Opt-in per test: HasFloatingBase() is
+  // Joint-lane receipt stamp and counter ReadState() reports. Defaults are 0 —
+  // "never received" — so tests that predate these fields keep their state.
+  static inline std::atomic<int64_t> joint_recv_steady_ns{0};
+  static inline std::atomic<uint64_t> joint_sequence{0};
+
+  // Floating-base lane. Opt-in per test: HasFloatingBase() is
   // what CM derives kFloatingBase from at configure, and the default stays
   // false so every TU sharing this fixture keeps the capability set it already
   // asserted against (and so the gate itself is testable — see
@@ -475,9 +511,11 @@ class PipelineStubBackend : public DeviceBackend {
   //
   // The values are DISTINCT per slot and per lane on purpose: a copy that
   // assigns the pose array to the twist, or site 0 to site 1, must not pass.
-  // Site 0 is left ZERO and only site 1 is filled, with num_imu_sites = 2, so
-  // a copy bounded to one site, or one that copies a single site where the
-  // array was meant, is visible at the far end.
+  //
+  // ReadBaseState ALSO writes the IMU arrays, the way a producer from before
+  // the base and IMU lanes were split filled them from its base read: the base
+  // copy must not carry them, and only a stub that writes them can show that
+  // (see ImuLaneIsIndependentOfTheBaseLane).
   static inline std::atomic<bool> has_floating_base{false};
   // ReadBaseState() calls CM has made. The withheld-capability test asserts
   // this at 0 so the READ gate has an assertion of its own: without it, a copy
@@ -494,6 +532,19 @@ class PipelineStubBackend : public DeviceBackend {
   static constexpr std::array<double, kImuChannelsPerSite> kImuSite1{0.1,  -0.2,  0.3,
                                                                      9.81, -0.01, 0.02};
 
+  // IMU lane. Opt-in per test like the base lane, for the same two reasons.
+  // Site 0's VALUES are left zero and only site 1's are filled, so a copy
+  // bounded to one site is visible at the far end; the per-site stamp, counter
+  // and flag are distinct per site (set by the test), so a copy that crosses
+  // sites is visible too. `imu_num_sites` is the count ReadImuState reports —
+  // a test sets an out-of-contract value to exercise the RT loop's bound.
+  static inline std::atomic<bool> has_imu_state{false};
+  static inline std::atomic<int> read_imu_calls{0};
+  static inline std::atomic<int> imu_num_sites{2};
+  static inline std::array<std::atomic<int64_t>, kMaxImuSites> imu_recv_steady_ns{};
+  static inline std::array<std::atomic<uint64_t>, kMaxImuSites> imu_sequence{};
+  static inline std::array<std::atomic<bool>, kMaxImuSites> imu_valid{};
+
   static void ResetStateChannels() {
     state_num_channels.store(2, std::memory_order_relaxed);
     state_position_nan.store(false, std::memory_order_relaxed);
@@ -507,6 +558,17 @@ class PipelineStubBackend : public DeviceBackend {
     base_recv_steady_ns.store(0, std::memory_order_relaxed);
     base_sequence.store(0, std::memory_order_relaxed);
     base_valid.store(false, std::memory_order_relaxed);
+    joint_recv_steady_ns.store(0, std::memory_order_relaxed);
+    joint_sequence.store(0, std::memory_order_relaxed);
+    has_imu_state.store(false, std::memory_order_relaxed);
+    read_imu_calls.store(0, std::memory_order_relaxed);
+    imu_num_sites.store(2, std::memory_order_relaxed);
+    for (auto& v : imu_recv_steady_ns)
+      v.store(0, std::memory_order_relaxed);
+    for (auto& v : imu_sequence)
+      v.store(0, std::memory_order_relaxed);
+    for (auto& v : imu_valid)
+      v.store(false, std::memory_order_relaxed);
   }
 
   // Full per-test reset for this backend — the counterpart to
@@ -530,6 +592,8 @@ class PipelineStubBackend : public DeviceBackend {
     cache.hole_mask = state_hole_mask.load(std::memory_order_relaxed);
     cache.velocity_hole_mask = state_velocity_hole_mask.load(std::memory_order_relaxed);
     cache.effort_hole_mask = state_effort_hole_mask.load(std::memory_order_relaxed);
+    cache.joint_recv_steady_ns = joint_recv_steady_ns.load(std::memory_order_relaxed);
+    cache.joint_sequence = joint_sequence.load(std::memory_order_relaxed);
     cache.valid = true;
     return true;
   }
@@ -574,6 +638,22 @@ class PipelineStubBackend : public DeviceBackend {
     cache.base_recv_steady_ns = base_recv_steady_ns.load(std::memory_order_relaxed);
     cache.base_sequence = base_sequence.load(std::memory_order_relaxed);
     cache.base_valid = base_valid.load(std::memory_order_relaxed);
+  }
+
+  bool HasImuState() const noexcept override {
+    return has_imu_state.load(std::memory_order_relaxed);
+  }
+
+  void ReadImuState(DeviceStateCache& cache) noexcept override {
+    read_imu_calls.fetch_add(1, std::memory_order_relaxed);
+    cache.num_imu_sites = imu_num_sites.load(std::memory_order_relaxed);
+    cache.imu[0] = {};
+    cache.imu[1] = kImuSite1;
+    for (std::size_t s = 0; s < cache.imu_recv_steady_ns.size(); ++s) {
+      cache.imu_recv_steady_ns[s] = imu_recv_steady_ns[s].load(std::memory_order_relaxed);
+      cache.imu_sequence[s] = imu_sequence[s].load(std::memory_order_relaxed);
+      cache.imu_valid[s] = imu_valid[s].load(std::memory_order_relaxed);
+    }
   }
 
   void WriteCommand(const PublishSnapshot::GroupCommandSlot& slot,
