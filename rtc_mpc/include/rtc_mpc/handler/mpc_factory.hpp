@@ -25,6 +25,7 @@
 ///     verbose: false
 ///     publish_deadline_ms: 0.0  # >= 0; 0 = off — the MPC thread's publish rules
 ///     publish_prim_tol: 0.0     # >= 0; 0 = off   (MPCSolverConfig)
+///     require_fresh_state: false  # solve each state snapshot once
 ///   limits:
 ///     friction_mu: 0.7          # only read by contact_rich; refused for
 ///                               # "kinodynamic" (its own constraints.friction.mu)

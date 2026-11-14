@@ -7,7 +7,10 @@
 ///        always published; both rules are off by default; an online solve
 ///        that started cold is published only once converged; an overrun
 ///        after a standing-solve tick — failed or not — is counted apart
-///        from an online one.
+///        from an online one. With `require_fresh_state`, a snapshot is
+///        solved once (the pending standing solve excepted); the phase
+///        manager's time is the snapshot's stamp, re-anchored where it left
+///        off on a new state epoch or a stamp that went back.
 ///
 /// The model is the generic Panda fixture (the thread runs forward
 /// kinematics every tick); nothing here solves an OCP.
@@ -37,6 +40,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -152,6 +156,65 @@ class StubPhaseManager final : public rtc::mpc::PhaseManagerBase {
   void ForcePhase(int) override {}
 };
 
+/// A stub phase manager that records the snapshot stamp, sequence and the
+/// time it was handed on each tick (loop thread writes, the test reads after
+/// a matching `count` load).
+class RecordingPhaseManager final : public rtc::mpc::PhaseManagerBase {
+ public:
+  struct Tick {
+    std::uint64_t stamp{0};
+    std::uint64_t sequence{0};
+    double t{0.0};
+  };
+
+  static constexpr std::size_t kCapacity = 4096;
+
+  void Init(const YAML::Node&) override {}
+
+  PhaseContext Update(const MPCStateSnapshot& state, const Eigen::VectorXd&, const Eigen::VectorXd&,
+                      const Eigen::VectorXd&, const pinocchio::SE3&, double t) override {
+    const std::size_t i = count.load(std::memory_order_relaxed);
+    if (i < kCapacity) {
+      ticks[i] = Tick{state.timestamp_ns, state.sequence, t};
+      count.store(i + 1, std::memory_order_release);
+    }
+    PhaseContext ctx;
+    ctx.ocp_type = "stub";
+    return ctx;
+  }
+
+  PhaseContext Update(const Eigen::VectorXd&, const Eigen::VectorXd&, const Eigen::VectorXd&,
+                      const pinocchio::SE3&, double) override {
+    PhaseContext ctx;
+    ctx.ocp_type = "stub";
+    return ctx;
+  }
+
+  void SetTaskTarget(const YAML::Node&) override {}
+
+  [[nodiscard]] int CurrentPhaseId() const override { return 0; }
+
+  [[nodiscard]] std::string CurrentPhaseName() const override { return {}; }
+
+  void ForcePhase(int) override {}
+
+  /// @return the time handed with the last tick that saw @p sequence, or
+  ///         NaN when none did yet.
+  [[nodiscard]] double TimeOf(std::uint64_t sequence) const {
+    const std::size_t n = count.load(std::memory_order_acquire);
+    double t = std::numeric_limits<double>::quiet_NaN();
+    for (std::size_t i = 0; i < n; ++i) {
+      if (ticks[i].sequence == sequence) {
+        t = ticks[i].t;
+      }
+    }
+    return t;
+  }
+
+  std::array<Tick, kCapacity> ticks{};
+  std::atomic<std::size_t> count{0};
+};
+
 class MpcThreadPublishTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -178,6 +241,29 @@ class MpcThreadPublishTest : public ::testing::Test {
     launch.target_frequency_hz = hz;
     thread.Init(mgr_, launch);
     return raw;
+  }
+
+  /// Start a thread at @p hz over a stub handler and a recording phase manager.
+  StubHandler* StartRecording(HandlerMPCThread& thread, const MPCSolverConfig& cfg, double hz,
+                              RecordingPhaseManager*& recorder) {
+    auto stub = std::make_unique<StubHandler>(model_handler_.nq(), model_handler_.nv(), cfg);
+    StubHandler* raw = stub.get();
+    auto rec = std::make_unique<RecordingPhaseManager>();
+    recorder = rec.get();
+    thread.Configure(model_handler_, std::move(stub), std::move(rec));
+    rtc::mpc::MpcThreadLaunchConfig launch{};
+    launch.main.cpu_core = -1;
+    launch.main.sched_policy = 0;
+    launch.target_frequency_hz = hz;
+    thread.Init(mgr_, launch);
+    return raw;
+  }
+
+  /// Store a state stamped @p stamp_ns; @return its snapshot sequence.
+  std::uint64_t Write(std::uint64_t stamp_ns) {
+    mgr_.WriteState(pinocchio::neutral(model_), Eigen::VectorXd::Zero(model_handler_.nv()),
+                    stamp_ns);
+    return mgr_.ReadState().sequence;
   }
 
   [[nodiscard]] std::uint64_t Published() const { return mgr_.GetSolveStats().count; }
@@ -346,6 +432,144 @@ TEST_F(MpcThreadPublishTest, AFailedStandingTicksOverrunIsCountedApart) {
   EXPECT_EQ(thread.OnlineOverrunCount(), 0U);
   EXPECT_GT(thread.FailedSolves(), 0U);
   EXPECT_EQ(thread.OnlineOverrunCount() + thread.StandingOverrunCount(), thread.OverrunCount());
+}
+
+// ── One solve per observation (`require_fresh_state`) ──────────────────────
+
+// The state is stored once (SetUp): one solve, every later tick skipped
+// before any work — the stub counts its calls, the loop its ticks.
+TEST_F(MpcThreadPublishTest, AFreshStateRuleSolvesEachSnapshotOnce) {
+  MPCSolverConfig cfg;
+  cfg.require_fresh_state = true;
+  HandlerMPCThread thread;
+  StubHandler* stub = Start(thread, cfg, 200.0);
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.RepeatedObservationSkips() >= 10U; }));
+  thread.StopAndJoin();
+  EXPECT_EQ(stub->calls.load(), 1U);
+  EXPECT_EQ(thread.TotalSolves(), 1U) << "a skip is not a solve";
+  EXPECT_EQ(thread.FailedSolves(), 0U) << "nor a failure";
+  EXPECT_EQ(thread.RepeatedObservationSkips(), thread.TickCount() - 1U);
+  EXPECT_EQ(thread.StandingRepeatSolves(), 0U);
+  EXPECT_EQ(Published(), 1U);
+}
+
+// Pass control for the rule: a new snapshot is solved.
+TEST_F(MpcThreadPublishTest, AFreshStateRuleSolvesANewSnapshot) {
+  MPCSolverConfig cfg;
+  cfg.require_fresh_state = true;
+  HandlerMPCThread thread;
+  StubHandler* stub = Start(thread, cfg, 200.0);
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return stub->calls.load() >= 1U; }));
+  (void)Write(5'000'000);
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return stub->calls.load() >= 2U; }));
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.RepeatedObservationSkips() >= 3U; }));
+  thread.StopAndJoin();
+  EXPECT_EQ(stub->calls.load(), 2U);
+  EXPECT_EQ(thread.RepeatedObservationSkips(), thread.TickCount() - 2U);
+}
+
+// The rule off (the default): the same snapshot is solved every tick.
+TEST_F(MpcThreadPublishTest, WithoutTheFreshStateRuleTheSameSnapshotIsSolvedEveryTick) {
+  HandlerMPCThread thread;
+  StubHandler* stub = Start(thread, MPCSolverConfig{}, 200.0);
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return stub->calls.load() >= 5U; }));
+  thread.StopAndJoin();
+  EXPECT_EQ(thread.RepeatedObservationSkips(), 0U);
+  EXPECT_EQ(stub->calls.load(), thread.TickCount());
+}
+
+// The standing solve continues on the same observation while it is pending
+// and its attempts return iterates …
+TEST_F(MpcThreadPublishTest, APendingStandingSolveContinuesOnTheSameSnapshot) {
+  MPCSolverConfig cfg;
+  cfg.require_fresh_state = true;
+  HandlerMPCThread thread;
+  StubHandler* stub = Start(thread, cfg, 200.0);
+  stub->initial = true;  // pending, not converged
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return stub->calls.load() >= 5U; }));
+  thread.StopAndJoin();
+  EXPECT_EQ(thread.RepeatedObservationSkips(), 0U);
+  EXPECT_EQ(stub->calls.load(), thread.TickCount());
+  EXPECT_EQ(thread.StandingRepeatSolves(), stub->calls.load() - 1U);
+}
+
+// … but not after an attempt the solver rejected: that observation is not
+// retried.
+TEST_F(MpcThreadPublishTest, ARejectedStandingAttemptIsNotRetriedOnTheSameSnapshot) {
+  MPCSolverConfig cfg;
+  cfg.require_fresh_state = true;
+  HandlerMPCThread thread;
+  StubHandler* stub = Start(thread, cfg, 200.0);
+  stub->initial = true;
+  stub->error = static_cast<int>(MPCSolveError::kSolverDiverged);
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.RepeatedObservationSkips() >= 5U; }));
+  thread.StopAndJoin();
+  EXPECT_EQ(stub->calls.load(), 1U);
+  EXPECT_EQ(thread.FailedSolves(), 1U);
+  EXPECT_EQ(thread.StandingRepeatSolves(), 0U);
+  EXPECT_EQ(thread.RepeatedObservationSkips(), thread.TickCount() - 1U);
+}
+
+// ── Phase time on the snapshot clock ───────────────────────────────────────
+
+// The phase manager's time is the snapshot stamp since the first snapshot,
+// whatever the wall clock does: stamps advanced at 3× and at 0.3× the wall
+// rate are handed through exactly (the same integer difference × 1e-9).
+TEST_F(MpcThreadPublishTest, ThePhaseTimeIsTheSnapshotStampNotTheWallClock) {
+  for (const double rate : {3.0, 0.3}) {
+    HandlerMPCThread thread;
+    RecordingPhaseManager* rec = nullptr;
+    (void)StartRecording(thread, MPCSolverConfig{}, 200.0, rec);
+    const std::uint64_t first = 2'000'000'000ULL;
+    const std::uint64_t first_seq = Write(first);
+    thread.Start();
+    ASSERT_TRUE(rtc::testing::WaitUntil([&] { return !std::isnan(rec->TimeOf(first_seq)); }));
+    std::uint64_t seq = first_seq;
+    std::uint64_t stamp = first;
+    for (int i = 1; i <= 6; ++i) {
+      std::this_thread::sleep_for(20ms);
+      stamp = first + static_cast<std::uint64_t>(rate * 20e6 * i);
+      seq = Write(stamp);
+      ASSERT_TRUE(rtc::testing::WaitUntil([&] { return !std::isnan(rec->TimeOf(seq)); }));
+      EXPECT_EQ(rec->TimeOf(seq), static_cast<double>(stamp - first) * 1e-9) << "rate " << rate;
+    }
+    thread.StopAndJoin();
+    EXPECT_EQ(rec->TimeOf(first_seq), 0.0);
+  }
+}
+
+// A new state epoch, or a stamp earlier than the anchor, continues the phase
+// time from where the last tick left it — it never goes back — and stamps
+// then count from the new anchor.
+TEST_F(MpcThreadPublishTest, ThePhaseTimeReAnchorsOnANewStateEpochOrAStampThatWentBack) {
+  HandlerMPCThread thread;
+  RecordingPhaseManager* rec = nullptr;
+  MPCSolverConfig cfg;
+  cfg.require_fresh_state = true;  // one tick per snapshot: the anchor sees each once
+  (void)StartRecording(thread, cfg, 200.0, rec);
+  const std::uint64_t first_seq = Write(1'000'000'000ULL);  // the first snapshot the loop sees
+  thread.Start();
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return !std::isnan(rec->TimeOf(first_seq)); }));
+  EXPECT_EQ(rec->TimeOf(first_seq), 0.0);
+  const auto expect_time = [&](std::uint64_t stamp, double want) {
+    const std::uint64_t seq = Write(stamp);
+    ASSERT_TRUE(rtc::testing::WaitUntil([&] { return !std::isnan(rec->TimeOf(seq)); }));
+    EXPECT_EQ(rec->TimeOf(seq), want) << "stamp " << stamp;
+  };
+  expect_time(1'500'000'000ULL, static_cast<double>(500'000'000ULL) * 1e-9);
+  const double at_reset = static_cast<double>(500'000'000ULL) * 1e-9;
+  mgr_.SetStateEpoch(1);
+  expect_time(200'000'000ULL, at_reset);
+  expect_time(400'000'000ULL, at_reset + static_cast<double>(200'000'000ULL) * 1e-9);
+  const double at_rewind = at_reset + static_cast<double>(200'000'000ULL) * 1e-9;
+  expect_time(100'000'000ULL, at_rewind);  // same epoch, stamp went back
+  expect_time(300'000'000ULL, at_rewind + static_cast<double>(200'000'000ULL) * 1e-9);
+  thread.StopAndJoin();
 }
 
 }  // namespace

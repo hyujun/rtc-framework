@@ -18,6 +18,7 @@
 #pragma GCC diagnostic pop
 
 #include "rtc_mpc/feedback/riccati_feedback.hpp"
+#include "rtc_mpc/reference/stage_reference.hpp"
 
 #include <algorithm>
 #include <array>
@@ -330,10 +331,23 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     return MPCSolveError::kSolverException;
   }
 
+  // A state from another state stream (the consumer reset or switched its
+  // source) is not a continuation of the iterates: a cold seed on the
+  // standing budget, as after a build.
+  const bool state_epoch_changed = have_state_epoch_ && state.state_epoch != last_state_epoch_;
+  have_state_epoch_ = true;
+  last_state_epoch_ = state.state_epoch;
+  if (state_epoch_changed && !first_solve_after_build_) {
+    ClearDuals();
+  }
+  if (state_epoch_changed) {
+    initial_solve_pending_ = true;
+  }
+
   // How far the warm start moves: one node a tick, or on a node grid the
   // index difference since the iterates' solve. Going back, or by the horizon
   // or more, leaves nothing to shift: a cold seed on the current budget.
-  bool cold_seeded = first_solve_after_build_;
+  bool cold_seeded = first_solve_after_build_ || state_epoch_changed;
   int shift = 1;
   if (!cold_seeded && ctx.on_node_grid && have_node_index_) {
     const std::int64_t d = ctx.node_index - last_node_index_;
@@ -415,7 +429,7 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     return MPCSolveError::kSolverDiverged;
   }
 
-  PackSolution(ocp, state, out, converged, initial_solve, dur_ns);
+  PackSolution(ocp, ctx, state, out, converged, initial_solve, dur_ns);
   out.cold_start = cold_seeded;
   out.horizon_offset_ns =
       ctx.on_node_grid ? static_cast<std::int64_t>(std::llround(ctx.horizon_offset * 1e9)) : 0;
@@ -605,8 +619,9 @@ void MPCHandlerCore::PackRiccatiGain(std::size_t k, MPCSolution& out) const noex
   }
 }
 
-void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const MPCStateSnapshot& state,
-                                  MPCSolution& out, bool converged, bool initial_solve,
+void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const PhaseContext& ctx,
+                                  const MPCStateSnapshot& state, MPCSolution& out, bool converged,
+                                  bool initial_solve,
                                   std::uint64_t solve_duration_ns) const noexcept {
   const auto& results = solver_->results_;
   const auto& xs = results.xs;
@@ -630,7 +645,9 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const MPCStateSnaps
   out.residuals.merit = results.merit_value_;
   out.observation_stamp_ns = state.timestamp_ns;
   out.observation_sequence = state.sequence;
+  out.observation_source_sequence = state.source_sequence;
   out.model_epoch = state.model_epoch;
+  out.state_epoch = state.state_epoch;
   // plan_id is stamped by the publisher; the receive stamp by the consumer.
   out.nq = nq_;
   out.nv = nv_;
@@ -661,9 +678,38 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const MPCStateSnaps
     }
   }
 
+  // Free-flyer quaternions on one hemisphere along the horizon: q and −q are
+  // the same rotation, and the solver's iterates may hold either. Node 0 is
+  // the measured state and stays as measured.
+  if (model_->layout().floating_base()) {
+    constexpr std::size_t kQuat = 3;  // `[p_xyz, quaternion_xyzw]`
+    for (std::size_t k = 1; k <= H && k < xs.size(); ++k) {
+      double dot = 0.0;
+      for (std::size_t j = 0; j < 4; ++j) {
+        dot += out.q_traj[k - 1][kQuat + j] * out.q_traj[k][kQuat + j];
+      }
+      if (dot < 0.0) {
+        for (std::size_t j = 0; j < 4; ++j) {
+          out.q_traj[k][kQuat + j] = -out.q_traj[k][kQuat + j];
+        }
+      }
+    }
+  }
+
+  // The horizon's contact modes and schedule ids; a node past the horizon,
+  // or an OCP without one, is 0 (`out` is a reused slot).
+  const HorizonReference* horizon = ctx.horizon;
+  out.schedule_id = horizon != nullptr ? horizon->schedule_id : 0;
+  out.schedule_epoch = horizon != nullptr ? horizon->schedule_epoch : 0;
+  for (std::size_t k = 0; k < out.node_mode.size(); ++k) {
+    out.node_mode[k] =
+        (horizon != nullptr && k <= H && k < horizon->n_stages) ? horizon->stages[k].mode : 0U;
+  }
+
   // Feed-forward acceleration: a copy of τ for the joint-torque OCPs (the
-  // whole-body layer downstream recomputes the mapping); not defined yet for
-  // a kinodynamic one, so it is shipped as 0 rather than left stale.
+  // whole-body layer downstream recomputes the mapping); for a kinodynamic
+  // one the mean acceleration of each node interval, every tangent row
+  // (the base rows difference the LOCAL twists, as the state does).
   // Contact forces: the wrench block at the front of a kinodynamic `u`
   // (inactive slots included — the consumer masks them by node mode); a
   // joint-torque OCP ships none.
@@ -673,8 +719,13 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const MPCStateSnaps
                                         static_cast<std::size_t>(kMaxContactVars));
   for (std::size_t k = 0; k < H; ++k) {
     for (int i = 0; i < nv_; ++i) {
-      out.a_ff_traj[k][static_cast<std::size_t>(i)] =
-          (kinodynamic || i >= nu_) ? 0.0 : out.u_traj[k][static_cast<std::size_t>(i)];
+      const auto ii = static_cast<std::size_t>(i);
+      if (kinodynamic) {
+        // dt_ was checked positive and finite before the solve.
+        out.a_ff_traj[k][ii] = (out.v_traj[k + 1][ii] - out.v_traj[k][ii]) / dt_;
+      } else {
+        out.a_ff_traj[k][ii] = i >= nu_ ? 0.0 : out.u_traj[k][ii];
+      }
     }
     for (std::size_t i = 0; i < n_lambda; ++i) {
       out.lambda_traj[k][i] = kinodynamic ? out.u_traj[k][i] : 0.0;

@@ -131,8 +131,12 @@ class TrajectoryInterpolator {
                    Eigen::Ref<Eigen::VectorXd> lambda_ref, InterpMeta& meta_out) noexcept;
 
   /// @return true once a valid solution has been installed via
-  ///         @ref SetSolution.
+  ///         @ref SetSolution (and not dropped by @ref Clear since).
   [[nodiscard]] bool HasSolution() const noexcept { return has_solution_; }
+
+  /// @brief Drop the active solution: @ref HasSolution is false until the
+  ///        next accepted @ref SetSolution.
+  void Clear() noexcept { has_solution_ = false; }
 
   /// @return remaining horizon time in seconds, or 0 if no solution or
   ///         beyond horizon.

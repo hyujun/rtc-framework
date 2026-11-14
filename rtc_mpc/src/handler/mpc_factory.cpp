@@ -119,6 +119,8 @@ bool MPCFactory::LoadSolverConfig(const YAML::Node& solver_node, MPCSolverConfig
       cfg.publish_deadline_ms = solver_node["publish_deadline_ms"].as<double>();
     if (solver_node["publish_prim_tol"])
       cfg.publish_prim_tol = solver_node["publish_prim_tol"].as<double>();
+    if (solver_node["require_fresh_state"])
+      cfg.require_fresh_state = solver_node["require_fresh_state"].as<bool>();
   } catch (...) {
     return false;
   }

@@ -493,6 +493,167 @@ TEST_F(MpcSolutionManagerTest, SolveStatsSnapshotIsConsistentUnderConcurrentPubl
   EXPECT_EQ(mgr_.GetSolveStats().count, kPublishes);
 }
 
+// ── State epoch, eviction, the age cap and re-enable ───────────────────────
+
+TEST_F(MpcSolutionManagerTest, WriteStateCarriesTheSourceSequenceAndTheStateEpoch) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  mgr_.SetStateEpoch(9);
+  EXPECT_EQ(mgr_.StateEpoch(), 9u);
+  mgr_.WriteState(q_curr_, v_curr_, 100, 0xABCDEF0123456789ULL);
+  const MPCStateSnapshot a = mgr_.ReadState();
+  EXPECT_EQ(a.source_sequence, 0xABCDEF0123456789ULL);
+  EXPECT_EQ(a.state_epoch, 9u);
+  EXPECT_EQ(a.sequence, 1u) << "the manager's own count is independent of the source's";
+
+  mgr_.WriteState(q_curr_, v_curr_, 200);  // the default: no source sequence
+  const MPCStateSnapshot b = mgr_.ReadState();
+  EXPECT_EQ(b.source_sequence, 0u);
+  EXPECT_EQ(b.sequence, 2u);
+  EXPECT_EQ(b.state_epoch, 9u);
+}
+
+TEST_F(MpcSolutionManagerTest, PlanFromAnotherStateEpochIsNotInstalled) {
+  mgr_.Init(MakeConfig(true), kNq, kNv, kNc);
+  mgr_.SetStateEpoch(2);
+  MPCSolution sol = MakeSolution();
+  sol.state_epoch = 1;
+  mgr_.PublishSolution(sol);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
+  EXPECT_EQ(mgr_.EpochRejections(), 0u) << "a state epoch is not a model epoch";
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+
+  // The same plan under the current state epoch installs.
+  sol.state_epoch = 2;
+  mgr_.PublishSolution(sol);
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 0, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
+}
+
+// The plan being sampled is dropped at the first sample after a bump, with
+// no newer plan arriving — the gate does not wait for one.
+TEST_F(MpcSolutionManagerTest, AStateEpochBumpEvictsTheActivePlan) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.PublishSolution(MakeSolution());
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  // Pass control: without a bump the held plan keeps sampling.
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+
+  mgr_.SetStateEpoch(1);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_FALSE(meta_.valid);
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 4, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u) << "counted once per evicted plan";
+
+  // A plan of the new epoch is accepted again.
+  MPCSolution next = MakeSolution();
+  next.state_epoch = 1;
+  mgr_.PublishSolution(next);
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 5, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+}
+
+TEST_F(MpcSolutionManagerTest, AModelEpochBumpEvictsTheActivePlan) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.PublishSolution(MakeSolution());
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  mgr_.SetModelEpoch(5);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.EpochRejections(), 1u);
+  EXPECT_EQ(mgr_.StateEpochRejections(), 0u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+}
+
+// Age = now − observation stamp, cap = (horizon + 1) node intervals: at the
+// cap the plan still samples (held on its last node), one nanosecond past it
+// the plan is dropped and counted once.
+TEST_F(MpcSolutionManagerTest, APlanOlderThanItsHorizonPlusOneNodeIsDropped) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  const uint64_t obs = 7'000'000'000ULL;
+  const uint64_t cap = static_cast<uint64_t>(kHorizon + 1) * 10'000'000ULL;  // kDtNode = 10 ms
+  MPCSolution sol = MakeSolution(obs);
+  sol.observation_stamp_ns = obs;
+  mgr_.PublishSolution(sol);
+  ASSERT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, obs, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                    u_fb_, meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, obs + cap, q_ref_, v_ref_, a_ff_, lambda_ref_,
+                                    u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 0u);
+
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, obs + cap + 1, q_ref_, v_ref_, a_ff_,
+                                     lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, obs + cap + 2, q_ref_, v_ref_, a_ff_,
+                                     lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
+}
+
+// A plan that arrives already past the cap is installed and dropped in the
+// same call; an observation stamp ahead of `now` is a negative age, not a
+// wrapped one.
+TEST_F(MpcSolutionManagerTest, TheAgeCapAppliesOnArrivalAndNeverWraps) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  MPCSolution old = MakeSolution();
+  old.observation_stamp_ns = 0;
+  mgr_.PublishSolution(old);
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, 1'000'000'000ULL, q_ref_, v_ref_, a_ff_,
+                                     lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
+
+  MPCSolution ahead = MakeSolution();
+  ahead.observation_stamp_ns = 1'000'000'055ULL;
+  mgr_.PublishSolution(ahead);
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, 1'000'000'000ULL, q_ref_, v_ref_, a_ff_,
+                                    lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), 1u);
+}
+
+// Disable → enable: the first sample after the re-enable has no plan, even
+// though the held one is young; a plan published after it is taken.
+TEST_F(MpcSolutionManagerTest, ReEnablingDropsThePlanHeldFromBefore) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.PublishSolution(MakeSolution());
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+
+  mgr_.SetEnabled(false);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  mgr_.SetEnabled(true);
+  mgr_.SetEnabled(true);  // a repeated `true` is not another re-enable
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+
+  mgr_.PublishSolution(MakeSolution());
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 4, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 5, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_))
+      << "the plan taken after the re-enable is kept";
+}
+
+// Pass control for the re-enable rule: enabling a manager that was
+// initialised disabled, before any plan, takes the first plan published.
+TEST_F(MpcSolutionManagerTest, EnablingBeforeTheFirstPlanTakesIt) {
+  mgr_.Init(MakeConfig(false), kNq, kNv, kNc);
+  mgr_.SetEnabled(true);
+  mgr_.PublishSolution(MakeSolution());
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+}
+
 // Per-tick raw-sample stream is no longer owned by MPCSolutionManager — it
 // lives on MPCThread::TimingProducer() (see test_mpc_timing_logger.cpp +
 // test_mpc_thread_skeleton.cpp). The aggregate windowed ring driven by
