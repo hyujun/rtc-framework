@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <string>
 #include <thread>
 
 namespace rtc {
@@ -62,6 +63,51 @@ TEST(DataFlow, SensorCallbackFiresWhenConfigured) {
   sim.Stop();
 
   EXPECT_GT(sensor_count.load(), 0);
+}
+
+// Within one step the sensors go out before the joint state, which is what
+// wakes a sim-synced controller tick. Both callbacks run on the sim thread, so
+// the recorded order is the call order, not a delivery order.
+TEST(DataFlow, SensorCallbackPrecedesStateCallbackWithinAStep) {
+  auto cfg = test::MakeMinimalConfig();
+  cfg.sync_timeout_ms = 1.0;
+  cfg.groups[0].sensor_names = {"auto"};
+  cfg.groups[0].sensor_topic = "/arm/sensors";
+  MuJoCoSimulator sim(std::move(cfg));
+  ASSERT_TRUE(sim.Initialize());
+
+  std::mutex order_mutex;
+  std::string order;
+  sim.SetSensorCallback(
+      0, [&](const std::vector<JointGroup::SensorInfo>&, const std::vector<double>&) {
+        std::lock_guard lock(order_mutex);
+        order.push_back('S');
+      });
+  sim.SetStateCallback(
+      0, [&](const std::vector<double>&, const std::vector<double>&, const std::vector<double>&) {
+        std::lock_guard lock(order_mutex);
+        order.push_back('J');
+      });
+
+  // Run until enough steps are in (or a generous deadline), not for a fixed
+  // time: a loaded host must not turn "too few steps" into a failure.
+  sim.Start();
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard lock(order_mutex);
+      if (order.size() >= 40u)
+        break;
+    }
+    std::this_thread::sleep_for(2ms);
+  }
+  sim.Stop();
+
+  std::lock_guard lock(order_mutex);
+  ASSERT_GE(order.size(), 40u) << "too few steps to judge the order";
+  for (std::size_t i = 0; i + 1 < order.size(); i += 2) {
+    ASSERT_EQ(order.substr(i, 2), "SJ") << "step " << i / 2 << " of \"" << order << "\"";
+  }
 }
 
 TEST(DataFlow, PositionStateUpdatesAfterCommand) {

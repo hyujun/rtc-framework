@@ -79,6 +79,8 @@ launch 인자 (빈 값 = YAML 값 사용):
 | `<projectile_ball.publish.camera_topic>` | `geometry_msgs/PointStamped` | 〃 | 위 위치 + 축별 가우시안 노이즈 (카메라 관측 모사) |
 | `/sim/status` | `std_msgs/Float64MultiArray` | 1 Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
 
+한 step 안의 발행 순서는 sensor → contact wrench → joint state 다. joint state 가 sim-sync tick 을 깨우므로 그 tick 이 같은 step 의 센서를 보는 경우가 보통이 되게 한 순서이고, 토픽 간 순서 보장은 아니다 (필요하면 소비자가 lane 의 stamp · sequence 로 판정).
+
 ### 구독 토픽
 
 | 토픽 | 타입 | 설명 |

@@ -1220,9 +1220,15 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     ReadContactWrenches();
     ReadObjectStates();
     ReadProjectileBallState();
-    InvokeStateCallback();
+    // Sensors and contact wrenches go out BEFORE the joint state: the joint
+    // state is what wakes a sim-synced controller tick, and a sensor message
+    // queued behind it may not yet be taken when that tick reads its inputs.
+    // Publishing it first makes "the tick sees this step's sensors" the
+    // usual case. It is not a guarantee (no FIFO holds across topics); a
+    // consumer that needs one compares the lanes' stamps and sequences.
     InvokeSensorCallback();
     InvokeContactWrenchCallback();
+    InvokeStateCallback();
     InvokeObjectStateCallback();
     InvokeProjectileBallCallback();
 
