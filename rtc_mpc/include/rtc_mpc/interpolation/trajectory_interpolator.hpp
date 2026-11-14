@@ -74,8 +74,6 @@ struct InterpMeta {
   /// Consumers typically treat this as a signal to request a fresh MPC
   /// solve or fall back to a safe reference.
   bool beyond_horizon{false};
-  /// Never set: a floating layout is sampled like a fixed one.
-  bool floating_unsupported{false};
 };
 
 /// Where one sample landed in the plan (@ref TrajectoryInterpolator::Sample).
