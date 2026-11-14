@@ -511,9 +511,12 @@ void RtControllerNode::ControlLoop() {
           backends_[slot]->ReadMotorState(cache);
         if (backends_[slot]->HasSensorState())
           backends_[slot]->ReadSensorState(cache);
-        if (backends_[slot]->HasFloatingBase())
+        // The two optional lanes are read on the capability CM derived at
+        // configure, not on a live Has*() answer: the copy blocks below are
+        // gated on the same bit, so a read and its copy cannot disagree.
+        if (urtc::HasCapability(cap, urtc::DeviceCapability::kFloatingBase))
           backends_[slot]->ReadBaseState(cache);
-        if (backends_[slot]->HasImuState())
+        if (urtc::HasCapability(cap, urtc::DeviceCapability::kImuState))
           backends_[slot]->ReadImuState(cache);
       }
       // The bounded count is written back into DeviceState, not just used as

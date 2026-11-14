@@ -515,7 +515,7 @@ class PipelineStubBackend : public DeviceBackend {
   // ReadBaseState ALSO writes the IMU arrays, the way a producer from before
   // the base and IMU lanes were split filled them from its base read: the base
   // copy must not carry them, and only a stub that writes them can show that
-  // (see ImuLaneIsIndependentOfTheBaseLane).
+  // (see BaseOnlyClaimLeavesTheImuLaneNeverReceived).
   static inline std::atomic<bool> has_floating_base{false};
   // ReadBaseState() calls CM has made. The withheld-capability test asserts
   // this at 0 so the READ gate has an assertion of its own: without it, a copy

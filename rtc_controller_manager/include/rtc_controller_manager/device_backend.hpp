@@ -238,7 +238,7 @@ class DeviceBackend {
   /// sensors, an estimator, a vehicle's localisation). CM derives
   /// DeviceCapability::kFloatingBase from this answer at configure, exactly
   /// as it derives kMotorState / kSensorData from the two above, and the RT
-  /// copy of the lane is gated on it; a fixed-base backend keeps the default
+  /// read and copy of the lane are gated on it; a fixed-base backend keeps the default
   /// and its controllers read the lane as "never received".
   ///
   /// A separate lane rather than part of ReadState() because its source is
@@ -255,9 +255,10 @@ class DeviceBackend {
 
   /// True when this backend fills the IMU lane — `imu` / `num_imu_sites` and
   /// the per-site stamp, counter and flag in DeviceStateCache. CM derives
-  /// DeviceCapability::kImuState from this answer once, at configure, so the
-  /// answer must not change after Configure(): a backend that starts claiming
-  /// the lane later is never read, and one that stops is read anyway.
+  /// DeviceCapability::kImuState from this answer once, at configure, and
+  /// both the RT read and the copy are gated on that bit — so the answer must
+  /// not change after Configure(): a backend that starts claiming the lane
+  /// later is never read, and one that stops is read anyway.
   ///
   /// Separate from HasFloatingBase() because the two lanes are separate
   /// claims: a robot with an IMU and no external base source has this lane
