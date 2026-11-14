@@ -511,8 +511,13 @@ void RtControllerNode::ControlLoop() {
           backends_[slot]->ReadMotorState(cache);
         if (backends_[slot]->HasSensorState())
           backends_[slot]->ReadSensorState(cache);
-        if (backends_[slot]->HasFloatingBase())
+        // The two optional lanes are read on the capability CM derived at
+        // configure, not on a live Has*() answer: the copy blocks below are
+        // gated on the same bit, so a read and its copy cannot disagree.
+        if (urtc::HasCapability(cap, urtc::DeviceCapability::kFloatingBase))
           backends_[slot]->ReadBaseState(cache);
+        if (urtc::HasCapability(cap, urtc::DeviceCapability::kImuState))
+          backends_[slot]->ReadImuState(cache);
       }
       // The bounded count is written back into DeviceState, not just used as
       // the copy length: controllers read state.devices[i].num_channels and
@@ -538,6 +543,11 @@ void RtControllerNode::ControlLoop() {
       dev.hole_mask = cache.hole_mask;
       dev.velocity_hole_mask = cache.velocity_hole_mask;
       dev.effort_hole_mask = cache.effort_hole_mask;
+      // The joint lane's receipt stamp and counter ride with the joint values,
+      // unconditionally like them. Seam test:
+      // JointLaneReceiptReachesTheController (test_rt_loop_pipeline).
+      dev.joint_recv_steady_ns = cache.joint_recv_steady_ns;
+      dev.joint_sequence = cache.joint_sequence;
       if (urtc::HasCapability(cap, urtc::DeviceCapability::kMotorState) &&
           cache.num_motor_channels > 0) {
         const auto nmc = BoundedCount(cache.num_motor_channels, urtc::kMaxDeviceChannels);
@@ -577,23 +587,30 @@ void RtControllerNode::ControlLoop() {
         std::copy_n(cache.inference_sequence.data(), ngrp, dev.inference_sequence.data());
       }
       if (urtc::HasCapability(cap, urtc::DeviceCapability::kFloatingBase)) {
-        // Floating-base lane (WD-16, #976). Pose and twist are fixed-width and
-        // copied whole; the IMU block is bounded by the site count the backend
-        // reports, and that bounded count is written back for the same reason
-        // num_channels is above. `base_valid` travels WITH the values rather
-        // than gating this copy: the contract is "values held, flag down" for
-        // a stale lane, and withholding the values here would turn "stale"
-        // into "never received" one package away from the producer that knows
-        // the difference. The seam test for every field here is
+        // Floating-base lane. Fixed-width, copied whole. `base_valid` travels
+        // WITH the values rather than gating this copy: the contract is
+        // "values held, flag down" for a stale lane, and withholding the
+        // values here would turn "stale" into "never received" one package
+        // away from the producer that knows the difference. Seam test:
         // FloatingBaseLaneReachesTheControllerBitExact (test_rt_loop_pipeline).
-        const auto nsites = BoundedCount(cache.num_imu_sites, urtc::kMaxImuSites);
-        dev.num_imu_sites = static_cast<int>(nsites);
         dev.base_pose = cache.base_pose;
         dev.base_twist = cache.base_twist;
-        std::copy_n(cache.imu.data(), nsites, dev.imu.data());
         dev.base_recv_steady_ns = cache.base_recv_steady_ns;
         dev.base_sequence = cache.base_sequence;
         dev.base_valid = cache.base_valid;
+      }
+      if (urtc::HasCapability(cap, urtc::DeviceCapability::kImuState)) {
+        // IMU lane. Every per-site array is bounded by the site count the
+        // backend reports, and that bounded count is written back for the
+        // same reason num_channels is above. The per-site flag travels with
+        // the values for the same reason `base_valid` does. Seam test:
+        // ImuLaneReachesTheControllerBitExact (test_rt_loop_pipeline).
+        const auto nsites = BoundedCount(cache.num_imu_sites, urtc::kMaxImuSites);
+        dev.num_imu_sites = static_cast<int>(nsites);
+        std::copy_n(cache.imu.data(), nsites, dev.imu.data());
+        std::copy_n(cache.imu_recv_steady_ns.data(), nsites, dev.imu_recv_steady_ns.data());
+        std::copy_n(cache.imu_sequence.data(), nsites, dev.imu_sequence.data());
+        std::copy_n(cache.imu_valid.data(), nsites, dev.imu_valid.data());
       }
       dev.valid = cache.valid;
       ++di;

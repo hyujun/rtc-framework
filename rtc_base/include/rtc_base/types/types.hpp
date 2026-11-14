@@ -85,7 +85,7 @@ inline constexpr double kDefaultControlDtSec = 1.0 / kDefaultControlRateHz;  // 
 inline constexpr int kMaxSensorGroups = 8;
 inline constexpr int kMaxTaskLinks = 8;
 
-// Floating-base lane widths (WD-16, #976).
+// Floating-base and IMU lane widths.
 //
 // kMaxImuSites        : IMU sites per device in `DeviceState::imu` — the one
 //                       CAPACITY here. Two covers a trunk-mounted pair; a third
@@ -215,6 +215,24 @@ struct DeviceState {
   // payload rather than an error).
   uint64_t velocity_hole_mask{0};
   uint64_t effort_hole_mask{0};
+  // Receipt time and sample counter of the joint lane — the joint-state twins
+  // of `inference_recv_steady_ns` / `inference_sequence` below (read that
+  // comment for the why of the steady axis, 0 = never received, and a counter
+  // beside the clock).
+  //
+  // They exist so a consumer that fuses the joint lane with another lane (an
+  // IMU, a base estimate) can say WHICH joint sample a tick read and how old
+  // it is, on the same axis as the other lane's stamp. The only joint receipt
+  // time before them was the backend's private watchdog stamp, which no
+  // controller can reach.
+  //
+  // `joint_sequence` counts the state messages the producer wrote into the
+  // cache — every one of them, including a message whose slots were all holes
+  // (the hole masks above carry that verdict, not this counter), and with no
+  // finiteness check of its own. It answers "did a new joint message land",
+  // not "is the new message usable".
+  int64_t joint_recv_steady_ns{0};
+  uint64_t joint_sequence{0};
   // Motor-space data (separate from joint-space, e.g. hand motor encoder
   // values)
   int num_motor_channels{0};
@@ -264,19 +282,17 @@ struct DeviceState {
   // reads as "never received" and fails closed rather than silently fresh.
   std::array<int64_t, kMaxSensorGroups> inference_recv_steady_ns{};
   std::array<uint64_t, kMaxSensorGroups> inference_sequence{};
-  // Floating-base lane (WD-16, #976): base pose · twist · IMU for a device
-  // group whose description has a free-flyer root. A fixed-base group leaves
-  // every field at its zero-init and `base_valid` false — the same "no claim"
-  // polarity the hole masks and receipt stamps above use, so every producer
-  // and fixture that predates this lane reports exactly what it knows.
+  // Floating-base lane: base pose and twist for a device group whose
+  // description has a free-flyer root. A fixed-base group leaves every field
+  // at its zero-init and `base_valid` false — the same "no claim" polarity the
+  // hole masks and receipt stamps above use, so every producer and fixture
+  // that predates this lane reports exactly what it knows.
   //
   // `base_pose` is p_xyz then q_xyzw — the pinocchio free-flyer configuration
   // order, so a consumer can copy it straight into the head of q. `base_twist`
   // is v then ω expressed in the BASE frame (pinocchio LOCAL), never world:
   // the PRODUCER converts, so every consumer reads one convention instead of
-  // each guessing the frame. `imu[s]` is gyro xyz then accelerometer xyz in
-  // site s's own frame, for the first `num_imu_sites` sites; the rest stay
-  // zero.
+  // each guessing the frame.
   //
   // `base_pose` defaults to the IDENTITY pose (zero translation, q = (0,0,0,1))
   // rather than all zeros, the one departure from the zero-init rule above: a
@@ -294,16 +310,49 @@ struct DeviceState {
   // `inference_enable` + age makes. Values are HELD under a false flag, not
   // zeroed: "stale" and "never received" are different answers.
   //
+  // This lane carries an EXTERNAL base estimate — a simulator's ground truth,
+  // a motion-capture system, a vehicle's localisation. A raw IMU is not part
+  // of it: an IMU is an input an estimator turns INTO a base estimate, it
+  // arrives on its own source at its own rate, and bundling the two under one
+  // flag let a dropped IMU sample invalidate the external pose (and a pose
+  // source leak in wherever the IMU was read). The IMU lane below is its own.
+  //
   // Mirror seam: DeviceStateCache holds the twin of every field and
   // RtControllerNode copies them under DeviceCapability::kFloatingBase; the
   // test that spans the seam is named in architecture-rationale.md.
   std::array<double, kBasePoseDim> base_pose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
   std::array<double, kBaseTwistDim> base_twist{};
-  std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
-  int num_imu_sites{0};
   int64_t base_recv_steady_ns{0};
   uint64_t base_sequence{0};
   bool base_valid{false};
+  // IMU lane: raw gyro and accelerometer per IMU site, independent of the
+  // floating-base lane above.
+  //
+  // `imu[s]` is gyro xyz [rad/s] then accelerometer xyz [m/s²] in site s's own
+  // frame, for the first `num_imu_sites` sites; the rest stay zero. The
+  // accelerometer reads SPECIFIC force (a = R_siteᵀ·(p̈ − g)), so a site at
+  // rest reads +g along its up axis — the producer passes the sensor's own
+  // reading through and does not rotate, debias or gravity-compensate it.
+  //
+  // Receipt stamp, counter and validity are PER SITE, not per lane, for the
+  // same reason the inference lane's are per group: two IMUs on one body may
+  // come from different drivers at different rates, and a non-finite sample
+  // from one must not make the other unreadable. `imu_recv_steady_ns[s]` and
+  // `imu_sequence[s]` follow the inference twins' contract (steady axis,
+  // 0 = never received, monotonic within a run); `imu_valid[s]` is the
+  // producer's own verdict for that site, with values HELD under a false flag.
+  // A consumer that propagates on one site follows that site's counter; which
+  // site that is, is the consumer's configuration, not this POD's.
+  //
+  // Mirror seam: DeviceStateCache holds the twin of every field and
+  // RtControllerNode copies them under DeviceCapability::kImuState, the site
+  // arrays bounded by `num_imu_sites`; the seam test is named in
+  // architecture-rationale.md.
+  std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
+  int num_imu_sites{0};
+  std::array<int64_t, kMaxImuSites> imu_recv_steady_ns{};
+  std::array<uint64_t, kMaxImuSites> imu_sequence{};
+  std::array<bool, kMaxImuSites> imu_valid{};
   bool valid{false};
 };
 
@@ -375,7 +424,7 @@ struct DeviceState {
 }
 
 // Age of the floating-base lane's most recent sample, or negative when it has
-// never reported — SensorGroupAgeNs for the base lane (WD-16). Spelled here,
+// never reported — SensorGroupAgeNs for the base lane. Spelled here,
 // once, so the "never received is not infinitely old" distinction above is not
 // re-derived by each consumer of `base_recv_steady_ns`.
 [[nodiscard]] constexpr int64_t BaseAgeNs(const DeviceState& dev, int64_t now_steady_ns) noexcept {
@@ -399,6 +448,52 @@ struct DeviceState {
   }
   const int64_t age = BaseAgeNs(dev, now_steady_ns);
   return age >= 0 && age <= max_age_ns;
+}
+
+// Age of IMU site `site`'s most recent sample, or negative when that site has
+// never reported or is not one of the device's `num_imu_sites` — the IMU-lane
+// twin of SensorGroupAgeNs, with the same "never received is not infinitely
+// old" reading.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+[[nodiscard]] constexpr int64_t ImuSiteAgeNs(const DeviceState& dev, int site,
+                                             int64_t now_steady_ns) noexcept {
+  if (site < 0 || site >= kMaxImuSites || site >= dev.num_imu_sites) {
+    return -1;
+  }
+  const int64_t recv = dev.imu_recv_steady_ns[static_cast<size_t>(site)];
+  if (recv <= 0) {
+    return -1;
+  }
+  return now_steady_ns - recv;
+}
+
+// Whether IMU site `site` is both valid by its producer's verdict AND younger
+// than `max_age_ns` — IsBaseFresh for one IMU site, with the same two terms
+// and the same fail-closed readings (never received, a site outside the
+// device's count, and a non-positive bound all withhold).
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+[[nodiscard]] constexpr bool IsImuSiteFresh(const DeviceState& dev, int site, int64_t now_steady_ns,
+                                            int64_t max_age_ns) noexcept {
+  if (max_age_ns <= 0 || site < 0 || site >= kMaxImuSites || site >= dev.num_imu_sites) {
+    return false;
+  }
+  if (!dev.imu_valid[static_cast<size_t>(site)]) {
+    return false;
+  }
+  const int64_t age = ImuSiteAgeNs(dev, site, now_steady_ns);
+  return age >= 0 && age <= max_age_ns;
+}
+
+// Age of the joint lane's most recent message, or negative when none has
+// arrived — the joint-lane twin of BaseAgeNs. There is no IsJointFresh beside
+// it on purpose: the joint lane's usability verdict is the hole masks
+// (rtc::IsLaneReadable), and this age is the axis a consumer aligns the
+// joint lane against another lane's stamp on, not a second verdict.
+[[nodiscard]] constexpr int64_t JointAgeNs(const DeviceState& dev, int64_t now_steady_ns) noexcept {
+  if (dev.joint_recv_steady_ns <= 0) {
+    return -1;
+  }
+  return now_steady_ns - dev.joint_recv_steady_ns;
 }
 
 // Which of the three joint-space lanes a freshness question is about (#446).
@@ -652,7 +747,8 @@ enum class DeviceCapability : uint16_t {
   kMotorState = 1 << 1,    ///< motor_positions / motor_velocities / motor_efforts
   kSensorData = 1 << 2,    ///< sensor_data / sensor_data_raw
   kInference = 1 << 3,     ///< inference_data / inference_enable
-  kFloatingBase = 1 << 4,  ///< base_pose / base_twist / imu (WD-16)
+  kFloatingBase = 1 << 4,  ///< base_pose / base_twist and their stamp · counter · flag
+  kImuState = 1 << 5,      ///< imu / num_imu_sites and the per-site stamp · counter · flag
 };
 
 [[nodiscard]] inline constexpr uint16_t operator|(DeviceCapability lhs,

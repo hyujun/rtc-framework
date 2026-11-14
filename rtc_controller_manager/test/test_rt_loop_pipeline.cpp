@@ -21,6 +21,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -294,7 +295,7 @@ TEST_F(RtLoopPipelineTest, SensorLaneReceiptReachesTheControllerPerGroup) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
-// The same seam for the floating-base lane (WD-16, #976).
+// The same seam for the floating-base lane.
 //
 // A FOURTH seam test, for the same reason the third was not folded into the
 // first two: this lane has its own copy block, gated on its own capability
@@ -304,9 +305,8 @@ TEST_F(RtLoopPipelineTest, SensorLaneReceiptReachesTheControllerPerGroup) {
 // the seam is a copy, and a copy that changes a bit is a different defect from
 // one that drops a field, but both are defects.
 //
-// IMU site 1 with site 0 left zero by the stub, and num_imu_sites = 2, so the
-// bounded copy is pinned at BOTH ends: a copy of one site passes site 0 and
-// fails here; a count clipped to 1 fails on num_imu_sites.
+// The IMU arrays are NOT asserted here: they are their own lane, under their
+// own capability, and ImuLaneReachesTheControllerBitExact below pins them.
 TEST_F(RtLoopPipelineTest, FloatingBaseLaneReachesTheControllerBitExact) {
   constexpr int64_t kRecvNs = 2'345'678'901LL;
   constexpr uint64_t kSeq = 7U;
@@ -335,15 +335,206 @@ TEST_F(RtLoopPipelineTest, FloatingBaseLaneReachesTheControllerBitExact) {
               PipelineTestController::observed_base_twist[i].load(std::memory_order_relaxed))
         << "base_twist[" << i << "]";
   }
+  EXPECT_EQ(kRecvNs, PipelineTestController::observed_base_recv_ns.load(std::memory_order_relaxed));
+  EXPECT_EQ(kSeq, PipelineTestController::observed_base_sequence.load(std::memory_order_relaxed));
+  EXPECT_TRUE(PipelineTestController::observed_base_valid.load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// The same seam for the IMU lane — a FIFTH seam test, for the base lane's
+// reason: its own copy block under its own capability bit.
+//
+// Site 1's values with site 0's left zero by the stub, and num_imu_sites = 2,
+// so the bounded copy is pinned at BOTH ends: a copy of one site passes site 0
+// and fails on site 1; a count clipped to 1 fails on num_imu_sites. The
+// per-site stamp, counter and flag differ per site — and site 0's flag is the
+// one that is DOWN — so a copy that crosses sites, or one that copies a single
+// lane-wide value, fails on whichever site it got wrong.
+TEST_F(RtLoopPipelineTest, ImuLaneReachesTheControllerBitExact) {
+  constexpr std::array<int64_t, kMaxImuSites> kRecvNs{1'111'111'111LL, 2'222'222'222LL};
+  constexpr std::array<uint64_t, kMaxImuSites> kSeq{3U, 7U};
+  constexpr std::array<bool, kMaxImuSites> kValid{false, true};
+  PipelineStubBackend::has_imu_state.store(true, std::memory_order_relaxed);
+  for (std::size_t s = 0; s < kRecvNs.size(); ++s) {
+    PipelineStubBackend::imu_recv_steady_ns[s].store(kRecvNs[s], std::memory_order_relaxed);
+    PipelineStubBackend::imu_sequence[s].store(kSeq[s], std::memory_order_relaxed);
+    PipelineStubBackend::imu_valid[s].store(kValid[s], std::memory_order_relaxed);
+  }
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
   for (std::size_t i = 0; i < PipelineStubBackend::kImuSite1.size(); ++i) {
     EXPECT_EQ(PipelineStubBackend::kImuSite1[i],
               PipelineTestController::observed_imu_site1[i].load(std::memory_order_relaxed))
         << "imu[1][" << i << "]";
+    EXPECT_EQ(0.0, PipelineTestController::observed_imu_site0[i].load(std::memory_order_relaxed))
+        << "imu[0][" << i << "]";
   }
   EXPECT_EQ(2, PipelineTestController::observed_num_imu_sites.load(std::memory_order_relaxed));
-  EXPECT_EQ(kRecvNs, PipelineTestController::observed_base_recv_ns.load(std::memory_order_relaxed));
-  EXPECT_EQ(kSeq, PipelineTestController::observed_base_sequence.load(std::memory_order_relaxed));
+  for (std::size_t s = 0; s < kRecvNs.size(); ++s) {
+    EXPECT_EQ(kRecvNs[s],
+              PipelineTestController::observed_imu_recv_ns[s].load(std::memory_order_relaxed))
+        << "imu_recv_steady_ns[" << s << "]";
+    EXPECT_EQ(kSeq[s],
+              PipelineTestController::observed_imu_sequence[s].load(std::memory_order_relaxed))
+        << "imu_sequence[" << s << "]";
+    EXPECT_EQ(kValid[s],
+              PipelineTestController::observed_imu_valid[s].load(std::memory_order_relaxed))
+        << "imu_valid[" << s << "]";
+  }
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// An out-of-contract site count is bounded before the IMU copy, the way the
+// joint channel count is (issue #196 §4): a backend reporting more sites than
+// the lane has arrays must neither index past them nor hand the controller a
+// count it cannot index by.
+TEST_F(RtLoopPipelineTest, ImuSiteCountIsBoundedBeforeTheCopy) {
+  PipelineStubBackend::has_imu_state.store(true, std::memory_order_relaxed);
+  PipelineStubBackend::imu_num_sites.store(5, std::memory_order_relaxed);
+  PipelineStubBackend::imu_sequence[1].store(9U, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(kMaxImuSites,
+            PipelineTestController::observed_num_imu_sites.load(std::memory_order_relaxed));
+  EXPECT_EQ(PipelineStubBackend::kImuSite1[3],
+            PipelineTestController::observed_imu_site1[3].load(std::memory_order_relaxed));
+  EXPECT_EQ(9U, PipelineTestController::observed_imu_sequence[1].load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// The joint lane's receipt stamp and counter cross the seam bit-exact. They
+// are copied unconditionally, like the joint values they describe, so the
+// stub claims no optional lane here.
+TEST_F(RtLoopPipelineTest, JointLaneReceiptReachesTheController) {
+  constexpr int64_t kRecvNs = 3'456'789'012LL;
+  constexpr uint64_t kSeq = 11U;
+  PipelineStubBackend::joint_recv_steady_ns.store(kRecvNs, std::memory_order_relaxed);
+  PipelineStubBackend::joint_sequence.store(kSeq, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(kRecvNs,
+            PipelineTestController::observed_joint_recv_ns.load(std::memory_order_relaxed));
+  EXPECT_EQ(kSeq, PipelineTestController::observed_joint_sequence.load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// The two lanes are independent claims. A backend with an IMU and no base
+// source gets the IMU through and the base lane stays at "never received"
+// with its identity pose; ReadBaseState is not even called.
+TEST_F(RtLoopPipelineTest, ImuOnlyClaimLeavesTheBaseLaneNeverReceived) {
+  PipelineStubBackend::has_imu_state.store(true, std::memory_order_relaxed);
+  PipelineStubBackend::has_floating_base.store(false, std::memory_order_relaxed);
+  PipelineStubBackend::imu_recv_steady_ns[1].store(4'000, std::memory_order_relaxed);
+  PipelineStubBackend::imu_sequence[1].store(5U, std::memory_order_relaxed);
+  PipelineStubBackend::imu_valid[1].store(true, std::memory_order_relaxed);
+  PipelineStubBackend::base_recv_steady_ns.store(1, std::memory_order_relaxed);
+  PipelineStubBackend::base_sequence.store(1, std::memory_order_relaxed);
+  PipelineStubBackend::base_valid.store(true, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(2, PipelineTestController::observed_num_imu_sites.load(std::memory_order_relaxed));
+  EXPECT_EQ(PipelineStubBackend::kImuSite1[0],
+            PipelineTestController::observed_imu_site1[0].load(std::memory_order_relaxed));
+  EXPECT_EQ(4'000, PipelineTestController::observed_imu_recv_ns[1].load(std::memory_order_relaxed));
+  EXPECT_EQ(5U, PipelineTestController::observed_imu_sequence[1].load(std::memory_order_relaxed));
+  EXPECT_TRUE(PipelineTestController::observed_imu_valid[1].load(std::memory_order_relaxed));
+
+  EXPECT_FALSE(PipelineTestController::observed_base_valid.load(std::memory_order_relaxed));
+  EXPECT_EQ(0U, PipelineTestController::observed_base_sequence.load(std::memory_order_relaxed));
+  EXPECT_EQ(0, PipelineTestController::observed_base_recv_ns.load(std::memory_order_relaxed));
+  EXPECT_EQ(1.0, PipelineTestController::observed_base_pose[6].load(std::memory_order_relaxed));
+  EXPECT_EQ(0.0, PipelineTestController::observed_base_twist[0].load(std::memory_order_relaxed));
+  EXPECT_EQ(0, PipelineStubBackend::read_base_calls.load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// The reverse: a base-only backend gets the base through and the IMU lane
+// stays at "never received". The stub's ReadBaseState writes the IMU arrays
+// the way a producer from before the lane split did, so this is what pins
+// that the base copy no longer carries them — and ReadImuState is not called.
+TEST_F(RtLoopPipelineTest, BaseOnlyClaimLeavesTheImuLaneNeverReceived) {
+  PipelineStubBackend::has_floating_base.store(true, std::memory_order_relaxed);
+  PipelineStubBackend::has_imu_state.store(false, std::memory_order_relaxed);
+  PipelineStubBackend::base_recv_steady_ns.store(6'000, std::memory_order_relaxed);
+  PipelineStubBackend::base_sequence.store(2U, std::memory_order_relaxed);
+  PipelineStubBackend::base_valid.store(true, std::memory_order_relaxed);
+  PipelineStubBackend::imu_recv_steady_ns[1].store(1, std::memory_order_relaxed);
+  PipelineStubBackend::imu_sequence[1].store(1U, std::memory_order_relaxed);
+  PipelineStubBackend::imu_valid[1].store(true, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
   EXPECT_TRUE(PipelineTestController::observed_base_valid.load(std::memory_order_relaxed));
+  EXPECT_EQ(2U, PipelineTestController::observed_base_sequence.load(std::memory_order_relaxed));
+  EXPECT_EQ(6'000, PipelineTestController::observed_base_recv_ns.load(std::memory_order_relaxed));
+  EXPECT_EQ(PipelineStubBackend::kBasePose[0],
+            PipelineTestController::observed_base_pose[0].load(std::memory_order_relaxed));
+
+  EXPECT_EQ(0, PipelineTestController::observed_num_imu_sites.load(std::memory_order_relaxed));
+  for (std::size_t i = 0; i < PipelineStubBackend::kImuSite1.size(); ++i) {
+    EXPECT_EQ(0.0, PipelineTestController::observed_imu_site1[i].load(std::memory_order_relaxed))
+        << "imu[1][" << i << "] crossed under the base capability";
+  }
+  for (std::size_t s = 0; s < static_cast<std::size_t>(kMaxImuSites); ++s) {
+    EXPECT_EQ(0, PipelineTestController::observed_imu_recv_ns[s].load(std::memory_order_relaxed));
+    EXPECT_EQ(0U, PipelineTestController::observed_imu_sequence[s].load(std::memory_order_relaxed));
+    EXPECT_FALSE(PipelineTestController::observed_imu_valid[s].load(std::memory_order_relaxed));
+  }
+  EXPECT_EQ(0, PipelineStubBackend::read_imu_calls.load(std::memory_order_relaxed));
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));

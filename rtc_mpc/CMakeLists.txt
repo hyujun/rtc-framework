@@ -248,6 +248,11 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_contact_constraints_alloc_gate)
   add_mpc_gtest(test_barrier_costs)
   add_mpc_gtest(test_kinodynamic_ocp)
+  if(TEST test_kinodynamic_ocp)
+    # ~48 s alone on a dev PC; the 60 s default is overrun when the whole
+    # workspace's tests run in parallel.
+    set_tests_properties(test_kinodynamic_ocp PROPERTIES TIMEOUT 300)
+  endif()
   add_mpc_gtest(test_kinodynamic_ocp_alloc_gate)
   # The receding walk window through the handler core (package-private src/
   # headers): four 40-tick runs, past the 60 s default.

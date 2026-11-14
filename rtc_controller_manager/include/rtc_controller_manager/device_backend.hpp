@@ -232,13 +232,13 @@ class DeviceBackend {
   /// HasSensorState() is true.
   virtual void ReadSensorState(DeviceStateCache& /*cache*/) noexcept {}
 
-  /// True when this backend fills the floating-base lane (WD-16, #976) —
-  /// `base_pose` / `base_twist` / `imu` and their stamp, counter and flag in
+  /// True when this backend fills the floating-base lane —
+  /// `base_pose` / `base_twist` and their stamp, counter and flag in
   /// DeviceStateCache — from a source of its own (a simulator's ground-truth
   /// sensors, an estimator, a vehicle's localisation). CM derives
   /// DeviceCapability::kFloatingBase from this answer at configure, exactly
   /// as it derives kMotorState / kSensorData from the two above, and the RT
-  /// copy of the lane is gated on it; a fixed-base backend keeps the default
+  /// read and copy of the lane are gated on it; a fixed-base backend keeps the default
   /// and its controllers read the lane as "never received".
   ///
   /// A separate lane rather than part of ReadState() because its source is
@@ -252,6 +252,26 @@ class DeviceBackend {
   /// value, never blocks, never allocates, and `base_valid` is this backend's
   /// own freshness verdict — values are left in place when it goes false.
   virtual void ReadBaseState(DeviceStateCache& /*cache*/) noexcept {}
+
+  /// True when this backend fills the IMU lane — `imu` / `num_imu_sites` and
+  /// the per-site stamp, counter and flag in DeviceStateCache. CM derives
+  /// DeviceCapability::kImuState from this answer once, at configure, and
+  /// both the RT read and the copy are gated on that bit — so the answer must
+  /// not change after Configure(): a backend that starts claiming the lane
+  /// later is never read, and one that stops is read anyway.
+  ///
+  /// Separate from HasFloatingBase() because the two lanes are separate
+  /// claims: a robot with an IMU and no external base source has this lane
+  /// only, and a simulator may publish ground truth without an IMU. A backend
+  /// that answers true for both fills two lanes with independent verdicts —
+  /// a bad IMU sample must not invalidate the base pose, and the reverse.
+  [[nodiscard]] virtual bool HasImuState() const noexcept { return false; }
+
+  /// RT-safe IMU read. Default no-op; only meaningful when HasImuState() is
+  /// true. Same contract as ReadBaseState, per site: latest value, never
+  /// blocks, never allocates, `imu_valid[s]` is this backend's own verdict
+  /// for site s, and a site's values are left in place when it goes false.
+  virtual void ReadImuState(DeviceStateCache& /*cache*/) noexcept {}
 
   /// Last time a state message arrived on this backend (steady clock). Used
   /// by CM's E-STOP watchdog. RT-safe.
