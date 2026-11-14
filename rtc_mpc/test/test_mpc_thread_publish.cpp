@@ -573,6 +573,9 @@ TEST_F(MpcThreadPublishTest, ThePhaseTimeReAnchorsOnANewStateEpochOrAStampThatWe
   const double before_back = at_rewind + static_cast<double>(4'900'000'000ULL) * 1e-9;
   expect_time(5'000'000'000ULL, before_back);
   expect_time(2'000'000'000ULL, before_back);
+  // A new state epoch with a stamp that went forward re-anchors too.
+  mgr_.SetStateEpoch(2);
+  expect_time(2'500'000'000ULL, before_back);
   thread.StopAndJoin();
 }
 

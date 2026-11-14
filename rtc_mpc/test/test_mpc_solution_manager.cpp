@@ -525,6 +525,7 @@ TEST_F(MpcSolutionManagerTest, PlanFromAnotherStateEpochIsNotInstalled) {
   EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
   EXPECT_EQ(mgr_.EpochRejections(), 0u) << "a state epoch is not a model epoch";
   EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_FALSE(mgr_.HasEverReceivedSolution()) << "refused at arrival, never installed";
 
   // The same plan under the current state epoch installs.
   sol.state_epoch = 2;

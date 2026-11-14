@@ -254,7 +254,6 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
 
 void MPCSolutionManager::DropActivePlan() noexcept {
   interpolator_.Clear();
-  gain_installed_ = false;
   active_receive_stamp_ns_ = 0;
 }
 

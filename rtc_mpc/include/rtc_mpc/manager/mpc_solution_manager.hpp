@@ -341,7 +341,8 @@ class MPCSolutionManager {
   /// outlived its horizon (see the file comment). Consumer thread.
   void EvictIfExpired(uint64_t now_ns, uint32_t model_epoch, uint32_t state_epoch) noexcept;
 
-  /// Forget the active plan, its gain and its receive stamp. Consumer thread.
+  /// Forget the active plan and its receive stamp (the next accepted plan
+  /// sets `gain_installed_`). Consumer thread.
   void DropActivePlan() noexcept;
 
   TripleBuffer<MPCSolution> solution_buffer_;

@@ -187,6 +187,16 @@ TEST_F(MPCHandlerCoreFloatingTest, PacksTheNodeModesTheScheduleIdsAndTheStatePro
     EXPECT_EQ(out.node_mode[k], want) << "node " << k;
   }
 
+  // A horizon of fewer stages than the solve's nodes: the nodes past its
+  // stages are 0, whatever its unused stages hold.
+  horizon.n_stages = kHorizon - 1;
+  ASSERT_EQ(core_.Solve(ctx, state, ocp_, out), MPCSolveError::kNoError);
+  for (std::size_t k = 0; k < out.node_mode.size(); ++k) {
+    const std::uint32_t want =
+        k < static_cast<std::size_t>(kHorizon - 1) ? horizon.stages[k].mode : 0U;
+    EXPECT_EQ(out.node_mode[k], want) << "node " << k;
+  }
+
   // The reused slot under a context without a horizon: all modes and ids 0.
   // The state epoch changed, so this solve also starts cold.
   ASSERT_EQ(core_.Solve(ctx_, state_, ocp_, out), MPCSolveError::kNoError);
