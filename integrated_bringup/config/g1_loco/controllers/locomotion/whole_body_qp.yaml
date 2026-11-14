@@ -10,10 +10,24 @@
 # task works while its contact is released (swing), the torso task holds the
 # orientation only, the force task pulls λ toward the MPC's. Retuning belongs to
 # the sim evaluation (W8).
+#
+# solver.warm_start / constraints.contact.inactive_lambda: each solve starts
+# from the previous result with ProxQP's proximal step reset (from the
+# equality-constrained solution after a miss), and a released foot's force is
+# pinned to zero in the QP itself. With the library default (the previous
+# result and its proximal step, regularised released forces) this QP misses on
+# a few percent of the ticks of a gait, in chains, and can return SOLVED at a
+# non-optimal point on a support change. A miss is still bounded by
+# max_iter × max_iter_in inner iterations, not by the control period.
 locomotion_controller:
   whole_body_qp:
     formulation_type: wqp
-    solver: {eps_abs: 1.0e-6, max_iter: 200, max_iter_in: 500, dense_backend: PrimalDualLDLT}
+    solver:
+      eps_abs: 1.0e-6
+      max_iter: 200
+      max_iter_in: 500
+      dense_backend: PrimalDualLDLT
+      warm_start: previous_result_reset_mu
     contact:
       friction_coeff: 0.4
       friction_faces: 4
@@ -37,6 +51,7 @@ locomotion_controller:
       eom: {}
       contact:                         # Baumgarte on the stance feet, [lin; ang]
         baumgarte: {kp: [0, 0, 100, 80, 80, 80], kd: [20, 20, 10, 20, 20, 20]}
+        inactive_lambda: zero
       friction_cone: {}
       joint_limit: {position_margin: 0.05, velocity_margin: 0.1}
       torque_limit: {tau_scale: 1.0}
