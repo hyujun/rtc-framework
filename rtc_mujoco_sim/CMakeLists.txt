@@ -89,6 +89,7 @@ if(mujoco_FOUND)
   add_library(mujoco_simulator_lib STATIC
     src/mujoco_simulator.cpp
     src/mujoco_sim_loop.cpp
+    src/imu_noise_model.cpp
     src/object_pool.cpp
     src/projectile_ball.cpp
     src/ros2_resource_provider.cpp
@@ -170,6 +171,12 @@ if(mujoco_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pure_helpers.cpp")
       ament_add_gtest(test_pure_helpers test/test_pure_helpers.cpp)
       target_link_libraries(test_pure_helpers mujoco_simulator_lib)
+    endif()
+
+    # IMU export noise: pure helper (white + bias + bias walk), no MJCF needed.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_imu_noise_model.cpp")
+      ament_add_gtest(test_imu_noise_model test/test_imu_noise_model.cpp)
+      target_link_libraries(test_imu_noise_model mujoco_simulator_lib)
     endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_projectile_ball.cpp")

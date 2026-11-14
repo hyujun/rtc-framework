@@ -231,6 +231,7 @@ MJCF 에 `mjSENS_CONTACT` (MuJoCo ≥ 3.3.5) 가 있고 그룹 YAML 의 `contact
 | [mujoco_simulator.hpp](include/rtc_mujoco_sim/mujoco_simulator.hpp) | `MuJoCoSimulator` — 그룹 인덱스 기반 `SetCommand` / `GetPositions` / 콜백 등록 / `Pause` · `Resume` · `StepOnce` · `RequestReset` |
 | [ros2_resource_provider.hpp](include/rtc_mujoco_sim/ros2_resource_provider.hpp) | `rtc::RegisterRos2ResourceProvider()` — MJCF 안의 `package://` URI 를 `ament_index_cpp` 로 해석 |
 | [object_pool.hpp](include/rtc_mujoco_sim/object_pool.hpp) · [projectile_ball.hpp](include/rtc_mujoco_sim/projectile_ball.hpp) | pool / 공 설정 · 샘플링 순수 로직 |
+| [imu_noise_model.hpp](include/rtc_mujoco_sim/imu_noise_model.hpp) | `ImuNoiseModel` — IMU export 노이즈 (white · bias · bias walk) 순수 로직 |
 
 ## 설정
 
