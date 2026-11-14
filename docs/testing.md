@@ -181,7 +181,7 @@ grep -rE "rc=22|setaffinity failed|Thread config failed" ~/.ros/log/<run>/   # �
   --event-handlers console_direct+ --return-code-on-test-failure )
 ```
 
-조합 일부만 돌리려면 `GTEST_FILTER='*walk_rollout_1_over_dt*'` 를 더한다. worker slot 이 CM shield 안에 있어야 고정이 성공하므로 (밖이면 pool 거부) 병렬 soak 는 그 slot 을 담는 worker profile 의 shield 아래서 돈다 (`cpu_shield.sh on --sim --profile mpc_par_sim` 등, [repo_scripts/README.md](../repo_scripts/README.md)). online 예산 · publish 규칙은 `RTC_MPC_SOAK_MAX_ITERS` · `RTC_MPC_SOAK_AL_ITERS` · `RTC_MPC_SOAK_DEADLINE_MS` · `RTC_MPC_SOAK_PRIM_TOL` 로 바꾼다 (기본 10 · 1 · 출하 g1_loco 값). timeout · crash 는 gtest XML 에 남지 않으니 ctest 요약 (`colcon test-result`) 으로 판정한다.
+조합 일부만 돌리려면 `GTEST_FILTER='*walk_rollout_1_over_dt*'` 를 더한다. soak 는 test 프로세스라 cset shield 의 "user" cpuset 으로 adopt 되지 않는다 — shield 가 켜져 있으면 격리 코어로의 고정이 EINVAL 로 실패해 pool 이 거부된다. shield 를 끄고 돌리거나 (`cpu_shield.sh off`) `cset shield --exec` 로 shield 안에서 띄운다. slot 후보는 `get_mpc_worker_slots <ncpu> <profile>` ([repo_scripts/README.md](../repo_scripts/README.md)). online 예산 · publish 규칙은 `RTC_MPC_SOAK_MAX_ITERS` · `RTC_MPC_SOAK_AL_ITERS` · `RTC_MPC_SOAK_DEADLINE_MS` · `RTC_MPC_SOAK_PRIM_TOL` 로 바꾼다 (기본 10 · 1 · 출하 g1_loco 값). timeout · crash 는 gtest XML 에 남지 않으니 ctest 요약 (`colcon test-result`) 으로 판정한다.
 
 ### Tracing
 
