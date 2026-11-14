@@ -749,6 +749,7 @@ TEST_F(FloatingBounds, SolverKeysReachTheConfigAndBadOnesAreRefused) {
   n["verbose"] = true;
   n["update_preconditioner"] = true;
   n["eps_primal_inf"] = 5e-5;
+  n["warm_start"] = "previous_result_reset_mu";
   for (const char* backend : {"Automatic", "PrimalDualLDLT", "PrimalLDLT"}) {
     n["dense_backend"] = backend;
     const QPSolverConfig c = ParseQPSolverConfig(n, d);
@@ -759,6 +760,7 @@ TEST_F(FloatingBounds, SolverKeysReachTheConfigAndBadOnesAreRefused) {
     EXPECT_TRUE(c.verbose);
     EXPECT_TRUE(c.update_preconditioner);
     EXPECT_EQ(c.eps_primal_inf, 5e-5);
+    EXPECT_EQ(c.warm_start, WarmStartMode::kPreviousResultResetMu);
     const auto expect =
         std::string(backend) == "Automatic"        ? proxsuite::proxqp::DenseBackend::Automatic
         : std::string(backend) == "PrimalDualLDLT" ? proxsuite::proxqp::DenseBackend::PrimalDualLDLT
@@ -770,6 +772,22 @@ TEST_F(FloatingBounds, SolverKeysReachTheConfigAndBadOnesAreRefused) {
   EXPECT_EQ(kept.max_iter, d.max_iter);
   EXPECT_EQ(kept.dense_backend, d.dense_backend);
   EXPECT_EQ(ParseQPSolverConfig(YAML::Node(), d).eps_primal_inf, d.eps_primal_inf);
+  EXPECT_EQ(kept.warm_start, WarmStartMode::kPreviousResult);
+  EXPECT_EQ(ParseQPSolverConfig(YAML::Load("{warm_start: previous_result}"), d).warm_start,
+            WarmStartMode::kPreviousResult);
+  QPSolverConfig reset_mu_default = d;
+  reset_mu_default.warm_start = WarmStartMode::kPreviousResultResetMu;
+  EXPECT_EQ(ParseQPSolverConfig(YAML::Load("{}"), reset_mu_default).warm_start,
+            WarmStartMode::kPreviousResultResetMu)
+      << "a missing key keeps the default handed in";
+  EXPECT_EQ(
+      ParseQPSolverConfig(YAML::Load("{warm_start: previous_result}"), reset_mu_default).warm_start,
+      WarmStartMode::kPreviousResult);
+  for (const char* wrong : {"cached", "PreviousResult", "", "1"}) {
+    YAML::Node w;
+    w["warm_start"] = wrong;
+    EXPECT_THROW((void)ParseQPSolverConfig(w, d), std::invalid_argument) << wrong;
+  }
   YAML::Node bad;
   bad["dense_backend"] = "Fast";
   EXPECT_THROW((void)ParseQPSolverConfig(bad, d), std::invalid_argument);

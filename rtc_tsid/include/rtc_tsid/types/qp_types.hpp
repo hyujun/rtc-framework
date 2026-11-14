@@ -3,6 +3,7 @@
 #include <Eigen/Core>
 #include <yaml-cpp/yaml.h>
 
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -63,6 +64,15 @@ struct SolveResult {
   // ProxQP's OUTER (proximal / BCL) steps (info.iter_ext) — what
   // QPSolverConfig::max_iter bounds. 0 when no solve ran.
   int outer_iterations{0};
+  // The solve started from the previous solve's iterates (either
+  // WarmStartMode), not from zero or the equality-constrained solution.
+  bool warm_started{false};
+  // ProxQP's primal residual max(‖A x − b‖∞, ‖[C x − u]₊ + [C x − l]₋‖∞) and dual
+  // residual ‖H x + g + Aᵀ y + Cᵀ z‖∞ at the iterate it stopped at, in the
+  // caller's units — reported whether or not it converged (a failed solve
+  // tells how far it got). NaN when no solve ran.
+  double pri_res{std::numeric_limits<double>::quiet_NaN()};
+  double dua_res{std::numeric_limits<double>::quiet_NaN()};
   int levels_solved{0};  // WQP: 항상 1, HQP: 실제 solve한 level 수
   // Constraint rows assembled this tick (HQP: the shared constraints, without
   // the cascaded rows of earlier levels), and the rows of active constraints
@@ -83,6 +93,9 @@ struct SolveResult {
     solve_time_us = 0.0;
     iterations = 0;
     outer_iterations = 0;
+    warm_started = false;
+    pri_res = std::numeric_limits<double>::quiet_NaN();
+    dua_res = std::numeric_limits<double>::quiet_NaN();
     levels_solved = 0;
   }
 };

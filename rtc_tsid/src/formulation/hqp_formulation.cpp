@@ -235,13 +235,17 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
   int levels_solved = 0;
   result_.converged = false;
   // Per-tick accumulators (were never reset before #551, so solve_time_us /
-  // iterations grew across ticks). status / non_finite report the LAST level
-  // tried — the failed one when the cascade breaks.
+  // iterations grew across ticks). status / non_finite / warm_started and the
+  // residuals report the LAST level tried — the failed one when the cascade
+  // breaks.
   result_.status = -1;
   result_.non_finite = false;
   result_.solve_time_us = 0.0;
   result_.iterations = 0;
   result_.outer_iterations = 0;
+  result_.warm_started = false;
+  result_.pri_res = std::numeric_limits<double>::quiet_NaN();
+  result_.dua_res = std::numeric_limits<double>::quiet_NaN();
 
   for (int k = 0; k <= active_max_level_ && k < max_levels_; ++k) {
     const auto& task_indices = level_task_indices_[static_cast<size_t>(k)];
@@ -339,6 +343,9 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     result_.solve_time_us += solver_result.solve_time_us;
     result_.iterations += solver_result.iterations;
     result_.outer_iterations += solver_result.outer_iterations;
+    result_.warm_started = solver_result.warm_started;
+    result_.pri_res = solver_result.pri_res;
+    result_.dua_res = solver_result.dua_res;
 
     if (!solver_result.converged) {
       // Infeasible → 직전 level z* 사용
