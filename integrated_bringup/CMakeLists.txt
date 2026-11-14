@@ -1656,9 +1656,11 @@ if(BUILD_TESTING)
   # Layer C: verifies HasSensorState / ReadSensorState / OnWrench contract —
   # stride-7 inference_data packing, stale detection, NaN guard, per-tip
   # miss counter independence, recovery, and dead-slot zero-fill.
-  # Plus the floating-base lane (WD-16, #976): base_state.* names looked up in
-  # a SimSensorState, converted once, with the same verdict / stamp / counter
-  # contract as the wrench lane.
+  # Plus the floating-base lane (base_state.* names looked up in a
+  # SimSensorState, converted once) and the IMU lane (imu_state.*, raw per site),
+  # each with the wrench lane's verdict / stamp / counter contract, their shared
+  # or separate subscriptions and configure-time refusals, and the joint lane's
+  # receipt stamp and counter.
   ament_add_gtest(test_mujoco_native_backend test/test_mujoco_native_backend.cpp
     ENV ROS_DOMAIN_ID=52)
   target_link_libraries(test_mujoco_native_backend
@@ -1671,6 +1673,25 @@ if(BUILD_TESTING)
     rtc_base
     rtc_msgs
     geometry_msgs
+    sensor_msgs
+  )
+
+  # The installed g1_loco / b7_loco sim.yaml configure the body group's
+  # mujoco_native backend with both the floating-base and the IMU lane, in the
+  # IMU site order the installed locomotion_controller model.imu names.
+  ament_add_gtest(test_loco_imu_lane_shipped test/test_loco_imu_lane_shipped.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_link_libraries(test_loco_imu_lane_shipped
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_loco_imu_lane_shipped
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_manager
+    rtc_base
+    rtc_msgs
   )
 
   # MuJoCo ↔ pinocchio floating-base conventions (W0-F02, #976): the one
@@ -1983,7 +2004,8 @@ if(BUILD_TESTING)
   # ── UdpHandNativeBackend sensor lane test ─────────────────────────────────
   # The other producer of the fingertip lane's per-group receipt time and
   # sample counter plus the inference-block decode
-  # those assertions stand on. Same domain as its mujoco counterpart.
+  # those assertions stand on, and its joint lane's receipt stamp and counter.
+  # Same domain as its mujoco counterpart.
   ament_add_gtest(test_udp_hand_native_backend test/test_udp_hand_native_backend.cpp
     ENV ROS_DOMAIN_ID=52)
   target_link_libraries(test_udp_hand_native_backend
@@ -1995,6 +2017,7 @@ if(BUILD_TESTING)
     rtc_controller_manager
     rtc_base
     rtc_msgs
+    sensor_msgs
   )
 
   # Every state lane of every shipped backend routes through DeviceBackend's
@@ -2337,6 +2360,7 @@ if(BUILD_TESTING)
     test_hand_sensor_layout_gate
     test_task_goal_frames
     test_mujoco_native_backend
+    test_loco_imu_lane_shipped
     test_catching_traj_input
     test_catching_tracking
     test_catching_supervisor_scenarios

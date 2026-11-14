@@ -11,6 +11,11 @@
 // Plus the WriteCommand direct-copy contract (command-ordering convention):
 //   - published JointCommand carries joint_names == joint_command_names and
 //     values[i] == slot.commands[i] — no command-side reorder
+//
+// Plus the floating-base lane (base_state.*), the IMU lane (imu_state.*: raw
+// per-site values with a verdict, stamp and counter per site), how the two
+// share or split their SimSensorState subscriptions, their configure-time
+// refusals, and the joint lane's receipt stamp and message counter.
 
 #include "integrated_bringup/backends/floating_base_conventions.hpp"
 #include "integrated_bringup/backends/mujoco_native_backend.hpp"
@@ -25,6 +30,7 @@
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 
 #include <gtest/gtest.h>
 
@@ -35,6 +41,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -563,7 +570,7 @@ TEST_F(MujocoNativeBackendTest, StaleTip_KeepsReceiptSoAgeStaysComputable) {
   EXPECT_EQ(stale.inference_sequence[0], fresh.inference_sequence[0]);
 }
 
-// ── Floating-base lane (WD-16, #976) ─────────────────────────────────────────
+// ── Floating-base lane ───────────────────────────────────────────────────────
 //
 // The backend looks the configured MJCF sensor names up in a SimSensorState,
 // guards them, and hands the arrays to floating_base_conventions.hpp. These
@@ -963,6 +970,523 @@ TEST(MujocoBaseLaneBudgetTest, OwnMissBudgetOverridesSharedOne) {
   EXPECT_TRUE(cache.base_valid);
   backend->ReadBaseState(cache);  // miss 2 == own budget → invalid (shared would allow 5)
   EXPECT_FALSE(cache.base_valid);
+
+  exec.remove_node(node->get_node_base_interface());
+}
+
+// ── IMU lane ─────────────────────────────────────────────────────────────────
+//
+// The IMU is its own lane beside the base lane: raw values in each site's own
+// frame, and a verdict, stamp and counter per SITE. The cases below pin the
+// per-site independence (one site stale or refused while the other and the
+// base keep going), the raw pass-through, the shared and separate
+// subscription shapes, and the configure-time refusals.
+
+class MujocoImuLaneTest : public MujocoBaseLaneTest {
+ protected:
+  // Publishes and pumps until IMU site `site`'s counter moves (or, for a
+  // sample that site must refuse, for a fixed grace period).
+  void PublishForImu(const rtc_msgs::msg::SimSensorState& msg, std::size_t site,
+                     bool expect_accept) {
+    rtc::DeviceStateCache probe{};
+    backend_->ReadImuState(probe);
+    const uint64_t seq_before = probe.imu_sequence[site];
+    pub_->publish(msg);
+    const auto deadline = std::chrono::steady_clock::now() + (expect_accept ? 2000ms : 300ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+      executor_->spin_some(20ms);
+      if (expect_accept) {
+        backend_->ReadImuState(probe);
+        if (probe.imu_sequence[site] != seq_before)
+          return;
+      }
+    }
+    if (expect_accept) {
+      FAIL() << "IMU site " << site << " sample never accepted";
+    }
+  }
+};
+
+TEST_F(MujocoImuLaneTest, HasImuState_TrueWithImuStateConfig) {
+  EXPECT_TRUE(backend_->HasImuState());
+  EXPECT_TRUE(backend_->HasFloatingBase());
+}
+
+// 1 message → each site's six values are the message's own, bit for bit (no
+// conversion: site frame, raw), valid, counter 1, stamped. One subscription
+// reads the clock once per message, so both sites and the base share a stamp.
+TEST_F(MujocoImuLaneTest, OneMessage_RawPerSiteValuesValidSequenceAndStamp) {
+  const BaseInputs in;
+  Publish(BaseMessage(in), /*expect_accept=*/true);
+
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  backend_->ReadImuState(cache);
+  ASSERT_EQ(cache.num_imu_sites, 2);
+  for (std::size_t s = 0; s < 2; ++s) {
+    for (std::size_t i = 0; i < 3; ++i) {
+      EXPECT_EQ(cache.imu[s][i], in.gyro[s][i]) << "site " << s << " gyro " << i;
+      EXPECT_EQ(cache.imu[s][3 + i], in.accel[s][i]) << "site " << s << " accel " << i;
+    }
+    EXPECT_TRUE(cache.imu_valid[s]) << "site " << s;
+    EXPECT_EQ(cache.imu_sequence[s], 1U) << "site " << s;
+    EXPECT_GT(cache.imu_recv_steady_ns[s], 0) << "site " << s;
+    EXPECT_EQ(cache.imu_recv_steady_ns[s], cache.base_recv_steady_ns) << "site " << s;
+  }
+}
+
+TEST_F(MujocoImuLaneTest, SecondMessage_AdvancesEverySiteByOne) {
+  BaseInputs in;
+  Publish(BaseMessage(in), true);
+  in.gyro[0][0] = 7.0;
+  Publish(BaseMessage(in), true);
+  rtc::DeviceStateCache cache{};
+  backend_->ReadImuState(cache);
+  EXPECT_EQ(cache.imu_sequence[0], 2U);
+  EXPECT_EQ(cache.imu_sequence[1], 2U);
+  EXPECT_EQ(cache.imu[0][0], 7.0);
+}
+
+// The RT read is not a sample: reading again without a message moves neither
+// the counter nor the stamp of any site.
+TEST_F(MujocoImuLaneTest, RepeatedReadsWithoutMessage_SequenceAndStampUnchanged) {
+  Publish(BaseMessage(BaseInputs{}), true);
+  rtc::DeviceStateCache first{};
+  backend_->ReadImuState(first);
+  ASSERT_EQ(first.imu_sequence[0], 1U);
+  for (int i = 0; i < 3; ++i) {
+    rtc::DeviceStateCache again{};
+    backend_->ReadImuState(again);
+    EXPECT_EQ(again.imu_sequence, first.imu_sequence);
+    EXPECT_EQ(again.imu_recv_steady_ns, first.imu_recv_steady_ns);
+  }
+}
+
+// A non-finite value on site 1 drops site 1 only: its values, stamp and
+// counter stay those of its last accepted sample, while site 0 and the base of
+// the same message are accepted.
+TEST_F(MujocoImuLaneTest, NonFiniteOnOneSite_DropsThatSiteOnly) {
+  const BaseInputs good;
+  Publish(BaseMessage(good), true);
+  rtc::DeviceStateCache before{};
+  backend_->ReadBaseState(before);
+  backend_->ReadImuState(before);
+
+  BaseInputs bad = good;
+  bad.gyro[1][0] = std::numeric_limits<double>::infinity();
+  bad.gyro[0][0] = 5.0;
+  bad.pos[0] = 3.0;
+  PublishForImu(BaseMessage(bad), 0, /*expect_accept=*/true);
+
+  rtc::DeviceStateCache after{};
+  backend_->ReadBaseState(after);
+  backend_->ReadImuState(after);
+  EXPECT_EQ(after.imu_sequence[0], before.imu_sequence[0] + 1);
+  EXPECT_EQ(after.imu[0][0], 5.0);
+  EXPECT_GT(after.imu_recv_steady_ns[0], before.imu_recv_steady_ns[0]);
+  EXPECT_EQ(after.imu_sequence[1], before.imu_sequence[1]);
+  EXPECT_EQ(after.imu_recv_steady_ns[1], before.imu_recv_steady_ns[1]);
+  EXPECT_EQ(after.imu[1], before.imu[1]);
+  EXPECT_EQ(after.base_sequence, before.base_sequence + 1);
+  EXPECT_DOUBLE_EQ(after.base_pose[0], 3.0);
+}
+
+// The case a lane-wide counter would pass: site 1 refused budget + 1 messages
+// in a row goes stale on its own while site 0 stays fresh and only site 0's
+// counter moves.
+TEST_F(MujocoImuLaneTest, OneSiteRefusedPastBudget_OnlyThatSiteGoesStale) {
+  const BaseInputs good;
+  Publish(BaseMessage(good), true);
+  rtc::DeviceStateCache cache{};
+  backend_->ReadImuState(cache);
+  ASSERT_TRUE(cache.imu_valid[0]);
+  ASSERT_TRUE(cache.imu_valid[1]);
+  const auto held = cache.imu[1];
+
+  BaseInputs bad = good;
+  bad.gyro[1][2] = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < kMaxMissedTicks + 1; ++i) {
+    PublishForImu(BaseMessage(bad), 0, /*expect_accept=*/true);
+  }
+  backend_->ReadImuState(cache);
+  EXPECT_TRUE(cache.imu_valid[0]);
+  EXPECT_FALSE(cache.imu_valid[1]);
+  EXPECT_EQ(cache.imu_sequence[0], 1U + static_cast<uint64_t>(kMaxMissedTicks + 1));
+  EXPECT_EQ(cache.imu_sequence[1], 1U);
+  EXPECT_EQ(cache.imu[1], held);
+}
+
+// A zero base quaternion is the base lane's refusal: the IMU of that message
+// is accepted.
+TEST_F(MujocoImuLaneTest, ZeroBaseQuaternion_DropsBaseOnlyImuAccepted) {
+  const BaseInputs good;
+  Publish(BaseMessage(good), true);
+  BaseInputs bad = good;
+  bad.quat_wxyz = {0.0, 0.0, 0.0, 0.0};
+  bad.accel[0][2] = 9.5;
+  PublishForImu(BaseMessage(bad), 0, /*expect_accept=*/true);
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  backend_->ReadImuState(cache);
+  EXPECT_EQ(cache.base_sequence, 1U);
+  EXPECT_EQ(cache.imu_sequence[0], 2U);
+  EXPECT_EQ(cache.imu_sequence[1], 2U);
+  EXPECT_EQ(cache.imu[0][5], 9.5);
+}
+
+// An IMU site whose sensors the message does not carry never becomes valid;
+// the other site and the base do.
+TEST_F(MujocoImuLaneTest, MissingImuName_ThatSiteNeverValidBaseValid) {
+  Publish(BaseMessage(BaseInputs{}, /*num_imu=*/1), true);
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  backend_->ReadImuState(cache);
+  EXPECT_TRUE(cache.base_valid);
+  EXPECT_TRUE(cache.imu_valid[0]);
+  EXPECT_EQ(cache.imu_sequence[0], 1U);
+  EXPECT_FALSE(cache.imu_valid[1]);
+  EXPECT_EQ(cache.imu_sequence[1], 0U);
+  EXPECT_EQ(cache.imu_recv_steady_ns[1], 0);
+}
+
+// A base sensor the message does not carry keeps the base never valid; the
+// IMU of the same messages is accepted.
+TEST_F(MujocoImuLaneTest, MissingBaseName_BaseNeverValidImuValid) {
+  auto msg = BaseMessage(BaseInputs{});
+  for (auto it = msg.sensors.begin(); it != msg.sensors.end(); ++it) {
+    if (it->name == kPosName) {
+      msg.sensors.erase(it);
+      break;
+    }
+  }
+  PublishForImu(msg, 0, /*expect_accept=*/true);
+  rtc::DeviceStateCache cache{};
+  backend_->ReadBaseState(cache);
+  backend_->ReadImuState(cache);
+  EXPECT_FALSE(cache.base_valid);
+  EXPECT_EQ(cache.base_sequence, 0U);
+  EXPECT_TRUE(cache.imu_valid[0]);
+  EXPECT_TRUE(cache.imu_valid[1]);
+}
+
+// Past the budget every site's flag goes false with its values, stamp and
+// counter held; the next message brings it back.
+TEST_F(MujocoImuLaneTest, Stale_AfterMaxMissedTicks_ClearsValidKeepsValuesRecovers) {
+  const BaseInputs in;
+  Publish(BaseMessage(in), true);
+  rtc::DeviceStateCache fresh{};
+  backend_->ReadImuState(fresh);
+  ASSERT_TRUE(fresh.imu_valid[0]);
+
+  rtc::DeviceStateCache cache{};
+  for (int i = 0; i < kMaxMissedTicks; ++i) {
+    backend_->ReadImuState(cache);
+  }
+  for (std::size_t s = 0; s < 2; ++s) {
+    EXPECT_FALSE(cache.imu_valid[s]) << "site " << s;
+    EXPECT_EQ(cache.imu[s], fresh.imu[s]) << "site " << s;
+    EXPECT_EQ(cache.imu_recv_steady_ns[s], fresh.imu_recv_steady_ns[s]) << "site " << s;
+    EXPECT_EQ(cache.imu_sequence[s], fresh.imu_sequence[s]) << "site " << s;
+  }
+
+  Publish(BaseMessage(in), true);
+  backend_->ReadImuState(cache);
+  EXPECT_TRUE(cache.imu_valid[0]);
+  EXPECT_TRUE(cache.imu_valid[1]);
+  EXPECT_EQ(cache.imu_sequence[0], 2U);
+}
+
+// ── Lane configurations ──────────────────────────────────────────────────────
+
+// A backend configured from `params` alone, with a publisher per topic it may
+// listen on. No fixture state is shared with the cases above.
+class LaneRig {
+ public:
+  LaneRig(const std::string& tag, const std::vector<rclcpp::Parameter>& params) {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides(params);
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_mujoco_lane_" + tag, options);
+    group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    rtc::DeviceBackendConfig cfg;
+    cfg.group_name = kGroup;
+    cfg.type = "mujoco_native";
+    cfg.state_topic = "/test_mujoco_lane_" + tag + "/joint_states";
+    cfg.command_topic = "/test_mujoco_lane_" + tag + "/joint_command";
+    backend_ = std::make_unique<rtc::MujocoNativeBackend>();
+    backend_->Configure(node_.get(), cfg, group_);
+    exec_.add_node(node_->get_node_base_interface());
+  }
+
+  ~LaneRig() { exec_.remove_node(node_->get_node_base_interface()); }
+
+  LaneRig(const LaneRig&) = delete;
+  LaneRig& operator=(const LaneRig&) = delete;
+
+  static constexpr const char* kGroup = "test_lane_cfg";
+
+  static std::string Key(const std::string& leaf) {
+    return std::string("devices.") + kGroup + ".backend." + leaf;
+  }
+
+  // Publishes `msg` on `topic` until `done` holds (or 2 s pass).
+  template <typename Pred>
+  [[nodiscard]] bool PublishUntil(const std::string& topic,
+                                  const rtc_msgs::msg::SimSensorState& msg, Pred done) {
+    rclcpp::QoS qos{1};
+    qos.best_effort();
+    auto pub = node_->create_publisher<rtc_msgs::msg::SimSensorState>(topic, qos);
+    pub->on_activate();
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      pub->publish(msg);
+      exec_.spin_some(20ms);
+      if (done()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Waits until `topic` has `expected` subscriptions, then holds a moment so
+  // a late extra one would show.
+  [[nodiscard]] std::size_t SubscriptionsOn(const std::string& topic, std::size_t expected) {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (node_->count_subscribers(topic) < expected &&
+           std::chrono::steady_clock::now() < deadline) {
+      exec_.spin_some(10ms);
+    }
+    std::this_thread::sleep_for(100ms);
+    exec_.spin_some(10ms);
+    return node_->count_subscribers(topic);
+  }
+
+  rtc::MujocoNativeBackend& backend() { return *backend_; }
+
+ private:
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+  rclcpp::CallbackGroup::SharedPtr group_;
+  rclcpp::executors::SingleThreadedExecutor exec_;
+  std::unique_ptr<rtc::MujocoNativeBackend> backend_;
+};
+
+std::vector<rclcpp::Parameter> BaseParams(const std::string& topic) {
+  return {
+      rclcpp::Parameter(LaneRig::Key("base_state.sensor_topic"), topic),
+      rclcpp::Parameter(LaneRig::Key("base_state.pos"), std::string(kPosName)),
+      rclcpp::Parameter(LaneRig::Key("base_state.quat"), std::string(kQuatName)),
+      rclcpp::Parameter(LaneRig::Key("base_state.linvel"), std::string(kLinvelName)),
+      rclcpp::Parameter(LaneRig::Key("base_state.angvel"), std::string(kAngvelName)),
+  };
+}
+
+std::vector<rclcpp::Parameter> ImuParams(const std::string& topic,
+                                         const std::vector<std::string>& sites = kSiteNames,
+                                         const std::vector<std::string>& gyro = kGyroNames,
+                                         const std::vector<std::string>& accel = kAccelNames) {
+  return {
+      rclcpp::Parameter(LaneRig::Key("imu_state.sensor_topic"), topic),
+      rclcpp::Parameter(LaneRig::Key("imu_state.site_names"), sites),
+      rclcpp::Parameter(LaneRig::Key("imu_state.gyro"), gyro),
+      rclcpp::Parameter(LaneRig::Key("imu_state.accel"), accel),
+  };
+}
+
+std::vector<rclcpp::Parameter> Join(std::vector<rclcpp::Parameter> a,
+                                    const std::vector<rclcpp::Parameter>& b) {
+  a.insert(a.end(), b.begin(), b.end());
+  return a;
+}
+
+TEST(MujocoLaneConfigTest, ImuOnlyConfig_ClaimsImuNotBase) {
+  const std::string topic = "/test_mujoco_lane_imu_only/sim_sensors";
+  LaneRig rig("imu_only", ImuParams(topic));
+  EXPECT_TRUE(rig.backend().HasImuState());
+  EXPECT_FALSE(rig.backend().HasFloatingBase());
+  ASSERT_TRUE(rig.PublishUntil(topic, BaseMessage(BaseInputs{}), [&rig] {
+    rtc::DeviceStateCache c{};
+    rig.backend().ReadImuState(c);
+    return c.imu_sequence[0] == 1U;
+  })) << "IMU sample never accepted";
+  rtc::DeviceStateCache cache{};
+  rig.backend().ReadImuState(cache);
+  EXPECT_EQ(cache.imu_sequence[1], 1U);
+  rig.backend().ReadBaseState(cache);
+  EXPECT_EQ(cache.base_sequence, 0U);
+}
+
+TEST(MujocoLaneConfigTest, BaseOnlyConfig_ClaimsBaseNotImu) {
+  const std::string topic = "/test_mujoco_lane_base_only/sim_sensors";
+  LaneRig rig("base_only", BaseParams(topic));
+  EXPECT_TRUE(rig.backend().HasFloatingBase());
+  EXPECT_FALSE(rig.backend().HasImuState());
+  ASSERT_TRUE(rig.PublishUntil(topic, BaseMessage(BaseInputs{}), [&rig] {
+    rtc::DeviceStateCache c{};
+    rig.backend().ReadBaseState(c);
+    return c.base_sequence == 1U;
+  })) << "base sample never accepted";
+  rtc::DeviceStateCache cache{};
+  rig.backend().ReadImuState(cache);
+  EXPECT_EQ(cache.num_imu_sites, 0);
+  EXPECT_EQ(cache.imu_sequence[0], 0U);
+  EXPECT_EQ(cache.imu_sequence[1], 0U);
+}
+
+// One topic → one subscription that decodes both lanes; two topics → one
+// subscription each, and each lane takes only its own topic's messages.
+TEST(MujocoLaneConfigTest, SharedTopic_OneSubscription) {
+  const std::string topic = "/test_mujoco_lane_shared/sim_sensors";
+  LaneRig rig("shared", Join(BaseParams(topic), ImuParams(topic)));
+  ASSERT_TRUE(rig.backend().HasFloatingBase());
+  ASSERT_TRUE(rig.backend().HasImuState());
+  EXPECT_EQ(rig.SubscriptionsOn(topic, 1), 1U);
+}
+
+TEST(MujocoLaneConfigTest, TwoTopics_TwoSubscriptionsEachLaneAccepts) {
+  const std::string base_topic = "/test_mujoco_lane_two/base_sensors";
+  const std::string imu_topic = "/test_mujoco_lane_two/imu_sensors";
+  LaneRig rig("two", Join(BaseParams(base_topic), ImuParams(imu_topic)));
+  ASSERT_TRUE(rig.backend().HasFloatingBase());
+  ASSERT_TRUE(rig.backend().HasImuState());
+  EXPECT_EQ(rig.SubscriptionsOn(base_topic, 1), 1U);
+  EXPECT_EQ(rig.SubscriptionsOn(imu_topic, 1), 1U);
+
+  ASSERT_TRUE(rig.PublishUntil(base_topic, BaseMessage(BaseInputs{}), [&rig] {
+    rtc::DeviceStateCache c{};
+    rig.backend().ReadBaseState(c);
+    return c.base_sequence == 1U;
+  })) << "base sample never accepted on its own topic";
+  rtc::DeviceStateCache cache{};
+  rig.backend().ReadImuState(cache);
+  EXPECT_EQ(cache.imu_sequence[0], 0U) << "the IMU lane read the base topic";
+
+  ASSERT_TRUE(rig.PublishUntil(imu_topic, BaseMessage(BaseInputs{}), [&rig] {
+    rtc::DeviceStateCache c{};
+    rig.backend().ReadImuState(c);
+    return c.imu_sequence[0] == 1U;
+  })) << "IMU sample never accepted on its own topic";
+  rig.backend().ReadBaseState(cache);
+  EXPECT_EQ(cache.base_sequence, 1U) << "the base lane read the IMU topic";
+}
+
+// The bundled lane's IMU keys under base_state refuse BOTH lanes — claiming
+// the base alone would lose the IMU without a word.
+TEST(MujocoLaneConfigTest, LeftoverBaseStateImuKeys_RefuseBothLanes) {
+  const std::string topic = "/test_mujoco_lane_leftover/sim_sensors";
+  auto params = Join(BaseParams(topic), ImuParams(topic));
+  params.emplace_back(LaneRig::Key("base_state.imu_gyro"), kGyroNames);
+  LaneRig rig("leftover", params);
+  EXPECT_FALSE(rig.backend().HasFloatingBase());
+  EXPECT_FALSE(rig.backend().HasImuState());
+
+  auto accel_only = BaseParams(topic);
+  accel_only.emplace_back(LaneRig::Key("base_state.imu_accel"), kAccelNames);
+  LaneRig rig2("leftover_accel", accel_only);
+  EXPECT_FALSE(rig2.backend().HasFloatingBase());
+  EXPECT_FALSE(rig2.backend().HasImuState());
+}
+
+// Each IMU configuration error refuses the IMU lane and leaves the base lane
+// claimed; the unedited lists (first case) are the passing twin.
+TEST(MujocoLaneConfigTest, ImuConfigError_RefusesImuOnlyBaseKept) {
+  const std::string topic = "/test_mujoco_lane_err/sim_sensors";
+
+  struct Case {
+    const char* what;
+    std::vector<std::string> sites;
+    std::vector<std::string> gyro;
+    std::vector<std::string> accel;
+    bool imu_claimed;
+  };
+
+  const std::vector<Case> cases = {
+      {"valid", kSiteNames, kGyroNames, kAccelNames, true},
+      {"no sites", {}, {}, {}, false},
+      {"duplicate site", {"site_a", "site_a"}, kGyroNames, kAccelNames, false},
+      {"over capacity", {"a", "b", "c"}, {"g0", "g1", "g2"}, {"a0", "a1", "a2"}, false},
+      {"gyro length", kSiteNames, {"imu_a_gyro"}, kAccelNames, false},
+      {"accel length", kSiteNames, kGyroNames, {"imu_a_accel"}, false},
+      {"empty name", kSiteNames, {"imu_a_gyro", ""}, kAccelNames, false},
+  };
+  int i = 0;
+  for (const Case& c : cases) {
+    LaneRig rig("err" + std::to_string(i++),
+                Join(BaseParams(topic), ImuParams(topic, c.sites, c.gyro, c.accel)));
+    EXPECT_EQ(rig.backend().HasImuState(), c.imu_claimed) << c.what;
+    EXPECT_TRUE(rig.backend().HasFloatingBase()) << c.what;
+  }
+}
+
+// And the reverse: a base configuration error refuses the base lane only.
+TEST(MujocoLaneConfigTest, BaseConfigError_RefusesBaseOnlyImuKept) {
+  const std::string topic = "/test_mujoco_lane_base_err/sim_sensors";
+  auto params = Join(BaseParams(topic), ImuParams(topic));
+  params.erase(params.begin() + 2);  // base_state.linvel
+  LaneRig rig("base_err", params);
+  EXPECT_FALSE(rig.backend().HasFloatingBase());
+  EXPECT_TRUE(rig.backend().HasImuState());
+}
+
+// ── Joint-lane receipt stamp and counter ─────────────────────────────────────
+
+TEST(MujocoJointReceiptTest, StampsReceiptAndCountsEveryMessage) {
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_mujoco_joint_receipt");
+  auto group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  rtc::DeviceBackendConfig cfg;
+  cfg.group_name = "test_joint_receipt";
+  cfg.type = "mujoco_native";
+  cfg.state_topic = "/test_mujoco_joint_receipt/joint_states";
+  cfg.command_topic = "/test_mujoco_joint_receipt/joint_command";
+  cfg.joint_command_names = {"j0", "j1"};
+  rtc::MujocoNativeBackend backend;
+  backend.Configure(node.get(), cfg, group);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  rclcpp::QoS qos{1};
+  qos.best_effort();
+  auto pub = node->create_publisher<sensor_msgs::msg::JointState>(cfg.state_topic, qos);
+  pub->on_activate();
+
+  sensor_msgs::msg::JointState msg;
+  msg.name = {"j0", "j1"};
+  msg.position = {1.0, 2.0};
+  const auto deliver = [&](uint64_t want) {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    rtc::DeviceStateCache c{};
+    pub->publish(msg);
+    while (std::chrono::steady_clock::now() < deadline) {
+      exec.spin_some(20ms);
+      static_cast<void>(backend.ReadState(c));
+      if (c.joint_sequence >= want)
+        return c;
+    }
+    return c;
+  };
+
+  rtc::DeviceStateCache before{};
+  static_cast<void>(backend.ReadState(before));
+  EXPECT_EQ(before.joint_sequence, 0U);
+  EXPECT_EQ(before.joint_recv_steady_ns, 0);
+
+  const rtc::DeviceStateCache first = deliver(1);
+  ASSERT_EQ(first.joint_sequence, 1U);
+  EXPECT_GT(first.joint_recv_steady_ns, 0);
+  // The same clock read as the watchdog stamp.
+  EXPECT_EQ(first.joint_recv_steady_ns, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                            backend.LastStateStamp().time_since_epoch())
+                                            .count());
+
+  const rtc::DeviceStateCache second = deliver(2);
+  ASSERT_EQ(second.joint_sequence, 2U);
+  EXPECT_GE(second.joint_recv_steady_ns, first.joint_recv_steady_ns);
+
+  rtc::DeviceStateCache read1{};
+  rtc::DeviceStateCache read2{};
+  static_cast<void>(backend.ReadState(read1));
+  static_cast<void>(backend.ReadState(read2));
+  EXPECT_EQ(read1.joint_sequence, 2U);
+  EXPECT_EQ(read2.joint_sequence, 2U);
+  EXPECT_EQ(read1.joint_recv_steady_ns, second.joint_recv_steady_ns);
+  EXPECT_EQ(read2.joint_recv_steady_ns, second.joint_recv_steady_ns);
 
   exec.remove_node(node->get_node_base_interface());
 }
