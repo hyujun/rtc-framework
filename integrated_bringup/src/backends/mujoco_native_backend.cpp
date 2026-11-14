@@ -342,8 +342,10 @@ void MujocoNativeBackend::OnSimSensorState(const rtc_msgs::msg::SimSensorState& 
   // wrench lanes (#349): it is load on the same FIFO thread.
   RTC_TRACE_SCOPE("MujocoNativeBackend::OnSimSensorState");
   StateLaneTimingScope timing_scope(*this);
-  // One receipt time per message, for both lanes: a consumer comparing the
-  // base and IMU stamps of one message must see them equal.
+  // One receipt time per message, for both lanes: both record the same stamp
+  // for one message. The RT side reads the two mirrors with separate Loads, so
+  // one tick may still see the base of one message and the IMU of the next —
+  // the stamps and counters are what tell a consumer which.
   const int64_t recv_steady_ns = rtc::SteadyNowNs();
   // Both decoders run whatever the first one decided — no early return.
   if (decode_base) {

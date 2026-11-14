@@ -75,9 +75,10 @@ namespace rtc {
 //
 // Subscriptions of the two lanes:
 //   - Same `sensor_topic` → ONE subscription; its callback reads the receipt
-//     clock once and runs DecodeBase then DecodeImu, so the two lanes' stamps
-//     of one message are equal and a refusal by one decoder never skips the
-//     other.
+//     clock once and runs DecodeBase then DecodeImu, so both lanes record the
+//     same stamp for one message and a refusal by one decoder never skips the
+//     other. The two mirrors are still read separately: one RT tick may see
+//     the base of one message and the IMU of the next.
 //   - Different topics → two subscriptions; only one lane configured → that
 //     one only. Every subscription is on the state callback group and goes
 //     through GuardStateLane.
@@ -225,8 +226,8 @@ class MujocoNativeBackend : public DeviceBackend {
 
   // ── Floating-base and IMU lanes ────────────────────────────────────────────
   // One SimSensorState message, decoded for the lanes its subscription feeds.
-  // The receipt clock is read ONCE here and handed to both decoders, so the
-  // two lanes' stamps of a shared message are equal; each decoder accepts or
+  // The receipt clock is read ONCE here and handed to both decoders, so both
+  // lanes record the same stamp for a shared message; each decoder accepts or
   // drops its own lane and neither one's verdict skips the other.
   void OnSimSensorState(const rtc_msgs::msg::SimSensorState& msg, bool decode_base,
                         bool decode_imu) noexcept;
