@@ -30,10 +30,12 @@ constexpr int kNc = 0;
 constexpr int kHorizon = 10;
 constexpr double kDtNode = 0.01;
 
-/// Build a trivially valid solution whose q(t) is linear, identity Riccati.
+/// Build a trivially valid solution whose q(t) is linear, identity Riccati,
+/// observed at @p timestamp (the consumer clock the tests sample with).
 MPCSolution MakeSolution(uint64_t timestamp = 1) {
   MPCSolution sol{};
   sol.timestamp_ns = timestamp;
+  sol.observation_stamp_ns = timestamp;
   sol.horizon_length = kHorizon;
   sol.dt_node = kDtNode;
   sol.converged = true;

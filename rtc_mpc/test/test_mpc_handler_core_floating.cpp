@@ -1,7 +1,9 @@
 /// @file test_mpc_handler_core_floating.cpp
 /// @brief The handler core on a floating base, driven by a kinodynamic stub
 ///        OCP (`ControlModel::kKinodynamicWrench`) on the public G1: sizes by
-///        `nu`, packs the wrench block as `lambda_traj` and a zero `a_ff_traj`,
+///        `nu`, packs the wrench block as `lambda_traj` and the interval-mean
+///        acceleration as `a_ff_traj`, packs the node modes and ids, keeps the
+///        base quaternions on one hemisphere, starts cold on a new state epoch,
 ///        carries a warm start of size `nu`, refuses a non-unit base
 ///        quaternion; and the shipped joint-torque OCPs still refuse a
 ///        floating model. Zero cold seed; convergence is not asserted.
@@ -111,7 +113,9 @@ TEST_F(MPCHandlerCoreFloatingTest, PacksTheKinodynamicControl) {
       EXPECT_EQ(out.lambda_traj[ks][is], out.u_traj[ks][is]) << "node " << k << " slot " << i;
     }
     for (int i = 0; i < out.nv; ++i) {
-      EXPECT_EQ(out.a_ff_traj[ks][static_cast<std::size_t>(i)], 0.0) << "node " << k;
+      const auto is = static_cast<std::size_t>(i);
+      EXPECT_EQ(out.a_ff_traj[ks][is], (out.v_traj[ks + 1][is] - out.v_traj[ks][is]) / kNodeDt)
+          << "node " << k;
     }
   }
 }
