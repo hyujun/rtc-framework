@@ -18,15 +18,19 @@
 #include <pinocchio/spatial/explog.hpp>
 #pragma GCC diagnostic pop
 
+#include "loco_gait.hpp"
 #include "loco_wbc_fixture.hpp"
+#include "rtc_tsid/formulation/wqp_formulation.hpp"
 #include "rtc_tsid/kinematics/se3_error.hpp"
 #include "rtc_tsid/tasks/com_task.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <limits>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -686,6 +690,61 @@ TEST(LocomotionFormulation, TheSolveReportIsTheReturnedIteratesAndEveryResetClea
       EXPECT_GT(o.eom_residual_inf, 0.0) << "premise: not trivially zero";
     }
     nan_or_clear(r.b.Controller().SkipTick());
+  }
+}
+
+// The EOM residual is exactly the base rows of M a + h − Jcᵀ λ of the
+// published solution. At a loose solver tolerance the rows' residuals differ
+// from one another, so the check sees which rows were taken (the premise: the
+// same rows shifted by one give another number on some tick).
+TEST(LocomotionFormulation, TheEomResidualIsThatOfTheBaseRowsOfTheDynamics) {
+  for (const char* formulation : {"wqp", "hqp"}) {
+    SCOPED_TRACE(formulation);
+    YAML::Node n = YAML::Load(kLocoWbq);
+    n["formulation_type"] = formulation;
+    n["solver"]["eps_abs"] = 1e-2;
+    LocoRig r(n);
+    LocoGait gait(*r.model, 1e-3);
+    const int nv = r.model->nv;
+    int checked = 0;
+    int discriminating = 0;
+    for (int k = 0; k < 60; ++k) {
+      gait.Apply(LocoGait::kSlot1Off - 30 + k, r);
+      const CommandOutput& o = r.Solve();
+      if (!o.tau_valid) {
+        continue;
+      }
+      ++checked;
+      Eigen::VectorXd dyn = r.cache.M * o.a_opt + r.cache.h;
+      for (std::size_t c = 0; c < 2; ++c) {
+        if (r.contacts.contacts[c].active) {
+          dyn.noalias() -= r.cache.contact_frames[c].J.transpose() *
+                           o.lambda_opt.segment(6 * static_cast<int>(c), 6);
+        }
+      }
+      const double tol =
+          64.0 * (2 * nv + 12) * kEps *
+          (r.cache.M.cwiseAbs().rowwise().sum().maxCoeff() * o.a_opt.lpNorm<Eigen::Infinity>() +
+           r.cache.h.lpNorm<Eigen::Infinity>() +
+           6.0 * r.cache.contact_frames[0].J.cwiseAbs().maxCoeff() *
+               o.lambda_opt.lpNorm<Eigen::Infinity>());
+      EXPECT_LE(std::abs(o.eom_residual_inf - dyn.head(6).lpNorm<Eigen::Infinity>()), tol) << k;
+      if (std::string(formulation) == "wqp") {
+        const auto& wqp = dynamic_cast<const WQPFormulation&>(r.b.Controller().Formulation());
+        const QPData& qp = wqp.LastQpForTesting();
+        const Eigen::VectorXd& x = wqp.SolverForTesting().Primal();
+        double shifted = 0.0;
+        for (int row = 1; row < 7; ++row) {
+          shifted = std::max(shifted, std::abs(qp.A.row(row).dot(x) - qp.b(row)));
+        }
+        discriminating += std::abs(shifted - o.eom_residual_inf) > 10.0 * tol ? 1 : 0;
+      }
+    }
+    EXPECT_GE(checked, 50);
+    if (std::string(formulation) == "wqp") {
+      EXPECT_GE(discriminating, 1)
+          << "premise: the fixture tells the EOM rows from their neighbours";
+    }
   }
 }
 
