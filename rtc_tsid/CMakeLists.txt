@@ -198,6 +198,10 @@ if(BUILD_TESTING)
   # the contact set from the spec, the #1040 / #1041 guards.
   add_tsid_gtest(test_locomotion_formulation)
 
+  # The same QP over a walking-like contact schedule (test/loco_gait.hpp): the
+  # default settings' trace digest.
+  add_tsid_gtest(test_locomotion_gait)
+
   # Stage B-1..B-3: ObjectFrame + grasp matrix G + ContactManager, GraspCache
   # (LDLT pinv + P_N) + ObjectWrenchTask, InternalForceTask (rank-based nullity
   # + P_N reference projection).
