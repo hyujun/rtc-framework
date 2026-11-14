@@ -70,8 +70,9 @@ namespace rtc {
 //     non-finite or absent is dropped alone, and the other site and the base
 //     lane keep accepting.
 //   - A configuration error of one lane (missing names, duplicate
-//     `site_names`, more than kMaxImuSites sites, `gyro` / `accel` of another
-//     length) refuses that lane only (ERROR); the other one is unaffected.
+//     `site_names`, a gyro / accel sensor name used twice, more than
+//     kMaxImuSites sites, `gyro` / `accel` of another length) refuses that
+//     lane only (ERROR); the other one is unaffected.
 //
 // Subscriptions of the two lanes:
 //   - Same `sensor_topic` → ONE subscription; its callback reads the receipt
