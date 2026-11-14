@@ -83,9 +83,9 @@ void Claim(std::set<std::string>& used, const std::string& value, const std::str
 }  // namespace
 
 HumanoidModelConfig LoadHumanoidModelConfig(const YAML::Node& model, const std::string& context) {
-  CheckKeys(
-      model, context,
-      {"body_group", "base_frame", "torso_frame", "end_effectors", "contacts", "hand_groups"});
+  CheckKeys(model, context,
+            {"body_group", "base_frame", "torso_frame", "end_effectors", "contacts", "hand_groups",
+             "imu"});
   HumanoidModelConfig cfg;
   cfg.body_group = ReadName(model, "body_group", context);
   cfg.base_frame = ReadName(model, "base_frame", context);
@@ -149,6 +149,28 @@ HumanoidModelConfig LoadHumanoidModelConfig(const YAML::Node& model, const std::
     std::string group = ReadNameNode(hands[i], where);
     Claim(groups, group, where, "device group");
     cfg.hand_groups.push_back(std::move(group));
+  }
+
+  const std::string imu_where = context + ".imu";
+  const YAML::Node imu = model["imu"];
+  CheckKeys(imu, imu_where, {"sites", "primary_site"});
+  const YAML::Node sites = ReadList(imu, "sites", imu_where);
+  const auto max_sites = static_cast<std::size_t>(rtc::kMaxImuSites);
+  if (sites.size() == 0 || sites.size() > max_sites) {
+    Refuse(imu_where + ".sites", "expected 1 to " + std::to_string(max_sites) + " entries, got " +
+                                     std::to_string(sites.size()));
+  }
+  std::set<std::string> labels;
+  for (std::size_t i = 0; i < sites.size(); ++i) {
+    const std::string where = Item(imu_where, "sites", i);
+    std::string label = ReadNameNode(sites[i], where);
+    Claim(labels, label, where, "IMU site");
+    cfg.imu.sites.push_back(std::move(label));
+  }
+  cfg.imu.primary_site = ReadName(imu, "primary_site", imu_where);
+  if (labels.count(cfg.imu.primary_site) == 0) {
+    Refuse(imu_where + ".primary_site",
+           "'" + cfg.imu.primary_site + "' is not one of model.imu.sites");
   }
   return cfg;
 }

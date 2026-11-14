@@ -32,3 +32,9 @@ locomotion_controller:
       - {name: "right_foot", frame: "right_toe_link", dim: 6}
     # Hand device groups held at their hold pose while walking (WD-12); [] = no hand.
     hand_groups: ["p2_right", "p2_left"]
+    # IMU sites of the body group, as labels in the order of its backend's
+    # imu_state.site_names (sim.yaml — a test compares the two). At most 2;
+    # primary_site is the one the controller propagates on.
+    imu:
+      sites: ["torso"]
+      primary_site: "torso"
