@@ -231,10 +231,10 @@ class MujocoNativeBackend : public DeviceBackend {
   // drops its own lane and neither one's verdict skips the other.
   void OnSimSensorState(const rtc_msgs::msg::SimSensorState& msg, bool decode_base,
                         bool decode_imu) noexcept;
-  // True when the lane took the sample (base: the whole pose; IMU: at least
-  // one site). Both run on the rt_callback lane — no allocation, no throw.
-  bool DecodeBase(const rtc_msgs::msg::SimSensorState& msg, int64_t recv_steady_ns) noexcept;
-  bool DecodeImu(const rtc_msgs::msg::SimSensorState& msg, int64_t recv_steady_ns) noexcept;
+  // Each accepts or drops its own lane (base: the whole pose; IMU: site by
+  // site). Both run on the rt_callback lane — no allocation, no throw.
+  void DecodeBase(const rtc_msgs::msg::SimSensorState& msg, int64_t recv_steady_ns) noexcept;
+  void DecodeImu(const rtc_msgs::msg::SimSensorState& msg, int64_t recv_steady_ns) noexcept;
 
   // The MJCF sensor names the base lane looks up, from YAML `base_state.*`.
   // Fixed after Configure; read on the rt_callback lane.
@@ -248,7 +248,6 @@ class MujocoNativeBackend : public DeviceBackend {
   // The IMU lane's sites, from YAML `imu_state.*` (index = DeviceState IMU
   // site). Fixed after Configure; read on the rt_callback lane.
   struct ImuLaneNames {
-    std::array<std::string, kMaxImuSites> site{};
     std::array<std::string, kMaxImuSites> gyro{};
     std::array<std::string, kMaxImuSites> accel{};
     int num_sites{0};

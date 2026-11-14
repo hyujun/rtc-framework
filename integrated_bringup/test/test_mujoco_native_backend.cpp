@@ -1406,6 +1406,14 @@ TEST(MujocoLaneConfigTest, ImuConfigError_RefusesImuOnlyBaseKept) {
       {"gyro length", kSiteNames, {"imu_a_gyro"}, kAccelNames, false},
       {"accel length", kSiteNames, kGyroNames, {"imu_a_accel"}, false},
       {"empty name", kSiteNames, {"imu_a_gyro", ""}, kAccelNames, false},
+      {"gyro is accel", kSiteNames, {"imu_a_gyro", "imu_b_accel"}, kAccelNames, false},
+      {"gyro on two sites", kSiteNames, {"imu_a_gyro", "imu_a_gyro"}, kAccelNames, false},
+      {"accel on two sites", kSiteNames, kGyroNames, {"imu_b_accel", "imu_b_accel"}, false},
+      {"gyro is the other site's accel",
+       kSiteNames,
+       {"imu_a_gyro", "imu_a_accel"},
+       kAccelNames,
+       false},
   };
   int i = 0;
   for (const Case& c : cases) {

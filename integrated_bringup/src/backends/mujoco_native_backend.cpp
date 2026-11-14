@@ -217,10 +217,17 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
       for (std::size_t i = 0; i < n && why == nullptr; ++i) {
         if (site_names[i].empty() || gyro_names[i].empty() || accel_names[i].empty()) {
           why = "a site, gyro or accel name is empty";
+        } else if (gyro_names[i] == accel_names[i]) {
+          why = "a gyro and an accel name are the same sensor";
         }
         for (std::size_t j = 0; j < i && why == nullptr; ++j) {
           if (site_names[j] == site_names[i]) {
             why = "a site name is listed twice";
+          } else if (gyro_names[j] == gyro_names[i] || accel_names[j] == accel_names[i] ||
+                     gyro_names[j] == accel_names[i] || accel_names[j] == gyro_names[i]) {
+            // Both are 3-vectors, so a reused name would be read without
+            // complaint — as the wrong quantity, or as another site's.
+            why = "a gyro or accel name is listed twice";
           }
         }
       }
@@ -235,7 +242,6 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
     } else {
       imu_names_.num_sites = static_cast<int>(n);
       for (std::size_t i = 0; i < n; ++i) {
-        imu_names_.site[i] = site_names[i];
         imu_names_.gyro[i] = gyro_names[i];
         imu_names_.accel[i] = accel_names[i];
       }
@@ -349,14 +355,14 @@ void MujocoNativeBackend::OnSimSensorState(const rtc_msgs::msg::SimSensorState& 
   const int64_t recv_steady_ns = rtc::SteadyNowNs();
   // Both decoders run whatever the first one decided — no early return.
   if (decode_base) {
-    static_cast<void>(DecodeBase(msg, recv_steady_ns));
+    DecodeBase(msg, recv_steady_ns);
   }
   if (decode_imu) {
-    static_cast<void>(DecodeImu(msg, recv_steady_ns));
+    DecodeImu(msg, recv_steady_ns);
   }
 }
 
-bool MujocoNativeBackend::DecodeBase(const rtc_msgs::msg::SimSensorState& msg,
+void MujocoNativeBackend::DecodeBase(const rtc_msgs::msg::SimSensorState& msg,
                                      int64_t recv_steady_ns) noexcept {
   // Slot k of base_sensor_idx_ caches where name k was last found.
   auto lookup = [&](std::size_t slot, const std::string& name) {
@@ -400,7 +406,7 @@ bool MujocoNativeBackend::DecodeBase(const rtc_msgs::msg::SimSensorState& msg,
                            base_names_.quat.c_str(), base_names_.linvel.c_str(),
                            base_names_.angvel.c_str());
     }
-    return false;
+    return;
   }
 
   // Load → update → Store: this decoder is the mirror's only writer, so the
@@ -412,10 +418,9 @@ bool MujocoNativeBackend::DecodeBase(const rtc_msgs::msg::SimSensorState& msg,
   mirror.recv_steady_ns = recv_steady_ns;
   mirror.sequence += 1;
   base_mirror_.Store(mirror);
-  return true;
 }
 
-bool MujocoNativeBackend::DecodeImu(const rtc_msgs::msg::SimSensorState& msg,
+void MujocoNativeBackend::DecodeImu(const rtc_msgs::msg::SimSensorState& msg,
                                     int64_t recv_steady_ns) noexcept {
   ImuMirror mirror = imu_mirror_.Load();
   bool accepted_any = false;
@@ -463,7 +468,6 @@ bool MujocoNativeBackend::DecodeImu(const rtc_msgs::msg::SimSensorState& msg,
                          "SimSensorState (%d site(s)) — the missing site stays invalid",
                          config_.group_name.c_str(), imu_names_.num_sites);
   }
-  return accepted_any;
 }
 
 void MujocoNativeBackend::ReadBaseState(DeviceStateCache& cache) noexcept {
@@ -650,14 +654,7 @@ void MujocoNativeBackend::OnJointState(sensor_msgs::msg::JointState::SharedPtr m
 
   auto ds = state_cache_.Load();
   WriteJointStateToCache(*msg, state_reorder_, ds);
-  // Joint-lane receipt: ONE clock read feeds both this stamp and the watchdog
-  // stamp below, so the two never disagree. The counter counts every message
-  // that reached WriteJointStateToCache — one whose slots were all holes
-  // included, and with no finiteness check (the hole masks carry those
-  // verdicts, not this counter).
-  const int64_t recv_steady_ns = rtc::SteadyNowNs();
-  ds.joint_recv_steady_ns = recv_steady_ns;
-  ds.joint_sequence += 1;
+  const int64_t recv_steady_ns = StampJointReceipt(ds);
   state_cache_.Store(ds);
 
   last_state_ns_.store(recv_steady_ns, std::memory_order_release);

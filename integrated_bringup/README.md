@@ -368,7 +368,7 @@ ros2 run integrated_bringup motion_editor_gui
 `sub_models` / `tree_models` 의 map 키는 `devices` 의 디바이스 그룹 이름과 같아야 합니다 (예: sub_model `ur5e` = device `ur5e`).
 
 - `base_state` 키: `sensor_topic` (sim 군의 `sensor_topic`) · `pos` · `quat` · `linvel` · `angvel` (base body 의 **`objtype="xbody"`** frame sensor 이름) · `max_consecutive_missed_ticks` (기본 = 군의 값). 비면 lane 을 쓰지 않습니다. MuJoCo ↔ pinocchio 변환은 [floating_base_conventions.hpp](include/integrated_bringup/backends/floating_base_conventions.hpp) 한 곳입니다. 예전 키 `imu_gyro` / `imu_accel` 이 남아 있으면 ERROR 로 **두 lane 모두** 거부합니다.
-- `imu_state` 키: `sensor_topic` · `site_names` (site label, index = IMU site — 보행 컨트롤러의 `model.imu.sites` 와 같은 순서) · `gyro` / `accel` (site 마다 MJCF gyro · accelerometer sensor 이름) · `max_consecutive_missed_ticks` (기본 = 군의 값). 값은 site frame 그대로 (변환 없음), valid · stamp · sequence 는 site 마다입니다. `base_state` 와 토픽이 같으면 구독 하나가 두 lane 을 풀고, 다르면 lane 마다 구독입니다. 한 lane 의 설정 오류 (이름 누락 · site 중복 · site 가 `kMaxImuSites` (2) 초과 · 목록 길이 불일치) 는 그 lane 만 거부합니다.
+- `imu_state` 키: `sensor_topic` · `site_names` (site label, index = IMU site — 보행 컨트롤러의 `model.imu.sites` 와 같은 순서) · `gyro` / `accel` (site 마다 MJCF gyro · accelerometer sensor 이름) · `max_consecutive_missed_ticks` (기본 = 군의 값). 값은 site frame 그대로 (변환 없음), valid · stamp · sequence 는 site 마다입니다. `base_state` 와 토픽이 같으면 구독 하나가 두 lane 을 풀고, 다르면 lane 마다 구독입니다. 한 lane 의 설정 오류 (이름 누락 · site 중복 · 한 센서 이름의 재사용 · site 가 `kMaxImuSites` (2) 초과 · 목록 길이 불일치) 는 그 lane 만 거부합니다.
 
 ```yaml
 urdf:
