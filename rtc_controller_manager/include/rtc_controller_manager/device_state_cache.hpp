@@ -41,6 +41,15 @@ struct DeviceStateCache {
   // "hole-free".
   uint64_t velocity_hole_mask{0};
   uint64_t effort_hole_mask{0};
+  // Joint-lane receipt time and message counter. Mirrors
+  // DeviceState::joint_recv_steady_ns and ::joint_sequence; that declaration
+  // owns the contract, including what the counter counts (every message
+  // written into this cache, holes or not). The backend stamps them in its
+  // state callback next to the watchdog stamp it already takes, from the same
+  // clock read. The mirror-seam warning above applies: dropped from
+  // RtControllerNode's copy, they read "never received" forever.
+  int64_t joint_recv_steady_ns{0};
+  uint64_t joint_sequence{0};
   // Motor-space data (separate from joint-space)
   int num_motor_channels{0};
   std::array<double, kMaxDeviceChannels> motor_positions{};
@@ -65,12 +74,12 @@ struct DeviceStateCache {
   // that always reports TIP_STALE rather than a crash.
   std::array<int64_t, kMaxSensorGroups> inference_recv_steady_ns{};
   std::array<uint64_t, kMaxSensorGroups> inference_sequence{};
-  // Floating-base lane (WD-16, #976). Mirrors DeviceState::base_pose,
-  // ::base_twist, ::imu, ::num_imu_sites, ::base_recv_steady_ns,
-  // ::base_sequence and ::base_valid; that declaration owns the contract —
-  // field order (p_xyz · q_xyzw; v · ω in the BASE frame), the IDENTITY
-  // default of `base_pose` (a zero quaternion is not a rotation), the "0 =
-  // never received" stamp polarity, and values held under a false `base_valid`.
+  // Floating-base lane. Mirrors DeviceState::base_pose, ::base_twist,
+  // ::base_recv_steady_ns, ::base_sequence and ::base_valid; that declaration
+  // owns the contract — field order (p_xyz · q_xyzw; v · ω in the BASE frame),
+  // the IDENTITY default of `base_pose` (a zero quaternion is not a rotation),
+  // the "0 = never received" stamp polarity, and values held under a false
+  // `base_valid`.
   //
   // The mirror-seam warning on `hole_mask` above applies to every one of
   // these: a field dropped from RtControllerNode's copy compiles and keeps the
@@ -79,11 +88,19 @@ struct DeviceStateCache {
   // with nothing to say why.
   std::array<double, kBasePoseDim> base_pose{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
   std::array<double, kBaseTwistDim> base_twist{};
-  std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
-  int num_imu_sites{0};
   int64_t base_recv_steady_ns{0};
   uint64_t base_sequence{0};
   bool base_valid{false};
+  // IMU lane. Mirrors DeviceState::imu, ::num_imu_sites,
+  // ::imu_recv_steady_ns, ::imu_sequence and ::imu_valid; that declaration
+  // owns the contract — site-frame raw gyro · specific force, per-site stamp,
+  // counter and verdict, values held under a false flag. Same mirror-seam
+  // warning: a site array dropped from the copy reads "never received".
+  std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
+  int num_imu_sites{0};
+  std::array<int64_t, kMaxImuSites> imu_recv_steady_ns{};
+  std::array<uint64_t, kMaxImuSites> imu_sequence{};
+  std::array<bool, kMaxImuSites> imu_valid{};
   bool valid{false};
 };
 
