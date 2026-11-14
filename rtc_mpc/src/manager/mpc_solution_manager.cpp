@@ -58,6 +58,7 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout) {
   state_sequence_ = 0;
   plan_counter_ = 0;
   active_receive_stamp_ns_ = 0;
+  gain_installed_ = false;
   epoch_rejections_.store(0, std::memory_order_relaxed);
   state_epoch_rejections_.store(0, std::memory_order_relaxed);
   policy_age_rejections_.store(0, std::memory_order_relaxed);
@@ -179,11 +180,14 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
   if (!enabled_.load(std::memory_order_acquire)) {
     return false;
   }
-  // A re-enable since the last call: the held plan predates it.
+  // Disabled since the last enabled call: the held plan and any published
+  // meanwhile predate the re-enable.
   const uint64_t generation = enable_generation_.load(std::memory_order_acquire);
   if (generation != seen_enable_generation_) {
     seen_enable_generation_ = generation;
-    interpolator_.Clear();
+    DropActivePlan();
+    (void)solution_buffer_.TryAcquireLatest();
+    return false;
   }
   // The interpolator is Euclidean in q: on a floating base it would blend
   // the quaternion with the angular velocity. Refuse explicitly rather than
@@ -219,13 +223,14 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
     // Install the first node's gain (nearest-node policy). The column count
     // is the state-tangent dim the writer packed with, not the state vector
     // length — they differ as soon as a joint has nq != nv.
-    if (riccati_enabled_ && fresh->gain_nodes > 0) {
+    gain_installed_ = riccati_enabled_ && fresh->gain_nodes > 0;
+    if (gain_installed_) {
       riccati_.SetGain(fresh->K_riccati[0].data(), fresh->nu, fresh->ndx);
     }
     stale_count_ = 0;
     has_ever_received_solution_ = true;
-  } else if (has_ever_received_solution_) {
-    ++stale_count_;
+  } else if (has_ever_received_solution_ && stale_count_ < max_stale_solutions_) {
+    ++stale_count_;  // saturates at the threshold
   }
 
   EvictIfExpired(now_ns, model_epoch, state_epoch);
@@ -241,10 +246,16 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
     return false;
   }
 
-  if (riccati_enabled_ && riccati_.HasGain()) {
+  if (gain_installed_ && riccati_.HasGain()) {
     riccati_.Compute(q_curr, v_curr, q_ref, v_ref, u_fb);
   }
   return true;
+}
+
+void MPCSolutionManager::DropActivePlan() noexcept {
+  interpolator_.Clear();
+  gain_installed_ = false;
+  active_receive_stamp_ns_ = 0;
 }
 
 void MPCSolutionManager::EvictIfExpired(uint64_t now_ns, uint32_t model_epoch,
@@ -255,12 +266,12 @@ void MPCSolutionManager::EvictIfExpired(uint64_t now_ns, uint32_t model_epoch,
   }
   if (s->model_epoch != model_epoch) {
     Bump(epoch_rejections_);
-    interpolator_.Clear();
+    DropActivePlan();
     return;
   }
   if (s->state_epoch != state_epoch) {
     Bump(state_epoch_rejections_);
-    interpolator_.Clear();
+    DropActivePlan();
     return;
   }
   // Integer age: the two stamps are in one clock; a stamp ahead of `now`
@@ -270,7 +281,7 @@ void MPCSolutionManager::EvictIfExpired(uint64_t now_ns, uint32_t model_epoch,
   const double cap_ns = static_cast<double>(s->horizon_length + 1) * s->dt_node * 1e9;
   if (static_cast<double>(age_ns) > cap_ns) {
     Bump(policy_age_rejections_);
-    interpolator_.Clear();
+    DropActivePlan();
   }
 }
 

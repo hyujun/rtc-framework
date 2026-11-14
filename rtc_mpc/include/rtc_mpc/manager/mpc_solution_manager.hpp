@@ -21,7 +21,10 @@
 /// finds (1) its `model_epoch` or `state_epoch` no longer the current one,
 /// (2) its age past the horizon by more than one node
 /// (`now − observation_stamp_ns > (horizon_length + 1) · dt_node`), or (3)
-/// that @ref SetEnabled re-enabled the manager since the previous call.
+/// that @ref SetEnabled disabled the manager since the previous enabled call
+/// — then a plan published before is dropped too.
+///
+/// Threads: @ref Init runs before the producer and consumer start.
 
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_mpc/comm/triple_buffer.hpp"
@@ -73,14 +76,14 @@ class MPCSolutionManager {
   [[nodiscard]] const WbLayout& Layout() const noexcept { return layout_; }
 
   /// @brief Runtime toggle for MPC consumption. When false,
-  ///        @ref ComputeReference reports invalid immediately; a switch from
-  ///        false to true drops the plan held from before, so a re-enabled
-  ///        consumer never samples it. Any single thread (parameter
-  ///        callbacks); the RT tick reads it.
+  ///        @ref ComputeReference reports invalid immediately, and the first
+  ///        sample after the manager is enabled again drops the plan it held
+  ///        and any published before — a re-enabled consumer never samples
+  ///        them. Any thread (parameter callbacks); the RT tick reads it.
   void SetEnabled(bool enabled) noexcept {
-    if (enabled && !enabled_.load(std::memory_order_relaxed)) {
-      // Ordered before the flag: a consumer that sees `true` from this call
-      // sees the new generation too.
+    if (!enabled) {
+      // Ordered before the flag: whenever the consumer next sees `true`, it
+      // sees that a disable came first.
       enable_generation_.fetch_add(1, std::memory_order_release);
     }
     enabled_.store(enabled, std::memory_order_release);
@@ -142,7 +145,12 @@ class MPCSolutionManager {
   ///        state snapshot and carried back in the plan; a plan of another
   ///        state epoch is neither installed nor kept (@ref
   ///        StateEpochRejections), and the MPC side starts its next solve
-  ///        cold. Any thread, release / acquire like @ref SetModelEpoch.
+  ///        cold. Epochs only grow: a value used again would let a plan of
+  ///        the earlier stream back in. Call it on the consumer thread,
+  ///        between the last @ref WriteState of the old stream and the first
+  ///        of the new one — from another thread, a state written around the
+  ///        bump can carry either epoch. Release / acquire like
+  ///        @ref SetModelEpoch.
   void SetStateEpoch(uint32_t epoch) noexcept {
     state_epoch_.store(epoch, std::memory_order_release);
   }
@@ -308,6 +316,7 @@ class MPCSolutionManager {
   std::atomic<uint64_t> enable_generation_{0};  // SetEnabled false → true transitions
   uint64_t seen_enable_generation_{0};          // consumer thread only
   bool riccati_enabled_{true};
+  bool gain_installed_{false};  // the active plan's gain is in riccati_ (consumer thread)
   int max_stale_solutions_{5};
   int stale_count_{0};
   bool has_ever_received_solution_{false};
@@ -331,6 +340,9 @@ class MPCSolutionManager {
   /// Drop the active plan when it is no longer the current epochs' or has
   /// outlived its horizon (see the file comment). Consumer thread.
   void EvictIfExpired(uint64_t now_ns, uint32_t model_epoch, uint32_t state_epoch) noexcept;
+
+  /// Forget the active plan, its gain and its receive stamp. Consumer thread.
+  void DropActivePlan() noexcept;
 
   TripleBuffer<MPCSolution> solution_buffer_;
   TrajectoryInterpolator interpolator_;

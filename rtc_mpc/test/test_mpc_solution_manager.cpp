@@ -646,6 +646,46 @@ TEST_F(MpcSolutionManagerTest, ReEnablingDropsThePlanHeldFromBefore) {
       << "the plan taken after the re-enable is kept";
 }
 
+// A plan published while disabled — the triple buffer keeps it — is not
+// taken after the re-enable, with no enabled sample in between either.
+TEST_F(MpcSolutionManagerTest, APlanPublishedBeforeTheReEnableIsNotTaken) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.SetEnabled(false);
+  mgr_.PublishSolution(MakeSolution());
+  mgr_.SetEnabled(true);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_))
+      << "the dropped plan does not come back on a later tick";
+  mgr_.PublishSolution(MakeSolution());
+  EXPECT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+}
+
+// An evicted plan's gain is not applied to the next plan when that one
+// ships none; pass control: a plan with a gain feeds the error back.
+TEST_F(MpcSolutionManagerTest, AnEvictedPlansGainIsNotAppliedToTheNextPlan) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  q_curr_.setConstant(0.5);  // a position error the identity gain would feed back
+  mgr_.PublishSolution(MakeSolution());
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 1, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_NE(u_fb_.norm(), 0.0);
+
+  mgr_.SetStateEpoch(1);
+  EXPECT_FALSE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 2, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.ActiveReceiveStampNs(), 0u) << "the evicted plan's provenance goes with it";
+  MPCSolution no_gain = MakeSolution();
+  no_gain.state_epoch = 1;
+  no_gain.gain_nodes = 0;
+  mgr_.PublishSolution(no_gain);
+  ASSERT_TRUE(
+      mgr_.ComputeReference(q_curr_, v_curr_, 3, q_ref_, v_ref_, a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(u_fb_.norm(), 0.0);
+}
+
 // Pass control for the re-enable rule: enabling a manager that was
 // initialised disabled, before any plan, takes the first plan published.
 TEST_F(MpcSolutionManagerTest, EnablingBeforeTheFirstPlanTakesIt) {

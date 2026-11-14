@@ -54,6 +54,7 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
 
   have_time_anchor_ = false;
   anchor_stamp_ns_ = 0;
+  last_stamp_ns_ = 0;
   anchor_state_epoch_ = 0;
   time_base_s_ = 0.0;
   last_phase_t_ = 0.0;
@@ -173,7 +174,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   // Phase time on the snapshot's clock; a new state stream or a stamp that
   // went back continues from the last tick's time.
   if (!have_time_anchor_ || state.state_epoch != anchor_state_epoch_ ||
-      state.timestamp_ns < anchor_stamp_ns_) {
+      state.timestamp_ns < last_stamp_ns_) {
     time_base_s_ = have_time_anchor_ ? last_phase_t_ : 0.0;
     anchor_stamp_ns_ = state.timestamp_ns;
     anchor_state_epoch_ = state.state_epoch;
@@ -181,6 +182,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   }
   const double t = time_base_s_ + static_cast<double>(state.timestamp_ns - anchor_stamp_ns_) * 1e-9;
   last_phase_t_ = t;
+  last_stamp_ns_ = state.timestamp_ns;
   const PhaseContext ctx =
       phase_manager_->Update(state, q_scratch_, v_scratch_, sensor_scratch_, tcp, t);
   last_phase_id_.store(ctx.phase_id, std::memory_order_relaxed);

@@ -38,7 +38,7 @@
 /// seconds, so the node grid, the gait and `horizon_offset` all run on the
 /// clock the consumer samples the plan with (a simulator slower or faster
 /// than wall time included). A snapshot of a new `state_epoch`, or a stamp
-/// earlier than the anchor, re-anchors it where the last tick left it, so
+/// earlier than the last tick's, re-anchors it where the last tick left it, so
 /// the phase time never goes back. The publish deadline stays on the steady
 /// clock.
 ///
@@ -249,6 +249,7 @@ class HandlerMPCThread final : public MPCThread {
   // Phase time on the snapshot clock (loop thread only).
   bool have_time_anchor_{false};
   std::uint64_t anchor_stamp_ns_{0};
+  std::uint64_t last_stamp_ns_{0};
   std::uint32_t anchor_state_epoch_{0};
   double time_base_s_{0.0};
   double last_phase_t_{0.0};

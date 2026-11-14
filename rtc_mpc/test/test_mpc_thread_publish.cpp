@@ -543,7 +543,7 @@ TEST_F(MpcThreadPublishTest, ThePhaseTimeIsTheSnapshotStampNotTheWallClock) {
   }
 }
 
-// A new state epoch, or a stamp earlier than the anchor, continues the phase
+// A new state epoch, or a stamp earlier than the last one, continues the phase
 // time from where the last tick left it — it never goes back — and stamps
 // then count from the new anchor.
 TEST_F(MpcThreadPublishTest, ThePhaseTimeReAnchorsOnANewStateEpochOrAStampThatWentBack) {
@@ -569,6 +569,10 @@ TEST_F(MpcThreadPublishTest, ThePhaseTimeReAnchorsOnANewStateEpochOrAStampThatWe
   const double at_rewind = at_reset + static_cast<double>(200'000'000ULL) * 1e-9;
   expect_time(100'000'000ULL, at_rewind);  // same epoch, stamp went back
   expect_time(300'000'000ULL, at_rewind + static_cast<double>(200'000'000ULL) * 1e-9);
+  // Back to a stamp still past the anchor (100 ms): a rewind all the same.
+  const double before_back = at_rewind + static_cast<double>(4'900'000'000ULL) * 1e-9;
+  expect_time(5'000'000'000ULL, before_back);
+  expect_time(2'000'000'000ULL, before_back);
   thread.StopAndJoin();
 }
 
