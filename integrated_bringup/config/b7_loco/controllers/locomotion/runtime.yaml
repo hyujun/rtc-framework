@@ -1,0 +1,67 @@
+# locomotion_controller — the controller's runtime sections (b7_loco)
+#
+# A fragment of ../locomotion_controller.yaml (its `include:` list). Schema and
+# checks: integrated_bringup controllers/locomotion_controller.hpp (every key of
+# pd_feedforward and fault is required, an unknown key is refused) and
+# controllers/locomotion/measured_state_source.hpp (estimator.*).
+locomotion_controller:
+  command_type: "pd_feedforward"   # the only accepted value
+
+  # The PD gains the body servo runs with under this controller, body roster
+  # order (_base.yaml devices.b7.joint_state_names: legs, then arms) [N·m/rad,
+  # N·m·s/rad]. They ride the wire with every command and stay in the simulator
+  # after a switch (sticky). Provisional, the g1_loco values per limb, until a
+  # gain selection on this profile's sim settles them.
+  # This profile's demo_joint_controller does not declare its servo gains yet
+  # (the scene's values live with the model, outside this repository): after a
+  # switch back from this controller the body keeps these low gains. Declare
+  # them there (as g1_loco does) before switching back on this profile.
+  pd_feedforward:
+    kp: [60, 60, 60, 60, 60, 60,  60, 60, 60, 60, 60, 60,  30, 30, 30, 30, 30, 30, 30,  30, 30, 30, 30, 30, 30, 30]
+    kd: [4, 4, 4, 4, 4, 4,  4, 4, 4, 4, 4, 4,  1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5,  1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+
+  # Latched fault: feedforward −damping_kd·v (clamped to max_torque), position
+  # target = the measured q, the gains above unchanged — a slow settle, not a
+  # hold. max_source_bad_ticks: consecutive ticks without a valid state before
+  # the latch (a shorter run holds the last torque).
+  fault:
+    max_source_bad_ticks: 5
+    damping_kd: [5, 5, 5, 5, 5, 5,  5, 5, 5, 5, 5, 5,  2, 2, 2, 2, 2, 2, 2,  2, 2, 2, 2, 2, 2, 2]
+
+  # Where the measured state comes from. truth = the simulator's base and joint
+  # lanes. Ages are against the tick's clock: the body lane (joints and base)
+  # fails the state when older; a stale hand only holds still.
+  estimator:
+    source: truth
+    body_max_age_ms: 10.0
+    hand_max_age_ms: 50.0
+
+  # Device slots, in this order: model.body_group, then model.hand_groups. The
+  # joint_goal lanes are the ones the other controllers of the profile use;
+  # this controller takes no goal (the reference is latched, the hands are
+  # held), so a goal sent while it runs is refused.
+  topics:
+    b7:
+      subscribe:
+        - topic: "b7/joint_goal"
+          role: "target"
+    p2_right:
+      subscribe:
+        - topic: "p2_right/joint_goal"
+          role: "target"
+    p2_left:
+      subscribe:
+        - topic: "p2_left/joint_goal"
+          role: "target"
+
+  logs:
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: b7_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p2_right_state
+    - msg_type: rtc_msgs/DeviceStateLog
+      instance: p2_left_state
+    - msg_type: integrated_bringup/JointFeedforwardLog
+      instance: joint_ff
+    - msg_type: integrated_bringup/LocomotionDiagLog
+      instance: locomotion_diag

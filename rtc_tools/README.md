@@ -52,6 +52,7 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 | `run_hand_close_trials` | 손 preshape↔closed 계단 N 회 러너 | `run_hand_close_trials --group … --joint-names … --out run.json` |
 | `run_stance_metrics` | 부동 베이스 로봇의 정지 지표 recorder (sim sensor 토픽 → CSV + JSON) | 아래 절 |
 | `analyze_stance_metrics` | 그 CSV 를 다시 판정 (`--settle` · `--z-ref` 바꿔 재계산) | `analyze_stance_metrics stance.csv --z-ref 0.764431` |
+| `plot_locomotion_diag` | locomotion 세션 (`locomotion_diag.csv` · `joint_ff.csv`) 의 그림 7 장 + JSON 요약 | 아래 절 |
 | `analyze_hand_canfd_gate` | CAN FD 손 실기 run 의 G-3 게이트 판정 (D55) | `analyze_hand_canfd_gate <session> g3.log --node-log node.log` |
 | `analyze_hand_gravity_ff` | 손 중력 feedforward A/B/A run (`joint_ff.csv`) 의 PASS / FAIL 판정 | `analyze_hand_gravity_ff <session> --json-out ff.json` |
 | `joint_command_gui` | 손 관절 슬라이더 명령 GUI (`joint_state_publisher_gui` 류) | 아래 절 |
@@ -290,6 +291,16 @@ ros2 run rtc_tools analyze_stance_metrics stance.csv --settle 2.0       # 같은
 ```
 
 slip 과 높이의 기준은 창의 **첫 샘플** (높이는 `--z-ref` 가 있으면 그것) 이라 창 앞의 transient 는 지표에 들어가지 않는다. `/sim/reset` 은 감지하지 않는다 — 리셋 뒤에 새로 돌린다. 구독은 다른 토픽처럼 KEEP_LAST 1 이라 호스트가 sensor rate 를 못 따라가면 샘플이 빠진다 — JSON 의 `sample_dt_median_s` · `sample_gap_max_s` 가 그것을 보이고, 간격이 주기의 3 배를 넘으면 경고를 찍는다. 시작 조건이나 첫 샘플이 `--wait-timeout` (기본 60 s) 안에 안 오면 에러로 끝난다. 순수 계산은 `rtc_tools.analysis.stance_metrics` (ROS 없음, pytest 가 본다), recorder 는 `stance_metrics_recorder` (rclpy).
+
+### locomotion_diag
+
+세션의 `controllers/locomotion_controller/` 아래 `locomotion_diag.csv` · `joint_ff.csv` · `<group>_state.csv` 를 `tick` 으로 이어 그림 7 장과 `locomotion_diag_summary.json` 을 `--out` (기본 `<session>/plots/locomotion_diag/`) 에 쓴다. 이름은 헤더에서 읽는다.
+
+```bash
+plot_locomotion_diag <session> [--stance-csv F] [--base-yaml _base.yaml --group G] [--t0 S] [--t1 S] [--z-ref M]
+```
+
+그림: base 높이·drift·기울기 / 접촉 법선력 / 관절 `tau_ff`·effort·`max_torque` / `q_ref − q`·`tau_servo` / QP 타임라인 / margin / mode·fault·health·source. JSON: 계열별 p50·p99·min·max (비유한 값은 개수만 세고 제외), mode 별 행 수, fault latch, 최대 tick 간격.
 
 ### hand_canfd_gate
 

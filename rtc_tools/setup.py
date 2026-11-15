@@ -53,6 +53,7 @@ setup(
             "catching_wait_pose_search = rtc_tools.analysis.catching_wait_pose_search:main",
             "run_stance_metrics = rtc_tools.analysis.stance_metrics_recorder:main",
             "analyze_stance_metrics = rtc_tools.analysis.stance_metrics:main",
+            "plot_locomotion_diag = rtc_tools.analysis.locomotion_diag:main",
             "joint_command_gui = rtc_tools.gui.joint_command_gui:main",
         ],
     },

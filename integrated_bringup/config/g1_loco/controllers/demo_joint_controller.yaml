@@ -68,6 +68,16 @@ demo_joint_controller:
   # off, so the servos carry the full weight — the plant the walking MPC will
   # drive. Anything but position | torque | pd_feedforward is refused.
   command_type: "pd_feedforward"
+  # The body servo's gains, declared on the wire every tick: the MJCF servo's own
+  # values (legs / waist 200/5, arms 100/2), so the stance is what the scene's
+  # servo gives. Declared rather than left to the scene because the simulator
+  # keeps the last gains it was sent: after locomotion_controller (whose gains
+  # are far lower) this controller must put the standing gains back, or the
+  # robot sinks on the next switch. PD alone stands only with an ankle
+  # stiffness above about m·g·h — lower leg gains fall in the sim.
+  pd_feedforward:
+    kp: [200, 200, 200, 200, 200, 200,  200, 200, 200, 200, 200, 200,  200, 200, 200,  100, 100, 100, 100,  100, 100, 100, 100]
+    kd: [5, 5, 5, 5, 5, 5,  5, 5, 5, 5, 5, 5,  5, 5, 5,  2, 2, 2, 2,  2, 2, 2, 2]
 
   # ── Topics ────────────────────────────────────────────────────────────────
   # Both groups are claimed (each has a target subscription): the sim waits

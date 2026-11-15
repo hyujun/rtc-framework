@@ -4,8 +4,10 @@
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace integrated_bringup {
@@ -133,6 +135,48 @@ void DemoJointController::DeclareGainParameters() noexcept {
   DeclareVirtualTcpParameters(*node_, hand_handle_ != nullptr, logger_, g.vtcp);
 
   gains_lock_.Store(g);
+
+  // The primary group's optional PD gains: seeded from the YAML, empty = none.
+  try {
+    PdGains pd = pd_gains_lock_.Load();
+    for (const auto& [name, arr, size] : {std::tuple{"pd_feedforward.kp", &pd.kp, &pd.kp_size},
+                                          std::tuple{"pd_feedforward.kd", &pd.kd, &pd.kd_size}}) {
+      std::vector<double> seed(arr->begin(), arr->begin() + *size);
+      rcl_interfaces::msg::ParameterDescriptor d;
+      d.description =
+          "Primary-group servo gains claimed on the wire with pd_feedforward (one per joint, "
+          ">= 0; empty = claim none)";
+      std::vector<double> v = node_->has_parameter(name)
+                                  ? node_->get_parameter(name).as_double_array()
+                                  : node_->declare_parameter<std::vector<double>>(name, seed, d);
+      if (const char* why = SetPdGainList(v, *arr, *size); why != nullptr) {
+        RCLCPP_ERROR(logger_, "parameter '%s' ignored (%s); keeping the YAML value", name, why);
+      }
+    }
+    pd_gains_lock_.Store(pd);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "pd_feedforward gain parameters not declared (%s)", e.what());
+  }
+}
+
+const char* DemoJointController::SetPdGainList(const std::vector<double>& v,
+                                               std::array<double, rtc::kMaxDeviceChannels>& out,
+                                               int& size) const noexcept {
+  if (!v.empty() && (pd_dof_ <= 0 || static_cast<int>(v.size()) != pd_dof_)) {
+    return pd_dof_ <= 0 ? "gains need arm_dof in the YAML (the primary group's joint count)"
+                        : "a gain list is empty or has one gain per primary joint";
+  }
+  if (!v.empty() && command_type_ != CommandType::kPdFeedforward) {
+    return "gains are claimed only with command_type pd_feedforward";
+  }
+  for (double x : v) {
+    if (!(std::isfinite(x) && x >= 0.0)) {
+      return "every gain must be finite and >= 0";
+    }
+  }
+  std::copy(v.begin(), v.end(), out.begin());
+  size = static_cast<int>(v.size());
+  return nullptr;
 }
 
 rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSet(
@@ -142,6 +186,8 @@ rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSe
 
   auto g = gains_lock_.Load();
   bool gains_dirty = false;
+  PdGains pd = pd_gains_lock_.Load();
+  bool pd_dirty = false;
 
   for (const auto& p : params) {
     const auto& name = p.get_name();
@@ -195,6 +241,18 @@ rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSe
         }
         g.grasp_hand_mode = requested;
         gains_dirty = true;
+      } else if (name == "pd_feedforward.kp" || name == "pd_feedforward.kd") {
+        // Staged like the other gains: nothing reaches the RT path unless every
+        // parameter of this set is accepted, and kp / kd set together land together.
+        const bool is_kp = name == "pd_feedforward.kp";
+        if (const char* why = SetPdGainList(p.as_double_array(), is_kp ? pd.kp : pd.kd,
+                                            is_kp ? pd.kp_size : pd.kd_size);
+            why != nullptr) {
+          result.successful = false;
+          result.reason = why;
+          return result;
+        }
+        pd_dirty = true;
       } else if (IsVirtualTcpParameter(name)) {
         // #847: inactive only — the gate and why are in virtual_tcp_params.hpp.
         if (const char* why = ApplyVirtualTcpSet(p, active_.load(std::memory_order_acquire),
@@ -216,6 +274,9 @@ rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSe
 
   if (gains_dirty) {
     gains_lock_.Store(g);
+  }
+  if (pd_dirty) {
+    pd_gains_lock_.Store(pd);
   }
   return result;
 }

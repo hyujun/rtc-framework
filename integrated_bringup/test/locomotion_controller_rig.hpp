@@ -1,0 +1,208 @@
+// Shared bring-up for the locomotion_controller tests: the installed g1_loco
+// profile on the CM's own model, a standing robot, ticks with fresh or stale
+// lanes. Header-only so each test binary (the alloc gate needs its own) uses
+// the same rig.
+#ifndef INTEGRATED_BRINGUP_TEST_LOCOMOTION_CONTROLLER_RIG_HPP_
+#define INTEGRATED_BRINGUP_TEST_LOCOMOTION_CONTROLLER_RIG_HPP_
+
+#include "integrated_bringup/controllers/locomotion_controller.hpp"
+#include "shipped_catching_bringup_fixture.hpp"
+#include "shipped_config_test_fixture.hpp"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/frames.hpp>
+#include <pinocchio/algorithm/joint-configuration.hpp>
+#pragma GCC diagnostic pop
+
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rclcpp_lifecycle/state.hpp>
+
+#include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace loco_rig {
+
+namespace fx = integrated_bringup::testfx;
+namespace loco = integrated_bringup::locomotion;
+using integrated_bringup::LocomotionController;
+using integrated_bringup::LocomotionControllerConfig;
+using integrated_bringup::ParseLocomotionControllerConfig;
+using Mode = LocomotionController::Mode;
+using Cause = LocomotionController::FaultCause;
+using CallbackReturn = LocomotionController::CallbackReturn;
+
+constexpr const char* kProfile = "g1_loco";
+constexpr const char* kKey = "locomotion_controller";
+constexpr int kBody = 0;
+constexpr int kHand = 1;
+
+inline int64_t NowNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+inline YAML::Node ShippedConfig() {
+  return fx::ShippedControllerNode(kProfile, kKey);
+}
+
+inline std::map<std::string, rtc::DeviceNameConfig> ShippedDevices(const YAML::Node& cfg) {
+  auto configs = fx::ShippedSimConfigs(kProfile, cfg);
+  for (auto& [group, device] : configs) {
+    rtc::DeviceBackendBinding backend;
+    backend.type = "mujoco_native";
+    device.backend = backend;
+  }
+  return configs;
+}
+
+// The stand keyframe: demo_joint's safe pose (body roster order).
+inline std::vector<double> StandPose() {
+  return fx::ShippedControllerNode(kProfile, "demo_joint_controller")["estop"]["arm_safe_position"]
+      .as<std::vector<double>>();
+}
+
+class LocomotionControllerTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+  }
+
+  // The CM's bring-up order: model + builder + rate, PreConfigure, devices,
+  // on_configure, on_activate.
+  void BringUp(YAML::Node cfg = ShippedConfig()) {
+    cfg_ = cfg;
+    rclcpp::NodeOptions opts;
+    opts.use_global_arguments(false);
+    node_ =
+        std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_locomotion_controller", "", opts);
+    ctrl_ = std::make_unique<LocomotionController>("");
+    ctrl_->SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
+    ctrl_->SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
+    ctrl_->SetControlRate(fx::kShippedProfileControlRateHz);
+    ASSERT_EQ(ctrl_->PreConfigure(node_, cfg_), CallbackReturn::SUCCESS);
+    ctrl_->SetDeviceNameConfigs(ShippedDevices(cfg_));
+    ASSERT_EQ(ctrl_->on_configure(rclcpp_lifecycle::State{}, node_, cfg_), CallbackReturn::SUCCESS)
+        << ctrl_->ConfigError();
+    Activate();
+    MakeStanding();
+  }
+
+  void Activate() {
+    ASSERT_EQ(ctrl_->on_activate(rclcpp_lifecycle::State{}), CallbackReturn::SUCCESS);
+  }
+
+  void Deactivate() {
+    ASSERT_EQ(ctrl_->on_deactivate(rclcpp_lifecycle::State{}), CallbackReturn::SUCCESS);
+  }
+
+  // The robot standing on both soles at the stand pose, at rest, every lane fresh.
+  void MakeStanding() {
+    const pinocchio::Model& full = ctrl_->FullModel();
+    const auto& idx = ctrl_->Indices();
+    const std::vector<double> pose = StandPose();
+    ASSERT_EQ(static_cast<int>(pose.size()), idx.body.num_channels);
+    Eigen::VectorXd q = pinocchio::neutral(full);
+    for (int c = 0; c < idx.body.num_channels; ++c) {
+      q(7 + idx.body.joint[static_cast<std::size_t>(c)]) = pose[static_cast<std::size_t>(c)];
+    }
+    pinocchio::Data data(full);
+    pinocchio::framesForwardKinematics(full, data, q);
+    double z_min = std::numeric_limits<double>::infinity();
+    for (const char* sole : {"left_sole", "right_sole"}) {
+      z_min = std::min(z_min, data.oMf[full.getFrameId(sole)].translation().z());
+    }
+    state_ = rtc::ControllerState{};
+    state_.num_devices = 2;
+    state_.dt = 1.0 / fx::kShippedProfileControlRateHz;
+    auto& body = state_.devices[kBody];
+    body.valid = true;
+    body.num_channels = idx.body.num_channels;
+    for (std::size_t c = 0; c < pose.size(); ++c) {
+      body.positions[c] = pose[c];
+    }
+    body.base_pose = {0.0, 0.0, -z_min, 0.0, 0.0, 0.0, 1.0};
+    body.base_valid = true;
+    auto& hand = state_.devices[kHand];
+    hand.valid = true;
+    hand.num_channels = idx.hands[0].num_channels;
+  }
+
+  // One tick with every lane stamped now.
+  rtc::ControllerOutput Tick() {
+    const int64_t now = NowNs();
+    state_.iteration += 1;
+    state_.devices[kBody].joint_recv_steady_ns = now;
+    state_.devices[kBody].base_recv_steady_ns = now;
+    state_.devices[kHand].joint_recv_steady_ns = now;
+    return ctrl_->Compute(state_);
+  }
+
+  // One tick with the body joint lane a second old (the source fails it).
+  rtc::ControllerOutput StaleTick() {
+    const int64_t now = NowNs();
+    state_.iteration += 1;
+    state_.devices[kBody].joint_recv_steady_ns = now - 1'000'000'000;
+    state_.devices[kBody].base_recv_steady_ns = now;
+    state_.devices[kHand].joint_recv_steady_ns = now;
+    return ctrl_->Compute(state_);
+  }
+
+  Mode LastMode() const { return static_cast<Mode>(ctrl_->LastDiag().mode); }
+
+  // The damping law on the raw body lane, bit for bit.
+  void ExpectDamping(const rtc::ControllerOutput& out) const {
+    const auto& body = out.devices[kBody];
+    const auto& dev = state_.devices[kBody];
+    const auto rt = cfg_["fault"]["damping_kd"].as<std::vector<double>>();
+    const auto lim = ShippedDevices(cfg_).at("g1").joint_limits->max_torque;
+    ASSERT_EQ(body.num_channels, static_cast<int>(rt.size()));
+    for (std::size_t i = 0; i < rt.size(); ++i) {
+      EXPECT_EQ(body.commands[i], dev.positions[i]) << i;
+      EXPECT_EQ(body.feedforward[i], std::clamp(-rt[i] * dev.velocities[i], -lim[i], lim[i])) << i;
+    }
+    ExpectShippedGains(out);
+  }
+
+  void ExpectShippedGains(const rtc::ControllerOutput& out) const {
+    const auto& body = out.devices[kBody];
+    const auto kp = cfg_["pd_feedforward"]["kp"].as<std::vector<double>>();
+    const auto kd = cfg_["pd_feedforward"]["kd"].as<std::vector<double>>();
+    EXPECT_TRUE(body.has_pd_gains);
+    for (std::size_t i = 0; i < kp.size(); ++i) {
+      EXPECT_EQ(body.pd_kp[i], kp[i]) << i;
+      EXPECT_EQ(body.pd_kd[i], kd[i]) << i;
+    }
+  }
+
+  YAML::Node cfg_;
+  rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
+  std::unique_ptr<LocomotionController> ctrl_;
+  rtc::ControllerState state_{};
+};
+
+}  // namespace loco_rig
+
+#endif  // INTEGRATED_BRINGUP_TEST_LOCOMOTION_CONTROLLER_RIG_HPP_

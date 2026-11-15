@@ -110,6 +110,12 @@
 
 **DemoCatchingController**: 소비 키가 provisional / TBD 이거나 계획기와 oracle 이 함께 켜지면 configure 는 성공하고 activate 만 거부한다 (park).
 
+**LocomotionController** (부동 베이스 전신 QP, 본체 `pd_feedforward` + 손 `kPosition` hold — 계약 SSoT 는 헤더):
+
+- kinematics 는 full 모델 (손 포함), dynamics 는 손을 neutral 에 잠근 reduced 모델이다. 측정 상태는 `MeasuredStateSource` 로만 받는다 — device lane 을 직접 읽지 않는다.
+- 자기 PD 게인을 매 tick wire 에 **선언**한다 (`has_pd_gains`). sim 의 게인은 sticky 라, 게인을 선언하지 않는 컨트롤러는 직전 컨트롤러의 게인을 물려받는다.
+- fault latch 출력은 감쇠뿐이다 (hold 를 합성하지 않는다). latch 는 reset 서비스와 **재활성화** 가 푼다 — 활성화가 latch 를 유지하는 다른 컨트롤러와 다른 이유는 헤더가 갖는다.
+
 **HandJointController** (손 1 군, `pd_feedforward` = 관절 reference + 모델 feedforward — 중력 + 관성 `M(q)·q̈_ref`):
 
 - 관성항은 `dynamics_feedforward.inertia_gain` (키 생략 = 0, p2 출하 1) 이고 q̈_ref 는 진행 중 궤적에서만 0 이 아니다 — 정지 자세는 중력만.

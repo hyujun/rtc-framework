@@ -32,6 +32,7 @@
 #include "integrated_bringup/logging/grasp_diag_log_pod.hpp"
 #include "integrated_bringup/logging/inference_diag_log_pod.hpp"
 #include "integrated_bringup/logging/joint_feedforward_log_pod.hpp"
+#include "integrated_bringup/logging/locomotion_diag_log_pod.hpp"
 #include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
@@ -220,6 +221,12 @@ struct LogRegistrationContext {
   // device joint names NAME and COUNT the per-joint column blocks.
   bool joint_ff_enabled{false};
   std::vector<std::string> joint_ff_joint_names{};
+
+  // LocomotionDiagLog — single fixed instance (kLocomotionDiagLogInstance);
+  // columns named by the contacts and the body joints.
+  bool locomotion_diag_enabled{false};
+  std::vector<std::string> locomotion_diag_contact_names{};
+  std::vector<std::string> locomotion_diag_joint_names{};
 };
 
 // ⚠ Two separate hazards, two separate fixes — keep both (#428).
@@ -317,6 +324,7 @@ struct RegisteredLogHandles {
   rtc::LogHandle<integrated_bringup::DualArmDiagLogPod> dualarm_diag;
   // Single fixed instance (kJointFeedforwardLogInstance), same reason.
   rtc::LogHandle<integrated_bringup::JointFeedforwardLogPod> joint_ff;
+  rtc::LogHandle<integrated_bringup::LocomotionDiagLogPod> locomotion_diag;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -654,12 +662,34 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.joint_ff = std::move(handle);
+    } else if (entry.msg_type == kLocomotionDiagLogMsgType) {
+      if (!ctx.locomotion_diag_enabled || entry.instance != kLocomotionDiagLogInstance) {
+        continue;
+      }
+      const auto contact_names = ctx.locomotion_diag_contact_names;
+      const auto joint_names = ctx.locomotion_diag_joint_names;
+      // One derivation, both writers (#440).
+      const auto cols = integrated_bringup::LocomotionDiagLogColumnsFor(contact_names, joint_names);
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::LocomotionDiagLogPod>(
+          entry.instance,
+          [contact_names, joint_names, cols](std::ostream& os) {
+            integrated_bringup::WriteLocomotionDiagLogHeader(os, contact_names, joint_names, cols);
+          },
+          [cols](std::ostream& os, const integrated_bringup::LocomotionDiagLogPod& pod) {
+            integrated_bringup::WriteLocomotionDiagLogRow(os, pod, cols);
+          });
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to open locomotion_diag CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.locomotion_diag = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
     // PullEstimatorLog, TaskDiagLog, GraspDiagLog, MomentumObserverLog,
     // ComplianceDiagLog, InferenceDiagLog, CatchingDiagLog, DualArmDiagLog,
-    // JointFeedforwardLog}; reaching here is a YAML parser bug. Silently ignore.
+    // JointFeedforwardLog, LocomotionDiagLog}; reaching here is a YAML parser bug. Silently ignore.
   }
 
   return result;

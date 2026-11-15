@@ -47,6 +47,11 @@ locomotion_controller:
         mask: [0, 0, 0, 1, 1, 1]
         weight: 10.0
       force: {weight: 1.0e-3}
+      # The CoM over its reference in the horizontal plane (the height is the
+      # posture's). Without it nothing holds the base's horizontal position
+      # against the plant: on the sim the stance rocked from foot to foot at
+      # ~5.6 Hz and the feet slid ~0.1 m in 10 s.
+      com: {kp: [50, 50, 0], kd: [14, 14, 0], weight: 10.0}
     constraints:
       eom: {}
       contact:                         # Baumgarte on the stance feet, [lin; ang]
@@ -55,3 +60,9 @@ locomotion_controller:
       friction_cone: {}
       joint_limit: {position_margin: 0.05, velocity_margin: 0.1}
       torque_limit: {tau_scale: 1.0}
+    # Solve health: a run of more than 5 ticks without a valid torque (or with
+    # the margins below their floors) is a Fault and latches the controller;
+    # 50 good ticks in a row return Degraded to Nominal.
+    health:
+      max_invalid_ticks: 5
+      recover_valid_ticks: 50
