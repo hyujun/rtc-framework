@@ -377,15 +377,41 @@ TEST_F(G1LocoConfigure, AFixedRootOverrideHoldsTheStanceIdentically) {
 
 // ── The optional PD gains of the primary group ───────────────────────────────
 //
-// Unset (the shipped file) claims nothing, so the output is what it was; set
-// by YAML or by parameter, both lists ride the body device with pd_feedforward.
+// Unset claims nothing, so the output is what it was; set by YAML or by
+// parameter, both lists ride the body device with pd_feedforward.
 
-TEST_F(G1LocoConfigure, TheShippedConfigClaimsNoPdGains) {
-  auto ctrl = BringUp(fx::ShippedModelConfig(kProfile), fx::ShippedModelBuilder(kProfile),
-                      "g1_loco_no_gains");
+TEST_F(G1LocoConfigure, WithoutTheSectionNoPdGainsAreClaimed) {
+  YAML::Node cfg = ShippedJointConfig();
+  cfg.remove("pd_feedforward");
+  rclcpp::NodeOptions opts;
+  opts.use_global_arguments(false);
+  node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("g1_loco_no_gains", "", opts);
+  auto ctrl = std::make_unique<DemoJointController>("");
+  ctrl->SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
+  ctrl->SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
+  ctrl->SetControlRate(fx::kShippedProfileControlRateHz);
+  cfg_ = cfg;
+  ASSERT_EQ(ctrl->PreConfigure(node_, cfg_), DemoJointController::CallbackReturn::SUCCESS);
+  ctrl->SetDeviceNameConfigs(ShippedDevices(cfg_));
   ASSERT_EQ(Configure(*ctrl), DemoJointController::CallbackReturn::SUCCESS);
   const ControllerOutput out = ctrl->Compute(StandState(cfg_));
   EXPECT_FALSE(out.devices[0].has_pd_gains);
+  EXPECT_FALSE(out.devices[1].has_pd_gains);
+}
+
+// The shipped file declares the scene servo's own gains (its comment says why).
+TEST_F(G1LocoConfigure, TheShippedConfigDeclaresTheSceneServoGains) {
+  auto ctrl = BringUp(fx::ShippedModelConfig(kProfile), fx::ShippedModelBuilder(kProfile),
+                      "g1_loco_scene_gains");
+  ASSERT_EQ(Configure(*ctrl), DemoJointController::CallbackReturn::SUCCESS);
+  const ControllerOutput out = ctrl->Compute(StandState(cfg_));
+  ASSERT_TRUE(out.devices[0].has_pd_gains);
+  for (int i = 0; i < kBodyDof; ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    const bool arm = i >= 15;  // legs 12 + waist 3, then the arms
+    EXPECT_EQ(out.devices[0].pd_kp[ui], arm ? 100.0 : 200.0) << i;
+    EXPECT_EQ(out.devices[0].pd_kd[ui], arm ? 2.0 : 5.0) << i;
+  }
   EXPECT_FALSE(out.devices[1].has_pd_gains);
 }
 

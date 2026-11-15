@@ -15,7 +15,7 @@ locomotion_controller:
   # provisional until the gain selection on the sim settles them.
   pd_feedforward:
     kp: [60, 60, 60, 60, 60, 60,  60, 60, 60, 60, 60, 60,  60, 60, 60,  30, 30, 30, 30,  30, 30, 30, 30]
-    kd: [3, 3, 3, 3, 3, 3,  3, 3, 3, 3, 3, 3,  3, 3, 3,  1.5, 1.5, 1.5, 1.5,  1.5, 1.5, 1.5, 1.5]
+    kd: [4, 4, 4, 4, 4, 4,  4, 4, 4, 4, 4, 4,  4, 4, 4,  1.5, 1.5, 1.5, 1.5,  1.5, 1.5, 1.5, 1.5]
 
   # Latched fault: feedforward −damping_kd·v (clamped to max_torque), position
   # target = the measured q, the gains above unchanged — a slow settle, not a
