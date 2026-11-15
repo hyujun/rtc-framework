@@ -111,8 +111,9 @@ off-RT ingress → RT drain marshal 은 이 패키지 소유다. 큐는 depth 4 
 | `kDeviceCountMismatch` | `num_devices` 가 state 와 다르거나 `[0, kMaxDevices]` 밖 |
 | `kChannelCountOutOfRange` | `num_channels` 가 `[0, kMaxDeviceChannels]` 밖이거나 device 가 보고한 수 초과 |
 | `kNonFiniteCommand` | `commands` · `feedforward` 의 NaN/Inf (`command_type` 과 무관하게 항상 검사) |
+| `kInvalidPdGain` | `has_pd_gains` 일 때 `pd_kp` · `pd_kd` 의 NaN/Inf/음수 (`command_type` 과 무관) |
 
-검사 대상은 액추에이터에 닿는 `commands` / `feedforward` 뿐이다. 거부되면 CM 이 hold 로 대체하고 (write 는 건너뛰지 않는다), 연속 N tick 거부면 global E-STOP 으로 승격하며 `N = max(10, lround(0.1 × control_rate))` 이다. hold 를 만들 수 없으면 즉시 승격한다. 정책 전문과 `kTorque` hold 의 노출 창은 [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) 가 갖는다.
+검사 대상은 액추에이터에 닿는 `commands` / `feedforward` / 선언된 PD 게인뿐이다. 거부되면 CM 이 hold 로 대체하고 (write 는 건너뛰지 않는다), 연속 N tick 거부면 global E-STOP 으로 승격하며 `N = max(10, lround(0.1 × control_rate))` 이다. hold 를 만들 수 없으면 즉시 승격한다. 정책 전문과 `kTorque` hold 의 노출 창은 [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) 가 갖는다.
 
 ### F5 device-readability 게이트
 
