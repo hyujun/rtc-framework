@@ -622,9 +622,12 @@ TEST(ThreadLayoutTiers, WorkerSlotsMatchTheProfileOnEveryTier) {
       {14, "mpc_par", {6, 7, 8, 9}},
       {16, "mpc_par", {6, 7, 8, 9}},
       {64, "mpc_par", {6, 7, 8, 9}},
-      // Simulation profile: the absent drivers' slots plus 6-7.
-      {6, "mpc_par_sim", {}},
-      {7, "mpc_par_sim", {}},
+      // Simulation profile: the absent drivers' slots plus 6-7. On the 6-core
+      // tier the drivers share slot 4, so that slot is the whole pool.
+      {4, "mpc_par_sim", {}},
+      {5, "mpc_par_sim", {}},
+      {6, "mpc_par_sim", {4}},
+      {7, "mpc_par_sim", {4}},
       {8, "mpc_par_sim", {4, 5, 6, 7}},
       {12, "mpc_par_sim", {4, 5, 6, 7}},
       {16, "mpc_par_sim", {4, 5, 6, 7}},
