@@ -67,6 +67,13 @@ class FrictionConeConstraint final : public ConstraintBase {
                          Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
                          Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
 
+  // Per active contact: the face rows and the unilateral row lower
+  // friction_n, the CoP rows cop_nm, the yaw rows yaw_nm.
+  void MinSlack(const ContactState& contacts, const Eigen::Ref<const Eigen::MatrixXd>& C_block,
+                const Eigen::Ref<const Eigen::VectorXd>& l_block,
+                const Eigen::Ref<const Eigen::VectorXd>& u_block, const Eigen::VectorXd& x,
+                WbcMargins& margins) const noexcept override;
+
   // Init-time: also sizes (and resets) the per-contact surface-basis branch.
   void SetContactManager(const ContactManagerConfig* manager);
 

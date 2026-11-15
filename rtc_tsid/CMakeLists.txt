@@ -59,6 +59,7 @@ add_library(rtc_tsid STATIC
   src/locomotion/reference_kinematics.cpp
   src/locomotion/locomotion_formulation.cpp
   src/controller/tsid_controller.cpp
+  src/controller/solve_health.cpp
 )
 
 target_include_directories(rtc_tsid PUBLIC
@@ -202,6 +203,10 @@ if(BUILD_TESTING)
   # default settings' trace digest, and the reset-mu warm start with zero
   # inactive forces against the defaults and a cold reference.
   add_tsid_gtest(test_locomotion_gait)
+
+  # Row-slack margins (WbcMargins) and the fail-safe classification
+  # (SolveHealth) of the same QP.
+  add_tsid_gtest(test_wbc_health)
 
   # Stage B-1..B-3: ObjectFrame + grasp matrix G + ContactManager, GraspCache
   # (LDLT pinv + P_N) + ObjectWrenchTask, InternalForceTask (rank-based nullity

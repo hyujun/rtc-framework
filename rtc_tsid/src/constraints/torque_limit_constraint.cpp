@@ -155,4 +155,14 @@ void TorqueLimitConstraint::ComputeInequality(const PinocchioCache& cache,
   clamped_count_ = clamped;
 }
 
+void TorqueLimitConstraint::MinSlack(const ContactState& /*contacts*/,
+                                     const Eigen::Ref<const Eigen::MatrixXd>& C_block,
+                                     const Eigen::Ref<const Eigen::VectorXd>& l_block,
+                                     const Eigen::Ref<const Eigen::VectorXd>& u_block,
+                                     const Eigen::VectorXd& x, WbcMargins& margins) const noexcept {
+  for (Eigen::Index i = 0; i < C_block.rows(); ++i) {
+    LowerTo(margins.torque_nm, RowSlack(C_block, l_block, u_block, x, i));
+  }
+}
+
 }  // namespace rtc::tsid

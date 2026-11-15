@@ -207,4 +207,14 @@ void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
   cut_count_ = cut;
 }
 
+void JointLimitConstraint::MinSlack(const ContactState& /*contacts*/,
+                                    const Eigen::Ref<const Eigen::MatrixXd>& C_block,
+                                    const Eigen::Ref<const Eigen::VectorXd>& l_block,
+                                    const Eigen::Ref<const Eigen::VectorXd>& u_block,
+                                    const Eigen::VectorXd& x, WbcMargins& margins) const noexcept {
+  for (Eigen::Index i = 0; i < C_block.rows(); ++i) {
+    LowerTo(margins.joint_accel_box, RowSlack(C_block, l_block, u_block, x, i));
+  }
+}
+
 }  // namespace rtc::tsid

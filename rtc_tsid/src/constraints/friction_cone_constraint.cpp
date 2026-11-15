@@ -309,4 +309,35 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& cache,
   }
 }
 
+void FrictionConeConstraint::MinSlack(const ContactState& contacts,
+                                      const Eigen::Ref<const Eigen::MatrixXd>& C_block,
+                                      const Eigen::Ref<const Eigen::VectorXd>& l_block,
+                                      const Eigen::Ref<const Eigen::VectorXd>& u_block,
+                                      const Eigen::VectorXd& x,
+                                      WbcMargins& margins) const noexcept {
+  if (!manager_) {
+    return;
+  }
+  // The row order of ComputeInequality: per active contact the n_faces face
+  // rows and the unilateral row, then (surface) four CoP rows and two yaw rows.
+  const Eigen::Index n_rows = C_block.rows();
+  Eigen::Index row = 0;
+  const auto lower = [&](double& margin, int count) {
+    for (int k = 0; k < count && row < n_rows; ++k, ++row) {
+      LowerTo(margin, RowSlack(C_block, l_block, u_block, x, row));
+    }
+  };
+  for (std::size_t i = 0; i < contacts.contacts.size() && i < manager_->contacts.size(); ++i) {
+    if (!contacts.contacts[i].active) {
+      continue;
+    }
+    const auto& cfg = manager_->contacts[i];
+    lower(margins.friction_n, cfg.friction_faces + 1);
+    if (cfg.contact_dim == 6) {
+      lower(margins.cop_nm, 4);
+      lower(margins.yaw_nm, 2);
+    }
+  }
+}
+
 }  // namespace rtc::tsid

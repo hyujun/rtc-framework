@@ -77,6 +77,7 @@ YAML 항목 (`type:`) 으로 태스크·제약을 짓는 dispatch 는 `formulati
 
 - `locomotion/locomotion_formulation.hpp` — `LocomotionFormulationBuilder`: 접촉 목록과 `whole_body_qp` YAML 로 보행 QP 를 짓고, 매 tick 접촉이 풀린 발의 태스크만 켠다
 - `locomotion/reference_kinematics.hpp` — `ReferenceKinematics`: 참조 상태의 frame pose · twist · 고전 가속도 (LOCAL_WORLD_ALIGNED)
+- builder 의 `Margins()` 는 valid tick 해의 행 slack (`types/wbc_margins.hpp` 의 `WbcMargins` — 마찰 · CoP · yaw · torque · 관절 가속도 box, 각 행 단위), `Health()` 는 `controller/solve_health.hpp` 의 `SolveHealth` (Nominal · Degraded · Fault, YAML `whole_body_qp.health`, 기본 off, 상태표는 헤더) 다. 둘 다 할당 없이 Compute 안에서 갱신된다
 
 ### 태스크
 
@@ -106,7 +107,7 @@ YAML 항목 (`type:`) 으로 태스크·제약을 짓는 dispatch 는 `formulati
 | `TorqueLimitConstraint` | 부등식 | URDF effort limit × YAML `tau_scale` ∈ (0, 1] (범위 위반 시 init throw) |
 | `JointLimitConstraint` | 부등식 | 1-tick 가속도 box. margin 띠 안의 역전 행은 속도 bound 로 collapse (`position_margin` < reference margin) |
 
-QP 행은 등록한 제약의 `MaxEqDim`·`MaxIneqDim` 합이다. 넘치면 풀지 않고 `qp_status` −2 를 낸다.
+QP 행은 등록한 제약의 `MaxEqDim`·`MaxIneqDim` 합이다. 넘치면 풀지 않고 `qp_status` −2 를 낸다. 부등식 제약은 `ConstraintBase::MinSlack` 으로 자기 행의 slack 을 종류별로 내고, formulation 의 `AccumulateSlack` 이 마지막 solve 의 행으로 모은다.
 
 ### ClikReferenceGenerator
 

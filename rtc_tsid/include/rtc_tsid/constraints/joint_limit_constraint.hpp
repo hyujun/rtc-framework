@@ -78,6 +78,12 @@ class JointLimitConstraint final : public ConstraintBase {
                          Eigen::Ref<Eigen::MatrixXd> C_block, Eigen::Ref<Eigen::VectorXd> l_block,
                          Eigen::Ref<Eigen::VectorXd> u_block) noexcept override;
 
+  // Every row lowers joint_accel_box.
+  void MinSlack(const ContactState& contacts, const Eigen::Ref<const Eigen::MatrixXd>& C_block,
+                const Eigen::Ref<const Eigen::VectorXd>& l_block,
+                const Eigen::Ref<const Eigen::VectorXd>& u_block, const Eigen::VectorXd& x,
+                WbcMargins& margins) const noexcept override;
+
   // Rows of the last ComputeInequality whose assembled box was empty
   // (l_i > u_i) before any repair. Rows with non-finite q_i / v_i are not
   // counted. Diagnostic only — read by the controller's wbc_diag log (#551).

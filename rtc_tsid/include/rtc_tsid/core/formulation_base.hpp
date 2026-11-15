@@ -53,6 +53,13 @@ class FormulationBase {
   // OnTorqueApplied). The owner calls it only on tau_valid ticks. RT-safe.
   virtual void OnTorqueApplied(const Eigen::VectorXd& tau) noexcept = 0;
 
+  // Lower `margins` (WbcMargins) to the slack of every inequality row the last
+  // Solve() assembled, at its published solution x_opt (HQP: the shared rows at
+  // the last level solved). `contacts` must be that Solve()'s. Meaningful only
+  // after a Solve() that converged; the default writes nothing. RT-safe.
+  virtual void AccumulateSlack(const ContactState& /*contacts*/,
+                               WbcMargins& /*margins*/) const noexcept {}
+
   // Formulation 종류 식별
   [[nodiscard]] virtual std::string_view Type() const noexcept = 0;
 };

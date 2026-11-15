@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rtc_tsid/constraints/contact_constraint.hpp"
+#include "rtc_tsid/controller/solve_health.hpp"
 #include "rtc_tsid/controller/tsid_controller.hpp"
 #include "rtc_tsid/locomotion/reference_kinematics.hpp"
 #include "rtc_tsid/tasks/com_task.hpp"
@@ -53,6 +54,7 @@ namespace rtc::tsid {
 //   tasks:       {posture: {…}, feet: {…}, torso: {…}, force: {…}, com: {…}?}
 //   constraints: {eom: {}, contact: {…}, friction_cone: {}, joint_limit: {…},
 //                 torque_limit: {…}}
+//   health: {…}                       # ParseSolveHealthConfig keys, optional
 // Each task / constraint map takes its rtc_tsid keys (kp, kd, weight,
 // priority, mask; baumgarte, terrain_height, inactive_lambda; position_margin,
 // …), never type /
@@ -104,12 +106,25 @@ class LocomotionFormulationBuilder {
                                       const ContactState& contacts) noexcept;
 
   // UpdateReferences, then the controller's Compute — or, when the reference
-  // was refused, TSIDController::SkipTick (no solve, tau_valid false). RT-safe.
+  // was refused, TSIDController::SkipTick (no solve, tau_valid false). Then the
+  // tick's margins (a valid tick: the solution's row slacks and EOM residual;
+  // otherwise the last ones, marked stale) and the health state. RT-safe.
   [[nodiscard]] const CommandOutput& Compute(const ControlState& state, const ControlReference& ref,
                                              const PinocchioCache& cache,
                                              const ContactState& contacts) noexcept;
 
   [[nodiscard]] TSIDController& Controller() noexcept { return controller_; }
+
+  // The last tick's margins (WbcMargins; stale until a valid tick and after an
+  // invalid one) and the fail-safe classification (SolveHealth, configured by
+  // whole_body_qp.health).
+  [[nodiscard]] const WbcMargins& Margins() const noexcept { return margins_; }
+
+  [[nodiscard]] const SolveHealth& Health() const noexcept { return health_; }
+
+  // The controller's Reset (constraint latches, warm start, outputs), the
+  // health back to Nominal and the margins to "none yet". RT-safe.
+  void Reset() noexcept;
 
   [[nodiscard]] const ContactManagerConfig& Contacts() const noexcept { return contacts_; }
 
@@ -142,6 +157,8 @@ class LocomotionFormulationBuilder {
   CoMTask* com_{nullptr};
   ContactConstraint* contact_rows_{nullptr};
   double t_ramp_{0.0};
+  WbcMargins margins_;
+  SolveHealth health_;
 };
 
 }  // namespace rtc::tsid

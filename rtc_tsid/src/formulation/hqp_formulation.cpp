@@ -85,6 +85,7 @@ void HQPFormulation::AddConstraint(std::unique_ptr<ConstraintBase> constraint) {
     eom_ = constraint.get();
   }
   constraints_.push_back(std::move(constraint));
+  ineq_rows_.emplace_back(0, 0);
   ResizeQp();
 }
 
@@ -215,7 +216,9 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
   }
 
   int base_n_ineq = 0;
-  for (const auto& con : constraints_) {
+  for (std::size_t k = 0; k < constraints_.size(); ++k) {
+    const auto& con = constraints_[k];
+    ineq_rows_[k] = {0, 0};
     if (!con->IsActive())
       continue;
     const int id = con->IneqDim(contacts);
@@ -230,6 +233,7 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     auto l_view = base_qp.l.segment(base_n_ineq, id);
     auto u_view = base_qp.u.segment(base_n_ineq, id);
     con->ComputeInequality(cache, contacts, robot_info, n_vars, C_view, l_view, u_view);
+    ineq_rows_[k] = {base_n_ineq, id};
     base_n_ineq += id;
   }
 
@@ -407,6 +411,19 @@ void HQPFormulation::Reset() noexcept {
 void HQPFormulation::OnTorqueApplied(const Eigen::VectorXd& tau) noexcept {
   for (const auto& con : constraints_) {
     con->OnTorqueApplied(tau);
+  }
+}
+
+void HQPFormulation::AccumulateSlack(const ContactState& contacts,
+                                     WbcMargins& margins) const noexcept {
+  const QPData& qp = qp_data_per_level_[0];
+  for (std::size_t k = 0; k < constraints_.size() && k < ineq_rows_.size(); ++k) {
+    const auto [row, dim] = ineq_rows_[k];
+    if (dim <= 0) {
+      continue;
+    }
+    constraints_[k]->MinSlack(contacts, qp.C.middleRows(row, dim), qp.l.segment(row, dim),
+                              qp.u.segment(row, dim), result_.x_opt, margins);
   }
 }
 
