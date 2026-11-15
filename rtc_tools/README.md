@@ -277,6 +277,8 @@ ros2 run rtc_tools analyze_vision_lane <prefix>
 
 부동 베이스 로봇이 servo PD 로 서 있는 동안의 네 지표 — `stance_hold_s` · `foot_slip_max` [m] · `base_height_dev_max` [m] · `base_tilt_max` [rad] — 와 모든 발이 내내 하중을 받았는지 (`steps_without_all_feet`) 를 sim 의 `rtc_msgs/SimSensorState` 토픽에서 잰다. 센서 이름은 전부 인자다 (base 의 framepos · framequat, 발마다 framepos 하나와 `<contact>` 센서 하나 — contact 의 `force` 는 values 1..3, `--contact-sign -1` 이 발이 바닥을 누르는 힘을 양수로 만든다). 문턱은 이 도구에 없다 — 이슈가 정한 수치에 JSON 을 대 본다.
 
+서 있었는지는 세 값이 더 말한다: base 의 xy 이동 `base_pos_drift_max` [m], `fallen` (창 안 어느 샘플이든 base 가 z_ref − 0.30 m 아래이거나 tilt 가 0.50 rad 를 넘음 — `compute()` 인자로 바꾼다), 그 첫 샘플까지의 `time_to_fall_s` (안 넘어지면 `null`).
+
 ```bash
 # 컨트롤러의 첫 pd_feedforward 명령에서 11 s 를 녹음하고 (모드 전환 transient 는 창 밖), 1 s 뒤부터 10 s 를 잰다
 # — --duration 은 녹음 전체, 판정 창 = duration − settle

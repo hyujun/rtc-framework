@@ -77,6 +77,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/wbc/force_reference_updater.cpp
   # Humanoid locomotion controller config (W1-F03 #1026; the controller is W6-F03)
   src/controllers/locomotion/humanoid_model_config.cpp
+  src/controllers/locomotion/measured_state_source.cpp
   # Learned-policy binding. Its law half lives in rtc_controllers/inference
   # (tensor marshalling) — this side owns the ControllerState/engine contract.
   src/controllers/inference/controller.cpp
@@ -2138,6 +2139,22 @@ if(BUILD_TESTING)
     rtc_base
     pinocchio
     Eigen3
+  )
+
+  # The measured-state seam: device layout map, `estimator` section, truth source.
+  # No model, no node.
+  ament_add_gtest(test_measured_state_source test/test_measured_state_source.cpp
+    TIMEOUT 60
+  )
+  target_link_libraries(test_measured_state_source
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_measured_state_source
+    rtc_controller_interface
+    rtc_controllers
+    rtc_base
+    pinocchio
   )
 
   # locomotion_controller.command.* (W2-F01): the shipped g1_loco fragment through

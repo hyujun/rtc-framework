@@ -399,6 +399,106 @@ TEST_F(MujocoBackendWriteCommandTest, WriteCommand_DirectCopy_PdFeedforwardMode)
   }
 }
 
+// ── PD gains on the wire ─────────────────────────────────────────────────────
+//
+// The gains ride along only when the receiver will apply them: kPdFeedforward,
+// claimed, and covering every command joint (the receiver drops a partial set).
+// Every other message carries empty kp/kd, which the receiver reads as "keep
+// the gains you have".
+
+rtc::PublishSnapshot::GroupCommandSlot MakeGainSlot() {
+  rtc::PublishSnapshot::GroupCommandSlot slot{};
+  slot.num_channels = static_cast<int>(kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    slot.commands[i] = 0.1 * static_cast<double>(i + 1);
+    slot.feedforward[i] = -1.0 - static_cast<double>(i);
+    slot.pd_kp[i] = 20.0 + static_cast<double>(i);
+    slot.pd_kd[i] = 0.5 + static_cast<double>(i);
+  }
+  slot.has_pd_gains = true;
+  return slot;
+}
+
+TEST_F(MujocoBackendWriteCommandTest, ClaimedPdGainsAreCarriedForPdFeedforward) {
+  const auto slot = MakeGainSlot();
+
+  const auto msg = WriteAndReceive(slot, rtc::CommandType::kPdFeedforward);
+
+  ASSERT_EQ(msg.kp.size(), kCmdNames.size());
+  ASSERT_EQ(msg.kd.size(), kCmdNames.size());
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    EXPECT_DOUBLE_EQ(msg.kp[i], slot.pd_kp[i]) << "i=" << i;
+    EXPECT_DOUBLE_EQ(msg.kd[i], slot.pd_kd[i]) << "i=" << i;
+    EXPECT_DOUBLE_EQ(msg.values[i], slot.commands[i]) << "i=" << i;
+    EXPECT_DOUBLE_EQ(msg.feedforward[i], slot.feedforward[i]) << "i=" << i;
+  }
+  EXPECT_EQ(msg.command_type, "pd_feedforward");
+}
+
+TEST_F(MujocoBackendWriteCommandTest, PdGainsAreWithheldUnlessTheReceiverWouldApplyThem) {
+  struct Case {
+    const char* what;
+    rtc::CommandType type;
+    bool claimed;
+    int num_channels;
+  };
+
+  const int full = static_cast<int>(kCmdNames.size());
+  for (const Case& c : {Case{"not claimed", rtc::CommandType::kPdFeedforward, false, full},
+                        Case{"position mode", rtc::CommandType::kPosition, true, full},
+                        Case{"partial slot", rtc::CommandType::kPdFeedforward, true, full - 1}}) {
+    auto slot = MakeGainSlot();
+    slot.has_pd_gains = c.claimed;
+    slot.num_channels = c.num_channels;
+
+    const auto msg = WriteAndReceive(slot, c.type);
+
+    EXPECT_TRUE(msg.kp.empty()) << c.what;
+    EXPECT_TRUE(msg.kd.empty()) << c.what;
+    ASSERT_EQ(msg.values.size(), kCmdNames.size()) << c.what;
+    EXPECT_DOUBLE_EQ(msg.values[0], slot.commands[0]) << c.what;
+  }
+}
+
+TEST_F(MujocoBackendWriteCommandTest, DroppingTheClaimSendsNoGainsAndKeepsTheTail) {
+  auto slot = MakeGainSlot();
+  ASSERT_FALSE(WriteAndReceive(slot, rtc::CommandType::kPdFeedforward).kp.empty());
+
+  // Next tick: no claim, and a slot one joint short — the last joint keeps the
+  // value the gains message carried, not an older one.
+  auto next = MakeGainSlot();
+  next.has_pd_gains = false;
+  next.num_channels = static_cast<int>(kCmdNames.size()) - 1;
+  for (std::size_t i = 0; i < kCmdNames.size(); ++i) {
+    next.commands[i] = 5.0 + static_cast<double>(i);
+  }
+  const auto msg = WriteAndReceive(next, rtc::CommandType::kPdFeedforward);
+
+  EXPECT_TRUE(msg.kp.empty());
+  EXPECT_TRUE(msg.kd.empty());
+  const std::size_t last = kCmdNames.size() - 1;
+  EXPECT_DOUBLE_EQ(msg.values[0], next.commands[0]);
+  EXPECT_DOUBLE_EQ(msg.values[last], slot.commands[last]);
+  EXPECT_DOUBLE_EQ(msg.feedforward[last], slot.feedforward[last]);
+}
+
+TEST_F(MujocoBackendWriteCommandTest, SafeCommandRepublishesTheLastMessageWithItsGains) {
+  const auto slot = MakeGainSlot();
+  ASSERT_FALSE(WriteAndReceive(slot, rtc::CommandType::kPdFeedforward).kp.empty());
+
+  received_.clear();
+  backend_->WriteSafeCommand();
+  const auto deadline = std::chrono::steady_clock::now() + 500ms;
+  while (received_.empty() && std::chrono::steady_clock::now() < deadline) {
+    executor_->spin_some(20ms);
+  }
+  ASSERT_FALSE(received_.empty());
+  const auto& msg = received_.back();
+  ASSERT_EQ(msg.kp.size(), kCmdNames.size());
+  EXPECT_DOUBLE_EQ(msg.kp[0], slot.pd_kp[0]);
+  EXPECT_DOUBLE_EQ(msg.values[0], slot.commands[0]);
+}
+
 // 13. Header stamp: WriteCommand propagates slot.stamp_ns (wall-clock ns) into
 //     the JointCommand header, split into sec/nanosec. Pins the wall-clock time
 //     axis contract for /<key>/joint_command (rosbag/tf2/message_filters).

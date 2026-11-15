@@ -86,7 +86,8 @@ struct TargetLimitViolation {
 // Phase 4).
 //
 // Scope is deliberately narrow: only the fields that reach an actuator —
-// `commands` and `feedforward`, bounded by `num_channels`. Everything else in
+// `commands` and `feedforward`, plus `pd_kp` / `pd_kd` when `has_pd_gains` is
+// set, bounded by `num_channels`. Everything else in
 // ControllerOutput (task poses, trajectory references, goal positions) feeds
 // log/GUI lanes where a bad value is visible but not dangerous, and screening
 // them would cost RT budget for no safety gain.
@@ -97,6 +98,8 @@ enum class OutputRejectReason : uint8_t {
   kChannelCountOutOfRange,  ///< a device's num_channels is negative, past capacity, or
                             ///< past what the device reported this tick
   kNonFiniteCommand,        ///< a command / feedforward value is NaN or Inf
+  kInvalidPdGain,           ///< has_pd_gains is set and a pd_kp / pd_kd value is NaN,
+                            ///< Inf or negative
 };
 
 // First rejection found, or kNone. Descriptive only — the caller decides the

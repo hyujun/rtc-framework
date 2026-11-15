@@ -13,8 +13,25 @@ stands under its position servos for T seconds:
 
 plus whether every foot carried load throughout (``steps_without_all_feet``,
 the count of samples where some foot's normal load was at or under the
-threshold). The thresholds are not here: this module measures, the caller
-judges (the Sprint Contract numbers live with the issue that set them).
+threshold).
+
+Three more say whether the robot stayed where it stood and stayed up:
+
+* ``base_pos_drift_max``   — the largest xy excursion of the base from the
+  window's first sample [m],
+* ``fallen``               — whether any sample in the window had the base under
+  ``z_ref − fall_height_m`` or tilted past ``fall_tilt_rad`` (defaults 0.30 m
+  and 0.50 rad — a robot that far down has fallen, whatever its servos do).
+  This one is a definition, not a gate: it says what "fell" means. Its height
+  half needs an absolute ``z_ref`` — against the window's first sample, a robot
+  that sank during the settle time starts the window already down,
+* ``time_to_fall_s``       — from the window's first sample to the first fallen
+  one, ``None`` when it did not fall.
+
+The gate thresholds are not here: this module measures, the caller judges
+(the Sprint Contract numbers live with the issue that set them). A non-finite
+base sample is an error, not a number: NaN compares false against every bound,
+so it would read as a robot standing perfectly still.
 
 Two more numbers say whether the samples themselves can be trusted:
 ``sample_dt_median_s`` (the sensor period the recording ran at) and
@@ -88,6 +105,9 @@ class StanceMetrics:
     z_ref: float
     sample_dt_median_s: float  # 0 when the window has one sample
     sample_gap_max_s: float  # 0 when the window has one sample
+    base_pos_drift_max: float
+    fallen: bool
+    time_to_fall_s: float | None  # None when it did not fall
 
 
 def tilt_rad(quat: Sequence[float]) -> float:
@@ -107,6 +127,8 @@ def compute(
     settle_s: float,
     force_threshold_n: float,
     z_ref: float | None = None,
+    fall_height_m: float = 0.30,
+    fall_tilt_rad: float = 0.50,
 ) -> StanceMetrics:
     """Metrics over the samples whose ``t − t_first >= settle_s``.
 
@@ -124,6 +146,9 @@ def compute(
             f"no sample after the settle time ({settle_s} s) — the recording lasted "
             f"{rows[-1].t - t0:.3f} s"
         )
+    for s in window:
+        if not all(math.isfinite(v) for v in (*s.pos, *s.quat)):
+            raise ValueError(f"non-finite base sample at t = {s.t}")
     first = window[0]
     num_feet = len(first.feet)
     ref_z = first.pos[2] if z_ref is None else z_ref
@@ -131,6 +156,8 @@ def compute(
     height_dev_max = 0.0
     tilt_max = 0.0
     without_all = 0
+    drift_max = 0.0
+    time_to_fall = None
     for s in window:
         if len(s.feet) != num_feet or len(s.loads) != num_feet:
             raise ValueError("samples disagree on the number of feet")
@@ -139,7 +166,11 @@ def compute(
             dy = s.feet[k][1] - first.feet[k][1]
             slip_max = max(slip_max, math.hypot(dx, dy))
         height_dev_max = max(height_dev_max, abs(s.pos[2] - ref_z))
-        tilt_max = max(tilt_max, tilt_rad(s.quat))
+        tilt = tilt_rad(s.quat)
+        tilt_max = max(tilt_max, tilt)
+        drift_max = max(drift_max, math.hypot(s.pos[0] - first.pos[0], s.pos[1] - first.pos[1]))
+        if time_to_fall is None and (s.pos[2] < ref_z - fall_height_m or tilt > fall_tilt_rad):
+            time_to_fall = s.t - first.t
         if not all(load > force_threshold_n for load in s.loads):
             without_all += 1
     gaps = sorted(b.t - a.t for a, b in zip(window, window[1:], strict=False))
@@ -154,6 +185,9 @@ def compute(
         z_ref=ref_z,
         sample_dt_median_s=gaps[len(gaps) // 2] if gaps else 0.0,
         sample_gap_max_s=gaps[-1] if gaps else 0.0,
+        base_pos_drift_max=drift_max,
+        fallen=time_to_fall is not None,
+        time_to_fall_s=time_to_fall,
     )
 
 

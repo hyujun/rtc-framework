@@ -237,6 +237,71 @@ TEST(ValidateControllerOutput, NanFeedforwardIsRejectedRegardlessOfCommandType) 
   EXPECT_EQ(1, v.channel_idx);
 }
 
+// ── PD gains (screened only when claimed) ──────────────────────────────────
+
+// The baseline with a claimed, in-contract gain set: a zero gain is legal (a
+// pure damper, or a joint the controller drives by feedforward alone).
+rtc::ControllerOutput WithPdGains(rtc::ControllerOutput out) {
+  auto& d = out.devices[0];
+  d.has_pd_gains = true;
+  d.pd_kp[0] = 40.0;
+  d.pd_kp[1] = 0.0;
+  d.pd_kd[0] = 2.0;
+  d.pd_kd[1] = 0.0;
+  return out;
+}
+
+TEST(ValidateControllerOutput, ClaimedPdGainsInContractAreAccepted) {
+  const auto state = MakeState();
+  EXPECT_TRUE(rtc::ValidateControllerOutput(WithPdGains(MakeOutput(state)), state).Ok());
+}
+
+TEST(ValidateControllerOutput, UnclaimedPdGainsAreIgnored) {
+  // has_pd_gains == false means the slot copy and the backend never read the
+  // gain arrays, so their contents cannot reach an actuator.
+  const auto state = MakeState();
+  auto out = MakeOutput(state);
+  out.devices[0].pd_kp[0] = kNaN;
+  out.devices[0].pd_kd[1] = -1.0;
+
+  EXPECT_TRUE(rtc::ValidateControllerOutput(out, state).Ok());
+}
+
+TEST(ValidateControllerOutput, ClaimedPdGainsPastCommandedChannelCountAreIgnored) {
+  const auto state = MakeState();
+  auto out = WithPdGains(MakeOutput(state));
+  out.devices[0].pd_kp[5] = kNaN;
+  out.devices[0].pd_kd[7] = -kInf;
+
+  EXPECT_TRUE(rtc::ValidateControllerOutput(out, state).Ok());
+}
+
+TEST(ValidateControllerOutput, ClaimedPdGainOutOfContractIsRejectedRegardlessOfCommandType) {
+  // Same reasoning as feedforward: the command type that decides whether the
+  // gains are forwarded comes from the same untrusted output.
+  struct Case {
+    bool kp;
+    int channel;
+    double value;
+  };
+
+  for (const Case& k : {Case{true, 1, -1.0}, Case{true, 0, kNaN}, Case{true, 1, kInf},
+                        Case{false, 0, -0.5}, Case{false, 1, kNaN}, Case{false, 0, kInf}}) {
+    const auto state = MakeState();
+    auto out = WithPdGains(MakeOutput(state));
+    out.command_type = rtc::CommandType::kPosition;
+    (k.kp ? out.devices[0].pd_kp : out.devices[0].pd_kd)[static_cast<std::size_t>(k.channel)] =
+        k.value;
+
+    const auto v = rtc::ValidateControllerOutput(out, state);
+
+    EXPECT_EQ(rtc::OutputRejectReason::kInvalidPdGain, v.reason)
+        << (k.kp ? "kp" : "kd") << "[" << k.channel << "] = " << k.value;
+    EXPECT_EQ(0, v.device_idx);
+    EXPECT_EQ(k.channel, v.channel_idx);
+  }
+}
+
 TEST(ValidateControllerOutput, FaultInSecondDeviceIsReported) {
   const auto state = MakeState(/*num_devices=*/2);
   auto out = MakeOutput(state);
@@ -258,6 +323,7 @@ TEST(OutputRejectReasonToString, EveryReasonHasADistinctName) {
       rtc::OutputRejectReason::kDeviceCountMismatch,
       rtc::OutputRejectReason::kChannelCountOutOfRange,
       rtc::OutputRejectReason::kNonFiniteCommand,
+      rtc::OutputRejectReason::kInvalidPdGain,
   };
   for (std::size_t i = 0; i < std::size(reasons); ++i) {
     const std::string a = rtc::OutputRejectReasonToString(reasons[i]);

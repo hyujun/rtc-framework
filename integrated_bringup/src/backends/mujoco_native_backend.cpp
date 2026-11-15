@@ -28,14 +28,19 @@ void MujocoNativeBackend::Configure(rclcpp_lifecycle::LifecycleNode* node,
   }
 
   // joint_command_names → command publisher layout (when provided). Pre-size
-  // values/feedforward once here so WriteCommand (RT thread) only fills them
-  // in place — no allocation on the actuator-publish path.
+  // values/feedforward (and kp/kd on the gains message) once here so
+  // WriteCommand (RT thread) only fills them in place — no allocation on the
+  // actuator-publish path.
   if (!config_.joint_command_names.empty()) {
     cmd_msg_.joint_names = config_.joint_command_names;
     cmd_msg_.values.assign(config_.joint_command_names.size(), 0.0);
     cmd_msg_.feedforward.assign(config_.joint_command_names.size(), 0.0);
   }
   cmd_msg_.command_type = "position";
+  cmd_msg_gains_ = cmd_msg_;
+  cmd_msg_gains_.kp.assign(cmd_msg_.values.size(), 0.0);
+  cmd_msg_gains_.kd.assign(cmd_msg_.values.size(), 0.0);
+  last_published_ = nullptr;
 
   rclcpp::QoS qos{1};
   qos.best_effort();
@@ -680,26 +685,43 @@ void MujocoNativeBackend::WriteCommand(const PublishSnapshot::GroupCommandSlot& 
     return;  // Skip until the controller has output.
 
   const bool pd_ff = (command_type == CommandType::kPdFeedforward);
-  cmd_msg_.command_type = CommandTypeToString(command_type);
-
-  // Stamp the JointCommand header from the RT-loop wall-clock capture (integer
-  // div/mod only — RT-safe). slot.stamp_ns is CLOCK_REALTIME ns so the topic
-  // shares the ROS wall time axis; 0 (unset) yields a zero stamp harmlessly.
-  cmd_msg_.header.stamp.sec = static_cast<int32_t>(slot.stamp_ns / 1'000'000'000LL);
-  cmd_msg_.header.stamp.nanosec = static_cast<uint32_t>(slot.stamp_ns % 1'000'000'000LL);
-
   // Direct copy: slot.commands is always in joint_command_names order (same
   // order the message labels carry) — wire-order differences are the
   // receiver's job (mujoco_simulator_node remaps by joint_names).
   const std::size_t n = std::min(static_cast<std::size_t>(nc), cmd_msg_.values.size());
-  const std::size_t nff = std::min(n, cmd_msg_.feedforward.size());
-  for (std::size_t i = 0; i < n; ++i) {
-    cmd_msg_.values[i] = slot.commands[i];
-    if (i < nff)
-      cmd_msg_.feedforward[i] = pd_ff ? slot.feedforward[i] : 0.0;
+  const bool send_gains = pd_ff && slot.has_pd_gains && n > 0 && n == cmd_msg_gains_.kp.size();
+  rtc_msgs::msg::JointCommand& msg = send_gains ? cmd_msg_gains_ : cmd_msg_;
+  msg.command_type = CommandTypeToString(command_type);
+
+  // Stamp the JointCommand header from the RT-loop wall-clock capture (integer
+  // div/mod only — RT-safe). slot.stamp_ns is CLOCK_REALTIME ns so the topic
+  // shares the ROS wall time axis; 0 (unset) yields a zero stamp harmlessly.
+  msg.header.stamp.sec = static_cast<int32_t>(slot.stamp_ns / 1'000'000'000LL);
+  msg.header.stamp.nanosec = static_cast<uint32_t>(slot.stamp_ns % 1'000'000'000LL);
+
+  // A slot that covers fewer joints than the message leaves the tail as last
+  // published. On a switch between the two messages that tail lives in the
+  // other one, so carry it over rather than republish an older value.
+  if (last_published_ != nullptr && last_published_ != &msg) {
+    std::copy(last_published_->values.begin() + static_cast<std::ptrdiff_t>(n),
+              last_published_->values.end(), msg.values.begin() + static_cast<std::ptrdiff_t>(n));
+    const std::size_t nf = std::min(n, msg.feedforward.size());
+    std::copy(last_published_->feedforward.begin() + static_cast<std::ptrdiff_t>(nf),
+              last_published_->feedforward.end(),
+              msg.feedforward.begin() + static_cast<std::ptrdiff_t>(nf));
   }
-  cmd_pub_->publish(cmd_msg_);
-  cmd_published_ = true;
+  const std::size_t nff = std::min(n, msg.feedforward.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    msg.values[i] = slot.commands[i];
+    if (i < nff)
+      msg.feedforward[i] = pd_ff ? slot.feedforward[i] : 0.0;
+  }
+  if (send_gains) {
+    std::copy_n(slot.pd_kp.data(), n, msg.kp.data());
+    std::copy_n(slot.pd_kd.data(), n, msg.kd.data());
+  }
+  cmd_pub_->publish(msg);
+  last_published_ = &msg;
 }
 
 void MujocoNativeBackend::WriteSafeCommand() noexcept {
@@ -710,13 +732,13 @@ void MujocoNativeBackend::WriteSafeCommand() noexcept {
   // value here would be worse than the silence: 0.0 on a position lane is
   // "go to the origin", which is the failure #196 spent a whole phase
   // keeping off the wire.
-  if (!cmd_pub_ || !cmd_published_) {
+  if (!cmd_pub_ || last_published_ == nullptr) {
     return;
   }
   // Re-publish the last command known to have gone out. Physically this
   // leaves the device where the silent path left it — the difference is that
   // the intent is now explicit on the wire and the lane stays live.
-  cmd_pub_->publish(cmd_msg_);
+  cmd_pub_->publish(*last_published_);
 }
 
 }  // namespace rtc

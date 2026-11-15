@@ -733,7 +733,8 @@ TEST_P(OutputFaultParamTest, RejectedOutputIsReplacedByHoldAtTheBackend) {
 INSTANTIATE_TEST_SUITE_P(AllRejectShapes, OutputFaultParamTest,
                          ::testing::Values(OutputFault::kInvalidFlag, OutputFault::kDeviceCount,
                                            OutputFault::kChannelCount,
-                                           OutputFault::kNonFiniteCommand),
+                                           OutputFault::kNonFiniteCommand,
+                                           OutputFault::kInvalidPdGain),
                          [](const ::testing::TestParamInfo<OutputFault>& param_info) {
                            switch (param_info.param) {
                              case OutputFault::kInvalidFlag:
@@ -744,6 +745,8 @@ INSTANTIATE_TEST_SUITE_P(AllRejectShapes, OutputFaultParamTest,
                                return "ChannelCountPastDeviceReport";
                              case OutputFault::kNonFiniteCommand:
                                return "NonFiniteCommand";
+                             case OutputFault::kInvalidPdGain:
+                               return "InvalidPdGain";
                              case OutputFault::kNone:
                                return "None";
                            }
@@ -991,6 +994,88 @@ TEST_F(OutputValidationTest, PerDeviceFeedforwardOverrideIsForwardedUnchanged) {
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// ── Per-joint PD gains ──────────────────────────────────────────────────────
+
+TEST_F(OutputValidationTest, ClaimedPdGainsReachTheBackendUnchanged) {
+  PipelineTestController::device0_command_type.store(static_cast<int>(CommandType::kPdFeedforward),
+                                                     std::memory_order_relaxed);
+  PipelineTestController::emit_pd_gains.store(true, std::memory_order_relaxed);
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  // One predicate over every field: the stub's fields are written one by one,
+  // so a check after a wait on one of them could read a different tick's rest.
+  ASSERT_TRUE(WaitFor(
+      [&] {
+        return backend->LastCommands()[0] == PipelineTestController::kCmd0 &&
+               backend->LastHasPdGains() && backend->LastPdKd()[1] == PipelineTestController::kKd1;
+      },
+      2000ms));
+
+  EXPECT_DOUBLE_EQ(PipelineTestController::kKp0, backend->LastPdKp()[0]);
+  EXPECT_DOUBLE_EQ(PipelineTestController::kKp1, backend->LastPdKp()[1]);
+  EXPECT_DOUBLE_EQ(PipelineTestController::kKd0, backend->LastPdKd()[0]);
+  EXPECT_DOUBLE_EQ(PipelineTestController::kKd1, backend->LastPdKd()[1]);
+  EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetRejectedOutputCount(*node));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// The hold rebuilds each device and claims no gains, whichever path built it —
+// the rejected output's gains are as untrusted as its commands, and the
+// E-STOP hold has no gains of its own to offer.
+class PdGainHoldTest : public OutputValidationTest {
+ protected:
+  void ExpectHoldClaimsNoPdGains(bool via_estop) {
+    PipelineTestController::emit_pd_gains.store(true, std::memory_order_relaxed);
+
+    auto node = MakeNode(/*control_rate=*/250.0);
+    ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+    auto* backend = Backend(*node);
+    ASSERT_NE(nullptr, backend);
+    ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+    backend->FireStateReady();
+    // Baseline: the claimed gains do reach the wire, so their absence below is
+    // the hold's doing.
+    ASSERT_TRUE(WaitFor(
+        [&] {
+          return backend->LastCommands()[0] == PipelineTestController::kCmd0 &&
+                 backend->LastHasPdGains();
+        },
+        2000ms));
+
+    if (via_estop) {
+      ControllerLifecycleTestAccess::CallTriggerEstop(*node, "test_estop");
+    } else {
+      PipelineTestController::output_fault.store(OutputFault::kNonFiniteCommand,
+                                                 std::memory_order_relaxed);
+    }
+    ASSERT_TRUE(WaitFor(
+        [&] {
+          return backend->LastCommands()[0] == PipelineStubBackend::kPos0 &&
+                 !backend->LastHasPdGains();
+        },
+        2000ms));
+    ExpectHeldAtMeasuredPosition(backend);
+
+    EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+    EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+  }
+};
+
+TEST_F(PdGainHoldTest, RejectedOutputHoldClaimsNoPdGains) {
+  ExpectHoldClaimsNoPdGains(/*via_estop=*/false);
+}
+
+TEST_F(PdGainHoldTest, EstopHoldClaimsNoPdGains) {
+  ExpectHoldClaimsNoPdGains(/*via_estop=*/true);
 }
 
 TEST_F(OutputValidationTest, TorqueOverrideBelowThresholdDoesNotEstopAndDoesNotLatch) {

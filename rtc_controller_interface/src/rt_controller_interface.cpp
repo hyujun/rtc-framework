@@ -440,6 +440,13 @@ ControllerOutputValidation ValidateControllerOutput(const ControllerOutput& out,
       if (!std::isfinite(dout.commands[ci]) || !std::isfinite(dout.feedforward[ci])) {
         return {OutputRejectReason::kNonFiniteCommand, i, c};
       }
+      // Gains are screened only when claimed: unclaimed slots never leave the
+      // process. A negative gain is no servo at all, and the receiver would
+      // drop the whole set and keep running on the previous one.
+      if (dout.has_pd_gains && !(std::isfinite(dout.pd_kp[ci]) && dout.pd_kp[ci] >= 0.0 &&
+                                 std::isfinite(dout.pd_kd[ci]) && dout.pd_kd[ci] >= 0.0)) {
+        return {OutputRejectReason::kInvalidPdGain, i, c};
+      }
     }
   }
   return {};
@@ -457,6 +464,8 @@ const char* OutputRejectReasonToString(OutputRejectReason reason) noexcept {
       return "channel_count_out_of_range";
     case OutputRejectReason::kNonFiniteCommand:
       return "non_finite_command";
+    case OutputRejectReason::kInvalidPdGain:
+      return "invalid_pd_gain";
   }
   return "unknown";
 }

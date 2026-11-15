@@ -96,7 +96,7 @@ auto snapshot = state_lock.Load();            // 다른 스레드, lock-free
 | 구조체 | 역할 |
 |--------|------|
 | `DeviceState` / `ControllerState` | 가변 채널 디바이스 상태 (position·velocity·effort, motor, sensor, inference, 부동 베이스 `base_*`, site 별 IMU `imu*`, joint 수신 시각·순번) / `devices[8]` + `dt`, `iteration`, `t_relative_s` |
-| `DeviceOutput` / `ControllerOutput` | 디바이스별 command·goal·target·trajectory·feedforward / `devices[8]` + task-space 값 + TF 발행용 SE3 |
+| `DeviceOutput` / `ControllerOutput` | 디바이스별 command·goal·target·trajectory·feedforward, 선택 PD 게인 (`pd_kp`·`pd_kd`·`has_pd_gains`) / `devices[8]` + task-space 값 + TF 발행용 SE3 |
 | `Pose` | RT-safe SE3 (`position[3]`, Hamilton quaternion w,x,y,z) |
 | `DeviceNameConfig` | 디바이스 이름·joint/sensor 이름·`DeviceUrdfConfig`·`DeviceJointLimits`·`DeviceSensorLayout`·`safe_position` |
 | `TopicConfig` | 디바이스 그룹별 구독/퍼블리시 토픽 (YAML 삽입 순서 보존). `GetFirstSubscribeTopic()` 은 `std::string` 반환이라 초기화 시에만 |
@@ -233,7 +233,7 @@ RT 스레드 (producer) 에서 비-RT 스레드 (consumer) 로 데이터를 넘�
 | `CmTimingBuffer` / `HandTimingBuffer` | 512 | CM RT loop / hand comm loop per-tick timing CSV |
 | `MpcTimingBuffer` | 128 | MPC per-tick timing CSV |
 
-`PublishSnapshot` 은 디바이스별 `GroupCommandSlot[8]` (command·goal·target·trajectory·feedforward·actual·motor·sensor·inference 배열, resolved `command_type`, 그룹별 `stamp_ns`, TF source pose) 과 공유 필드 (`actual_task_positions[6]`, `stamp_ns`, `active_controller_idx`, `num_groups`) 로 구성됩니다.
+`PublishSnapshot` 은 디바이스별 `GroupCommandSlot[8]` (command·goal·target·trajectory·feedforward·PD 게인·actual·motor·sensor·inference 배열, resolved `command_type`, 그룹별 `stamp_ns`, TF source pose) 과 공유 필드 (`actual_task_positions[6]`, `stamp_ns`, `active_controller_idx`, `num_groups`) 로 구성됩니다.
 
 ### 로깅 (`logging/`)
 
