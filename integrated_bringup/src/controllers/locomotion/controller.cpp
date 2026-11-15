@@ -198,6 +198,7 @@ void LocomotionController::InitModels() {
   full_data_ = std::make_unique<pinocchio::Data>(*full_model_);
   q_full_ = pinocchio::neutral(*full_model_);
   total_mass_ = pinocchio::computeTotalMass(*full_model_);
+  weight_ = total_mass_ * full_model_->gravity.linear().norm();
   ++model_epoch_;
 }
 

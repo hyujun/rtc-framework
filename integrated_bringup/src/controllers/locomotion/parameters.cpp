@@ -23,17 +23,24 @@ using rtc::params::Spelling;
   throw std::invalid_argument(where + ": " + what);
 }
 
+// A map whose keys are among `allowed`, with every one of `required` present.
 void CheckKeys(const YAML::Node& map, const std::string& where,
-               std::initializer_list<const char*> keys) {
+               std::initializer_list<const char*> allowed,
+               std::initializer_list<const char*> required) {
   if (!map || !map.IsMap()) {
     Refuse(where, "expected a map, got " + Spelling(map));
   }
-  if (const auto unknown = FindUnknownKey(map, keys)) {
+  if (const auto unknown = FindUnknownKey(map, allowed)) {
     Refuse(where, "unknown key '" + *unknown + "'");
   }
-  if (const auto missing = FindMissingKey(map, keys)) {
+  if (const auto missing = FindMissingKey(map, required)) {
     Refuse(where, "required key '" + *missing + "' is missing");
   }
+}
+
+void CheckKeys(const YAML::Node& map, const std::string& where,
+               std::initializer_list<const char*> keys) {
+  CheckKeys(map, where, keys, keys);
 }
 
 // A non-empty list of finite, non-negative numbers (a gain per joint).
@@ -89,18 +96,10 @@ bool ReadBool(const YAML::Node& map, const char* key, const std::string& where) 
 // passed through to them.
 LocomotionMpcConfig ParseMpc(const YAML::Node& n, const std::string& where) {
   LocomotionMpcConfig out;
-  if (!n || !n.IsMap()) {
-    Refuse(where, "expected a map, got " + Spelling(n));
-  }
-  if (const auto unknown =
-          FindUnknownKey(n, {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity",
-                             "ocp_type", "solver", "kinodynamic", "max_stale_solutions"})) {
-    Refuse(where, "unknown key '" + *unknown + "'");
-  }
-  if (const auto missing =
-          FindMissingKey(n, {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity"})) {
-    Refuse(where, "required key '" + *missing + "' is missing");
-  }
+  CheckKeys(n, where,
+            {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity", "ocp_type",
+             "solver", "kinodynamic", "max_stale_solutions"},
+            {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity"});
   out.present = true;
   out.enabled = ReadBool(n, "enabled", where);
   int nodes = 0;
@@ -116,16 +115,8 @@ LocomotionMpcConfig ParseMpc(const YAML::Node& n, const std::string& where) {
   out.max_policy_age_s = ReadPositive(n, "max_policy_age_s", where, /*zero_ok=*/true);
   const std::string ric = where + ".riccati";
   const YAML::Node r = n["riccati"];
-  if (!r.IsMap()) {
-    Refuse(ric, "expected a map, got " + Spelling(r));
-  }
-  if (const auto unknown = FindUnknownKey(
-          r, {"enabled", "gain_scale", "accel_only", "max_delta_x_norm", "max_delta_blocks"})) {
-    Refuse(ric, "unknown key '" + *unknown + "'");
-  }
-  if (const auto missing = FindMissingKey(r, {"enabled"})) {
-    Refuse(ric, "required key '" + *missing + "' is missing");
-  }
+  CheckKeys(r, ric, {"enabled", "gain_scale", "accel_only", "max_delta_x_norm", "max_delta_blocks"},
+            {"enabled"});
   out.riccati_enabled = ReadBool(r, "enabled", ric);
   const std::string san = where + ".sanity";
   CheckKeys(n["sanity"], san, {"joint_delta_rad", "base_speed", "joint_accel", "wrench_scale"});

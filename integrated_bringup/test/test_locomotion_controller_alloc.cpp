@@ -13,19 +13,8 @@
 
 #include <gtest/gtest.h>
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wpedantic"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/algorithm/center-of-mass.hpp>
-#pragma GCC diagnostic pop
-
 #include <algorithm>
-#include <chrono>
 #include <cstddef>
-#include <memory>
-#include <thread>
 #include <vector>
 
 namespace {
@@ -80,33 +69,14 @@ TEST_F(LocomotionAlloc, EveryTickPathAllocatesNothing) {
 // plans come from a stub on the MPC thread (the gate counts the ticking thread
 // only).
 TEST_F(LocomotionAlloc, TheMpcPathAllocatesNothing) {
-  cfg_ = MpcConfig();
-  rclcpp::NodeOptions opts;
-  opts.use_global_arguments(false);
-  node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_locomotion_mpc_alloc", "", opts);
-  ctrl_ = std::make_unique<LocomotionController>("");
-  ctrl_->SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
-  ctrl_->SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
-  ctrl_->SetControlRate(fx::kShippedProfileControlRateHz);
-  ASSERT_EQ(ctrl_->PreConfigure(node_, cfg_), CallbackReturn::SUCCESS);
-  ctrl_->SetDeviceNameConfigs(ShippedDevices(cfg_));
-  ASSERT_EQ(ctrl_->on_configure(rclcpp_lifecycle::State{}, node_, cfg_), CallbackReturn::SUCCESS);
-  const double weight =
-      pinocchio::computeTotalMass(ctrl_->FullModel()) * ctrl_->FullModel().gravity.linear().norm();
-  auto stub = std::make_unique<StandingStub>(weight);
-  StandingStub* const s = stub.get();
-  ASSERT_TRUE(integrated_bringup::LocomotionControllerTestAccess::Spawn(*ctrl_, std::move(stub)));
+  Configure(MpcConfig(), rclcpp::NodeOptions{}, "test_locomotion_mpc_alloc");
+  StandingStub* const s = SpawnStandingStub(*ctrl_);
+  ASSERT_NE(s, nullptr);
   Activate();
   MakeStanding();
-  Tick();
-  Tick();
   // Until the first stand, outside the gate (the plan arrives from another thread).
-  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-  while (ctrl_->Source() != LocomotionController::ReferenceSource::kStand &&
-         std::chrono::steady_clock::now() < end) {
-    Tick();
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
+  ASSERT_TRUE(TickUntil(
+      [this] { return ctrl_->Source() == LocomotionController::ReferenceSource::kStand; }));
   ASSERT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kStand);
   std::size_t worst = 0;
   for (int k = 0; k < 30; ++k) {

@@ -21,9 +21,10 @@ layout), and loco turns the MPC off again with sim_overlay:=mpc_off — the
 control arm of an MPC evaluation. ``--rtf R`` runs the sim at R × real time
 (``max_rtf:=R``): settle, lead and the recording are sim seconds scaled by
 1 / R (the sim stamps its sensor messages with the wall clock, so the
-recorder's duration and its JSON's times are wall seconds), so a host slower
-than the control PCs gives the MPC the solve time per simulated second that a
-fast one would.
+recorder's duration, its wall limit and its JSON's times are wall seconds), so
+a host slower than the control PCs gives the MPC the solve time per simulated
+second that a fast one would. ``max_rtf`` is a ceiling: check the sim reached
+it (the CM's timing lines report sim seconds per wall interval).
 
 Each run's recorder CSV / JSON and the controller log session land in
 ``<out>/<arm>_<k>/``. Run it under ``repo_scripts/scripts/with_verify_hold.sh``
@@ -45,23 +46,17 @@ from pathlib import Path
 import yaml
 
 LOCO = "locomotion_controller"
-SWITCHED = ("loco", "mpc", "mpc_fb")
+ARMS = ("servo", "loco", "lowpd", "mpc", "mpc_fb")
 
 
-def launch_args(arm: str, mpc_layout: bool, overlays: dict[str, str] | None = None) -> list[str]:
+def launch_args(arm: str, mpc_layout: bool, overlays: dict[str, str]) -> list[str]:
     """The arm's launch arguments (module docstring); `overlays` replaces an arm's overlay."""
-    if arm == "mpc":
-        args, overlay = ["enable_mpc:=true"], None
-    elif arm == "mpc_fb":
-        args, overlay = ["enable_mpc:=true"], "mpc_riccati"
-    elif not mpc_layout:
-        args, overlay = [], None
-    elif arm == "loco":
-        args, overlay = ["enable_mpc:=true"], "mpc_off"
-    else:
-        args, overlay = ["enable_mpc:=true"], None
-    overlay = (overlays or {}).get(arm, overlay)
-    return args + ([f"sim_overlay:={overlay}"] if overlay else [])
+    mpc_arm = arm in ("mpc", "mpc_fb")
+    default = {"mpc_fb": "mpc_riccati", "loco": "mpc_off" if mpc_layout else None}.get(arm)
+    overlay = overlays.get(arm, default)
+    return (["enable_mpc:=true"] if mpc_arm or mpc_layout else []) + (
+        [f"sim_overlay:={overlay}"] if overlay else []
+    )
 
 
 def sh(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess:
@@ -98,7 +93,6 @@ def gains(runtime_yaml: Path) -> tuple[list[float], list[float]]:
 def switch_step(arm: str, args: argparse.Namespace, note: dict) -> bool:
     if arm == "servo":
         return True
-    assert arm in SWITCHED or arm == "lowpd", arm
     if arm == "lowpd":
         kp, kd = gains(args.runtime_yaml)
         for name, vals in (("pd_feedforward.kp", kp), ("pd_feedforward.kd", kd)):
@@ -149,9 +143,10 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
     out = args.out / f"{arm}_{k}"
     out.mkdir(parents=True, exist_ok=True)
     extra = launch_args(arm, args.mpc_layout, args.overlay) + args.launch_arg
-    if args.rtf is not None:
+    wall = 1.0
+    if args.rtf:
         extra.append(f"max_rtf:={args.rtf}")
-    wall = 1.0 / args.rtf if args.rtf else 1.0
+        wall = 1.0 / args.rtf
     note: dict = {"arm": arm, "k": k, "launch_args": extra}
     t_start = time.time()
     with open(out / "launch.log", "w") as log:
@@ -202,8 +197,6 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                     str(out / "stance.csv"),
                     "--json",
                     str(out / "stance.json"),
-                    "--wall-limit",
-                    str((3.0 * args.duration + 5.0) * wall),
                 ],
                 timeout=args.duration * 4 * wall + 60,
             )
@@ -237,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         "--arms",
         nargs="+",
         default=["servo", "loco", "lowpd"],
-        choices=["servo", "loco", "lowpd", "mpc", "mpc_fb"],
+        choices=ARMS,
     )
     p.add_argument(
         "--mpc-layout",

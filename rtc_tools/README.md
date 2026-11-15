@@ -292,8 +292,6 @@ ros2 run rtc_tools analyze_stance_metrics stance.csv --settle 2.0       # 같은
 
 slip 과 높이의 기준은 창의 **첫 샘플** (높이는 `--z-ref` 가 있으면 그것) 이라 창 앞의 transient 는 지표에 들어가지 않는다. `/sim/reset` 은 감지하지 않는다 — 리셋 뒤에 새로 돌린다. 구독은 다른 토픽처럼 KEEP_LAST 1 이라 호스트가 sensor rate 를 못 따라가면 샘플이 빠진다 — JSON 의 `sample_dt_median_s` · `sample_gap_max_s` 가 그것을 보이고, 간격이 주기의 3 배를 넘으면 경고를 찍는다. 시작 조건이나 첫 샘플이 `--wait-timeout` (기본 60 s) 안에 안 오면 에러로 끝난다. 순수 계산은 `rtc_tools.analysis.stance_metrics` (ROS 없음, pytest 가 본다), recorder 는 `stance_metrics_recorder` (rclpy).
 
-녹음은 wall `--wall-limit` (기본 3 × duration + 5 s) 에서 끊는다 — `max_rtf` < 1 로 느리게 돌린 sim 이면 늘린다.
-
 ### locomotion_diag
 
 세션의 `controllers/locomotion_controller/` 아래 `locomotion_diag.csv` · `joint_ff.csv` · `<group>_state.csv` 를 `tick` 으로 이어 그림 7 장과 `locomotion_diag_summary.json` 을 `--out` (기본 `<session>/plots/locomotion_diag/`) 에 쓴다. 이름은 헤더에서 읽는다.

@@ -35,14 +35,16 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
   ++tick_count_;
   last_solve_ = nullptr;
   ReadState(state, now_ns);
-  if (mpc_enabled_ && source_ok_) {
-    // The MPC's clock: the tick count, so it runs with the control loop.
-    mpc_t_ns_ =
-        static_cast<std::uint64_t>(state.iteration) * static_cast<std::uint64_t>(tick_dt_ns_);
-    WriteMpcState();
-  }
   if (mpc_enabled_) {
     wbc_ref_.valid = false;  // a tick that does not sample the plan logs none
+    // Nothing samples the plan under the latch: the MPC gets no new state
+    // (the reset restarts its stream).
+    if (source_ok_ && !fault_latched_tick_) {
+      // The MPC's clock: the tick count, so it runs with the control loop.
+      mpc_t_ns_ =
+          static_cast<std::uint64_t>(state.iteration) * static_cast<std::uint64_t>(tick_dt_ns_);
+      WriteMpcState();
+    }
   }
 
   if (fault_latched_tick_) {
@@ -128,7 +130,6 @@ void LocomotionController::RestartReference() noexcept {
 
 void LocomotionController::ClearLatch() noexcept {
   fault_latched_tick_ = false;
-  ref_source_ = ReferenceSource::kIdle;
   fault_cause_.store(FaultCause::kNone, std::memory_order_relaxed);
   fault_latched_.store(false, std::memory_order_release);
 }
@@ -183,7 +184,7 @@ void LocomotionController::LatchReference(const ControllerState& state) noexcept
   // at the CoM and the QP has nothing to trade against its acceleration. Any
   // other count: an equal share of the weight, no moment. (z slot = the normal
   // force of a point or a surface contact; moments in world axes at the frame.)
-  const double weight = total_mass_ * full_model_->gravity.linear().norm();
+  const double weight = weight_;
   const std::size_t nc = cfg_.model.contacts.size();
   std::array<double, LocomotionDiagLogPod::kMaxContacts> share{};
   Eigen::Vector2d cop_offset = Eigen::Vector2d::Zero();
@@ -257,7 +258,6 @@ void LocomotionController::Latch(FaultCause cause) noexcept {
     ++fault_count_;
     fault_latched_.store(true, std::memory_order_release);
   }
-  ref_source_ = ReferenceSource::kFault;
   mode_ = Mode::kFault;
 }
 
@@ -417,7 +417,7 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
     d.ref_base_p[i] = ref_.q_des.size() > 2 ? ref_.q_des(static_cast<Eigen::Index>(i)) : 0.0;
     d.com[i] = full_data_->com[0](static_cast<Eigen::Index>(i));
   }
-  d.ref_source = static_cast<std::uint8_t>(ref_source_);
+  d.ref_source = static_cast<std::uint8_t>(Source());
   const bool plan = mpc_enabled_ && wbc_ref_.valid;
   d.plan_id = plan ? wbc_ref_.plan_id : 0;
   d.policy_age_us = plan ? static_cast<double>(static_cast<std::int64_t>(

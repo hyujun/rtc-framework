@@ -178,11 +178,9 @@ def launch_setup(context, *args, **kwargs):
     # the overlay, which may override it.
     enable_mpc = LaunchConfiguration("enable_mpc").perform(context)
     ctrl_params = [base_config, ctrl_config, sim_config]
-    mpc_choice = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
-    if enable_mpc.strip().lower() in mpc_choice:
-        ctrl_params.append(
-            {"locomotion_controller.mpc.enabled": mpc_choice[enable_mpc.strip().lower()]}
-        )
+    mpc_enabled = shield.mpc_enabled_choice(enable_mpc)
+    if mpc_enabled is not None:
+        ctrl_params.append({"locomotion_controller.mpc.enabled": mpc_enabled})
     if sim_overlay is not None:
         ctrl_params.append(sim_overlay)
     ctrl_overrides = {}

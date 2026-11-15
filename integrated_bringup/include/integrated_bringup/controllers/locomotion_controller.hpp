@@ -137,6 +137,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace integrated_bringup {
@@ -251,7 +252,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   /// The last tick's sample of the plan (`valid` false when none was usable).
   [[nodiscard]] const rtc::mpc::WbcReference& LastPlanSample() const noexcept { return wbc_ref_; }
 
-  [[nodiscard]] ReferenceSource Source() const noexcept { return ref_source_; }
+  [[nodiscard]] ReferenceSource Source() const noexcept {
+    return fault_latched_tick_ ? ReferenceSource::kFault : ref_source_;
+  }
 
  protected:
   void OnDeviceConfigsSet() override;
@@ -270,10 +273,11 @@ class LocomotionController final : public rtc::RTControllerInterface {
 
   // The MPC (mpc_reference.cpp). Off the RT thread: BuildMpc (Pass 1),
   // SpawnMpcThread (first activation; a null handler = the factory's),
-  // StopMpcThread, LogMpcTick (the 1 Hz aux timer).
+  // PauseMpc, StopMpcThread, LogMpcTick (the 1 Hz aux timer).
   void BuildMpc(const YAML::Node& cfg);
   [[nodiscard]] bool SpawnMpcThread(std::unique_ptr<rtc::mpc::MPCHandlerBase> handler) noexcept;
   void StopMpcThread() noexcept;
+  void PauseMpc() noexcept;  ///< sampling off, the thread paused (deactivation)
   void LogMpcTick() noexcept;
   // On the RT thread, in tick order.
   void WriteMpcState() noexcept;
@@ -282,6 +286,8 @@ class LocomotionController final : public rtc::RTControllerInterface {
   void CopyPlan() noexcept;
   void ApplyContactMask(std::uint32_t mask) noexcept;
   void LosePlan(const rtc::ControllerState& state) noexcept;
+  /// The lowest and the highest contact frame z, from the tick's kinematics.
+  [[nodiscard]] std::pair<double, double> ContactHeights() const noexcept;
   void RestartMpcStream() noexcept;
 
   // Compute() pieces, in tick order.
@@ -324,6 +330,7 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::array<double, kLocomotionMaxBodyJoints> damping_kd_{};
   std::array<double, kLocomotionMaxBodyJoints> tau_max_{};  ///< +inf when the roster has none
   double total_mass_{0.0};
+  double weight_{0.0};  ///< total_mass_ · |g| [N]
   uint32_t model_epoch_{1};
   std::unique_ptr<locomotion::TruthStateSource> source_;
 
@@ -382,7 +389,6 @@ class LocomotionController final : public rtc::RTControllerInterface {
   bool layout_profile_drops_mpc_{false};
   bool mpc_spawn_refused_{false};
   rtc::MpcWorkerSlots mpc_worker_slots_{};
-  YAML::Node mpc_factory_cfg_;  ///< `{mpc: …}`, what MPCFactory::Create reads
   int mpc_horizon_nodes_{0};
   double mpc_dt_{0.0};
   std::unique_ptr<rtc::mpc::RobotModelHandler> mpc_model_;
@@ -399,8 +405,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::int64_t tick_dt_ns_{0};
   // RT tick state.
   rtc::mpc::WbcReference wbc_ref_{};
-  ReferenceSource ref_source_{ReferenceSource::kIdle};
-  std::uint64_t mpc_t_ns_{0};  ///< this tick on the MPC's clock (iteration · dt)
+  ReferenceSource ref_source_{
+      ReferenceSource::kIdle};  ///< idle / stand / walk; the latch reads as fault
+  std::uint64_t mpc_t_ns_{0};   ///< this tick on the MPC's clock (iteration · dt)
   std::uint32_t mpc_state_epoch_{0};
   std::uint32_t contact_mask_{0};
   std::uint64_t rejected_plan_id_{0};

@@ -315,6 +315,14 @@ def _mode_counts(mode: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.unique(mode[np.isfinite(mode)], return_counts=True)
 
 
+def _named_counts(values: np.ndarray, names: Sequence[str]) -> dict[str, int]:
+    """Rows per code, keyed by its name (an unknown code by its number)."""
+    return {
+        names[int(m)] if 0 <= int(m) < len(names) else str(int(m)): int(c)
+        for m, c in zip(*_mode_counts(values), strict=True)
+    }
+
+
 def summarize(diag: Table, z_ref: float | None = None) -> dict:
     base = base_series(diag, z_ref)
     series: dict[str, np.ndarray] = {
@@ -335,10 +343,7 @@ def summarize(diag: Table, z_ref: float | None = None) -> dict:
         "rows": int(len(tick)),
         "t_first_s": float(diag["t_relative_s"][0]),
         "t_last_s": float(diag["t_relative_s"][-1]),
-        "rows_per_mode": {
-            MODE_NAMES[int(m)] if 0 <= int(m) < len(MODE_NAMES) else str(int(m)): int(c)
-            for m, c in zip(*_mode_counts(diag["mode"]), strict=True)
-        },
+        "rows_per_mode": _named_counts(diag["mode"], MODE_NAMES),
         "tau_valid_false_rows": int(np.sum(diag["tau_valid"] < 0.5)),
         "qp_status_histogram": histogram(diag["qp_status"]),
         "qp_status_nonzero_rows": int(np.sum(diag["qp_status"] != 0)),
@@ -361,29 +366,23 @@ def _mpc_summary(diag: Table) -> dict:
         return {}
     src = diag["ref_source"]
     t = diag["t_relative_s"]
-    stand = src == 1
+    stand = src == REFERENCE_SOURCE_NAMES.index("stand")
     age = diag["policy_age_us"]
-    out: dict = {
-        "rows_per_reference_source": {
-            REFERENCE_SOURCE_NAMES[int(m)]
-            if 0 <= int(m) < len(REFERENCE_SOURCE_NAMES)
-            else str(int(m)): int(c)
-            for m, c in zip(*_mode_counts(src), strict=True)
-        },
-        "stand_fraction": float(np.mean(stand)) if src.size else 0.0,
+    return {
+        "rows_per_reference_source": _named_counts(src, REFERENCE_SOURCE_NAMES),
+        "stand_fraction": float(np.mean(stand)),
         # From the first row (the activation, or the window's start).
         "time_to_stand_s": float(t[np.argmax(stand)] - t[0]) if stand.any() else None,
-        "walk_rows": int(np.sum(src == 2)),
-        "plausibility_rejects": int(np.nanmax(diag["plausibility_rejects"])) if src.size else 0,
-        "mpc_state_epoch_max": int(np.nanmax(diag["mpc_state_epoch"])) if src.size else 0,
+        "walk_rows": int(np.sum(src == REFERENCE_SOURCE_NAMES.index("walk"))),
+        "plausibility_rejects": int(diag["plausibility_rejects"][-1]),  # a running total
+        "mpc_state_epoch_max": int(np.nanmax(diag["mpc_state_epoch"])),
         # The base height the stand followed: the sampled plan's z.
         "stand_ref_base_z_mean_m": float(np.mean(diag["ref_base_pz"][stand]))
         if stand.any()
         else None,
-        "policy_age_us": series_stats(np.where(age >= 0.0, age, np.nan)),
+        # The rows with a plan (−1 = none); a NaN age fails the test and is left out.
+        "policy_age_us": series_stats(age[age >= 0.0]),
     }
-    out["policy_age_us"]["n_nonfinite"] = 0  # the rows without a plan, not bad data
-    return out
 
 
 # ── figures ────────────────────────────────────────────────────────────────

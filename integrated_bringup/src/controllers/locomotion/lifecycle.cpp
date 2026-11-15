@@ -79,6 +79,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
     joint_log_handle_ = std::move(reg.handles.joint_ff);
     diag_log_handle_ = std::move(reg.handles.locomotion_diag);
 
+    layout_profile_drops_mpc_ = false;
     if (mpc_enabled_ && node) {
       const std::string profile = ReadLayoutProfile(*node);
       layout_profile_drops_mpc_ = LayoutProfileDropsMpc(profile);
@@ -122,7 +123,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
     const rclcpp_lifecycle::State& prev) noexcept {
   // First: a refused activation leaves nothing behind (the CM keeps the
   // previous controller and never deactivates this one).
-  if (mpc_enabled_ && layout_profile_drops_mpc_) {
+  if (layout_profile_drops_mpc_) {  // only set with mpc.enabled
     RCLCPP_ERROR(logger_,
                  "[locomotion] activation refused: this launch ran with layout profile '%s' "
                  "(enable_mpc:=false), which returned the MPC cores to the system cpuset, but "
@@ -170,8 +171,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
     if (rc == CallbackReturn::SUCCESS) {
       mpc_thread_->Resume();
     } else {
-      mpc_manager_.SetEnabled(false);  // nothing will deactivate a refused activation
-      mpc_thread_->Pause();
+      PauseMpc();  // nothing will deactivate a refused activation
     }
   }
   return rc;
@@ -179,12 +179,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
 
 rtc::RTControllerInterface::CallbackReturn LocomotionController::on_deactivate(
     const rclcpp_lifecycle::State& prev) noexcept {
-  if (mpc_enabled_) {
-    mpc_manager_.SetEnabled(false);
-    if (mpc_thread_) {
-      mpc_thread_->Pause();
-    }
-  }
+  PauseMpc();
   DeactivateOwnedTopics(prev, owned_topics_);
   log_set_.DrainAll();
   return CallbackReturn::SUCCESS;

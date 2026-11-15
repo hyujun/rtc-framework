@@ -9,6 +9,14 @@
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/center-of-mass.hpp>
+#pragma GCC diagnostic pop
+
 #include <yaml-cpp/yaml.h>
 
 #include <atomic>
@@ -65,7 +73,6 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
                                 const rtc::mpc::MPCStateSnapshot& state,
                                 rtc::mpc::MPCSolution& out) noexcept override {
     std::this_thread::sleep_for(std::chrono::microseconds(sleep_us.load()));
-    calls.fetch_add(1);
     if (fail.load()) {
       return rtc::mpc::MPCSolveError::kSolverException;
     }
@@ -95,10 +102,17 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
         q[static_cast<std::size_t>(i)] = state.q[static_cast<std::size_t>(i)];
       }
       q[7] += joint_offset.load();
+      q[2] += base_dz.load();
+      if (const double tilt = base_tilt.load(); tilt != 0.0) {  // about x, from upright
+        q[3] = std::sin(0.5 * tilt);
+        q[4] = q[5] = 0.0;
+        q[6] = std::cos(0.5 * tilt);
+      }
       if (zero_quaternion.load()) {
         q[3] = q[4] = q[5] = q[6] = 0.0;
       }
       out.v_traj[static_cast<std::size_t>(k)].fill(0.0);
+      out.v_traj[static_cast<std::size_t>(k)][0] = base_vx.load();
       // The sampler differentiates q and v: a rate flipping each node is a
       // large joint acceleration.
       out.v_traj[static_cast<std::size_t>(k)][6] = (k % 2 == 0 ? 1.0 : -1.0) * joint_rate.load();
@@ -117,6 +131,8 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
           l[static_cast<std::size_t>(6 * c + 2)] = fz / support;
         }
       }
+      l[2] -= pull.load();  // moved from the first contact to the second
+      l[8] += pull.load();
     }
     return rtc::mpc::MPCSolveError::kNoError;
   }
@@ -151,15 +167,28 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
   std::atomic<double> joint_offset{0.0};
   std::atomic<bool> zero_quaternion{false};
   std::atomic<double> fz_scale{1.0};
+  std::atomic<double> base_tilt{0.0};  ///< [rad] the plan's base rolled from upright
+  std::atomic<double> base_dz{0.0};    ///< [m] the plan's base raised
+  std::atomic<double> base_vx{0.0};    ///< [m/s] the plan's base velocity
+  std::atomic<double> pull{0.0};       ///< [N] normal force moved between the soles
   std::atomic<double> joint_rate{0.0};  ///< the first joint's rate, flipping sign each node [rad/s]
-  std::atomic<std::uint64_t> calls{0};
 
  private:
   double weight_;
   rtc::mpc::MPCSolverConfig cfg_{};
 };
 
-YAML::Node MpcConfig() {
+// A stub on `ctrl`'s MPC thread (configured, not yet activated); null on a refusal.
+inline StandingStub* SpawnStandingStub(LocomotionController& ctrl) {
+  const double weight =
+      pinocchio::computeTotalMass(ctrl.FullModel()) * ctrl.FullModel().gravity.linear().norm();
+  auto stub = std::make_unique<StandingStub>(weight);
+  StandingStub* const raw = stub.get();
+  return integrated_bringup::LocomotionControllerTestAccess::Spawn(ctrl, std::move(stub)) ? raw
+                                                                                          : nullptr;
+}
+
+inline YAML::Node MpcConfig() {
   YAML::Node cfg = YAML::Clone(fx::ShippedControllerNode(kProfile, kKey));
   cfg["mpc"]["enabled"] = true;
   return cfg;

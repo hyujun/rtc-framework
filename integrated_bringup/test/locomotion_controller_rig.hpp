@@ -28,10 +28,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace loco_rig {
@@ -98,23 +100,54 @@ class LocomotionControllerTest : public ::testing::Test {
   }
 
   // The CM's bring-up order: model + builder + rate, PreConfigure, devices,
-  // on_configure, on_activate.
+  // on_configure (Configure), on_activate.
   void BringUp(YAML::Node cfg = ShippedConfig()) {
+    Configure(cfg);
+    Activate();
+    MakeStanding();
+  }
+
+  // A controller with the CM's model, builder and rate, before its YAML.
+  static std::unique_ptr<LocomotionController> MakeController() {
+    auto ctrl = std::make_unique<LocomotionController>("");
+    ctrl->SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
+    ctrl->SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
+    ctrl->SetControlRate(fx::kShippedProfileControlRateHz);
+    return ctrl;
+  }
+
+  void Configure(YAML::Node cfg, rclcpp::NodeOptions opts = rclcpp::NodeOptions{},
+                 const char* node_name = "test_locomotion_controller") {
     cfg_ = cfg;
-    rclcpp::NodeOptions opts;
     opts.use_global_arguments(false);
-    node_ =
-        std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_locomotion_controller", "", opts);
-    ctrl_ = std::make_unique<LocomotionController>("");
-    ctrl_->SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
-    ctrl_->SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
-    ctrl_->SetControlRate(fx::kShippedProfileControlRateHz);
+    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>(node_name, "", opts);
+    ctrl_ = MakeController();
     ASSERT_EQ(ctrl_->PreConfigure(node_, cfg_), CallbackReturn::SUCCESS);
     ctrl_->SetDeviceNameConfigs(ShippedDevices(cfg_));
     ASSERT_EQ(ctrl_->on_configure(rclcpp_lifecycle::State{}, node_, cfg_), CallbackReturn::SUCCESS)
         << ctrl_->ConfigError();
-    Activate();
-    MakeStanding();
+  }
+
+  // Ticks at about the control rate until `done` or the timeout (for state
+  // another thread produces).
+  bool TickUntil(const std::function<bool()>& done,
+                 std::chrono::milliseconds timeout = std::chrono::seconds(3)) {
+    const auto end = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < end) {
+      last_out_ = Tick();
+      if (done()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+  }
+
+  void TickFor(int n) {
+    for (int k = 0; k < n; ++k) {
+      last_out_ = Tick();
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
   }
 
   void Activate() {
@@ -208,6 +241,7 @@ class LocomotionControllerTest : public ::testing::Test {
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
   std::unique_ptr<LocomotionController> ctrl_;
   rtc::ControllerState state_{};
+  rtc::ControllerOutput last_out_{};
 };
 
 }  // namespace loco_rig

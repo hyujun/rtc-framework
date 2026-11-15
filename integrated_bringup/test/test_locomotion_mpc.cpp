@@ -7,14 +7,6 @@
 // runs the installed MPC itself.
 #include "locomotion_mpc_stub.hpp"
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wshadow"
-#pragma GCC diagnostic ignored "-Wpedantic"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#include <pinocchio/algorithm/center-of-mass.hpp>
-#pragma GCC diagnostic pop
-
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
@@ -43,47 +35,12 @@ class LocomotionMpcTest : public LocomotionControllerTest {
   // The rig's bring-up with the MPC on and the stub's thread spawned before
   // the activation (which then only resumes it).
   void BringUpWithStub(YAML::Node cfg = MpcConfig()) {
-    cfg_ = cfg;
-    rclcpp::NodeOptions opts;
-    opts.use_global_arguments(false);
-    node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_locomotion_mpc", "", opts);
-    ctrl_ = std::make_unique<LocomotionController>("");
-    ctrl_->SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
-    ctrl_->SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
-    ctrl_->SetControlRate(fx::kShippedProfileControlRateHz);
-    ASSERT_EQ(ctrl_->PreConfigure(node_, cfg_), CallbackReturn::SUCCESS);
-    ctrl_->SetDeviceNameConfigs(ShippedDevices(cfg_));
-    ASSERT_EQ(ctrl_->on_configure(rclcpp_lifecycle::State{}, node_, cfg_), CallbackReturn::SUCCESS)
-        << ctrl_->ConfigError();
+    Configure(cfg, rclcpp::NodeOptions{}, "test_locomotion_mpc");
     ASSERT_TRUE(ctrl_->MpcEnabled());
-    const double weight = pinocchio::computeTotalMass(ctrl_->FullModel()) *
-                          ctrl_->FullModel().gravity.linear().norm();
-    auto stub = std::make_unique<StandingStub>(weight);
-    stub_ = stub.get();
-    ASSERT_TRUE(LocomotionControllerTestAccess::Spawn(*ctrl_, std::move(stub)));
+    stub_ = SpawnStandingStub(*ctrl_);
+    ASSERT_NE(stub_, nullptr);
     Activate();
     MakeStanding();
-  }
-
-  // Ticks at about the control rate (the MPC's clock is the tick count) until
-  // `done` or the timeout.
-  bool TickUntil(const std::function<bool()>& done, std::chrono::milliseconds timeout = 3s) {
-    const auto end = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < end) {
-      last_out_ = Tick();
-      if (done()) {
-        return true;
-      }
-      std::this_thread::sleep_for(2ms);
-    }
-    return false;
-  }
-
-  void TickFor(int n) {
-    for (int k = 0; k < n; ++k) {
-      last_out_ = Tick();
-      std::this_thread::sleep_for(2ms);
-    }
   }
 
   bool Standing() { return ctrl_->Source() == Source::kStand; }
@@ -113,7 +70,6 @@ class LocomotionMpcTest : public LocomotionControllerTest {
   }
 
   StandingStub* stub_{nullptr};
-  rtc::ControllerOutput last_out_{};
 };
 
 // ── The reference sources ────────────────────────────────────────────────────
@@ -187,6 +143,10 @@ TEST_F(LocomotionMpcTest, AnImplausiblePlanFallsBackToIdleWithoutAFault) {
       {"no support at all", [](StandingStub& s) { s.mask = 0U; }},
       {"a third of the weight", [](StandingStub& s) { s.fz_scale = 0.3; }},
       {"a joint acceleration out of bounds", [](StandingStub& s) { s.joint_rate = 30.0; }},
+      {"the base rolled past the bound", [](StandingStub& s) { s.base_tilt = 0.6; }},
+      {"the base above the height range", [](StandingStub& s) { s.base_dz = 0.5; }},
+      {"the base faster than the bound", [](StandingStub& s) { s.base_vx = 4.0; }},
+      {"a sole pulling on the floor", [](StandingStub& s) { s.pull = 200.0; }},
   };
   for (const auto& [what, spoil] : spoils) {
     SCOPED_TRACE(what);
@@ -348,18 +308,9 @@ TEST_F(LocomotionMpcTest, UnderTheMpcTheHandsHoldTheirDefaultPose) {
 }
 
 TEST_F(LocomotionMpcTest, TheMpcOffLayoutRefusesTheActivation) {
-  cfg_ = MpcConfig();
   rclcpp::NodeOptions opts;
-  opts.use_global_arguments(false);
   opts.parameter_overrides({rclcpp::Parameter("rt_layout_profile", "mpc_off")});
-  node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_locomotion_mpc_off", "", opts);
-  ctrl_ = std::make_unique<LocomotionController>("");
-  ctrl_->SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
-  ctrl_->SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
-  ctrl_->SetControlRate(fx::kShippedProfileControlRateHz);
-  ASSERT_EQ(ctrl_->PreConfigure(node_, cfg_), CallbackReturn::SUCCESS);
-  ctrl_->SetDeviceNameConfigs(ShippedDevices(cfg_));
-  ASSERT_EQ(ctrl_->on_configure(rclcpp_lifecycle::State{}, node_, cfg_), CallbackReturn::SUCCESS);
+  Configure(MpcConfig(), opts, "test_locomotion_mpc_off");
   EXPECT_EQ(ctrl_->on_activate(rclcpp_lifecycle::State{}), CallbackReturn::FAILURE);
   EXPECT_EQ(ctrl_->MpcThread(), nullptr) << "refused before anything was spawned";
 }
@@ -470,11 +421,7 @@ TEST_F(LocomotionMpcTest, TheStageReferenceMustNameTheHandsAndNoStrangers) {
     YAML::Node cfg = MpcConfig();
     spoil(cfg);
     auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("test_loco_qdefault");
-    LocomotionController ctrl("");
-    ctrl.SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
-    ctrl.SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
-    ctrl.SetControlRate(fx::kShippedProfileControlRateHz);
-    EXPECT_NE(ctrl.PreConfigure(node, cfg), CallbackReturn::SUCCESS) << what;
+    EXPECT_NE(MakeController()->PreConfigure(node, cfg), CallbackReturn::SUCCESS) << what;
   };
   refused([](YAML::Node& c) { c["reference"]["q_default"]["no_such_joint"] = 0.0; }, "stranger");
   refused([](YAML::Node& c) { c["reference"]["q_default"].remove("thumb_mcp_joint"); },
