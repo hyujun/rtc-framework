@@ -2,6 +2,7 @@
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/model_config_lookup.hpp"
+#include "integrated_bringup/support/mpc_pool_wait.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
@@ -2023,26 +2024,6 @@ namespace {
   } catch (...) {
     return 0;
   }
-}
-
-// The MPC thread's verdict on its solver pool, awaited from on_activate (aux
-// thread). The set-up is one parallel region before the first tick, so it
-// settles within milliseconds; the ceiling only bounds a thread that never
-// reaches its loop entry, which is a refusal too.
-[[nodiscard]] bool AwaitMpcPool(const rtc::mpc::MPCThread& thread) noexcept {
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (std::chrono::steady_clock::now() < deadline) {
-    switch (thread.PoolState()) {
-      case rtc::mpc::SolverPoolState::kReady:
-        return true;
-      case rtc::mpc::SolverPoolState::kFailed:
-        return false;
-      case rtc::mpc::SolverPoolState::kPending:
-        break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  return false;
 }
 
 }  // namespace

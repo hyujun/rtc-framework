@@ -1,0 +1,13 @@
+# sim overlay — locomotion_controller's MPC with the plan's feedback gain on
+#
+#   ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true sim_overlay:=mpc_riccati
+#
+# The Riccati feedback of the sampled plan is added to the acceleration
+# reference, each state block's deviation capped by mpc.riccati.max_delta_blocks
+# (locomotion/mpc.yaml). Reported beside the MPC arm, not shipped on.
+integrated_rt_controller:
+  ros__parameters:
+    locomotion_controller:
+      mpc:
+        riccati:
+          enabled: true

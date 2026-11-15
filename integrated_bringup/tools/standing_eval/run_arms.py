@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stand the floating-base sim profile under three arms and record each run.
+"""Stand the floating-base sim profile under its arms and record each run.
 
 One run = one fresh simulator on one time axis: launch (the profile's initial
 joint controller holds the keyframe on its MJCF servo gains) → ``--settle`` s
@@ -11,7 +11,20 @@ message for ``--duration`` s. The arms differ only in the switch step:
           locomotion controller's (``pd_feedforward.kp/kd`` parameters), no
           feedforward                                          — PD alone
   loco    /rtc_cm/switch_controller to the locomotion controller; the call
-          must answer ok and the active controller must be it  — the treatment
+          must answer ok and the active controller must be it  — the latched pose
+  mpc     the same switch, the launch with enable_mpc:=true: the controller
+          stands on its MPC's plan
+  mpc_fb  as mpc, with the plan's Riccati feedback on (sim_overlay:=mpc_riccati)
+
+With ``--mpc-layout`` every arm runs under enable_mpc:=true (the same CPU
+layout), and loco turns the MPC off again with sim_overlay:=mpc_off — the
+control arm of an MPC evaluation. ``--rtf R`` runs the sim at R × real time
+(``max_rtf:=R``): settle, lead and the recording are sim seconds scaled by
+1 / R (the sim stamps its sensor messages with the wall clock, so the
+recorder's duration, its wall limit and its JSON's times are wall seconds), so
+a host slower than the control PCs gives the MPC the solve time per simulated
+second that a fast one would. ``max_rtf`` is a ceiling: check the sim reached
+it (the CM's timing lines report sim seconds per wall interval).
 
 Each run's recorder CSV / JSON and the controller log session land in
 ``<out>/<arm>_<k>/``. Run it under ``repo_scripts/scripts/with_verify_hold.sh``
@@ -33,6 +46,17 @@ from pathlib import Path
 import yaml
 
 LOCO = "locomotion_controller"
+ARMS = ("servo", "loco", "lowpd", "mpc", "mpc_fb")
+
+
+def launch_args(arm: str, mpc_layout: bool, overlays: dict[str, str]) -> list[str]:
+    """The arm's launch arguments (module docstring); `overlays` replaces an arm's overlay."""
+    mpc_arm = arm in ("mpc", "mpc_fb")
+    default = {"mpc_fb": "mpc_riccati", "loco": "mpc_off" if mpc_layout else None}.get(arm)
+    overlay = overlays.get(arm, default)
+    return (["enable_mpc:=true"] if mpc_arm or mpc_layout else []) + (
+        [f"sim_overlay:={overlay}"] if overlay else []
+    )
 
 
 def sh(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess:
@@ -118,11 +142,16 @@ def newest_session(root: Path, after: float) -> Path | None:
 def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
     out = args.out / f"{arm}_{k}"
     out.mkdir(parents=True, exist_ok=True)
-    note: dict = {"arm": arm, "k": k}
+    extra = launch_args(arm, args.mpc_layout, args.overlay) + args.launch_arg
+    wall = 1.0
+    if args.rtf:
+        extra.append(f"max_rtf:={args.rtf}")
+        wall = 1.0 / args.rtf
+    note: dict = {"arm": arm, "k": k, "launch_args": extra}
     t_start = time.time()
     with open(out / "launch.log", "w") as log:
         launch = subprocess.Popen(
-            ["ros2", "launch", "integrated_bringup", args.launch, "enable_viewer:=false"],
+            ["ros2", "launch", "integrated_bringup", args.launch, "enable_viewer:=false", *extra],
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -131,12 +160,12 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
             if not wait_topic(args.sensor_topic, 90.0):
                 note["error"] = "no sensor topic"
                 return note
-            time.sleep(args.settle)
+            time.sleep(args.settle * wall)
             note["switch_ok"] = switch_step(arm, args, note)
             if not note["switch_ok"]:
                 note["error"] = "switch step failed"
                 return note
-            time.sleep(args.lead)
+            time.sleep(args.lead * wall)
             rec = sh(
                 [
                     "ros2",
@@ -158,7 +187,7 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                     "--contact-sign",
                     "-1",
                     "--duration",
-                    str(args.duration),
+                    str(args.duration * wall),
                     "--settle",
                     "0",
                     "--z-ref",
@@ -169,7 +198,7 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                     "--json",
                     str(out / "stance.json"),
                 ],
-                timeout=args.duration * 4 + 60,
+                timeout=args.duration * 4 * wall + 60,
             )
             note["recorder_rc"] = rec.returncode
             (out / "recorder.log").write_text(rec.stdout + rec.stderr)
@@ -197,7 +226,17 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--arms", nargs="+", default=["servo", "loco", "lowpd"])
+    p.add_argument(
+        "--arms",
+        nargs="+",
+        default=["servo", "loco", "lowpd"],
+        choices=ARMS,
+    )
+    p.add_argument(
+        "--mpc-layout",
+        action="store_true",
+        help="every arm under enable_mpc:=true; loco with sim_overlay:=mpc_off",
+    )
     p.add_argument("-k", type=int, default=5, help="runs per arm")
     p.add_argument("--launch", default="sim_g1_loco.launch.py")
     p.add_argument(
@@ -206,14 +245,32 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="the locomotion controller's runtime fragment (its PD gains)",
     )
+    p.add_argument(
+        "--overlay",
+        action="append",
+        default=[],
+        metavar="ARM=OVERLAY",
+        help="the arm's sim_overlay (a shipped name or a path), replacing its own",
+    )
+    p.add_argument(
+        "--launch-arg",
+        action="append",
+        default=[],
+        metavar="NAME:=VALUE",
+        help="passed to every launch (e.g. max_log_sessions:=200 while sessions are collected)",
+    )
     p.add_argument("--joint-node", default="/demo_joint_controller/demo_joint_controller")
     p.add_argument("--sensor-topic", default="/g1/sim_sensors")
     p.add_argument("--z-ref", type=float, default=0.764431)
     p.add_argument("--settle", type=float, default=2.0)
     p.add_argument("--lead", type=float, default=1.0)
     p.add_argument("--duration", type=float, default=10.0)
+    p.add_argument(
+        "--rtf", type=float, default=None, help="max_rtf for the sim (module docstring)"
+    )
     p.add_argument("--logging-root", type=Path, required=True)
     args = p.parse_args(argv)
+    args.overlay = dict(o.split("=", 1) for o in args.overlay)
     notes = []
     for k in range(args.k):
         for arm in args.arms:

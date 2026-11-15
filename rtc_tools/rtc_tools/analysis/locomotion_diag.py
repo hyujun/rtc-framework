@@ -76,7 +76,8 @@ MARGINS = (
     "margin_joint_accel",
 )
 MODE_NAMES = ("waiting", "nominal", "degraded", "fault")
-FAULT_CAUSE_NAMES = ("none", "solve health", "source", "non-finite", "model epoch")
+FAULT_CAUSE_NAMES = ("none", "solve health", "source", "non-finite", "model epoch", "plan loss")
+REFERENCE_SOURCE_NAMES = ("idle", "stand", "walk", "fault")
 HEALTH_NAMES = ("nominal", "degraded", "fault")
 SOURCE_STATUS_NAMES = (
     "ok",
@@ -314,6 +315,14 @@ def _mode_counts(mode: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.unique(mode[np.isfinite(mode)], return_counts=True)
 
 
+def _named_counts(values: np.ndarray, names: Sequence[str]) -> dict[str, int]:
+    """Rows per code, keyed by its name (an unknown code by its number)."""
+    return {
+        names[int(m)] if 0 <= int(m) < len(names) else str(int(m)): int(c)
+        for m, c in zip(*_mode_counts(values), strict=True)
+    }
+
+
 def summarize(diag: Table, z_ref: float | None = None) -> dict:
     base = base_series(diag, z_ref)
     series: dict[str, np.ndarray] = {
@@ -334,10 +343,7 @@ def summarize(diag: Table, z_ref: float | None = None) -> dict:
         "rows": int(len(tick)),
         "t_first_s": float(diag["t_relative_s"][0]),
         "t_last_s": float(diag["t_relative_s"][-1]),
-        "rows_per_mode": {
-            MODE_NAMES[int(m)] if 0 <= int(m) < len(MODE_NAMES) else str(int(m)): int(c)
-            for m, c in zip(*_mode_counts(diag["mode"]), strict=True)
-        },
+        "rows_per_mode": _named_counts(diag["mode"], MODE_NAMES),
         "tau_valid_false_rows": int(np.sum(diag["tau_valid"] < 0.5)),
         "qp_status_histogram": histogram(diag["qp_status"]),
         "qp_status_nonzero_rows": int(np.sum(diag["qp_status"] != 0)),
@@ -350,6 +356,32 @@ def summarize(diag: Table, z_ref: float | None = None) -> dict:
         "max_tick_gap": float(gaps.max()) if gaps.size else 0.0,
         "missing_ticks": int(np.sum(gaps[gaps > 1] - 1)) if gaps.size else 0,
         "series": {name: series_stats(v) for name, v in series.items()},
+        **_mpc_summary(diag),
+    }
+
+
+def _mpc_summary(diag: Table) -> dict:
+    """The MPC columns (a session without them — an older log — gets none)."""
+    if "ref_source" not in diag:
+        return {}
+    src = diag["ref_source"]
+    t = diag["t_relative_s"]
+    stand = src == REFERENCE_SOURCE_NAMES.index("stand")
+    age = diag["policy_age_us"]
+    return {
+        "rows_per_reference_source": _named_counts(src, REFERENCE_SOURCE_NAMES),
+        "stand_fraction": float(np.mean(stand)),
+        # From the first row (the activation, or the window's start).
+        "time_to_stand_s": float(t[np.argmax(stand)] - t[0]) if stand.any() else None,
+        "walk_rows": int(np.sum(src == REFERENCE_SOURCE_NAMES.index("walk"))),
+        "plausibility_rejects": int(diag["plausibility_rejects"][-1]),  # a running total
+        "mpc_state_epoch_max": int(np.nanmax(diag["mpc_state_epoch"])),
+        # The base height the stand followed: the sampled plan's z.
+        "stand_ref_base_z_mean_m": float(np.mean(diag["ref_base_pz"][stand]))
+        if stand.any()
+        else None,
+        # The rows with a plan (−1 = none); a NaN age fails the test and is left out.
+        "policy_age_us": series_stats(age[age >= 0.0]),
     }
 
 
@@ -536,6 +568,8 @@ def plot_modes(sess: Session, path: Path) -> None:
         ("health", HEALTH_NAMES),
         ("source_status", SOURCE_STATUS_NAMES),
     )
+    if "ref_source" in sess.diag:
+        specs = (*specs, ("ref_source", REFERENCE_SOURCE_NAMES))
     fig, axes = plt.subplots(len(specs), 1, figsize=(10, 8), sharex=True)
     for ax, (col, names) in zip(axes, specs, strict=True):
         ax.step(t, sess.diag[col], where="post")
@@ -544,7 +578,7 @@ def plot_modes(sess: Session, path: Path) -> None:
         ax.set_ylabel(col, fontsize=8)
         ax.grid(alpha=0.3)
     axes[-1].set_xlabel("t [s]")
-    fig.suptitle("Mode, fault cause, health and source status")
+    fig.suptitle("Mode, fault cause, health, source status (and reference source)")
     _save(fig, path)
 
 

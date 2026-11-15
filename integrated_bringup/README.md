@@ -113,7 +113,7 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `use_cpu_affinity` | `true` | Tier 1 CPU 격리 + MuJoCo 핀닝 |
 | `max_log_sessions` | `10` (그 profile 의 YAML) | 세션 폴더 최대 보관 수 |
 | `initial_controller` | `""` (YAML) | 시작 컨트롤러. 기본은 profile 의 `sim.yaml` (`ur5e_p1a` · `iiwa7_leap` 은 wbc, `p2` · `p2_left` 는 `hand_joint_controller`, 나머지는 `demo_joint_controller`). 기동 완료 신호는 `RtControllerNode reached Active state` 로그 |
-| `enable_mpc` | `""` (YAML) | `demo_wbc_controller` 의 `mpc.enabled` 를 launch 시점에 덮는다. `sim_iiwa7_leap` 은 `false` 가 YAML 기본, `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2` 는 CPU layout 만 고르고 기본 `false` |
+| `enable_mpc` | `""` (YAML) | `mpc.enabled` 를 launch 시점에 덮는다 — `sim_iiwa7_leap` 은 `demo_wbc_controller` 의 것 (YAML 기본 `false`), `sim_g1_loco` 는 `locomotion_controller` 의 것, 나머지 sim 은 CPU layout 만 (기본 `false`) |
 | `mpc_engine` | `""` (YAML) | `mock` / `handler` (`demo_wbc_controller` 의 MPC 엔진). `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2` 에는 없다 |
 | `sim_overlay` | `""` | 출하 씬을 건드리지 않고 바꾸는 overlay (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2`). [Scene overlay](#scene-overlay-sim_overlay--출하-씬을-건드리지-않고-바꾸기) |
 | `sim_lanes` | `false` | clock 위상 · 공 접촉 측정 lane 을 켜고 `<session>/sim/` 에 쓴다 (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2`) |
@@ -173,11 +173,11 @@ ros2 service call /sim/reset std_srvs/srv/Trigger                               
 
 - 보행 MPC 의 plant 다. device group 이 둘이다: `g1` (왼다리 6 + 오른다리 6 + 허리 3 + 왼팔 4 + 오른팔 4 = 23 관절, 이 순서 — 손목은 강체) 과 `p1b` (합성 손 10 관절, sim 에서는 `fake_response` LPF). 모델은 공개 `robot_descriptions` 의 `robots/g1` 부동 MJCF 와 `g1_29dof_floating_with_p1b_surrogate` xacro 다 — 비공개 패키지가 필요 없다.
 - `controllers/locomotion_controller.yaml` (+ `locomotion/` 의 조각 하나씩) 은 `locomotion_controller` 의 `model.*` · `runtime.yaml` (PD 게인 · fault · state source · 토픽 · 로그) · `command.*` (명령 필터) · `gait.*` (gait 표) · `swing.*` · `terrain.*` (swing 발 참조 · 지면) · `reference.*` (q_default · arm swing) · `whole_body_qp.*` · `mpc.*` 계약이다: 발 접촉 `left_sole` · `right_sole`, 양팔 끝 `left_wrist_yaw_link` · `base_adapter`, 몸통 `torso_link`, IMU site `pelvis` · `torso` (`model.imu`, primary `pelvis`).
-  - 스키마 · 거부 규칙은 `model.*` 이 `controllers/locomotion/humanoid_model_config.hpp`, `whole_body_qp.*` 가 `rtc_tsid` 의 builder 헤더, `mpc.*` 가 `rtc_mpc` `ocp/kinodynamic_ocp_config.hpp` · `handler/mpc_factory.hpp` (`solver:`), 나머지가 `rtc_mpc` `reference/` 헤더가 갖고, 위 관절 순서 (모델 = `joint_state_names` = MJCF actuator) 는 `test_g1_loco_joint_order` 가, `model.imu.sites` = `imu_state.site_names` (순서 포함) 는 `test_loco_imu_lane_shipped` 가 본다.
+  - 스키마 · 거부 규칙은 `model.*` 이 `controllers/locomotion/humanoid_model_config.hpp`, `whole_body_qp.*` 가 `rtc_tsid` 의 builder 헤더, `mpc.*` 가 `rtc_mpc` `ocp/kinodynamic_ocp_config.hpp` · `handler/mpc_factory.hpp` (`solver:`) · 컨트롤러 헤더 (소비자 키), 나머지가 `rtc_mpc` `reference/` 헤더가 갖고, 위 관절 순서 (모델 = `joint_state_names` = MJCF actuator) 는 `test_g1_loco_joint_order` 가, `model.imu.sites` = `imu_state.site_names` (순서 포함) 는 `test_loco_imu_lane_shipped` 가 본다.
 - 기동해 서 있는 것은 sim 의 `stand` keyframe (`reset_keyframe`) + MJCF `<position>` servo 다 — `locomotion_controller` 로는 `/rtc_cm/switch_controller` 로 넘어간다 ([locomotion-controller.md](docs/locomotion-controller.md)). `demo_joint_controller` (시작 컨트롤러) 는 측정 자세를 `pd_feedforward` 로 hold 하고 feedforward 는 0 이다 — 첫 명령에서 sim 이 `g1` 군을 PD-feedforward 모드로 바꾸고 중력 보상을 끄므로 그 뒤의 자세는 servo 의 것이다. 지표 (`run_stance_metrics`, [rtc_tools README](../rtc_tools/README.md)) 는 그 전환 뒤부터 잰다.
 - 컨트롤러 모델의 root 는 **부동** (`urdf.root_joint_type: "floating"`) 이다. full · actuated 모델이 pelvis 에 free-flyer 를 갖고, tree 모델은 그것을 잠그며, 손의 폐쇄 체인 handle 은 seed (단위) 자세로 hold 한다 — 손끝 FK 와 관절 블록은 고정 root 모델과 같다 (`test_g1_loco_configure` 가 대조한다). 부동 베이스의 ground truth 는 `devices.g1.backend.base_state` lane, 두 IMU 는 `imu_state` lane ([기구학 모델 설정](#기구학-모델-설정) 의 두 키, 같은 토픽) 으로 들어오지만 아직 모델의 base 로 배선되지 않는다. 발 접촉은 `fingertip_wrench_topics` 의 두 sole 토픽 (`/g1/{left,right}_sole_contact/contact_wrench`) 이다.
 - MJCF 의 `<option timestep>` 0.002 는 **제어 주기**다 (sim 이 `n_substeps` 3 으로 나눈다). `use_yaml_servo_gains` 는 `false` 가 기본이고 YAML 은 `servo_kp` / `servo_kd` 를 싣지 않는다.
-- `enable_mpc` 는 CPU layout 만 고른다 (기본 `false`). `mpc_engine` 인자는 없다.
+- `enable_mpc` 는 CPU layout 과 `locomotion_controller.mpc.enabled` 를 고른다 (기본 `false` = latch 자세, `true` = MPC plan 으로 서기). `mpc_engine` 인자는 없다. 평가용 overlay `mpc_off` (MPC layout 에서 MPC 끔) · `mpc_riccati` 를 출하한다.
 
 GUI 는 `ros2 run integrated_bringup demo_controller_gui --robot g1_loco`.
 
@@ -233,7 +233,7 @@ ros2 param set /hand_joint_controller/hand_joint_controller mode damping        
 | `demo_catching_controller` | 날아오는 물체 포획: vision 예측 → 계획기 → 확장 CLIK 팔 + 손 시퀀서 | `ur5e_p1b` · `iiwa7_leap` | [demo-catching-controller.md](docs/demo-catching-controller.md) |
 | `hand_joint_controller` | 손 하나: 관절 quintic 궤적 + 모델 중력 토크 feedforward (`pd_feedforward`) | `p2` · `p2_left` | [hand-joint-controller.md](docs/hand-joint-controller.md) |
 | `demo_dualarm_controller` | 두 손 frame 과제 + 자세를 QP 하나로 푸는 상체 제어 | `g1_p1b` | [demo-dualarm-controller.md](docs/demo-dualarm-controller.md) |
-| `locomotion_controller` | 부동 베이스 전신 QP (측정 상태 → full · reduced 모델 → TSID) 를 `pd_feedforward` + 자기 PD 게인으로. 지금은 고정 reference 로 서 있기 | `g1_loco` · `b7_loco` | [locomotion-controller.md](docs/locomotion-controller.md) |
+| `locomotion_controller` | 부동 베이스 전신 QP (측정 상태 → full · reduced 모델 → TSID) 를 `pd_feedforward` + 자기 PD 게인으로. MPC plan (`mpc.enabled`) 또는 latch 자세로 서 있기 | `g1_loco` · `b7_loco` | [locomotion-controller.md](docs/locomotion-controller.md) |
 
 컨트롤러가 지켜야 하는 계약은 [agent_docs/controllers.md](../agent_docs/controllers.md), 컨트롤러별 게인 · 토픽 카탈로그는 [docs/controllers.md](../docs/controllers.md) 에 있다. 공통 파라미터 · 팔 끝 frame · 손끝 FK 배선 · grasp mode 전환은 [demo-shared-params.md](docs/demo-shared-params.md), 컨트롤러가 남기는 CSV 는 [controller-logs.md](docs/controller-logs.md) 가 갖는다.
 
@@ -414,7 +414,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py initial_controller:=demo_w
 `sim_ur5e_p1b`, `sim_iiwa7_leap`, `sim_g1_p1b` 는 `mujoco_simulator.yaml` 뒤, 명령줄 인자 앞에 params 파일 하나를 더 끼우는 `sim_overlay:=` 를 받습니다 (`sim_ur5e_p1a` 는 받지 않음). overlay 는 두 노드에 모두 전달되고 각 노드는 자기 섹션만 읽습니다. `sim_overlay:=` 없이 띄우면 출하 씬 그대로입니다.
 
 - **값 해석**: 이름만 주면 `config/<robot>/sim_overlays/<name>.yaml`, `/` 가 있거나 `.yaml` 로 끝나면 경로입니다. 해석되지 않는 값은 launch 를 실패시키고 에러에 출하 overlay 이름 목록이 실립니다.
-- **출하 overlay**: `config/ur5e_p1b/sim_overlays/` 에 `inference_pole`, `fingertip_grasp`, `fingertip_grasp_free` 가 있고 용도는 각 파일 헤더 주석이 갖습니다. 새 실험용 overlay 는 repo 밖에 두고 경로로 넘깁니다. overlay 는 다른 overlay 를 include 하지 못하므로 자기완결 파일이어야 합니다.
+- **출하 overlay**: `config/ur5e_p1b/sim_overlays/` 에 `inference_pole`, `fingertip_grasp`, `fingertip_grasp_free`, `config/g1_loco/sim_overlays/` 에 `mpc_off`, `mpc_riccati` 가 있고 용도는 각 파일 헤더 주석이 갖습니다. 새 실험용 overlay 는 repo 밖에 두고 경로로 넘깁니다. overlay 는 다른 overlay 를 include 하지 못하므로 자기완결 파일이어야 합니다.
 - **장면을 바꾸는 overlay 는 `urdf.extra_frames.scene_world` 도 둡니다.** 파라미터는 키 단위로 덮이므로 적지 않으면 `sim.yaml` 의 (다른 장면의) world 가 남습니다. 자세한 규칙은 [Task 목표의 기준 frame](#task-목표의-기준-frame-779) 을 봅니다.
 - **키 경로가 어긋나면 경고 없이 무시되어 출하값으로 돕니다.** 컨트롤러 미러 (`ros2 param get`) 나 기동 로그로 적용을 확인합니다. `sim.yaml` 의 override 는 overlay 아래에 깔리므로, overlay 가 `robot.arm.qdd_max` 를 적지 않으면 `sim.yaml` 값으로 돕니다.
 - **포구 컨트롤러**: 출하 overlay 는 없습니다. 탐색과 구간 계획기는 launch 인자 `catch_search_mode:=` · `catch_segment_mode:=` 로 바꿉니다. 지운 키 (`robot.arm.accel_limits_*`) 나 `joint_cmd.accel_constraint: box` 는 컨트롤러가 park 하고 ERROR 로그가 해당 키를 지목합니다.

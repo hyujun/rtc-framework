@@ -23,17 +23,24 @@ using rtc::params::Spelling;
   throw std::invalid_argument(where + ": " + what);
 }
 
+// A map whose keys are among `allowed`, with every one of `required` present.
 void CheckKeys(const YAML::Node& map, const std::string& where,
-               std::initializer_list<const char*> keys) {
+               std::initializer_list<const char*> allowed,
+               std::initializer_list<const char*> required) {
   if (!map || !map.IsMap()) {
     Refuse(where, "expected a map, got " + Spelling(map));
   }
-  if (const auto unknown = FindUnknownKey(map, keys)) {
+  if (const auto unknown = FindUnknownKey(map, allowed)) {
     Refuse(where, "unknown key '" + *unknown + "'");
   }
-  if (const auto missing = FindMissingKey(map, keys)) {
+  if (const auto missing = FindMissingKey(map, required)) {
     Refuse(where, "required key '" + *missing + "' is missing");
   }
+}
+
+void CheckKeys(const YAML::Node& map, const std::string& where,
+               std::initializer_list<const char*> keys) {
+  CheckKeys(map, where, keys, keys);
 }
 
 // A non-empty list of finite, non-negative numbers (a gain per joint).
@@ -57,6 +64,67 @@ std::vector<double> ReadGains(const YAML::Node& map, const char* key, const std:
     }
     out.push_back(x);
   }
+  return out;
+}
+
+double ReadPositive(const YAML::Node& map, const char* key, const std::string& where,
+                    bool zero_ok) {
+  const YAML::Node v = map[key];
+  double x = std::numeric_limits<double>::quiet_NaN();
+  try {
+    x = v.as<double>();
+  } catch (const YAML::Exception&) {
+  }
+  if (!(std::isfinite(x) && (x > 0.0 || (zero_ok && x == 0.0)))) {
+    Refuse(where + "." + key, std::string("expected a finite number ") +
+                                  (zero_ok ? ">= 0" : "> 0") + ", got " + Spelling(v));
+  }
+  return x;
+}
+
+bool ReadBool(const YAML::Node& map, const char* key, const std::string& where) {
+  const YAML::Node v = map[key];
+  try {
+    return v.as<bool>();
+  } catch (const YAML::Exception&) {
+  }
+  Refuse(where + "." + key, "expected true or false, got " + Spelling(v));
+}
+
+// `mpc:` — the consumer's keys are required (an absent riccati.enabled would
+// read as on in the manager); the factory's and the manager's own keys are
+// passed through to them.
+LocomotionMpcConfig ParseMpc(const YAML::Node& n, const std::string& where) {
+  LocomotionMpcConfig out;
+  CheckKeys(n, where,
+            {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity", "ocp_type",
+             "solver", "kinodynamic", "max_stale_solutions"},
+            {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity"});
+  out.present = true;
+  out.enabled = ReadBool(n, "enabled", where);
+  int nodes = 0;
+  try {
+    nodes = n["period_nodes"].as<int>();
+  } catch (const YAML::Exception&) {
+    Refuse(where + ".period_nodes", "expected an integer, got " + Spelling(n["period_nodes"]));
+  }
+  if (nodes < 1) {
+    Refuse(where + ".period_nodes", "must be >= 1, got " + std::to_string(nodes));
+  }
+  out.period_nodes = nodes;
+  out.max_policy_age_s = ReadPositive(n, "max_policy_age_s", where, /*zero_ok=*/true);
+  const std::string ric = where + ".riccati";
+  const YAML::Node r = n["riccati"];
+  CheckKeys(r, ric, {"enabled", "gain_scale", "accel_only", "max_delta_x_norm", "max_delta_blocks"},
+            {"enabled"});
+  out.riccati_enabled = ReadBool(r, "enabled", ric);
+  const std::string san = where + ".sanity";
+  CheckKeys(n["sanity"], san, {"joint_delta_rad", "base_speed", "joint_accel", "wrench_scale"});
+  out.sanity_joint_delta_rad = ReadPositive(n["sanity"], "joint_delta_rad", san, false);
+  out.sanity_base_speed = ReadPositive(n["sanity"], "base_speed", san, false);
+  out.sanity_joint_accel = ReadPositive(n["sanity"], "joint_accel", san, false);
+  out.sanity_wrench_scale = ReadPositive(n["sanity"], "wrench_scale", san, false);
+  out.node = YAML::Clone(n);
   return out;
 }
 
@@ -108,6 +176,9 @@ LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg
     Refuse(root + ".whole_body_qp", "expected a map, got " + Spelling(cfg["whole_body_qp"]));
   }
   out.whole_body_qp = YAML::Clone(cfg["whole_body_qp"]);
+  if (cfg["mpc"]) {
+    out.mpc = ParseMpc(cfg["mpc"], root + ".mpc");
+  }
   return out;
 }
 

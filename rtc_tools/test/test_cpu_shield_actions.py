@@ -141,6 +141,26 @@ def test_only_an_explicit_false_opts_out(enable_mpc, expected):
     assert cpu_shield.mpc_layout_profile(enable_mpc) == expected
 
 
+@pytest.mark.parametrize(
+    ("enable_mpc", "expected"),
+    [
+        ("true", True),
+        (" YES ", True),
+        ("1", True),
+        ("false", False),
+        ("0", False),
+        ("", None),
+        ("maybe", None),
+    ],
+)
+def test_the_controller_choice_reads_the_same_spellings(enable_mpc, expected):
+    """mpc.enabled is overridden only by a recognised value; whatever it says, the
+    layout it implies agrees (None and True reserve the cores, False drops them)."""
+    assert cpu_shield.mpc_enabled_choice(enable_mpc) is expected
+    dropped = cpu_shield.mpc_layout_profile(enable_mpc) == cpu_shield.MPC_OFF
+    assert dropped == (expected is False)
+
+
 def test_profile_mapping_survives_an_unresolved_substitution():
     """The robot launches map a ``LaunchConfiguration``, resolved at run time.
 

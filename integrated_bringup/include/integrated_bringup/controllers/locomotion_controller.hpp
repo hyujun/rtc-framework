@@ -9,11 +9,29 @@
 // own non-dominant PD gains on the wire. Hand groups get a kPosition hold at the
 // pose they had when the reference latched.
 //
-// The reference is fixed for now: the measured pose at the first valid tick,
-// zero velocity and acceleration, and the static contact wrench of that pose
-// (two contacts: the weight split and the centres of pressure placed so that
-// they balance gravity at the CoM; otherwise an equal share of the weight). A planner replaces it
-// later through the same ControlReference.
+// The reference (LocomotionDiagLogPod::ReferenceSource):
+//   idle   the latched pose: the measured pose at the first valid tick, zero
+//          velocity and acceleration, and the static contact wrench of that
+//          pose (two contacts: the weight split and the centres of pressure
+//          placed so that they balance gravity at the CoM; otherwise an equal
+//          share of the weight). Without an MPC (`mpc:` absent or
+//          mpc.enabled false) this is the only reference.
+//   stand  the MPC plan, sampled each tick: q / v / a and the contact wrench
+//          copied block for block into the QP's reference (base twist and
+//          acceleration in the base LOCAL frame, wrenches on world axes, the
+//          model's contact order), every contact in support.
+//   walk   the same with a contact in swing (the plan's contact mask).
+//   fault  the latch below.
+// idle → stand needs a usable plan (finite, of the current model and state
+// epochs, younger than mpc.max_policy_age_s, past the plausibility check) that
+// is not an unconverged standing solve, and every contact in support. A plan
+// published unconverged by the online budget keeps stand: the producer's
+// publish rule bounds its residual. stand / walk → idle only when the plan is
+// lost (evicted, refused, implausible); the pose re-latches from the
+// measurement if every contact frame is within a few millimetres of the
+// lowest and the base is nearly still — otherwise the fault latches
+// (kPlanLoss): re-latching a swing foot would load it.
+// A plan the plausibility check refuses stays refused for every later sample.
 //
 // Modes (LocomotionDiagLogPod::Mode):
 //   waiting   no valid state since activation — damping on the raw body lane
@@ -26,12 +44,15 @@
 //             gravity; that is the intent (no large torque from a bad state).
 // Fault causes: the QP's health reached Fault; the source was not ok for more
 // than fault.max_source_bad_ticks ticks in a row; the output was not finite;
-// the state's model epoch is not the controller's.
+// the state's model epoch is not the controller's; the plan was lost off a
+// still double support (above).
 //
 // Clearing the fault: ResetFault() (the CM's reset service) — the next tick
 // resets the QP, re-latches the reference from the measurement and returns to
 // nominal; if the cause is still there it latches again on that tick, which
-// HasLatchedFault() reports. Unlike the controllers whose fault outlives a
+// HasLatchedFault() reports. A reset, an activation and either E-STOP edge
+// also restart the MPC's state stream (a new state epoch: no plan of the old
+// one is sampled again) and its gait schedule. Unlike the controllers whose fault outlives a
 // deactivate / activate cycle, ACTIVATING this controller also clears it: it is
 // activated by an operator's switch from another controller that has been
 // holding the robot, and a latch from an earlier session describes a robot
@@ -46,8 +67,29 @@
 //   fault: {max_source_bad_ticks: N (≥ 1), damping_kd: [...] (body roster order, ≥ 0)}
 //   topics: {<body group>: {...}, <hand group>: {...}}   # body first, then model.hand_groups
 //   logs: [...]   # DeviceStateLog per group, JointFeedforwardLog (body), LocomotionDiagLog
-// The other sections of the file (command, gait, swing, terrain, reference,
-// mpc) belong to the planner and are not read here.
+//   mpc:          # optional; absent = no MPC (the idle reference only)
+//     enabled: bool             # false = as if absent
+//     period_nodes: N (≥ 1)     # the MPC thread's period, in OCP node intervals
+//     max_policy_age_s: s (≥ 0) # a plan older than this is dropped (0 = the horizon only)
+//     riccati: {enabled: bool, ...}   # rtc_mpc MPCSolutionManager
+//     sanity: {joint_delta_rad, base_speed, joint_accel, wrench_scale}   # all > 0, below
+//     ocp_type / solver / kinodynamic / max_stale_solutions   # rtc_mpc MPCFactory · manager
+// With mpc.enabled the planner's sections are read too: command.* (the
+// command filter: its base_height is the stance height), gait.*, swing.*,
+// terrain.*, and reference.* (its q_default names the body joints and the
+// hand joints; the hands are held at their q_default values, and the body
+// joints go to the MPC's stage reference).
+// The plausibility check of a sampled plan: a contact mask of at least one of
+// the model's contacts; a unit base quaternion within sanity.joint_delta_rad
+// of the measured orientation; every joint inside its model range widened by
+// joint_delta_rad and within joint_delta_rad of its measured value; the base
+// height above the lowest contact frame inside [command.h_min, command.h_max];
+// the base speed at most sanity.base_speed [m/s]; every joint acceleration (and
+// the feedback, when on) at most sanity.joint_accel [rad/s²]; no contact
+// pulling by more than 2 % of the weight, and the total normal force between
+// 1 / sanity.wrench_scale and sanity.wrench_scale × the robot's weight.
+// The MPC thread runs on the `mpc` layout role: activation is refused under a
+// launch profile that dropped it (enable_mpc:=false) while mpc.enabled is true.
 #ifndef INTEGRATED_BRINGUP_CONTROLLERS_LOCOMOTION_CONTROLLER_HPP_
 #define INTEGRATED_BRINGUP_CONTROLLERS_LOCOMOTION_CONTROLLER_HPP_
 
@@ -59,6 +101,14 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_mpc/handler/mpc_handler_base.hpp"
+#include "rtc_mpc/logging/mpc_timing_logger.hpp"
+#include "rtc_mpc/manager/mpc_solution_manager.hpp"
+#include "rtc_mpc/model/robot_model_handler.hpp"
+#include "rtc_mpc/phase/locomotion_phase_manager.hpp"
+#include "rtc_mpc/reference/command_filter.hpp"
+#include "rtc_mpc/thread/handler_mpc_thread.hpp"
+#include "rtc_mpc/types/wbc_reference.hpp"
 #include "rtc_tsid/locomotion/locomotion_formulation.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
@@ -87,12 +137,27 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace integrated_bringup {
 
 /// Body joints the controller drives (the joint log's capacity).
 inline constexpr std::size_t kLocomotionMaxBodyJoints = LocomotionDiagLogPod::kMaxJoints;
+
+/// @brief `mpc:` (header comment). `present` false = the section is absent.
+struct LocomotionMpcConfig {
+  bool present{false};
+  bool enabled{false};
+  int period_nodes{1};
+  double max_policy_age_s{0.0};  ///< checked here; the plan sampler reads it from `node`
+  bool riccati_enabled{false};
+  double sanity_joint_delta_rad{0.0};  ///< [rad]
+  double sanity_base_speed{0.0};       ///< [m/s]
+  double sanity_joint_accel{0.0};      ///< [rad/s²]
+  double sanity_wrench_scale{0.0};     ///< × the robot's weight
+  YAML::Node node;                     ///< the whole section (factory and manager keys)
+};
 
 /// @brief The controller's own sections of its YAML (Pass 1, schema only).
 struct LocomotionControllerConfig {
@@ -103,10 +168,11 @@ struct LocomotionControllerConfig {
   int max_source_bad_ticks{1};
   std::vector<double> damping_kd;
   YAML::Node whole_body_qp;
+  LocomotionMpcConfig mpc;
 };
 
 /// @throws std::invalid_argument naming the key on a missing / unknown key of
-///         `pd_feedforward` or `fault`, a gain that is negative or not finite, a
+///         `pd_feedforward`, `fault` or `mpc`, a gain that is negative or not finite, a
 ///         `command_type` other than pd_feedforward, or a model / estimator section
 ///         its own parser refuses.
 [[nodiscard]] LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg);
@@ -115,6 +181,7 @@ class LocomotionController final : public rtc::RTControllerInterface {
  public:
   using Mode = LocomotionDiagLogPod::Mode;
   using FaultCause = LocomotionDiagLogPod::FaultCause;
+  using ReferenceSource = LocomotionDiagLogPod::ReferenceSource;
 
   explicit LocomotionController(std::string_view urdf_path);
   ~LocomotionController() override;
@@ -172,6 +239,23 @@ class LocomotionController final : public rtc::RTControllerInterface {
 
   [[nodiscard]] const locomotion::DeviceIndices& Indices() const noexcept { return indices_; }
 
+  /// True when this configuration runs the MPC (mpc.enabled).
+  [[nodiscard]] bool MpcEnabled() const noexcept { return mpc_enabled_; }
+
+  /// The MPC thread, or null before the first activation that spawned it.
+  [[nodiscard]] const rtc::mpc::MPCThread* MpcThread() const noexcept { return mpc_thread_.get(); }
+
+  [[nodiscard]] const rtc::mpc::MPCSolutionManager& MpcManager() const noexcept {
+    return mpc_manager_;
+  }
+
+  /// The last tick's sample of the plan (`valid` false when none was usable).
+  [[nodiscard]] const rtc::mpc::WbcReference& LastPlanSample() const noexcept { return wbc_ref_; }
+
+  [[nodiscard]] ReferenceSource Source() const noexcept {
+    return fault_latched_tick_ ? ReferenceSource::kFault : ref_source_;
+  }
+
  protected:
   void OnDeviceConfigsSet() override;
 
@@ -186,6 +270,25 @@ class LocomotionController final : public rtc::RTControllerInterface {
   void InitModels();
   [[nodiscard]] std::string WireDevices();
   void ResetLogState() noexcept;
+
+  // The MPC (mpc_reference.cpp). Off the RT thread: BuildMpc (Pass 1),
+  // SpawnMpcThread (first activation; a null handler = the factory's),
+  // PauseMpc, StopMpcThread, LogMpcTick (the 1 Hz aux timer).
+  void BuildMpc(const YAML::Node& cfg);
+  [[nodiscard]] bool SpawnMpcThread(std::unique_ptr<rtc::mpc::MPCHandlerBase> handler) noexcept;
+  void StopMpcThread() noexcept;
+  void PauseMpc() noexcept;  ///< sampling off, the thread paused (deactivation)
+  void LogMpcTick() noexcept;
+  // On the RT thread, in tick order.
+  void WriteMpcState() noexcept;
+  void FollowPlan(const rtc::ControllerState& state) noexcept;
+  [[nodiscard]] std::uint8_t Plausible(const rtc::mpc::WbcReference& r) const noexcept;
+  void CopyPlan() noexcept;
+  void ApplyContactMask(std::uint32_t mask) noexcept;
+  void LosePlan(const rtc::ControllerState& state) noexcept;
+  /// The lowest and the highest contact frame z, from the tick's kinematics.
+  [[nodiscard]] std::pair<double, double> ContactHeights() const noexcept;
+  void RestartMpcStream() noexcept;
 
   // Compute() pieces, in tick order.
   void ServiceRequests() noexcept;
@@ -227,6 +330,7 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::array<double, kLocomotionMaxBodyJoints> damping_kd_{};
   std::array<double, kLocomotionMaxBodyJoints> tau_max_{};  ///< +inf when the roster has none
   double total_mass_{0.0};
+  double weight_{0.0};  ///< total_mass_ · |g| [N]
   uint32_t model_epoch_{1};
   std::unique_ptr<locomotion::TruthStateSource> source_;
 
@@ -246,7 +350,7 @@ class LocomotionController final : public rtc::RTControllerInterface {
   bool source_ok_{false};
   bool reference_latched_{false};
   bool fault_latched_tick_{false};
-  FaultCause fault_cause_{FaultCause::kNone};
+  std::atomic<FaultCause> fault_cause_{FaultCause::kNone};  ///< read by on_activate
   Mode mode_{Mode::kWaiting};
   uint32_t source_bad_ticks_{0};
   uint32_t fault_count_{0};
@@ -279,6 +383,46 @@ class LocomotionController final : public rtc::RTControllerInterface {
   rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
   rclcpp::TimerBase::SharedPtr log_drain_timer_;
   std::uint64_t log_drops_reported_{0};
+
+  // ── MPC (built at Pass 1 when mpc.enabled; the thread at the first activation) ──
+  bool mpc_enabled_{false};
+  bool layout_profile_drops_mpc_{false};
+  bool mpc_spawn_refused_{false};
+  rtc::MpcWorkerSlots mpc_worker_slots_{};
+  int mpc_horizon_nodes_{0};
+  double mpc_dt_{0.0};
+  std::unique_ptr<rtc::mpc::RobotModelHandler> mpc_model_;
+  /// Held until the thread takes it; `phase_` stays a borrowed pointer to it.
+  std::unique_ptr<rtc::mpc::LocomotionPhaseManager> phase_owned_;
+  rtc::mpc::LocomotionPhaseManager* phase_{nullptr};
+  rtc::mpc::CommandFilter command_filter_;
+  rtc::mpc::MPCSolutionManager mpc_manager_;
+  /// The hand joints' hold targets under the MPC (q_default), by full-model joint index.
+  std::array<double, locomotion::kMaxStateJoints> q_default_full_{};
+  std::array<double, kLocomotionMaxBodyJoints> joint_lo_{};  ///< reduced model, body order
+  std::array<double, kLocomotionMaxBodyJoints> joint_hi_{};
+  std::uint32_t all_contacts_mask_{0};
+  std::int64_t tick_dt_ns_{0};
+  // RT tick state.
+  rtc::mpc::WbcReference wbc_ref_{};
+  ReferenceSource ref_source_{
+      ReferenceSource::kIdle};  ///< idle / stand / walk; the latch reads as fault
+  std::uint64_t mpc_t_ns_{0};   ///< this tick on the MPC's clock (iteration · dt)
+  std::uint32_t mpc_state_epoch_{0};
+  std::uint32_t contact_mask_{0};
+  std::uint64_t rejected_plan_id_{0};
+  std::atomic<std::uint64_t> plausibility_rejects_{0};  ///< written by the RT tick only
+  std::atomic<std::uint8_t> last_reject_check_{0};      ///< the check the last refusal failed
+  double u_fb_norm_{0.0};
+  // The 1 Hz aux timer: the MPC tick-timing CSV and the counters.
+  rtc::mpc::MpcTimingLogger mpc_timing_logger_;
+  rclcpp::CallbackGroup::SharedPtr mpc_timing_cb_group_;
+  rclcpp::TimerBase::SharedPtr mpc_timing_timer_;
+  std::uint64_t mpc_timing_ticks_{0};
+  std::uint64_t mpc_failed_reported_{0};
+  /// Declared last: destroyed first, before everything it borrows (the
+  /// destructor stops it before any member goes).
+  std::unique_ptr<rtc::mpc::HandlerMPCThread> mpc_thread_;
 };
 
 }  // namespace integrated_bringup

@@ -83,7 +83,8 @@ G1_LOCO_SIM = "sim_g1_loco.launch.py"
 B7_LOCO_SIM = "sim_b7_loco.launch.py"
 P2_SIM = "sim_p2.launch.py"
 # The two G1 sims, the b7 sim and the hand-only p2 sim ship no
-# demo_wbc_controller config and take `enable_mpc` for the CPU layout alone.
+# demo_wbc_controller config: `enable_mpc` is their CPU layout (and, on the
+# g1_loco sim, locomotion_controller.mpc.enabled — tested below).
 LAYOUT_ONLY_SIMS = (G1_SIM, G1_LOCO_SIM, B7_LOCO_SIM, P2_SIM)
 
 # Argument combinations, not just defaults. Every override argument declares an
@@ -461,8 +462,8 @@ def test_layout_only_sim_sends_the_wbc_controller_nothing(filename, enable_mpc):
     """Neither G1 profile nor the b7 profile ships a demo_wbc_controller
     config, so nothing addresses it.
 
-    `enable_mpc` stays on these launches for the CPU layout alone: it must
-    reach `rt_layout_profile` and no controller parameter.
+    `enable_mpc` must reach `rt_layout_profile` and no demo_wbc_controller
+    parameter.
     """
     overrides = {"use_cpu_affinity": "false"}
     if enable_mpc:
@@ -473,6 +474,23 @@ def test_layout_only_sim_sends_the_wbc_controller_nothing(filename, enable_mpc):
     # The default is "false" on this launch: no MPC cores shielded.
     expected = "mpc_on" if enable_mpc == "true" else "mpc_off"
     assert values.get("rt_layout_profile") == expected, values.get("rt_layout_profile")
+
+
+@pytest.mark.parametrize("enable_mpc, expected", [(None, False), ("true", True), ("false", False)])
+def test_g1_loco_enable_mpc_sets_the_locomotion_mpc(enable_mpc, expected):
+    """The g1_loco sim maps `enable_mpc` (default false) onto
+    locomotion_controller.mpc.enabled, so the default launch keeps the latched
+    pose under the MPC-off layout and only enable_mpc:=true runs the MPC; the
+    other loco sim ships no `mpc:` section and gets no such key."""
+    overrides = {"use_cpu_affinity": "false"}
+    if enable_mpc is not None:
+        overrides["enable_mpc"] = enable_mpc
+    nodes, context = _nodes_by_name(overrides, G1_LOCO_SIM)
+    values = _override_values(nodes["integrated_rt_controller"], context)
+    assert values.get("locomotion_controller.mpc.enabled") is expected, sorted(values)
+    nodes, context = _nodes_by_name(overrides, B7_LOCO_SIM)
+    values = _override_values(nodes["integrated_rt_controller"], context)
+    assert "locomotion_controller.mpc.enabled" not in values, sorted(values)
 
 
 def test_the_wbc_sims_still_send_the_mpc_overrides():

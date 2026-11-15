@@ -322,6 +322,9 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
   out.state_epoch = s.state_epoch;
   out.schedule_id = s.schedule_id;
   out.schedule_epoch = s.schedule_epoch;
+  out.solve_duration_ns = s.solve_duration_ns;
+  out.converged = s.converged;
+  out.initial_solve = s.initial_solve;
   out.progress = spot.progress;
   out.beyond_horizon = spot.beyond_horizon;
 

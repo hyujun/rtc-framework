@@ -1,12 +1,14 @@
 // locomotion_controller's RT tick allocates nothing on any of its paths:
 // nominal (the QP), degraded (a short source drop), fault (damping), the reset
-// and E-STOP services, and a re-latch. Own binary: the gate replaces the global
+// and E-STOP services, and a re-latch; with the MPC, the stand on its plan and
+// the fall back to the latched pose. Own binary: the gate replaces the global
 // `operator new` (alloc_gate.hpp contract item 1).
 //
 // WHAT THIS GATE SEES: global `operator new` across translation units, so the
 // QP solver's and pinocchio's heap use counts too. It does not see Eigen's
 // aligned_malloc, which none of the fixed-size types here reach.
 #include "locomotion_controller_rig.hpp"
+#include "locomotion_mpc_stub.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 
 #include <gtest/gtest.h>
@@ -59,6 +61,33 @@ TEST_F(LocomotionAlloc, EveryTickPathAllocatesNothing) {
     worst = std::max(worst, GatedTick(false));
   }
   ASSERT_EQ(LastMode(), Mode::kNominal);
+  EXPECT_EQ(worst, 0U);
+}
+
+// The MPC path: the state write, the sample, the plausibility check, the plan
+// copy and the contact mask, then the plan lost and the pose re-latched. The
+// plans come from a stub on the MPC thread (the gate counts the ticking thread
+// only).
+TEST_F(LocomotionAlloc, TheMpcPathAllocatesNothing) {
+  Configure(MpcConfig(), rclcpp::NodeOptions{}, "test_locomotion_mpc_alloc");
+  StandingStub* const s = SpawnStandingStub(*ctrl_);
+  ASSERT_NE(s, nullptr);
+  Activate();
+  MakeStanding();
+  // Until the first stand, outside the gate (the plan arrives from another thread).
+  ASSERT_TRUE(TickUntil(
+      [this] { return ctrl_->Source() == LocomotionController::ReferenceSource::kStand; }));
+  ASSERT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kStand);
+  std::size_t worst = 0;
+  for (int k = 0; k < 30; ++k) {
+    worst = std::max(worst, GatedTick(false));
+  }
+  EXPECT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kStand);
+  s->fail = true;  // the plan ages out: the fall back and the re-latch
+  for (int k = 0; k < 120; ++k) {
+    worst = std::max(worst, GatedTick(false));
+  }
+  EXPECT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kIdle);
   EXPECT_EQ(worst, 0U);
 }
 

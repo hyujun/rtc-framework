@@ -1,0 +1,13 @@
+# sim overlay — locomotion_controller without its MPC under the MPC layout
+#
+#   ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true sim_overlay:=mpc_off
+#
+# The launch applies an overlay after its enable_mpc mapping, so this keeps the
+# MPC cores shielded (the same CPU layout as an MPC run) while the controller
+# holds the latched pose — the control arm of an MPC evaluation
+# (tools/standing_eval/run_arms.py --mpc-layout).
+integrated_rt_controller:
+  ros__parameters:
+    locomotion_controller:
+      mpc:
+        enabled: false

@@ -36,6 +36,11 @@
 ///   from was observed, `receive_stamp_ns` is when the consumer acquired the
 ///   plan. Policy age is their difference; it is not a field so it cannot
 ///   go stale.
+/// - `converged` / `initial_solve`: a plan can be published unconverged
+///   (the producer's publish rule bounds its residual instead), and the
+///   standing solve — the first after a cold start — is exempt from the
+///   deadline; a consumer that must not act on an unconverged standing plan
+///   checks both.
 /// - No feedforward torque: a kinodynamic plan has none; the consumer's QP
 ///   produces torques.
 
@@ -71,6 +76,9 @@ struct WbcReference {
   uint64_t observation_source_sequence{0};  ///< the caller's own sequence of that state
   uint64_t schedule_id{0};                  ///< contact schedule the plan's horizon sampled
   uint64_t schedule_epoch{0};               ///< its gait commit count
+  uint64_t solve_duration_ns{0};            ///< how long the plan's solve took
+  bool converged{false};                    ///< the solve converged (`MPCSolution::converged`)
+  bool initial_solve{false};  ///< it ran on the standing budget (`MPCSolution::initial_solve`)
 
   // ── Sampling status ─────────────────────────────────────────────────
   double progress{0.0};        ///< normalized position in the horizon, `[0, 1]`

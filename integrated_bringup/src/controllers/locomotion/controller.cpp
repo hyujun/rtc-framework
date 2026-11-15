@@ -42,11 +42,16 @@ LocomotionController::LocomotionController(std::string_view urdf_path)
     : logger_(rclcpp::get_logger("integrated_bringup.locomotion_controller")),
       urdf_path_(urdf_path) {}
 
-LocomotionController::~LocomotionController() = default;
+LocomotionController::~LocomotionController() {
+  // Before any member goes: the MPC thread borrows the model handler, the
+  // phase manager it owns runs on it, and it writes the plan sampler.
+  StopMpcThread();
+}
 
 // ── Pass 1: the YAML and the system model ────────────────────────────────────
 
 void LocomotionController::LoadConfig(const YAML::Node& cfg) {
+  StopMpcThread();  // a thread of an earlier configuration runs on what is rebuilt here
   RTControllerInterface::LoadConfig(cfg);  // parses `topics:`
   cfg_loaded_ = false;
   cfg_ = ParseLocomotionControllerConfig(cfg);
@@ -91,6 +96,7 @@ void LocomotionController::LoadConfig(const YAML::Node& cfg) {
   }
 
   InitModels();
+  BuildMpc(cfg);
   cfg_loaded_ = true;
   config_error_ = GetDeviceNameConfig(cfg_.model.body_group) != nullptr
                       ? WireDevices()
@@ -172,6 +178,8 @@ void LocomotionController::InitModels() {
     contact_frames_full_.push_back(full_model_->getFrameId(c.frame));
   }
   spec.torso_frame = cfg_.model.torso_frame;
+  all_contacts_mask_ = (1U << static_cast<unsigned>(contact_names_.size())) - 1U;
+  contact_mask_ = all_contacts_mask_;
   if (spec.contacts.size() > LocomotionDiagLogPod::kMaxContacts) {
     Fail("more contacts than the diagnostic log holds (" +
          std::to_string(LocomotionDiagLogPod::kMaxContacts) + ")");
@@ -190,6 +198,7 @@ void LocomotionController::InitModels() {
   full_data_ = std::make_unique<pinocchio::Data>(*full_model_);
   q_full_ = pinocchio::neutral(*full_model_);
   total_mass_ = pinocchio::computeTotalMass(*full_model_);
+  weight_ = total_mass_ * full_model_->gravity.linear().norm();
   ++model_epoch_;
 }
 

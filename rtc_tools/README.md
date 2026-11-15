@@ -300,7 +300,7 @@ slip 과 높이의 기준은 창의 **첫 샘플** (높이는 `--z-ref` 가 있�
 plot_locomotion_diag <session> [--stance-csv F] [--base-yaml _base.yaml --group G] [--t0 S] [--t1 S] [--z-ref M]
 ```
 
-그림: base 높이·drift·기울기 / 접촉 법선력 / 관절 `tau_ff`·effort·`max_torque` / `q_ref − q`·`tau_servo` / QP 타임라인 / margin / mode·fault·health·source. JSON: 계열별 p50·p99·min·max (비유한 값은 개수만 세고 제외), mode 별 행 수, fault latch, 최대 tick 간격.
+그림: base 높이·drift·기울기 / 접촉 법선력 / 관절 `tau_ff`·effort·`max_torque` / `q_ref − q`·`tau_servo` / QP 타임라인 / margin / mode·fault·health·source. JSON: 계열별 p50·p99·min·max (비유한 값은 개수만 세고 제외), mode 별 행 수, fault latch, 최대 tick 간격; MPC 열이 있으면 reference 출처별 행 수 · stand 비율 · `time_to_stand_s` · policy age 분포 · stand 중 plan 의 base z 평균.
 
 ### hand_canfd_gate
 

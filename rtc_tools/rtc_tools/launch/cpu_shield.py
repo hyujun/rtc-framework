@@ -50,6 +50,7 @@ SHIELD_MODES = ("--robot", "--sim")
 # Layout profile ids — must match repo_scripts/config/thread_layout.yaml.
 MPC_ON, MPC_OFF = "mpc_on", "mpc_off"
 _MPC_FALSEY = ("false", "0", "no")
+_MPC_TRUTHY = ("true", "1", "yes")
 
 
 def mpc_layout_profile(enable_mpc):
@@ -86,6 +87,22 @@ def mpc_layout_profile(enable_mpc):
             "'",
         ]
     )
+
+
+def mpc_enabled_choice(enable_mpc: str) -> bool | None:
+    """The controller ``mpc.enabled`` a launch's ``enable_mpc`` string asks for.
+
+    True / False for a recognised true / false, None (leave the controller YAML
+    alone) for an empty or unrecognised value — the same spellings as
+    :func:`mpc_layout_profile`, so the layout and the controller cannot read one
+    value two ways: None and True both keep the MPC cores reserved.
+    """
+    value = enable_mpc.strip().lower()
+    if value in _MPC_FALSEY:
+        return False
+    if value in _MPC_TRUTHY:
+        return True
+    return None
 
 
 def enable_cpu_shield(

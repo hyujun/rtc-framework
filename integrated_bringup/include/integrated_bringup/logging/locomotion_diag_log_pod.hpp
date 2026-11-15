@@ -41,6 +41,14 @@ struct LocomotionDiagLogPod {
     kSource = 2,       ///< the state source was not ok for too many ticks in a row
     kNonFinite = 3,    ///< the output was not finite
     kModelEpoch = 4,   ///< the state is in another model layout than the controller's
+    kPlanLoss = 5,     ///< the MPC plan was lost with the robot off a still double support
+  };
+  /// Where this tick's reference came from.
+  enum class ReferenceSource : std::uint8_t {
+    kIdle = 0,   ///< the latched measured pose (no MPC, or no usable plan)
+    kStand = 1,  ///< the MPC plan, every contact in support
+    kWalk = 2,   ///< the MPC plan, a contact in swing
+    kFault = 3,  ///< the fault latch: no reference is followed
   };
 
   double t_relative_s{0.0};
@@ -81,8 +89,21 @@ struct LocomotionDiagLogPod {
   std::array<double, 3> base_p{};       ///< measured base position, world [m]
   std::array<double, 4> base_q_xyzw{};  ///< measured base orientation
   std::array<double, 6> base_v{};       ///< measured base twist, base frame [v; ω]
-  std::array<double, 3> ref_base_p{};   ///< the latched reference's base position [m]
+  std::array<double, 3> ref_base_p{};   ///< the reference's base position [m]
   std::array<double, 3> com{};          ///< full-model CoM at the measured state, world [m]
+
+  // The MPC plan (all 0 / false when the controller runs without one).
+  std::uint8_t ref_source{0};       ///< ReferenceSource
+  std::uint64_t plan_id{0};         ///< the sampled plan; 0 = none this tick
+  double policy_age_us{-1.0};       ///< this tick − the plan's observation [µs]; −1 = none
+  bool mpc_converged{false};        ///< the sampled plan's solve converged
+  bool mpc_initial_solve{false};    ///< it was a standing (initial) solve
+  double mpc_solve_us{0.0};         ///< its solve time [µs]
+  std::uint64_t schedule_epoch{0};  ///< its gait commit count
+  std::uint32_t contact_mask{0};    ///< the contacts the QP held in support this tick
+  std::uint64_t plausibility_rejects{0};  ///< plans refused by the plausibility check, total
+  double u_fb_norm{0.0};                  ///< ‖the Riccati feedback added to a_des‖
+  std::uint32_t mpc_state_epoch{0};       ///< the state stream's epoch
   std::array<double, kMaxContacts * 3> foot_p{};  ///< contact frames, full-model FK, world [m]
   std::array<double, 6> a_opt_base{};             ///< the QP's base acceleration [m/s², rad/s²]
 
@@ -126,7 +147,8 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
         "margin_friction_n,margin_cop_nm,margin_yaw_nm,margin_torque_nm,margin_joint_accel,"
         "margins_stale,base_px,base_py,base_pz,base_qx,base_qy,base_qz,base_qw,"
         "base_vx,base_vy,base_vz,base_wx,base_wy,base_wz,ref_base_px,ref_base_py,ref_base_pz,"
-        "com_x,com_y,com_z";
+        "com_x,com_y,com_z,ref_source,plan_id,policy_age_us,mpc_converged,mpc_initial_solve,"
+        "mpc_solve_us,schedule_epoch,contact_mask,plausibility_rejects,u_fb_norm,mpc_state_epoch";
   for (std::size_t c = 0; c < cols.contacts; ++c) {
     for (const char* axis : {"x", "y", "z"}) {
       os << ",foot_" << contact_names[c] << '_' << axis;
@@ -173,6 +195,10 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
   for (double x : p.com) {
     os << ',' << x;
   }
+  os << ',' << static_cast<unsigned>(p.ref_source) << ',' << p.plan_id << ',' << p.policy_age_us
+     << ',' << (p.mpc_converged ? 1 : 0) << ',' << (p.mpc_initial_solve ? 1 : 0) << ','
+     << p.mpc_solve_us << ',' << p.schedule_epoch << ',' << p.contact_mask << ','
+     << p.plausibility_rejects << ',' << p.u_fb_norm << ',' << p.mpc_state_epoch;
   for (std::size_t i = 0; i < cols.contacts * 3; ++i) {
     os << ',' << p.foot_p[i];
   }

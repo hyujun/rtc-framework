@@ -32,12 +32,15 @@ Nodes launched:
   2. integrated_rt_controller  — 500Hz controller (CV-based wakeup in sim mode)
 
 Two device groups: `g1` (legs 12 + waist 3 + arms 4 + 4 = 23, the whole body
-on a free-floating pelvis) and `p1b` (hand 10, an LPF echo in this sim). This
-profile ships one controller, demo_joint_controller, sending `pd_feedforward`:
-the simulator's position servos hold the `stand` keyframe, the controller's
-feedforward torque is zero. `enable_mpc` selects the CPU layout and nothing
-else here, and defaults to false: the MPC-on layout would shield cores for a
-thread nothing on this profile starts (yet — the walking MPC is the plan).
+on a free-floating pelvis) and `p1b` (hand 10, an LPF echo in this sim). The
+initial controller is demo_joint_controller, sending `pd_feedforward`: the
+simulator's position servos hold the `stand` keyframe, the controller's
+feedforward torque is zero. The operator switches to locomotion_controller.
+`enable_mpc` (default false) selects the CPU layout and sets
+`locomotion_controller.mpc.enabled`: true shields the MPC cores and the
+controller follows its MPC's plan; false leaves the cores to the system and the
+controller holds the latched pose. A `sim_overlay:=` file applies after it, so
+an overlay can turn the MPC off again under the MPC layout.
 
 The robot model (URDF + MJCF) is `robot_descriptions`' public G1 with the
 synthetic hand of `robots/p1b_surrogate` — no private package is needed.
@@ -170,7 +173,14 @@ def launch_setup(context, *args, **kwargs):
         sim_params.append(sim_overrides)
 
     # ── Build controller parameters (YAML + overrides + launch args) ──────────
+    # `enable_mpc` picks the CPU layout profile and whether locomotion_controller
+    # runs its MPC (an empty value defers to its YAML). The latter goes before
+    # the overlay, which may override it.
+    enable_mpc = LaunchConfiguration("enable_mpc").perform(context)
     ctrl_params = [base_config, ctrl_config, sim_config]
+    mpc_enabled = shield.mpc_enabled_choice(enable_mpc)
+    if mpc_enabled is not None:
+        ctrl_params.append({"locomotion_controller.mpc.enabled": mpc_enabled})
     if sim_overlay is not None:
         ctrl_params.append(sim_overlay)
     ctrl_overrides = {}
@@ -179,9 +189,6 @@ def launch_setup(context, *args, **kwargs):
     # on_configure, and two independent numbers made the effective retention
     # min(launch, node) (#402).
     ctrl_overrides["max_log_sessions"] = session.max_sessions
-    # `enable_mpc` picks the CPU layout profile. It reaches no controller
-    # parameter on this profile: neither controller it ships has an MPC thread.
-    enable_mpc = LaunchConfiguration("enable_mpc").perform(context)
     # One mapping for both consumers: the cset shield and the controller's
     # activation gate must agree on which profile is in force (#350).
     layout_profile = shield.mpc_layout_profile(enable_mpc)
@@ -507,10 +514,9 @@ def generate_launch_description():
         "enable_mpc",
         default_value="false",
         description=(
-            "CPU layout profile: false (the default) leaves the MPC cores to "
-            "the system, true shields them for an MPC or planner thread. The "
-            "controller this profile ships starts none, so set it only "
-            "together with a controller that does."
+            "true shields the MPC cores and runs locomotion_controller's MPC "
+            "(locomotion_controller.mpc.enabled); false (the default) leaves the "
+            "cores to the system and the controller holds the latched pose."
         ),
     )
 
