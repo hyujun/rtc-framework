@@ -1009,10 +1009,15 @@ TEST_F(OutputValidationTest, ClaimedPdGainsReachTheBackendUnchanged) {
   ASSERT_NE(nullptr, backend);
   ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
   backend->FireStateReady();
-  ASSERT_TRUE(
-      WaitFor([&] { return backend->LastCommands()[0] == PipelineTestController::kCmd0; }, 2000ms));
+  // One predicate over every field: the stub's fields are written one by one,
+  // so a check after a wait on one of them could read a different tick's rest.
+  ASSERT_TRUE(WaitFor(
+      [&] {
+        return backend->LastCommands()[0] == PipelineTestController::kCmd0 &&
+               backend->LastHasPdGains() && backend->LastPdKd()[1] == PipelineTestController::kKd1;
+      },
+      2000ms));
 
-  EXPECT_TRUE(backend->LastHasPdGains());
   EXPECT_DOUBLE_EQ(PipelineTestController::kKp0, backend->LastPdKp()[0]);
   EXPECT_DOUBLE_EQ(PipelineTestController::kKp1, backend->LastPdKp()[1]);
   EXPECT_DOUBLE_EQ(PipelineTestController::kKd0, backend->LastPdKd()[0]);
@@ -1052,10 +1057,13 @@ class PdGainHoldTest : public OutputValidationTest {
       PipelineTestController::output_fault.store(OutputFault::kNonFiniteCommand,
                                                  std::memory_order_relaxed);
     }
-    ASSERT_TRUE(
-        WaitFor([&] { return backend->LastCommands()[0] == PipelineStubBackend::kPos0; }, 2000ms));
+    ASSERT_TRUE(WaitFor(
+        [&] {
+          return backend->LastCommands()[0] == PipelineStubBackend::kPos0 &&
+                 !backend->LastHasPdGains();
+        },
+        2000ms));
     ExpectHeldAtMeasuredPosition(backend);
-    EXPECT_FALSE(backend->LastHasPdGains());
 
     EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
     EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
