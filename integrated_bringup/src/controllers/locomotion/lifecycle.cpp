@@ -1,7 +1,9 @@
 // locomotion_controller: lifecycle hooks. See locomotion_controller.hpp.
 #include "integrated_bringup/controllers/locomotion_controller.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
+#include "integrated_bringup/support/layout_profile.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "rtc_base/threading/thread_utils.hpp"
 
 #include <chrono>
 #include <map>
@@ -26,6 +28,8 @@ const char* CauseName(LocomotionDiagLogPod::FaultCause cause) noexcept {
       return "non_finite";
     case LocomotionDiagLogPod::FaultCause::kModelEpoch:
       return "model_epoch";
+    case LocomotionDiagLogPod::FaultCause::kPlanLoss:
+      return "plan_loss";
   }
   return "unknown";
 }
@@ -75,6 +79,12 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
     joint_log_handle_ = std::move(reg.handles.joint_ff);
     diag_log_handle_ = std::move(reg.handles.locomotion_diag);
 
+    if (mpc_enabled_ && node) {
+      const std::string profile = ReadLayoutProfile(*node);
+      layout_profile_drops_mpc_ = LayoutProfileDropsMpc(profile);
+      mpc_worker_slots_ = rtc::SelectMpcWorkerSlots(profile);
+    }
+
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
           node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -110,20 +120,71 @@ void LocomotionController::ResetLogState() noexcept {
 
 rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
     const rclcpp_lifecycle::State& prev) noexcept {
+  // First: a refused activation leaves nothing behind (the CM keeps the
+  // previous controller and never deactivates this one).
+  if (mpc_enabled_ && layout_profile_drops_mpc_) {
+    RCLCPP_ERROR(logger_,
+                 "[locomotion] activation refused: this launch ran with layout profile '%s' "
+                 "(enable_mpc:=false), which returned the MPC cores to the system cpuset, but "
+                 "mpc.enabled is true. Relaunch with enable_mpc:=true, or set mpc.enabled: false.",
+                 std::string(kMpcOffLayoutProfile).c_str());
+    return CallbackReturn::FAILURE;
+  }
+  if (mpc_enabled_) {
+    if (!SpawnMpcThread(nullptr)) {
+      return CallbackReturn::FAILURE;
+    }
+    // The 1 Hz timer reads the thread: created once it exists. The controller
+    // node is spun by the CM's single-threaded nrt_callback executor, which
+    // also serves the switch / lifecycle calls — the timer never runs beside
+    // them.
+    if (!mpc_timing_timer_ && node_) {
+      mpc_timing_cb_group_ =
+          node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+      mpc_timing_timer_ = node_->create_wall_timer(
+          std::chrono::seconds(1), [this]() { LogMpcTick(); }, mpc_timing_cb_group_);
+    }
+    if (!mpc_timing_logger_.IsOpen()) {
+      if (mpc_timing_logger_.Open()) {
+        RCLCPP_INFO(logger_, "[locomotion] MPC tick-timing CSV: %s",
+                    mpc_timing_logger_.Path().c_str());
+      } else {
+        RCLCPP_WARN(logger_, "[locomotion] MPC tick-timing CSV disabled (Open failed)");
+      }
+    }
+    // A plan from before this activation is not sampled (the manager's
+    // re-enable fence); the first tick restarts the state stream.
+    mpc_manager_.SetEnabled(true);
+  }
   // The first tick of this activation drops a latch left from the last one
   // (header); say so here, off the RT thread.
   if (fault_latched_.load(std::memory_order_acquire)) {
     RCLCPP_WARN(logger_,
                 "[locomotion] a latched fault (cause %s) is dropped by this activation; the "
                 "reference re-latches from the measured state",
-                CauseName(fault_cause_));
+                CauseName(fault_cause_.load(std::memory_order_relaxed)));
   }
   ActivateOwnedTopics(prev, owned_topics_);
-  return rtc::RTControllerInterface::on_activate(prev);
+  const auto rc = rtc::RTControllerInterface::on_activate(prev);
+  if (mpc_thread_) {
+    if (rc == CallbackReturn::SUCCESS) {
+      mpc_thread_->Resume();
+    } else {
+      mpc_manager_.SetEnabled(false);  // nothing will deactivate a refused activation
+      mpc_thread_->Pause();
+    }
+  }
+  return rc;
 }
 
 rtc::RTControllerInterface::CallbackReturn LocomotionController::on_deactivate(
     const rclcpp_lifecycle::State& prev) noexcept {
+  if (mpc_enabled_) {
+    mpc_manager_.SetEnabled(false);
+    if (mpc_thread_) {
+      mpc_thread_->Pause();
+    }
+  }
   DeactivateOwnedTopics(prev, owned_topics_);
   log_set_.DrainAll();
   return CallbackReturn::SUCCESS;
@@ -131,6 +192,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_deactivate(
 
 rtc::RTControllerInterface::CallbackReturn LocomotionController::on_cleanup(
     const rclcpp_lifecycle::State& prev) noexcept {
+  StopMpcThread();
   ResetOwnedTopics(owned_topics_);
   log_drain_timer_.reset();
   log_drain_cb_group_.reset();

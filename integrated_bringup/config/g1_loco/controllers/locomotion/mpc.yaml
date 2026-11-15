@@ -6,8 +6,25 @@
 # rtc_mpc ocp/kinodynamic_ocp_config.hpp (every key required, an unknown key
 # refused, every joint of the MPC model named, a name the model lacks ignored).
 # `solver:` is the factory's (rtc_mpc handler/mpc_factory.hpp — key meanings and
-# the values Init refuses); the runtime section joins when the code that reads
-# it lands.
+# the values Init refuses).
+#
+# The controller's own keys (integrated_bringup controllers/locomotion_controller.hpp,
+# every one required when `mpc:` is present):
+#   enabled           the controller follows the MPC's plan; false = the latched
+#                     pose only. The launches set it from enable_mpc (default false).
+#   period_nodes      the MPC thread's period in node intervals (1 → 1 / 0.035 s).
+#   max_policy_age_s  a plan whose observation is older than this is dropped:
+#                     3 node intervals + one period, until the control-PC soak
+#                     sets it.
+#   riccati.enabled   the plan's feedback gain added to the acceleration
+#                     reference — off (the manager reads an absent key as on);
+#                     the other riccati keys are the manager's (rtc_mpc
+#                     manager/mpc_solution_manager.hpp).
+#   sanity            the plausibility check of a sampled plan (a plan that fails
+#                     is dropped, never followed): |q_ref − q| per joint and the
+#                     joint range widened by joint_delta_rad [rad]; base speed
+#                     [m/s]; joint acceleration [rad/s²]; the total normal force
+#                     at most wrench_scale × the weight.
 #
 # solver: the tolerances the OCP's tests solve to. Until one solve converges
 # (after the build, a rebuild or a rejected solve) the MPC solves with
@@ -53,6 +70,25 @@
 # Euler (the starting value) and RK2.
 locomotion_controller:
   mpc:
+    enabled: false
+    period_nodes: 1
+    max_policy_age_s: 0.14            # [s] 3 × 0.035 + 0.035
+    riccati:
+      enabled: false
+      gain_scale: 1.0
+      accel_only: true
+      max_delta_blocks:               # the Δx cap per state block when on (mpc_riccati overlay)
+        base_position: 0.05           # [m]
+        base_orientation: 0.1         # [rad]
+        joint_position: 0.2           # [rad]
+        base_linear_velocity: 0.5     # [m/s]
+        base_angular_velocity: 1.0    # [rad/s]
+        joint_velocity: 2.0           # [rad/s]
+    sanity:
+      joint_delta_rad: 0.5            # [rad]
+      base_speed: 3.0                 # [m/s] (command v_max 2.0)
+      joint_accel: 500.0              # [rad/s²]
+      wrench_scale: 3.0               # × m·g
     ocp_type: "kinodynamic"
     solver:
       prim_tol: 1.0e-4

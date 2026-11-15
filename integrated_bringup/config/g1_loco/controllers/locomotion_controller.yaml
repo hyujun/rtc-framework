@@ -16,8 +16,8 @@
 #   locomotion/reference.yaml the stage reference the OCP tracks (reference.*)
 #   locomotion/whole_body_qp.yaml the whole-body QP it solves each tick (whole_body_qp.*)
 #   locomotion/mpc.yaml       the whole-body MPC's OCP, its weights and solver budgets (mpc.*)
-# command / gait / swing / reference / mpc are the planner's, read by their own
-# config tests until the planner joins the tick.
+# command / gait / swing / terrain / reference are the planner's: read when mpc.enabled is
+# true (the controller then follows the MPC's plan — controllers/locomotion_controller.hpp).
 include:
   - locomotion/model.yaml
   - locomotion/runtime.yaml

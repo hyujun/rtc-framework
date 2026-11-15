@@ -56,8 +56,15 @@ inline int64_t NowNs() {
       .count();
 }
 
+// The installed configuration with the MPC off: the rig's tests are the
+// latched-pose controller's, and an MPC thread would make their outputs depend
+// on when its plan arrives. The MPC tests turn it on themselves.
 inline YAML::Node ShippedConfig() {
-  return fx::ShippedControllerNode(kProfile, kKey);
+  YAML::Node cfg = fx::ShippedControllerNode(kProfile, kKey);
+  if (cfg["mpc"]) {
+    cfg["mpc"]["enabled"] = false;
+  }
+  return cfg;
 }
 
 inline std::map<std::string, rtc::DeviceNameConfig> ShippedDevices(const YAML::Node& cfg) {

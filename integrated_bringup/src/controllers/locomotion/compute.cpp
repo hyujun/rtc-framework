@@ -35,6 +35,15 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
   ++tick_count_;
   last_solve_ = nullptr;
   ReadState(state, now_ns);
+  if (mpc_enabled_ && source_ok_) {
+    // The MPC's clock: the tick count, so it runs with the control loop.
+    mpc_t_ns_ =
+        static_cast<std::uint64_t>(state.iteration) * static_cast<std::uint64_t>(tick_dt_ns_);
+    WriteMpcState();
+  }
+  if (mpc_enabled_) {
+    wbc_ref_.valid = false;  // a tick that does not sample the plan logs none
+  }
 
   if (fault_latched_tick_) {
     mode_ = Mode::kFault;
@@ -42,7 +51,12 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
     if (source_ok_ && !reference_latched_) {
       LatchReference(state);
     }
-    if (!reference_latched_) {
+    if (mpc_enabled_ && source_ok_ && reference_latched_) {
+      FollowPlan(state);  // may latch the fault (a plan lost off a still double support)
+    }
+    if (fault_latched_tick_) {
+      mode_ = Mode::kFault;
+    } else if (!reference_latched_) {
       mode_ = Mode::kWaiting;
     } else if (source_bad_ticks_ > static_cast<uint32_t>(cfg_.max_source_bad_ticks)) {
       Latch(FaultCause::kSource);
@@ -107,11 +121,15 @@ void LocomotionController::RestartReference() noexcept {
   tau_prev_.fill(0.0);
   tau_.fill(0.0);
   qp_.Reset();
+  if (mpc_enabled_) {
+    RestartMpcStream();
+  }
 }
 
 void LocomotionController::ClearLatch() noexcept {
   fault_latched_tick_ = false;
-  fault_cause_ = FaultCause::kNone;
+  ref_source_ = ReferenceSource::kIdle;
+  fault_cause_.store(FaultCause::kNone, std::memory_order_relaxed);
   fault_latched_.store(false, std::memory_order_release);
 }
 
@@ -196,6 +214,7 @@ void LocomotionController::LatchReference(const ControllerState& state) noexcept
   }
   // A hand is held where it is — only a hand the source has a real sample of;
   // one it has not seen yet is latched by FillHands on its first readable tick.
+  // Under the MPC, whose model locks the hands, at its q_default instead.
   for (int h = 0; h < indices_.num_hands; ++h) {
     const auto hu = static_cast<std::size_t>(h);
     if ((measured_.valid_mask & loco::HandBit(hu)) == 0) {
@@ -204,7 +223,7 @@ void LocomotionController::LatchReference(const ControllerState& state) noexcept
     const auto& map = indices_.hands[hu];
     for (int c = 0; c < map.num_channels; ++c) {
       const auto a = static_cast<std::size_t>(map.joint[static_cast<std::size_t>(c)]);
-      hand_hold_[a] = measured_.q[7 + a];
+      hand_hold_[a] = mpc_enabled_ ? q_default_full_[a] : measured_.q[7 + a];
     }
     hand_hold_mask_ |= 1U << hu;
   }
@@ -234,10 +253,11 @@ void LocomotionController::Solve() noexcept {
 void LocomotionController::Latch(FaultCause cause) noexcept {
   if (!fault_latched_tick_) {
     fault_latched_tick_ = true;
-    fault_cause_ = cause;
+    fault_cause_.store(cause, std::memory_order_relaxed);
     ++fault_count_;
     fault_latched_.store(true, std::memory_order_release);
   }
+  ref_source_ = ReferenceSource::kFault;
   mode_ = Mode::kFault;
 }
 
@@ -324,7 +344,8 @@ void LocomotionController::FillHands(const ControllerState& state, ControllerOut
       if (reference_latched_) {  // the first readable tick after the latch: hold here
         for (int c = 0; c < map.num_channels; ++c) {
           const auto uc = static_cast<std::size_t>(c);
-          hand_hold_[static_cast<std::size_t>(map.joint[uc])] = dev.positions[uc];
+          const auto a = static_cast<std::size_t>(map.joint[uc]);
+          hand_hold_[a] = mpc_enabled_ ? q_default_full_[a] : dev.positions[uc];
         }
         hand_hold_mask_ |= bit;
       }
@@ -358,7 +379,7 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   d.tick_count = tick_count_;
   d.mode = static_cast<std::uint8_t>(mode_);
   d.estop = estop_active_;
-  d.fault_cause = static_cast<std::uint8_t>(fault_cause_);
+  d.fault_cause = static_cast<std::uint8_t>(fault_cause_.load(std::memory_order_relaxed));
   d.fault_latched = fault_latched_tick_;
   d.fault_count = fault_count_;
   d.source_status = static_cast<std::uint8_t>(measured_.status);
@@ -396,6 +417,21 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
     d.ref_base_p[i] = ref_.q_des.size() > 2 ? ref_.q_des(static_cast<Eigen::Index>(i)) : 0.0;
     d.com[i] = full_data_->com[0](static_cast<Eigen::Index>(i));
   }
+  d.ref_source = static_cast<std::uint8_t>(ref_source_);
+  const bool plan = mpc_enabled_ && wbc_ref_.valid;
+  d.plan_id = plan ? wbc_ref_.plan_id : 0;
+  d.policy_age_us = plan ? static_cast<double>(static_cast<std::int64_t>(
+                               mpc_t_ns_ - wbc_ref_.observation_stamp_ns)) *
+                               1e-3
+                         : -1.0;
+  d.mpc_converged = plan && wbc_ref_.converged;
+  d.mpc_initial_solve = plan && wbc_ref_.initial_solve;
+  d.mpc_solve_us = plan ? static_cast<double>(wbc_ref_.solve_duration_ns) * 1e-3 : 0.0;
+  d.schedule_epoch = plan ? wbc_ref_.schedule_epoch : 0;
+  d.contact_mask = contact_mask_;
+  d.plausibility_rejects = plausibility_rejects_.load(std::memory_order_relaxed);
+  d.u_fb_norm = u_fb_norm_;
+  d.mpc_state_epoch = mpc_state_epoch_;
   for (std::size_t i = 0; i < 4; ++i) {
     d.base_q_xyzw[i] = measured_.q[3 + i];
   }

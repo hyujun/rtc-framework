@@ -1,0 +1,520 @@
+// locomotion_controller: the MPC — its build (Pass 1), its thread (activation
+// to cleanup), and the tick's use of its plan (the reference sources, the
+// plausibility check, the contact mask). See locomotion_controller.hpp.
+#include "integrated_bringup/controllers/locomotion_controller.hpp"
+#include "integrated_bringup/support/mpc_pool_wait.hpp"
+#include "rtc_base/threading/thread_utils.hpp"
+#include "rtc_mpc/handler/mpc_factory.hpp"
+#include "rtc_mpc/model/wb_layout.hpp"
+#include "rtc_mpc/phase/phase_context.hpp"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/joint-configuration.hpp>
+#pragma GCC diagnostic pop
+
+#include <Eigen/Geometry>
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+namespace integrated_bringup {
+
+namespace mpc = rtc::mpc;
+using rtc::ControllerState;
+
+namespace {
+
+constexpr const char* kContext = "locomotion_controller";
+
+// The re-latch guard of a lost plan: every contact frame this close to the
+// lowest one, the base slower than this.
+constexpr double kRelatchFootSpreadM = 0.015;
+constexpr double kRelatchBaseSpeed = 0.1;  // [m/s]
+// A contact's normal force may dip this far below zero (× the robot's weight).
+// The plan's soft cone barrier keeps a stance foot's force positive; an
+// unconverged plan may dip slightly below.
+constexpr double kPullTolerance = 0.02;
+// A unit quaternion to this tolerance on its squared norm.
+constexpr double kQuaternionTolerance = 1e-6;
+
+[[noreturn]] void Fail(const std::string& what) {
+  throw std::invalid_argument(std::string(kContext) + ".mpc: " + what);
+}
+
+YAML::Node Section(const YAML::Node& cfg, const char* key) {
+  const YAML::Node n = cfg[key];
+  if (!n.IsDefined() || !n.IsMap()) {
+    Fail(std::string("mpc.enabled needs the `") + key + ":` section (a map)");
+  }
+  return n;
+}
+
+}  // namespace
+
+// ── Pass 1 ───────────────────────────────────────────────────────────────────
+
+void LocomotionController::BuildMpc(const YAML::Node& cfg) {
+  mpc_enabled_ = false;
+  mpc_spawn_refused_ = false;
+  rejected_plan_id_ = 0;  // the sampler's plan ids restart with its Init below
+  phase_ = nullptr;
+  phase_owned_.reset();
+  mpc_model_.reset();
+  if (!cfg_.mpc.enabled) {
+    return;
+  }
+  tick_dt_ns_ = std::llround(GetDefaultDt() * 1e9);
+  if (tick_dt_ns_ <= 0) {
+    Fail("the control rate gives no tick period");
+  }
+  const YAML::Node& m = cfg_.mpc.node;
+  const YAML::Node kino = m["kinodynamic"];
+  if (!kino.IsDefined() || !kino.IsMap()) {
+    Fail("`kinodynamic:` is required (the OCP's horizon)");
+  }
+  try {
+    mpc_horizon_nodes_ = kino["horizon_nodes"].as<int>();
+    mpc_dt_ = kino["dt"].as<double>();
+  } catch (const YAML::Exception&) {
+    Fail("kinodynamic.horizon_nodes / dt are not readable");
+  }
+  if (mpc_horizon_nodes_ < 1 || !(std::isfinite(mpc_dt_) && mpc_dt_ > 0.0)) {
+    Fail("kinodynamic.horizon_nodes must be >= 1 and dt > 0");
+  }
+  {
+    YAML::Node factory(YAML::NodeType::Map);
+    factory["mpc"] = YAML::Clone(m);
+    mpc_factory_cfg_.reset(factory);
+  }
+
+  // The MPC's model is the dynamics model (hands locked at neutral).
+  mpc_model_ = std::make_unique<mpc::RobotModelHandler>();
+  if (const auto err =
+          mpc_model_->Init(*reduced_model_, locomotion::ToRobotModelHandlerYaml(cfg_.model));
+      err != mpc::RobotModelInitError::kNoError) {
+    Fail("the MPC model handler refused the model (error " + std::to_string(static_cast<int>(err)) +
+         ")");
+  }
+  const mpc::WbLayout layout = mpc::WbLayout::FromHandler(*mpc_model_);
+  if (!layout.valid() || layout.nq != info_.nq || layout.nv != info_.nv ||
+      layout.n_contact_vars != qp_.Contacts().max_contact_vars) {
+    Fail("the MPC's state / contact layout is not the whole-body QP's");
+  }
+
+  // The stage reference: q_default's body joints go to the MPC (its model has
+  // no hand joint); the hand joints are the hands' hold under the MPC.
+  const YAML::Node ref_in = Section(cfg, "reference");
+  const YAML::Node qd = ref_in["q_default"];
+  if (!qd.IsDefined() || !qd.IsMap()) {
+    Fail("reference.q_default must be a map");
+  }
+  std::map<std::string, std::size_t> full_index;
+  for (std::size_t a = 0; a < full_joint_order_.size(); ++a) {
+    full_index[full_joint_order_[a]] = a;
+  }
+  const std::set<std::string> body(body_joint_names_.begin(), body_joint_names_.end());
+  std::set<std::string> hands_named;
+  const Eigen::VectorXd neutral_full = pinocchio::neutral(*full_model_);
+  YAML::Node qd_out(YAML::NodeType::Map);
+  q_default_full_.fill(0.0);
+  for (const auto& kv : qd) {
+    const std::string name = kv.first.as<std::string>();
+    if (body.count(name) != 0) {
+      qd_out[name] = YAML::Clone(kv.second);
+      continue;
+    }
+    const auto it = full_index.find(name);
+    if (it == full_index.end()) {
+      Fail("reference.q_default names '" + name + "', a joint of neither the body nor a hand");
+    }
+    double v = std::numeric_limits<double>::quiet_NaN();
+    try {
+      v = kv.second.as<double>();
+    } catch (const YAML::Exception&) {
+    }
+    if (!std::isfinite(v)) {
+      Fail("reference.q_default." + name + " must be a finite number");
+    }
+    // The MPC and the QP model the hand locked at its neutral value; a hold
+    // anywhere else would put mass where neither model has it.
+    if (v != neutral_full(static_cast<Eigen::Index>(7 + it->second))) {
+      Fail("reference.q_default." + name +
+           " must be the joint's neutral value (the hands are locked there in the dynamics "
+           "model)");
+    }
+    q_default_full_[it->second] = v;
+    hands_named.insert(name);
+  }
+  for (const auto& name : full_joint_order_) {
+    if (body.count(name) == 0 && hands_named.count(name) == 0) {
+      Fail("reference.q_default does not name the hand joint '" + name +
+           "' (its hold under the MPC)");
+    }
+  }
+  YAML::Node ref_out(YAML::NodeType::Map);
+  for (const auto& kv : ref_in) {
+    const std::string key = kv.first.as<std::string>();
+    if (key != "q_default") {
+      ref_out[key] = YAML::Clone(kv.second);
+    }
+  }
+  ref_out["q_default"] = qd_out;
+
+  YAML::Node pm(YAML::NodeType::Map);
+  pm["horizon_nodes"] = mpc_horizon_nodes_;
+  pm["dt"] = mpc_dt_;
+  for (const char* key : {"gait", "swing", "terrain"}) {
+    pm[key] = YAML::Clone(Section(cfg, key));
+  }
+  pm["reference"] = ref_out;
+  phase_owned_ = std::make_unique<mpc::LocomotionPhaseManager>(*mpc_model_, contact_names_);
+  if (const auto err = phase_owned_->Load(pm); err != mpc::LocomotionPhaseError::kNoError) {
+    Fail("the gait / swing / terrain / reference sections were refused (LocomotionPhaseError " +
+         std::to_string(static_cast<int>(err)) + ")");
+  }
+  phase_ = phase_owned_.get();
+
+  // The command: at rest at the configured stance height until a command
+  // source drives the filter. The builder reads the height of a command that
+  // has seen no sample yet.
+  mpc::CommandFilterConfig command{};
+  if (const auto err = mpc::LoadCommandFilterConfig(Section(cfg, "command"), command);
+      err != mpc::CommandFilterError::kNoError) {
+    Fail("command: was refused (CommandFilterError " + std::to_string(static_cast<int>(err)) + ")");
+  }
+  if (command_filter_.Init(command) != mpc::CommandFilterError::kNoError ||
+      command_filter_.Reset(command.base_height) != mpc::CommandFilterError::kNoError) {
+    Fail("the command filter refused command:");
+  }
+  phase_->SetCommand(command_filter_.output());
+
+  mpc_manager_.Init(m, layout, reduced_model_.get());
+  if (!mpc_manager_.ConfigValid()) {
+    Fail("the plan sampler refused max_policy_age_s / riccati / max_stale_solutions");
+  }
+  mpc_manager_.SetModelEpoch(model_epoch_);
+  mpc_manager_.SetEnabled(false);  // on at activation
+
+  for (std::size_t j = 0; j < nb_; ++j) {
+    joint_lo_[j] = reduced_model_->lowerPositionLimit(static_cast<Eigen::Index>(7 + j));
+    joint_hi_[j] = reduced_model_->upperPositionLimit(static_cast<Eigen::Index>(7 + j));
+  }
+  mpc_enabled_ = true;
+}
+
+// ── The thread (aux thread) ──────────────────────────────────────────────────
+
+bool LocomotionController::SpawnMpcThread(std::unique_ptr<mpc::MPCHandlerBase> handler) noexcept {
+  if (mpc_thread_) {
+    return true;
+  }
+  if (mpc_spawn_refused_ || !phase_owned_ || !mpc_model_) {
+    RCLCPP_ERROR(logger_,
+                 "[locomotion] the MPC thread was refused at an earlier activation (or was "
+                 "stopped) — reconfigure the controller first");
+    return false;
+  }
+  try {
+    const auto threads = rtc::SelectThreadConfigs();
+    mpc::MpcThreadLaunchConfig launch{};
+    launch.main = threads.mpc.main;
+    launch.target_frequency_hz = 1.0 / (cfg_.mpc.period_nodes * mpc_dt_);
+    if (!handler) {
+      mpc::PhaseContext ctx;
+      ctx.ocp_type = cfg_.mpc.node["ocp_type"] ? cfg_.mpc.node["ocp_type"].as<std::string>() : "";
+      ctx.cost_config.horizon_length = mpc_horizon_nodes_;
+      ctx.cost_config.dt = mpc_dt_;
+      const mpc::MPCFactoryStatus status = mpc::MPCFactory::Create(
+          mpc_factory_cfg_, *mpc_model_, ctx, handler, mpc_worker_slots_.count);
+      if (status.error != mpc::MPCFactoryError::kNoError || !handler) {
+        RCLCPP_ERROR(logger_,
+                     "[locomotion] MPCFactory::Create refused mpc.* (err=%d, init=%d, config=%d); "
+                     "this run's layout profile reserves %d MPC worker slot(s) — activation "
+                     "refused",
+                     static_cast<int>(status.error), static_cast<int>(status.init_error),
+                     static_cast<int>(status.ocp_config_error), mpc_worker_slots_.count);
+        mpc_spawn_refused_ = true;
+        return false;
+      }
+    }
+    launch.solver_threads = handler->solver_config().num_threads;
+    launch.workers = mpc_worker_slots_;
+    auto thread = std::make_unique<mpc::HandlerMPCThread>();
+    thread->Configure(*mpc_model_, std::move(handler), std::move(phase_owned_));
+    thread->Init(mpc_manager_, launch);
+    thread->Start();
+    // One thread too: its loop entry can refuse (thread count, layout).
+    if (!AwaitMpcPool(*thread)) {
+      RCLCPP_ERROR(logger_,
+                   "[locomotion] the MPC thread refused its %d-thread solver set-up (reason "
+                   "on stderr) — activation refused",
+                   launch.solver_threads);
+      thread->StopAndJoin();
+      phase_ = nullptr;  // it went down with the thread
+      mpc_spawn_refused_ = true;
+      return false;
+    }
+    mpc_thread_ = std::move(thread);
+    RCLCPP_INFO(logger_,
+                "[locomotion] MPC thread started: core=%d prio=%d %.2f Hz, %d solver thread(s)",
+                launch.main.cpu_core, launch.main.sched_priority, launch.target_frequency_hz,
+                launch.solver_threads);
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_, "[locomotion] the MPC thread could not start: %s", e.what());
+    phase_ = nullptr;  // it may have gone with the thread
+    mpc_spawn_refused_ = true;
+    return false;
+  }
+  return true;
+}
+
+void LocomotionController::StopMpcThread() noexcept {
+  mpc_manager_.SetEnabled(false);
+  mpc_timing_timer_.reset();
+  mpc_timing_cb_group_.reset();
+  if (mpc_thread_) {
+    mpc_thread_->StopAndJoin();
+    mpc_thread_.reset();
+    phase_ = nullptr;  // owned by the thread
+  }
+}
+
+void LocomotionController::LogMpcTick() noexcept {
+  if (!mpc_thread_) {
+    return;
+  }
+  mpc_thread_->TimingProducer().Drain([this](const rtc::RtTickTimingSample& s) {
+    if (mpc_timing_logger_.IsOpen()) {
+      mpc_timing_logger_.Log(s);
+    }
+  });
+  const std::uint64_t failed = mpc_thread_->FailedSolves();
+  if (failed > mpc_failed_reported_) {
+    RCLCPP_WARN(logger_, "[locomotion] %lu MPC solve(s) failed (total %lu, last error %d)",
+                static_cast<unsigned long>(failed - mpc_failed_reported_),
+                static_cast<unsigned long>(mpc_thread_->TotalSolves()),
+                mpc_thread_->LastSolveErrorCode());
+    mpc_failed_reported_ = failed;
+  }
+  constexpr std::uint64_t kInfoEveryTicks = 10;
+  if (mpc_manager_.Enabled() && ++mpc_timing_ticks_ % kInfoEveryTicks == 0) {
+    const auto stats = mpc_manager_.GetSolveStats();
+    RCLCPP_INFO(logger_,
+                "[locomotion] mpc: solves %lu (failed %lu, deadline miss %lu, withheld %lu, "
+                "overrun %lu), solve p50 %.1f ms p99 %.1f ms; refused: epoch %lu state %lu age %lu "
+                "dim %lu implausible %lu (last check %u)",
+                static_cast<unsigned long>(mpc_thread_->TotalSolves()),
+                static_cast<unsigned long>(failed),
+                static_cast<unsigned long>(mpc_thread_->DeadlineMissCount()),
+                static_cast<unsigned long>(mpc_thread_->WithheldCount()),
+                static_cast<unsigned long>(mpc_thread_->OnlineOverrunCount()),
+                static_cast<double>(stats.p50_ns) * 1e-6, static_cast<double>(stats.p99_ns) * 1e-6,
+                static_cast<unsigned long>(mpc_manager_.EpochRejections()),
+                static_cast<unsigned long>(mpc_manager_.StateEpochRejections()),
+                static_cast<unsigned long>(mpc_manager_.PolicyAgeRejections()),
+                static_cast<unsigned long>(mpc_manager_.DimensionRejections()),
+                static_cast<unsigned long>(plausibility_rejects_.load(std::memory_order_relaxed)),
+                static_cast<unsigned>(last_reject_check_.load(std::memory_order_relaxed)));
+  }
+}
+
+// ── The tick (RT thread) ─────────────────────────────────────────────────────
+
+void LocomotionController::WriteMpcState() noexcept {
+  mpc_manager_.SetContactMask(contact_mask_);
+  mpc_manager_.WriteState(qp_state_.q, qp_state_.v, mpc_t_ns_, measured_.sequence);
+}
+
+void LocomotionController::RestartMpcStream() noexcept {
+  // The gait first, then the epoch: a solve of the new stream must not run on
+  // the old schedule.
+  if (phase_ != nullptr) {
+    phase_->RequestReset();
+  }
+  mpc_manager_.SetStateEpoch(++mpc_state_epoch_);
+  wbc_ref_ = mpc::WbcReference{};
+  u_fb_norm_ = 0.0;
+  rejected_plan_id_ = 0;
+  if (!fault_latched_tick_) {  // an E-STOP edge does not clear the latch
+    ref_source_ = ReferenceSource::kIdle;
+  }
+  ApplyContactMask(all_contacts_mask_);
+}
+
+void LocomotionController::FollowPlan(const ControllerState& state) noexcept {
+  u_fb_norm_ = 0.0;
+  bool usable = mpc_manager_.SampleReference(qp_state_.q, qp_state_.v, mpc_t_ns_, wbc_ref_);
+  if (usable && wbc_ref_.plan_id == rejected_plan_id_) {
+    usable = false;
+  } else if (const std::uint8_t check = usable ? Plausible(wbc_ref_) : 0; check != 0) {
+    last_reject_check_.store(check, std::memory_order_relaxed);
+    rejected_plan_id_ = wbc_ref_.plan_id;
+    plausibility_rejects_.fetch_add(1, std::memory_order_relaxed);
+    usable = false;
+  }
+  if (!usable) {
+    wbc_ref_.valid = false;
+  }
+  const bool all_support = wbc_ref_.contact_mask == all_contacts_mask_;
+  switch (ref_source_) {
+    case ReferenceSource::kIdle:
+      // An unconverged standing solve is not a plan to stand on.
+      if (usable && all_support && !estop_active_ &&
+          (!wbc_ref_.initial_solve || wbc_ref_.converged)) {
+        ref_source_ = ReferenceSource::kStand;
+      }
+      break;
+    case ReferenceSource::kStand:
+    case ReferenceSource::kWalk:
+      if (!usable) {
+        LosePlan(state);
+        return;
+      }
+      ref_source_ = all_support ? ReferenceSource::kStand : ReferenceSource::kWalk;
+      break;
+    case ReferenceSource::kFault:
+      break;
+  }
+  if (ref_source_ == ReferenceSource::kStand || ref_source_ == ReferenceSource::kWalk) {
+    CopyPlan();
+    ApplyContactMask(wbc_ref_.contact_mask);
+  }
+}
+
+std::uint8_t LocomotionController::Plausible(const mpc::WbcReference& r) const noexcept {
+  // 0 = plausible; otherwise the number of the check that failed (logged).
+  // Every comparison is written so that a NaN fails it.
+  const auto& s = cfg_.mpc;
+  if (r.nq != info_.nq || r.nv != info_.nv) {
+    return 1;
+  }
+  if (r.contact_mask == 0 || (r.contact_mask & ~all_contacts_mask_) != 0) {
+    return 2;  // no support, or a contact the model does not have
+  }
+  // The base orientation: a unit quaternion within joint_delta_rad of the measured one.
+  const Eigen::Quaterniond q_ref(r.q_ref[6], r.q_ref[3], r.q_ref[4], r.q_ref[5]);
+  if (!(std::abs(q_ref.squaredNorm() - 1.0) < kQuaternionTolerance)) {
+    return 3;
+  }
+  const Eigen::Quaterniond q_meas(qp_state_.q(6), qp_state_.q(3), qp_state_.q(4), qp_state_.q(5));
+  if (!(q_ref.angularDistance(q_meas) <= s.sanity_joint_delta_rad)) {
+    return 4;
+  }
+  for (std::size_t j = 0; j < nb_; ++j) {
+    const double q = r.q_ref[7 + j];
+    const double q_now = qp_state_.q(static_cast<Eigen::Index>(7 + j));
+    if (!(q >= joint_lo_[j] - s.sanity_joint_delta_rad &&
+          q <= joint_hi_[j] + s.sanity_joint_delta_rad &&
+          std::abs(q - q_now) <= s.sanity_joint_delta_rad)) {
+      return 5;
+    }
+    if (!(std::abs(r.a_ref[6 + j]) <= s.sanity_joint_accel)) {
+      return 6;
+    }
+  }
+  double ground = std::numeric_limits<double>::infinity();
+  for (const auto f : contact_frames_full_) {
+    ground = std::min(ground, full_data_->oMf[f].translation().z());
+  }
+  const auto& cmd = command_filter_.config();
+  const double height = r.q_ref[2] - ground;
+  if (!(height >= cmd.h_min && height <= cmd.h_max)) {
+    return 7;
+  }
+  const double speed =
+      std::sqrt(r.v_ref[0] * r.v_ref[0] + r.v_ref[1] * r.v_ref[1] + r.v_ref[2] * r.v_ref[2]);
+  if (!(speed <= s.sanity_base_speed)) {
+    return 8;
+  }
+  const double weight = total_mass_ * full_model_->gravity.linear().norm();
+  double fz_sum = 0.0;
+  std::size_t offset = 0;
+  for (const auto& c : cfg_.model.contacts) {
+    const double fz = r.wrench_ref[offset + 2];
+    if (!(fz >= -kPullTolerance * weight)) {
+      return 9;
+    }
+    fz_sum += fz;
+    offset += static_cast<std::size_t>(c.dim);
+  }
+  // The plan carries the robot: between 1 / wrench_scale and wrench_scale of its weight.
+  if (!(fz_sum <= s.sanity_wrench_scale * weight && fz_sum >= weight / s.sanity_wrench_scale)) {
+    return 10;
+  }
+  if (s.riccati_enabled) {
+    for (int i = 0; i < r.nv; ++i) {
+      if (!(std::abs(r.u_fb_acc[static_cast<std::size_t>(i)]) <= s.sanity_joint_accel)) {
+        return 11;
+      }
+    }
+  }
+  return 0;
+}
+
+void LocomotionController::CopyPlan() noexcept {
+  const auto& r = wbc_ref_;
+  for (Eigen::Index i = 0; i < ref_.q_des.size(); ++i) {
+    ref_.q_des(i) = r.q_ref[static_cast<std::size_t>(i)];
+  }
+  double fb2 = 0.0;
+  for (Eigen::Index i = 0; i < ref_.v_des.size(); ++i) {
+    const auto ui = static_cast<std::size_t>(i);
+    ref_.v_des(i) = r.v_ref[ui];
+    double a = r.a_ref[ui];
+    if (cfg_.mpc.riccati_enabled) {
+      a += r.u_fb_acc[ui];
+      fb2 += r.u_fb_acc[ui] * r.u_fb_acc[ui];
+    }
+    ref_.a_des(i) = a;
+  }
+  u_fb_norm_ = std::sqrt(fb2);
+  ref_.tau_ff.setZero();
+  ref_.lambda_des.setZero();
+  const Eigen::Index nl = std::min<Eigen::Index>(ref_.lambda_des.size(), r.n_contact_vars);
+  for (Eigen::Index i = 0; i < nl; ++i) {
+    ref_.lambda_des(i) = r.wrench_ref[static_cast<std::size_t>(i)];
+  }
+}
+
+void LocomotionController::ApplyContactMask(std::uint32_t mask) noexcept {
+  const int nc = static_cast<int>(contact_frames_full_.size());
+  for (int i = 0; i < nc; ++i) {
+    contacts_.SetActivationTarget(i, ((mask >> static_cast<unsigned>(i)) & 1U) != 0 ? 1.0 : 0.0,
+                                  0.0);
+  }
+  contacts_.UpdateActivation(static_cast<double>(tick_dt_ns_) * 1e-9);
+  contacts_.RecomputeActive(qp_.Contacts());
+  contact_mask_ = mask;
+}
+
+void LocomotionController::LosePlan(const ControllerState& state) noexcept {
+  double z_lo = std::numeric_limits<double>::infinity();
+  double z_hi = -std::numeric_limits<double>::infinity();
+  for (const auto f : contact_frames_full_) {
+    const double z = full_data_->oMf[f].translation().z();
+    z_lo = std::min(z_lo, z);
+    z_hi = std::max(z_hi, z);
+  }
+  const double speed = std::sqrt(measured_.v[0] * measured_.v[0] + measured_.v[1] * measured_.v[1] +
+                                 measured_.v[2] * measured_.v[2]);
+  if (z_hi - z_lo <= kRelatchFootSpreadM && speed < kRelatchBaseSpeed) {
+    ref_source_ = ReferenceSource::kIdle;
+    ApplyContactMask(all_contacts_mask_);
+    reference_latched_ = false;
+    LatchReference(state);
+  } else {
+    Latch(FaultCause::kPlanLoss);
+  }
+}
+
+}  // namespace integrated_bringup

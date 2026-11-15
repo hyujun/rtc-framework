@@ -82,6 +82,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/locomotion/compute.cpp
   src/controllers/locomotion/lifecycle.cpp
   src/controllers/locomotion/parameters.cpp
+  src/controllers/locomotion/mpc_reference.cpp
   # Learned-policy binding. Its law half lives in rtc_controllers/inference
   # (tensor marshalling) — this side owns the ControllerState/engine contract.
   src/controllers/inference/controller.cpp
@@ -2189,6 +2190,36 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # Its MPC: the reference sources, the plausibility check, the contact mask,
+  # the state stream's restarts, the thread's lifetime, the `mpc:` schema — on a
+  # stub handler, and one smoke run of the installed MPC.
+  ament_add_gtest(test_locomotion_mpc test/test_locomotion_mpc.cpp
+    TIMEOUT 600
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_locomotion_mpc PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_locomotion_mpc PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_mpc
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_mpc
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_mpc
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # Its RT tick on every path under the global operator-new gate. Own binary:
   # alloc_gate.hpp replaces operator new (one TU per binary).
   ament_add_gtest(test_locomotion_controller_alloc test/test_locomotion_controller_alloc.cpp
@@ -2213,6 +2244,7 @@ if(BUILD_TESTING)
     rtc_controllers
     rtc_urdf_bridge
     rtc_tsid
+    rtc_mpc
     rtc_base
     pinocchio
     Eigen3
