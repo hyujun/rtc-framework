@@ -70,7 +70,7 @@
 # Euler (the starting value) and RK2.
 locomotion_controller:
   mpc:
-    enabled: false
+    enabled: true                     # the launches override it from enable_mpc
     period_nodes: 1
     max_policy_age_s: 0.14            # [s] 3 × 0.035 + 0.035
     riccati:
