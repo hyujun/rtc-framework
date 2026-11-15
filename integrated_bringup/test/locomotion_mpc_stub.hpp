@@ -167,10 +167,10 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
   std::atomic<double> joint_offset{0.0};
   std::atomic<bool> zero_quaternion{false};
   std::atomic<double> fz_scale{1.0};
-  std::atomic<double> base_tilt{0.0};  ///< [rad] the plan's base rolled from upright
-  std::atomic<double> base_dz{0.0};    ///< [m] the plan's base raised
-  std::atomic<double> base_vx{0.0};    ///< [m/s] the plan's base velocity
-  std::atomic<double> pull{0.0};       ///< [N] normal force moved between the soles
+  std::atomic<double> base_tilt{0.0};   ///< [rad] the plan's base rolled from upright
+  std::atomic<double> base_dz{0.0};     ///< [m] the plan's base raised
+  std::atomic<double> base_vx{0.0};     ///< [m/s] the plan's base velocity
+  std::atomic<double> pull{0.0};        ///< [N] normal force moved between the soles
   std::atomic<double> joint_rate{0.0};  ///< the first joint's rate, flipping sign each node [rad/s]
 
  private:
