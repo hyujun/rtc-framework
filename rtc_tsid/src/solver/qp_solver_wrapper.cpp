@@ -33,6 +33,8 @@ QPSolverConfig ParseQPSolverConfig(const YAML::Node& node, const QPSolverConfig&
   read("eps_primal_inf", c.eps_primal_inf);
   std::string backend;
   read("dense_backend", backend);
+  std::string warm_start;
+  read("warm_start", warm_start);
 
   if (c.max_iter <= 0 || c.max_iter_in <= 0) {
     throw std::invalid_argument("solver.max_iter / max_iter_in must be > 0");
@@ -54,6 +56,16 @@ QPSolverConfig ParseQPSolverConfig(const YAML::Node& node, const QPSolverConfig&
     } else {
       throw std::invalid_argument("solver.dense_backend: unknown backend '" + backend +
                                   "' (Automatic | PrimalDualLDLT | PrimalLDLT)");
+    }
+  }
+  if (node["warm_start"]) {
+    if (warm_start == "previous_result") {
+      c.warm_start = WarmStartMode::kPreviousResult;
+    } else if (warm_start == "previous_result_reset_mu") {
+      c.warm_start = WarmStartMode::kPreviousResultResetMu;
+    } else {
+      throw std::invalid_argument("solver.warm_start: unknown mode '" + warm_start +
+                                  "' (previous_result | previous_result_reset_mu)");
     }
   }
   return c;
@@ -125,21 +137,35 @@ void QPSolverWrapper::Init(int max_n_vars, int max_n_eq, int max_n_ineq,
     qp_->init(H0, g0, std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
   }
 
-  // 이후 모든 Solve() 호출은 warm-start
+  // 이후 모든 Solve() 호출은 warm-start (kPreviousResultResetMu: Solve() 가 매번
+  // 정한다, 첫 solve 는 equality-constrained).
   qp_->settings.initial_guess =
       proxsuite::proxqp::InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT;
+  cold_next_ = true;
+  solved_once_ = false;
 
   initialized_ = true;
 }
 
 const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   if (!initialized_) {
-    result_.converged = false;
-    result_.status = -1;
-    result_.iterations = 0;
-    result_.outer_iterations = 0;
+    result_.MarkNotSolved(-1);
     return result_;
   }
+  using proxsuite::proxqp::InitialGuessStatus;
+  const bool reset_mu = config_.warm_start == WarmStartMode::kPreviousResultResetMu;
+  // ProxQP reads the start mode in update() (its setup keeps or clears the
+  // previous iterates there), so it is chosen before update().
+  if (reset_mu) {
+    qp_->settings.initial_guess = cold_next_
+                                      ? InitialGuessStatus::EQUALITY_CONSTRAINED_INITIAL_GUESS
+                                      : InitialGuessStatus::COLD_START_WITH_PREVIOUS_RESULT;
+  }
+  result_.warm_started =
+      solved_once_ &&
+      (qp_->settings.initial_guess == InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT ||
+       qp_->settings.initial_guess == InitialGuessStatus::COLD_START_WITH_PREVIOUS_RESULT);
+  solved_once_ = true;
 
   const auto t_start = std::chrono::steady_clock::now();
 
@@ -194,17 +220,31 @@ const SolveResult& QPSolverWrapper::Solve(const QPData& qp) noexcept {
   // Only a settings enum changes — no allocation.
   const bool iterates_finite =
       qp_->results.x.allFinite() && qp_->results.y.allFinite() && qp_->results.z.allFinite();
-  qp_->settings.initial_guess =
-      iterates_finite ? proxsuite::proxqp::InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT
-                      : proxsuite::proxqp::InitialGuessStatus::NO_INITIAL_GUESS;
+  if (!reset_mu) {
+    qp_->settings.initial_guess = iterates_finite
+                                      ? InitialGuessStatus::WARM_START_WITH_PREVIOUS_RESULT
+                                      : InitialGuessStatus::NO_INITIAL_GUESS;
+  }
 
   // 결과 추출 — caller 가 알려준 active dim (qp.n_vars) 만큼만 읽음
   result_.converged = iterates_finite && (qp_->results.info.status ==
                                           proxsuite::proxqp::QPSolverOutput::PROXQP_SOLVED);
+  // kPreviousResultResetMu: a miss (non-finite, MAX_ITER, an infeasibility
+  // verdict) leaves no iterate worth starting from.
+  cold_next_ = !result_.converged;
   result_.status = static_cast<int>(qp_->results.info.status);
   result_.non_finite = !iterates_finite;
   result_.iterations = static_cast<int>(qp_->results.info.iter);
   result_.outer_iterations = static_cast<int>(qp_->results.info.iter_ext);
+  // An infeasibility verdict replaces x, y, z with the certificate direction
+  // after the residuals were taken: they describe no returned iterate.
+  const bool certificate =
+      qp_->results.info.status == proxsuite::proxqp::QPSolverOutput::PROXQP_PRIMAL_INFEASIBLE ||
+      qp_->results.info.status == proxsuite::proxqp::QPSolverOutput::PROXQP_DUAL_INFEASIBLE;
+  result_.pri_res =
+      certificate ? std::numeric_limits<double>::quiet_NaN() : qp_->results.info.pri_res;
+  result_.dua_res =
+      certificate ? std::numeric_limits<double>::quiet_NaN() : qp_->results.info.dua_res;
 
   const int active_n = (qp.n_vars > 0 && qp.n_vars <= n) ? qp.n_vars : n;
   if (result_.converged) {
@@ -225,8 +265,13 @@ const Eigen::VectorXd& QPSolverWrapper::InequalityDual() const noexcept {
   return qp_ ? qp_->results.z : no_dual_;
 }
 
+const Eigen::VectorXd& QPSolverWrapper::Primal() const noexcept {
+  return qp_ ? qp_->results.x : no_dual_;
+}
+
 void QPSolverWrapper::ResetWarmStart() noexcept {
-  if (qp_) {
+  cold_next_ = true;
+  if (qp_ && config_.warm_start == WarmStartMode::kPreviousResult) {
     qp_->settings.initial_guess = proxsuite::proxqp::InitialGuessStatus::NO_INITIAL_GUESS;
   }
 }

@@ -1,6 +1,9 @@
 #include "rtc_tsid/formulation/hqp_formulation.hpp"
 
+#include "row_residual.hpp"
+
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace rtc::tsid {
@@ -78,6 +81,9 @@ void HQPFormulation::SizeLevelIndices() {
 void HQPFormulation::AddConstraint(std::unique_ptr<ConstraintBase> constraint) {
   max_n_eq_base_ += std::max(0, constraint->MaxEqDim(contact_cfg_));
   max_n_ineq_ += std::max(0, constraint->MaxIneqDim(contact_cfg_));
+  if (constraint->Name() == "eom") {
+    eom_ = constraint.get();
+  }
   constraints_.push_back(std::move(constraint));
   ResizeQp();
 }
@@ -186,6 +192,7 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
   // is solved (see WQPFormulation::Solve).
   int rows_dropped = 0;
   int base_n_eq = 0;
+  eom_dim_ = 0;
   for (const auto& con : constraints_) {
     if (!con->IsActive())
       continue;
@@ -200,6 +207,10 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     auto A_view = base_qp.A.block(base_n_eq, 0, ed, n_vars);
     auto b_view = base_qp.b.segment(base_n_eq, ed);
     con->ComputeEquality(cache, contacts, robot_info, n_vars, A_view, b_view);
+    if (con.get() == eom_) {
+      eom_row_ = base_n_eq;
+      eom_dim_ = ed;
+    }
     base_n_eq += ed;
   }
 
@@ -235,13 +246,19 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
   int levels_solved = 0;
   result_.converged = false;
   // Per-tick accumulators (were never reset before #551, so solve_time_us /
-  // iterations grew across ticks). status / non_finite report the LAST level
-  // tried — the failed one when the cascade breaks.
+  // iterations grew across ticks). status / non_finite / warm_started and the
+  // residuals report the LAST level tried — the failed one when the cascade
+  // breaks.
   result_.status = -1;
   result_.non_finite = false;
   result_.solve_time_us = 0.0;
   result_.iterations = 0;
   result_.outer_iterations = 0;
+  result_.warm_started = false;
+  result_.pri_res = std::numeric_limits<double>::quiet_NaN();
+  result_.dua_res = std::numeric_limits<double>::quiet_NaN();
+  result_.eom_residual_inf = std::numeric_limits<double>::quiet_NaN();
+  int last_tried = -1;
 
   for (int k = 0; k <= active_max_level_ && k < max_levels_; ++k) {
     const auto& task_indices = level_task_indices_[static_cast<size_t>(k)];
@@ -331,6 +348,7 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
 
     // ── Solve level k ──
     const auto& solver_result = qp_solvers_[static_cast<size_t>(k)].Solve(qp);
+    last_tried = k;
 
     // Every attempted level counts toward time / iterations — a failed level
     // still spent the budget, and the diagnostics must see that.
@@ -339,6 +357,9 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     result_.solve_time_us += solver_result.solve_time_us;
     result_.iterations += solver_result.iterations;
     result_.outer_iterations += solver_result.outer_iterations;
+    result_.warm_started = solver_result.warm_started;
+    result_.pri_res = solver_result.pri_res;
+    result_.dua_res = solver_result.dua_res;
 
     if (!solver_result.converged) {
       // Infeasible → 직전 level z* 사용
@@ -363,6 +384,13 @@ const SolveResult& HQPFormulation::Solve(const PinocchioCache& cache, const Cont
     }
   }
 
+  if (last_tried >= 0) {
+    const auto lt = static_cast<size_t>(last_tried);
+    result_.eom_residual_inf = std::isnan(result_.pri_res)
+                                   ? std::numeric_limits<double>::quiet_NaN()
+                                   : EqualityRowResidualInf(qp_data_per_level_[lt], eom_row_,
+                                                            eom_dim_, qp_solvers_[lt].Primal());
+  }
   result_.levels_solved = levels_solved;
   return result_;
 }

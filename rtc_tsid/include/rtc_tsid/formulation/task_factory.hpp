@@ -30,7 +30,9 @@ namespace rtc::tsid {
 // object frame and state provider), and added to the formulation in YAML
 // order. With `control_period > 0` the constraints that integrate over one
 // period (joint_limit, torque_limit) take it when their `dt` is missing and
-// throw std::invalid_argument when it disagrees (#1019). An unknown type is
+// throw std::invalid_argument when it disagrees (#1019); a contact_constraint
+// with inactive_lambda zero on a WQP / HQP whose solver.warm_start is
+// previous_result throws std::invalid_argument too. An unknown type is
 // skipped with an error message; the caller logs the messages (rtc_tsid has
 // no logger). The report lists what was built so the caller can post-process
 // (its own keys, pointers it keeps for diagnostics).

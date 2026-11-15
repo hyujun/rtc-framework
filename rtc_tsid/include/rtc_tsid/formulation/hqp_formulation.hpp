@@ -91,6 +91,11 @@ class HQPFormulation final : public FormulationBase {
 
   ContactManagerConfig contact_cfg_;  // the contact set the Max*Dim are taken over
   QPSolverConfig solver_cfg_;
+  // The constraint named "eom" (if added) and its rows in the shared block on
+  // the last Solve() (every level's QP starts with that block).
+  const ConstraintBase* eom_{nullptr};
+  int eom_row_{0};
+  int eom_dim_{0};
 
   SolveResult result_;
 };

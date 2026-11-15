@@ -18,6 +18,9 @@
 #include "rtc_tsid/formulation/wqp_formulation.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
 
+#include <cmath>
+#include <limits>
+
 namespace rtc::tsid {
 namespace {
 
@@ -193,6 +196,33 @@ TEST_F(WQPFormulationTest, PostureOnlyConverges) {
   // a_opt ≈ 0 (at desired posture with zero velocity)
   Eigen::VectorXd a_opt = result.x_opt.head(robot_info_.nv);
   EXPECT_LT(a_opt.norm(), 1e-4) << "a_opt = " << a_opt.transpose();
+}
+
+// A QP without equations-of-motion rows (fixed base, no eom constraint)
+// reports an EOM residual of 0 on a finite solve and NaN on a non-finite one —
+// no rows is not a licence to call a NaN iterate exact.
+TEST_F(WQPFormulationTest, WithoutEomRowsTheEomResidualIsZeroOrNan) {
+  YAML::Node formulation_config;
+  formulation_config["formulation_type"] = "wqp";
+  auto formulation = CreateFormulation(*model_, robot_info_, contact_cfg_, formulation_config);
+  auto posture = std::make_unique<PostureTask>();
+  YAML::Node task_cfg;
+  task_cfg["kp"] = 100.0;
+  task_cfg["kd"] = 20.0;
+  posture->Init(*model_, robot_info_, cache_, task_cfg);
+  formulation->AddTask(std::move(posture));
+  const Eigen::VectorXd q = pinocchio::neutral(*model_);
+  cache_.Update(q, Eigen::VectorXd::Zero(robot_info_.nv));
+  ref_.q_des = q;
+  ref_.v_des.setZero(robot_info_.nv);
+  ref_.a_des.setZero(robot_info_.nv);
+  const SolveResult& ok = formulation->Solve(cache_, ref_, contacts_, robot_info_);
+  ASSERT_TRUE(ok.converged);
+  EXPECT_EQ(ok.eom_residual_inf, 0.0);
+  ref_.a_des(0) = std::numeric_limits<double>::quiet_NaN();
+  const SolveResult& bad = formulation->Solve(cache_, ref_, contacts_, robot_info_);
+  ASSERT_TRUE(bad.non_finite) << "premise: the iterate is not finite";
+  EXPECT_TRUE(std::isnan(bad.eom_residual_inf));
 }
 
 TEST_F(WQPFormulationTest, PostureTrackingNonZeroAccel) {

@@ -2,6 +2,7 @@
 
 #include "rtc_tsid/types/qp_types.hpp"
 
+#include <cstdint>
 #include <memory>
 
 // ProxSuite 헤더 — 컴파일러 경고 억제
@@ -14,6 +15,30 @@
 #pragma GCC diagnostic pop
 
 namespace rtc::tsid {
+
+// Where each Solve() starts from (QPSolverConfig::warm_start).
+//
+//   kPreviousResult        — the previous solve's iterates AND its proximal
+//                            penalties μ_eq, μ_in (ProxQP
+//                            WARM_START_WITH_PREVIOUS_RESULT), whatever that
+//                            solve's outcome; after non-finite iterates or
+//                            ResetWarmStart() one start from zero.
+//   kPreviousResultResetMu — the previous solve's iterates with μ_eq, μ_in
+//                            reset to their initial values (ProxQP
+//                            COLD_START_WITH_PREVIOUS_RESULT; ρ is reset on
+//                            every update in both modes). The first solve,
+//                            the one after a solve that did not converge and
+//                            the one after ResetWarmStart() start from the
+//                            equality-constrained solution instead.
+//
+// On a sequence of QPs whose active set changes (a support change of a
+// contact-switching controller), kPreviousResult can stop at a point that
+// passes ProxQP's residual test with multipliers of the wrong sign on inactive
+// rows — a solution that is not the optimum — and a failed solve's iterates
+// seed the next one. Resetting the proximal penalties and restarting from the
+// equality-constrained solution after a failure removes both on such
+// sequences; it costs nothing per solve (a settings enum, no buffer).
+enum class WarmStartMode : std::uint8_t { kPreviousResult, kPreviousResultResetMu };
 
 // ────────────────────────────────────────────────
 // QP solver 설정 (QPSolverWrapper 바깥에 정의하여 default arg 문제 회피)
@@ -57,14 +82,17 @@ struct QPSolverConfig {
   // 0 bounds that time with max_iter (and max_iter_in), chosen against the
   // iterations its converging solves need.
   double eps_primal_inf{1e-4};
+  // Kept last: callers initialise this struct by designated initialisers.
+  WarmStartMode warm_start{WarmStartMode::kPreviousResult};
 };
 
 // The solver keys of a YAML map over `defaults` — a missing key keeps the
 // default: max_iter, max_iter_in, eps_abs, eps_rel, verbose,
 // update_preconditioner, dense_backend ("Automatic" | "PrimalDualLDLT" |
-// "PrimalLDLT") and eps_primal_inf (≥ 0). A node that is not a map, a value
-// that does not convert, max_iter / max_iter_in ≤ 0, eps_abs ≤ 0, eps_rel < 0,
-// a non-finite tolerance, an unknown backend name or a negative eps_primal_inf
+// "PrimalLDLT"), eps_primal_inf (≥ 0) and warm_start ("previous_result" |
+// "previous_result_reset_mu"). A node that is not a map, a value that does not
+// convert, max_iter / max_iter_in ≤ 0, eps_abs ≤ 0, eps_rel < 0, a non-finite
+// tolerance, an unknown backend or warm_start name or a negative eps_primal_inf
 // throw std::invalid_argument (init time). Used by the WQP (`wqp.solver`) and the HQP
 // (`hqp.solver_per_level`).
 [[nodiscard]] QPSolverConfig ParseQPSolverConfig(const YAML::Node& node,
@@ -93,8 +121,10 @@ class QPSolverWrapper {
   // 다음 solve 는 warm start 없이 시작한다 (비유한 해가 이후 solve 를 전부 막지 않게).
   [[nodiscard]] const SolveResult& Solve(const QPData& qp) noexcept;
 
-  // Discard the warm start: the NEXT Solve() begins from x = y = z = 0 instead
-  // of from the previous solve's iterates, after which warm-starting resumes.
+  // Discard the warm start: the NEXT Solve() begins from x = y = z = 0
+  // (kPreviousResult) or from the equality-constrained solution
+  // (kPreviousResultResetMu) instead of from the previous solve's iterates,
+  // after which warm-starting resumes.
   //
   // Warm starting is the right default for a controller, where consecutive
   // ticks solve almost the same QP. It is WRONG whenever consecutive solves are
@@ -126,6 +156,13 @@ class QPSolverWrapper {
   [[nodiscard]] const Eigen::VectorXd& EqualityDual() const noexcept;
   [[nodiscard]] const Eigen::VectorXd& InequalityDual() const noexcept;
 
+  // The primal iterate the LAST Solve() stopped at, in the caller's units —
+  // SolveResult::x_opt only on a converged solve, the failed iterate (or NaN)
+  // otherwise; after an infeasibility verdict (status 2 or 4) ProxQP leaves its
+  // certificate direction here, not an iterate. Same sizing and lifetime as
+  // the duals.
+  [[nodiscard]] const Eigen::VectorXd& Primal() const noexcept;
+
   // 설정 변경 (non-RT)
   void SetMaxIter(int iter) noexcept;
   void SetEpsAbs(double eps) noexcept;
@@ -140,6 +177,11 @@ class QPSolverWrapper {
   int max_n_vars_{0};
   int max_n_eq_{0};
   int max_n_ineq_{0};
+  // kPreviousResultResetMu: the next Solve() starts from the equality-
+  // constrained solution (no previous solve, a miss, or ResetWarmStart()).
+  bool cold_next_{true};
+  // A Solve() has run since Init(): there are iterates to start from.
+  bool solved_once_{false};
 
   // Persistent inequality placeholder, allocated once in Init() and reused for
   // (a) the init model and (b) any Solve() tick with zero active inequality rows.

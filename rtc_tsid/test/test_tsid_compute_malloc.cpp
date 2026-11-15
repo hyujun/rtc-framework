@@ -47,6 +47,7 @@
 #include "rtc_tsid/controller/tsid_controller.hpp"
 #include "rtc_tsid/tasks/posture_task.hpp"
 
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -386,6 +387,69 @@ TEST(TsidComputeMallocTest, HqpTorqueRecoveryAroundTheSolveAllocatesNothing) {
   EXPECT_TRUE(converged);
   EXPECT_EQ(levels, 2) << "premise: both levels were solved";
   EXPECT_EQ(compute, solve_only) << "the τ recovery around the solve allocated";
+}
+
+// The reset-μ warm start with zero inactive forces (the locomotion profile's
+// pair) on the three kinds of tick it treats differently — a steady tick (the
+// previous result with the proximal step reset), a lift-off (the zero rows
+// switch on) and the tick after a miss (the equality-constrained start):
+// UpdateReferences allocates nothing and Compute adds nothing to ProxQP's own
+// count, measured on a twin's Solve alone.
+TEST(TsidComputeMallocTest, TheResetMuWarmStartAddsNothingOnAnyKindOfTick) {
+  YAML::Node wbq = YAML::Load(test::kLocoWbq);
+  wbq["solver"]["warm_start"] = "previous_result_reset_mu";
+  wbq["constraints"]["contact"]["inactive_lambda"] = "zero";
+  enum class Kind { kSteady, kLiftOff, kAfterMiss };
+  for (const Kind kind : {Kind::kSteady, Kind::kLiftOff, Kind::kAfterMiss}) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    test::LocoRig a(wbq);
+    test::LocoRig b(wbq);
+    const Eigen::VectorXd q = test::QStand(*a.model);
+    for (test::LocoRig* r : {&a, &b}) {
+      r->Set(q, Eigen::VectorXd::Zero(r->model->nv));
+      r->WeightOn({0, 1});
+      for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(r->Solve().tau_valid);
+      }
+      if (kind == Kind::kLiftOff) {
+        r->Release(1);
+        r->WeightOn({0});
+      } else if (kind == Kind::kAfterMiss) {
+        r->ref.lambda_des(2) = std::numeric_limits<double>::quiet_NaN();
+        const CommandOutput& miss = r->Solve();
+        ASSERT_FALSE(miss.tau_valid);
+        ASSERT_TRUE(miss.qp_non_finite) << "premise: the solve itself missed";
+        r->WeightOn({0, 1});
+      }
+    }
+    std::size_t update = 0;
+    std::size_t solve_only = 0;
+    bool warm = false;
+    {
+      rtc::testing::ScopedMallocGate gate;
+      EXPECT_TRUE(a.b.UpdateReferences(a.ref, a.contacts));
+      update = gate.count();
+    }
+    {
+      rtc::testing::ScopedMallocGate gate;
+      warm = a.b.Controller().Formulation().Solve(a.cache, a.ref, a.contacts, a.info).warm_started;
+      solve_only = gate.count();
+    }
+    std::size_t compute = 0;
+    bool valid = false;
+    {
+      rtc::testing::ScopedMallocGate gate;
+      valid = b.Solve().tau_valid;
+      compute = gate.count();
+    }
+    EXPECT_EQ(warm, kind != Kind::kAfterMiss) << "premise: the start this kind of tick takes";
+    EXPECT_EQ(update, 0U);
+    EXPECT_TRUE(valid);
+    EXPECT_EQ(compute, solve_only);
+    const char* names[] = {"steady", "lift_off", "after_miss"};
+    RecordProperty(std::string("proxqp_solve_mallocs_reset_mu_") + names[static_cast<int>(kind)],
+                   std::to_string(solve_only));
+  }
 }
 
 }  // namespace

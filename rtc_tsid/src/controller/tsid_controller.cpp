@@ -56,6 +56,10 @@ const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
   output_.n_ineq_used = result.n_ineq_used;
   output_.rows_dropped = result.rows_dropped;
   output_.outer_iterations = result.outer_iterations;
+  output_.qp_warm_started = result.warm_started;
+  output_.qp_pri_res = result.pri_res;
+  output_.qp_dua_res = result.dua_res;
+  output_.eom_residual_inf = result.eom_residual_inf;
   // Until the torque below is known to be finite, this tick's outputs are the
   // last valid ones (WD-60). An HQP's solution is that of the last level it
   // solved, so a lower level failing still leaves a usable torque.
@@ -69,8 +73,10 @@ const CommandOutput& TSIDController::Compute(const ControlState& /*state*/,
   const int na = robot_info_.n_actuated;
 
   // 2. a and the full λ block live in the solver's x_opt (stable for this
-  // call): [a (nv); λ (max_contact_vars)]. Inactive contacts' λ slots are ≈ 0
-  // by Hessian regularization (no task/constraint references them).
+  // call): [a (nv); λ (max_contact_vars)]. An inactive contact's λ slot is
+  // pinned to 0 by its contact rows (inactive_lambda zero) or else held only by
+  // the Hessian regularisation (wherever the warm start left it); τ skips it
+  // either way.
   const int n_lambda_full = contact_cfg_.max_contact_vars;
   const auto a = result.x_opt.head(nv);
 

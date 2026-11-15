@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace rtc::tsid {
@@ -446,6 +448,8 @@ TEST_F(QPSolverWrapperTest, ZeroPrimalInfeasibilityThresholdStillRejectsAContrad
   const auto& result = wrapper.Solve(qp);
   EXPECT_FALSE(result.converged);
   EXPECT_EQ(result.status, kPrimalInfeasible);
+  EXPECT_TRUE(std::isnan(result.pri_res)) << "x is the certificate, not an iterate";
+  EXPECT_TRUE(std::isnan(result.dua_res));
 
   // The default threshold does not call it solved either.
   QPSolverConfig standard;
@@ -504,6 +508,276 @@ TEST_F(QPSolverWrapperTest, MaxIterBoundsTheOuterCount) {
 TEST_F(QPSolverWrapperTest, DualsAreEmptyBeforeInit) {
   EXPECT_EQ(solver.EqualityDual().size(), 0);
   EXPECT_EQ(solver.InequalityDual().size(), 0);
+  EXPECT_EQ(solver.Primal().size(), 0);
+}
+
+// ── warm_start modes and the residual report ─────────────────────────────────
+
+double RowSumNorm(const Eigen::MatrixXd& m) {
+  return m.size() > 0 ? m.cwiseAbs().rowwise().sum().maxCoeff() : 0.0;
+}
+
+double FiniteMax(const Eigen::VectorXd& v) {
+  double out = 0.0;
+  for (Eigen::Index i = 0; i < v.size(); ++i) {
+    if (std::isfinite(v(i))) {
+      out = std::max(out, std::abs(v(i)));
+    }
+  }
+  return out;
+}
+
+// The two residuals recomputed from the QP data and an iterate, with the
+// rounding bound 64·n·ε·(the magnitudes summed in a row) each is compared within.
+struct Recomputed {
+  double pri{0.0};
+  double pri_tol{0.0};
+  double dua{0.0};
+  double dua_tol{0.0};
+};
+
+Recomputed Recompute(const QPData& qp, const Eigen::VectorXd& x, const Eigen::VectorXd& y,
+                     const Eigen::VectorXd& z) {
+  const auto n = qp.H.rows();
+  const auto n_eq = qp.A.rows();
+  const auto n_in = qp.C.rows();
+  const double eps = std::numeric_limits<double>::epsilon();
+  const double terms = 64.0 * static_cast<double>(n + n_eq + n_in) * eps;
+  Recomputed r;
+  const double xn = x.lpNorm<Eigen::Infinity>();
+  if (n_eq > 0) {
+    const Eigen::VectorXd e = qp.A * x - qp.b;
+    r.pri = e.lpNorm<Eigen::Infinity>();
+  }
+  if (n_in > 0) {
+    const Eigen::VectorXd cx = qp.C * x;
+    for (Eigen::Index i = 0; i < n_in; ++i) {
+      r.pri = std::max({r.pri, cx(i) - qp.u(i), qp.l(i) - cx(i)});
+    }
+  }
+  r.pri_tol = terms * (std::max(RowSumNorm(qp.A), RowSumNorm(qp.C)) * xn +
+                       std::max({FiniteMax(qp.b), FiniteMax(qp.l), FiniteMax(qp.u)}));
+  Eigen::VectorXd d = qp.H * x + qp.g;
+  if (n_eq > 0) {
+    d += qp.A.transpose() * y;
+  }
+  if (n_in > 0) {
+    d += qp.C.transpose() * z;
+  }
+  r.dua = d.lpNorm<Eigen::Infinity>();
+  r.dua_tol =
+      terms * (RowSumNorm(qp.H) * xn + qp.g.lpNorm<Eigen::Infinity>() +
+               RowSumNorm(qp.A.transpose()) * (n_eq > 0 ? y.lpNorm<Eigen::Infinity>() : 0.0) +
+               RowSumNorm(qp.C.transpose()) * (n_in > 0 ? z.lpNorm<Eigen::Infinity>() : 0.0));
+  return r;
+}
+
+// min ½ xᵀHx + gᵀx, Σx = 1, two binding bounds and a free one (the dual test's
+// problem with a non-diagonal H), sized to the solver's dimensions.
+QPData MixedQp() {
+  QPData qp;
+  qp.Init(3, 1, 3);
+  qp.n_vars = 3;
+  qp.n_eq = 1;
+  qp.n_ineq = 3;
+  qp.H.topLeftCorner(3, 3) << 2.0, 0.3, 0.0, 0.3, 1.0, 0.1, 0.0, 0.1, 4.0;
+  qp.g.head(3) << -2.0, 1.0, 0.5;
+  qp.A.row(0) << 1.0, 1.0, 1.0;
+  qp.b(0) = 1.0;
+  qp.C.topLeftCorner(3, 3) = Eigen::Matrix3d::Identity();
+  const double inf = std::numeric_limits<double>::infinity();
+  qp.l.head(3) << -inf, 0.6, -5.0;
+  qp.u.head(3) << 0.1, inf, 5.0;
+  return qp;
+}
+
+QPSolverConfig WithMode(WarmStartMode mode) {
+  QPSolverConfig c;
+  c.max_iter = 100;
+  c.warm_start = mode;
+  return c;
+}
+
+// pri_res / dua_res are ProxQP's residuals of the iterate it stopped at, in the
+// caller's units (it scales the problem internally): a recomputation from the
+// unscaled data agrees to rounding. On a failed solve ProxQP may have reset
+// its multipliers after its last check, so only the primal residual is the
+// returned iterate's there.
+TEST_F(QPSolverWrapperTest, ResidualsAreThoseOfTheReturnedIterate) {
+  for (const WarmStartMode mode :
+       {WarmStartMode::kPreviousResult, WarmStartMode::kPreviousResultResetMu}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    QPData qp = MixedQp();
+    QPSolverWrapper w;
+    QPSolverConfig c = WithMode(mode);
+    c.update_preconditioner = true;  // a non-trivial scaling between the two units
+    w.Init(3, 1, 3, c);
+    for (int k = 0; k < 3; ++k) {
+      qp.g(2) = 0.5 + 0.2 * k;
+      const auto& r = w.Solve(qp);
+      ASSERT_TRUE(r.converged);
+      const Recomputed e = Recompute(qp, w.Primal(), w.EqualityDual(), w.InequalityDual());
+      EXPECT_LE(std::abs(r.pri_res - e.pri), e.pri_tol) << "solve " << k;
+      EXPECT_LE(std::abs(r.dua_res - e.dua), e.dua_tol) << "solve " << k;
+      EXPECT_LE(r.pri_res, c.eps_abs);
+      EXPECT_LE(r.dua_res, c.eps_abs);
+      for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(w.Primal()(i), r.x_opt(i)) << "Primal() is x_opt on a converged solve";
+      }
+    }
+
+    QPSolverConfig capped = WithMode(mode);
+    capped.max_iter = 1;
+    capped.eps_abs = 1e-14;
+    QPSolverWrapper once;
+    once.Init(3, 1, 3, capped);
+    const auto& r = once.Solve(qp);
+    ASSERT_FALSE(r.converged);
+    EXPECT_TRUE(std::isfinite(r.pri_res));
+    EXPECT_TRUE(std::isfinite(r.dua_res));
+    const Recomputed e = Recompute(qp, once.Primal(), once.EqualityDual(), once.InequalityDual());
+    EXPECT_LE(std::abs(r.pri_res - e.pri), e.pri_tol);
+  }
+}
+
+TEST_F(QPSolverWrapperTest, ResidualsAreNanWhenNothingWasSolved) {
+  const auto& r = solver.Solve(MixedQp());
+  EXPECT_FALSE(r.converged);
+  EXPECT_FALSE(r.warm_started);
+  EXPECT_TRUE(std::isnan(r.pri_res));
+  EXPECT_TRUE(std::isnan(r.dua_res));
+}
+
+// Where each solve starts, per mode. The shipped mode starts every solve but
+// the first (which has nothing to start from) from the previous iterates, and
+// only non-finite iterates or ResetWarmStart() make one start from zero; a
+// solve that ran out of iterations still seeds the next. The reset-μ mode
+// starts the first solve, the one after any miss and the one after
+// ResetWarmStart() from the equality-constrained solution.
+TEST_F(QPSolverWrapperTest, WarmStartedSaysWhereEachSolveStarted) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const WarmStartMode mode :
+       {WarmStartMode::kPreviousResult, WarmStartMode::kPreviousResultResetMu}) {
+    SCOPED_TRACE(static_cast<int>(mode));
+    const bool reset_mu = mode == WarmStartMode::kPreviousResultResetMu;
+    QPData qp = MixedQp();
+    QPSolverConfig c = WithMode(mode);
+    QPSolverWrapper w;
+    w.Init(3, 1, 3, c);
+    EXPECT_FALSE(w.Solve(qp).warm_started) << "first solve: nothing to start from";
+    EXPECT_TRUE(w.Solve(qp).warm_started);
+    w.ResetWarmStart();
+    EXPECT_FALSE(w.Solve(qp).warm_started) << "after ResetWarmStart";
+    EXPECT_TRUE(w.Solve(qp).warm_started);
+
+    // Non-finite iterates: both modes start the next solve afresh.
+    qp.g(0) = nan;
+    const auto& bad = w.Solve(qp);
+    EXPECT_FALSE(bad.converged);
+    EXPECT_TRUE(bad.non_finite);
+    qp = MixedQp();
+    const auto& after_nan = w.Solve(qp);
+    EXPECT_FALSE(after_nan.warm_started) << "after a non-finite solve";
+    EXPECT_TRUE(after_nan.converged);
+
+    // Out of iterations (finite iterates): only the reset-μ mode drops them.
+    w.SetMaxIter(1);
+    w.SetEpsAbs(1e-14);
+    ASSERT_TRUE(w.Solve(qp).warm_started);
+    const auto& capped = w.Solve(qp);
+    EXPECT_FALSE(capped.converged);
+    EXPECT_FALSE(capped.non_finite);
+    w.SetMaxIter(100);
+    w.SetEpsAbs(1e-6);
+    const auto& after_miss = w.Solve(qp);
+    EXPECT_EQ(after_miss.warm_started, !reset_mu) << "after a solve that ran out of iterations";
+    EXPECT_TRUE(after_miss.converged);
+  }
+}
+
+// A reported infeasibility is a miss like any other: the reset-μ mode answers
+// the next (feasible) QP from the equality-constrained start, exactly.
+TEST_F(QPSolverWrapperTest, ResetMuModeRestartsAfterAnInfeasibleSolve) {
+  QPData qp;
+  qp.Init(2, 0, 2);
+  qp.n_vars = 2;
+  qp.n_ineq = 2;
+  qp.H.topLeftCorner(2, 2) = Eigen::Matrix2d::Identity();
+  qp.C(0, 0) = 1.0;
+  qp.C(1, 0) = 1.0;
+  const double inf = std::numeric_limits<double>::infinity();
+  qp.l.head(2) << -inf, 1.0;
+  qp.u.head(2) << -1.0, inf;  // x0 ≤ −1 and x0 ≥ 1
+  QPSolverConfig c = WithMode(WarmStartMode::kPreviousResultResetMu);
+  c.max_iter = 50;
+  c.eps_primal_inf = 0.0;  // the exact certificate this QP has (see the test above)
+  QPSolverWrapper w;
+  w.Init(2, 0, 2, c);
+  const auto& verdict = w.Solve(qp);
+  ASSERT_FALSE(verdict.converged);
+  ASSERT_EQ(verdict.status, 2) << "premise: an infeasibility certificate";
+  EXPECT_TRUE(std::isnan(verdict.pri_res)) << "x is the certificate, not an iterate";
+  EXPECT_TRUE(std::isnan(verdict.dua_res));
+
+  qp.l(1) = -3.0;
+  qp.g.head(2) << 0.0, -2.0;
+  QPSolverWrapper fresh;
+  fresh.Init(2, 0, 2, c);
+  const Eigen::Vector2d reference = fresh.Solve(qp).x_opt.head(2);
+  const auto& r = w.Solve(qp);
+  ASSERT_TRUE(r.converged);
+  EXPECT_FALSE(r.warm_started);
+  EXPECT_EQ(r.x_opt(0), reference(0));
+  EXPECT_EQ(r.x_opt(1), reference(1));
+  EXPECT_NEAR(r.x_opt(0), -1.0, 1e-5);
+  EXPECT_NEAR(r.x_opt(1), 2.0, 1e-5);
+}
+
+// The order-independence ResetWarmStart() gives the shipped mode (above) holds
+// in the reset-μ mode too: after the reset the answer is a fresh solver's, bit
+// for bit, and without it the earlier question leaks in.
+TEST_F(QPSolverWrapperTest, ResetMuModeResetWarmStartMakesTheAnswerOrderIndependent) {
+  QPSolverConfig loose = WithMode(WarmStartMode::kPreviousResultResetMu);
+  loose.eps_abs = 1e-3;
+  const auto fill = [](QPData& qp, double g0, double g1, double g2) {
+    qp.Init(3, 0, 3);
+    qp.n_vars = 3;
+    qp.n_ineq = 3;
+    qp.H.topLeftCorner(3, 3) = Eigen::Matrix3d::Identity();
+    qp.H(1, 1) = 1e-3;
+    qp.H(2, 2) = 1e3;
+    qp.C.topLeftCorner(3, 3) = Eigen::Matrix3d::Identity();
+    qp.l.head(3).setConstant(-2.0);
+    qp.u.head(3).setConstant(2.0);
+    qp.g.head(3) << g0, g1, g2;
+  };
+  QPData p;
+  QPData other;
+  fill(p, -0.7, -1.3, 0.9);
+  fill(other, 1.9, 0.4, -1.7);
+
+  QPSolverWrapper fresh;
+  fresh.Init(3, 0, 3, loose);
+  const Eigen::VectorXd reference = fresh.Solve(p).x_opt.head(3);
+
+  QPSolverWrapper reset;
+  reset.Init(3, 0, 3, loose);
+  ASSERT_TRUE(reset.Solve(p).converged);
+  ASSERT_TRUE(reset.Solve(other).converged);
+  reset.ResetWarmStart();
+  const Eigen::VectorXd after_reset = reset.Solve(p).x_opt.head(3);
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_EQ(after_reset(i), reference(i)) << "component " << i;
+  }
+
+  QPSolverWrapper warm;
+  warm.Init(3, 0, 3, loose);
+  ASSERT_TRUE(warm.Solve(p).converged);
+  ASSERT_TRUE(warm.Solve(other).converged);
+  const Eigen::VectorXd without_reset = warm.Solve(p).x_opt.head(3);
+  EXPECT_FALSE(without_reset(0) == reference(0) && without_reset(1) == reference(1) &&
+               without_reset(2) == reference(2))
+      << "the previous result no longer leaks here — this fixture can no longer measure the reset";
 }
 
 }  // namespace

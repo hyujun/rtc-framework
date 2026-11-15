@@ -675,6 +675,8 @@ TEST_F(FloatingBounds, ANonValidTickKeepsTheLastValidOutputsAndReportsWhy) {
   EXPECT_FALSE(o1.tau_valid);
   EXPECT_FALSE(o1.qp_converged);
   EXPECT_EQ(o1.qp_status, 2);
+  EXPECT_TRUE(std::isnan(o1.qp_pri_res)) << "a certificate, not an iterate: no residuals";
+  EXPECT_TRUE(std::isnan(o1.eom_residual_inf));
   EXPECT_TRUE(SameBytes(o1.tau, tau));
   EXPECT_TRUE(SameBytes(o1.a_opt, a));
   EXPECT_TRUE(SameBytes(o1.lambda_opt, lambda));
@@ -699,6 +701,10 @@ TEST_F(FloatingBounds, ANonValidTickKeepsTheLastValidOutputsAndReportsWhy) {
   EXPECT_EQ(b1.qp_status, kRowBudgetExceeded);
   EXPECT_EQ(b1.rows_dropped, 1);
   EXPECT_TRUE(SameBytes(b1.tau, tau_b));
+  EXPECT_FALSE(b1.qp_warm_started);  // the solve report of a tick that solved nothing
+  EXPECT_TRUE(std::isnan(b1.qp_pri_res));
+  EXPECT_TRUE(std::isnan(b1.qp_dua_res));
+  EXPECT_TRUE(std::isnan(b1.eom_residual_inf));
   // (d) max_iter 1 on a cold start → MAX_ITER_REACHED (1), the premise of the
   // registered max_iter-hit path
   Options one;
@@ -716,6 +722,15 @@ TEST_F(FloatingBounds, ANonValidTickKeepsTheLastValidOutputsAndReportsWhy) {
   EXPECT_EQ(again.rows_dropped, sr.rows_dropped);
   EXPECT_EQ(again.outer_iterations, sr.outer_iterations);
   EXPECT_EQ(again.qp_status, sr.status);
+  EXPECT_EQ(again.qp_warm_started, sr.warm_started);
+  // Bytes, so NaN (this rig's QP is the contradictory one) compares too.
+  const auto same = [](double a, double b) { return std::memcmp(&a, &b, sizeof a) == 0; };
+  EXPECT_TRUE(same(again.qp_pri_res, sr.pri_res));
+  EXPECT_TRUE(same(again.qp_dua_res, sr.dua_res));
+  EXPECT_TRUE(same(again.eom_residual_inf, sr.eom_residual_inf));
+  // A failed solve still reports how far it got.
+  EXPECT_TRUE(std::isfinite(c1.qp_pri_res));
+  EXPECT_TRUE(std::isfinite(c1.eom_residual_inf));
 }
 
 // A solve that converges but whose torque recovery overflows (the solve does
@@ -749,6 +764,7 @@ TEST_F(FloatingBounds, SolverKeysReachTheConfigAndBadOnesAreRefused) {
   n["verbose"] = true;
   n["update_preconditioner"] = true;
   n["eps_primal_inf"] = 5e-5;
+  n["warm_start"] = "previous_result_reset_mu";
   for (const char* backend : {"Automatic", "PrimalDualLDLT", "PrimalLDLT"}) {
     n["dense_backend"] = backend;
     const QPSolverConfig c = ParseQPSolverConfig(n, d);
@@ -759,6 +775,7 @@ TEST_F(FloatingBounds, SolverKeysReachTheConfigAndBadOnesAreRefused) {
     EXPECT_TRUE(c.verbose);
     EXPECT_TRUE(c.update_preconditioner);
     EXPECT_EQ(c.eps_primal_inf, 5e-5);
+    EXPECT_EQ(c.warm_start, WarmStartMode::kPreviousResultResetMu);
     const auto expect =
         std::string(backend) == "Automatic"        ? proxsuite::proxqp::DenseBackend::Automatic
         : std::string(backend) == "PrimalDualLDLT" ? proxsuite::proxqp::DenseBackend::PrimalDualLDLT
@@ -770,6 +787,22 @@ TEST_F(FloatingBounds, SolverKeysReachTheConfigAndBadOnesAreRefused) {
   EXPECT_EQ(kept.max_iter, d.max_iter);
   EXPECT_EQ(kept.dense_backend, d.dense_backend);
   EXPECT_EQ(ParseQPSolverConfig(YAML::Node(), d).eps_primal_inf, d.eps_primal_inf);
+  EXPECT_EQ(kept.warm_start, WarmStartMode::kPreviousResult);
+  EXPECT_EQ(ParseQPSolverConfig(YAML::Load("{warm_start: previous_result}"), d).warm_start,
+            WarmStartMode::kPreviousResult);
+  QPSolverConfig reset_mu_default = d;
+  reset_mu_default.warm_start = WarmStartMode::kPreviousResultResetMu;
+  EXPECT_EQ(ParseQPSolverConfig(YAML::Load("{}"), reset_mu_default).warm_start,
+            WarmStartMode::kPreviousResultResetMu)
+      << "a missing key keeps the default handed in";
+  EXPECT_EQ(
+      ParseQPSolverConfig(YAML::Load("{warm_start: previous_result}"), reset_mu_default).warm_start,
+      WarmStartMode::kPreviousResult);
+  for (const char* wrong : {"cached", "PreviousResult", "", "1"}) {
+    YAML::Node w;
+    w["warm_start"] = wrong;
+    EXPECT_THROW((void)ParseQPSolverConfig(w, d), std::invalid_argument) << wrong;
+  }
   YAML::Node bad;
   bad["dense_backend"] = "Fast";
   EXPECT_THROW((void)ParseQPSolverConfig(bad, d), std::invalid_argument);

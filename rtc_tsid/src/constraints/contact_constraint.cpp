@@ -26,6 +26,7 @@ void ContactConstraint::Init(const pinocchio::Model& /*model*/, const RobotModel
   nv_ = robot_info.nv;
   baumgarte_ = false;
   use_terrain_ = false;
+  inactive_lambda_ = InactiveLambda::kRegularize;
   kp_.setZero();
   kd_.setZero();
   if (constraint_config && constraint_config["baumgarte"]) {
@@ -44,6 +45,17 @@ void ContactConstraint::Init(const pinocchio::Model& /*model*/, const RobotModel
       throw std::invalid_argument("contact_accel.terrain_height must be finite");
     }
     use_terrain_ = true;
+  }
+  if (constraint_config && constraint_config["inactive_lambda"]) {
+    const auto mode = constraint_config["inactive_lambda"].as<std::string>();
+    if (mode == "regularize") {
+      inactive_lambda_ = InactiveLambda::kRegularize;
+    } else if (mode == "zero") {
+      inactive_lambda_ = InactiveLambda::kZero;
+    } else {
+      throw std::invalid_argument("contact_accel.inactive_lambda: unknown mode '" + mode +
+                                  "' (regularize | zero)");
+    }
   }
 }
 
@@ -88,7 +100,10 @@ void ContactConstraint::ComputeEquality(const PinocchioCache& cache, const Conta
 
   // Stage A-5a: fixed-dim equality block. Active contacts get the
   // Jc_i·a = -dotJc_i·v (+ a_c*) rows; inactive contacts get zero rows (left
-  // as the caller's zero-init, so 0·a = 0 is trivially satisfied).
+  // as the caller's zero-init, so 0·a = 0 is trivially satisfied) or, with
+  // inactive_lambda zero, I·λ_i = 0. A slot's rows and its λ columns follow
+  // the same contact order and dimensions, so λ_i sits at column nv + row.
+  const bool zero_inactive = inactive_lambda_ == InactiveLambda::kZero;
   int row = 0;
   for (size_t i = 0; i < contacts.contacts.size(); ++i) {
     const int cdim = manager_->contacts[i].contact_dim;
@@ -98,6 +113,11 @@ void ContactConstraint::ComputeEquality(const PinocchioCache& cache, const Conta
     if (!active) {
       slot.latched = false;  // the next activation latches a new anchor
       slot.a_star.setZero();
+      // The contact state decides (as the EOM and friction rows do); a slot
+      // marked active without a cache frame keeps 0 = 0.
+      if (zero_inactive && !contacts.contacts[i].active && nv_ + row + cdim <= A_block.cols()) {
+        A_block.block(row, nv_ + row, cdim, cdim).setIdentity();
+      }
       row += cdim;
       continue;
     }

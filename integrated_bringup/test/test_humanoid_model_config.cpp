@@ -14,6 +14,7 @@
 #include "rtc_mpc/reference/stage_reference_builder.hpp"
 #include "rtc_mpc/reference/surface_frame.hpp"
 #include "rtc_mpc/reference/swing_trajectory.hpp"
+#include "rtc_tsid/formulation/wqp_formulation.hpp"
 #include "rtc_tsid/locomotion/locomotion_formulation.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "shipped_catching_bringup_fixture.hpp"
@@ -501,6 +502,12 @@ TEST(HumanoidModelConfig, TheShippedWholeBodyQpBuildsAndSolvesOnTheCmModels) {
     rtc::tsid::LocomotionFormulationBuilder builder;
     ASSERT_NO_THROW(builder.Init(*model, info, cache, spec, root["whole_body_qp"], 0.002));
     ASSERT_EQ(builder.NumFeet(), model_cfg.contacts.size());
+    // The profile's solver pair: the reset-μ warm start, zero released forces.
+    const auto& wqp =
+        dynamic_cast<const rtc::tsid::WQPFormulation&>(builder.Controller().Formulation());
+    EXPECT_EQ(wqp.SolverConfig().warm_start, rtc::tsid::WarmStartMode::kPreviousResultResetMu);
+    EXPECT_EQ(builder.ContactRows()->InactiveLambdaMode(),
+              rtc::tsid::ContactConstraint::InactiveLambda::kZero);
     for (std::size_t i = 0; i < model_cfg.contacts.size(); ++i) {
       EXPECT_EQ(builder.Contacts().contacts[i].frame_name, model_cfg.contacts[i].frame) << i;
     }
