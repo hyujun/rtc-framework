@@ -2487,6 +2487,7 @@ if(BUILD_TESTING)
     test_g1_loco_configure
     test_locomotion_controller
     test_locomotion_controller_alloc
+    test_locomotion_mpc
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
@@ -2507,6 +2508,7 @@ if(BUILD_TESTING)
     test_catching_planner_lane
     test_catching_tracking
     test_catching_supervisor_scenarios
+    test_locomotion_mpc
     PROPERTIES RUN_SERIAL TRUE)
 
   # Every gtest binary logs into its own throwaway session directory
