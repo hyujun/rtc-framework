@@ -1049,6 +1049,44 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
     }
   }
 
+  // Optional PD gains of the primary group (header): both lists or neither,
+  // each one gain >= 0 per primary joint, and only with pd_feedforward.
+  {
+    PdGains pd{};
+    // Captured here, off the RT thread: arm_dof_ itself may still be resolved
+    // by the first tick when the YAML does not name it.
+    pd_dof_ = arm_dof_;
+    if (const YAML::Node node = cfg["pd_feedforward"]; node) {
+      if (command_type_ != CommandType::kPdFeedforward) {
+        throw std::runtime_error(
+            "demo_joint_controller: pd_feedforward gains need command_type pd_feedforward");
+      }
+      const auto read = [&](const char* key, std::array<double, rtc::kMaxDeviceChannels>& out) {
+        if (!node.IsMap() || !node[key] || !node[key].IsSequence()) {
+          throw std::runtime_error(std::string("demo_joint_controller: pd_feedforward.") + key +
+                                   " must be a list");
+        }
+        const auto v = node[key].as<std::vector<double>>();
+        if (static_cast<int>(v.size()) != arm_dof_) {
+          throw std::runtime_error(std::string("demo_joint_controller: pd_feedforward.") + key +
+                                   " needs one gain per primary joint (" +
+                                   std::to_string(arm_dof_) + ")");
+        }
+        for (std::size_t i = 0; i < v.size(); ++i) {
+          if (!(std::isfinite(v[i]) && v[i] >= 0.0)) {
+            throw std::runtime_error(std::string("demo_joint_controller: pd_feedforward.") + key +
+                                     "[" + std::to_string(i) + "] must be finite and >= 0");
+          }
+          out[i] = v[i];
+        }
+        return static_cast<int>(v.size());
+      };
+      pd.kp_size = read("kp", pd.kp);
+      pd.kd_size = read("kd", pd.kd);
+    }
+    pd_gains_lock_.Store(pd);
+  }
+
   BuildGraspController(shared, grasp_controller_);
 
   // ── #167 P3: pull estimator + tip-link → FK slot resolve ────────────────

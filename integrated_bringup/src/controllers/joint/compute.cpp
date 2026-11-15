@@ -771,6 +771,14 @@ ControllerOutput DemoJointController::WriteJointCommand(const ControllerState& s
     }
     rtc::utils::ClampRange(out0.commands, nc0, std::span<const double>(device_position_lower_[0]),
                            std::span<const double>(device_position_upper_[0]), -6.2832, 6.2832);
+    if (command_type_ == CommandType::kPdFeedforward) {
+      const PdGains pd = pd_gains_lock_.Load();
+      if (pd.kp_size == nc0 && pd.kd_size == nc0 && nc0 > 0) {
+        out0.has_pd_gains = true;
+        out0.pd_kp = pd.kp;
+        out0.pd_kd = pd.kd;
+      }
+    }
   } else {
     // F5: this tick has no honest arm command, so it issues none. Zero-length is
     // "no update" — the drive holds its previous setpoint. Emitting nc0 zeros

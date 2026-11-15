@@ -183,6 +183,19 @@ class DemoJointController final : public RTControllerInterface {
 
   [[nodiscard]] CommandType GetCommandType() const noexcept override { return command_type_; }
 
+  /// The optional PD gains of the primary group's servo (`pd_feedforward.kp` /
+  /// `.kd`, YAML or runtime parameter, primary-group roster order). Claimed on
+  /// the wire only with command_type pd_feedforward and when both lists cover
+  /// the group; empty (the default) claims nothing, so the output is unchanged.
+  struct PdGains {
+    std::array<double, rtc::kMaxDeviceChannels> kp{};
+    std::array<double, rtc::kMaxDeviceChannels> kd{};
+    int kp_size{0};
+    int kd_size{0};
+  };
+
+  [[nodiscard]] PdGains GetPdGains() const noexcept { return pd_gains_lock_.Load(); }
+
   void set_gains(Gains gains) noexcept { gains_lock_.Store(gains); }
 
   [[nodiscard]] Gains get_gains() const noexcept { return gains_lock_.Load(); }
@@ -534,6 +547,12 @@ class DemoJointController final : public RTControllerInterface {
 
   // ── Internal state ──────────────────────────────────────────────────────
   rtc::SeqLock<Gains> gains_lock_;
+  // Validates one gain list (empty, or one gain >= 0 per primary joint with
+  // pd_feedforward) and copies it; returns why it was refused, or nullptr.
+  [[nodiscard]] const char* SetPdGainList(const std::vector<double>& v,
+                                          std::array<double, rtc::kMaxDeviceChannels>& out,
+                                          int& size) const noexcept;
+  rtc::SeqLock<PdGains> pd_gains_lock_;
 
   // SeqLock for the per-device joint target slots. RT thread (Compute) is the
   // SOLE writer of target_seqlock_; off-RT writers hand their goal to the base
@@ -940,6 +959,8 @@ class DemoJointController final : public RTControllerInterface {
   // treats the key as optional), otherwise the device's own first reported
   // num_channels, filled on the RT path. RT-path loops iterate over these.
   int arm_dof_{0};
+  /// arm_dof_ as LoadConfig left it — the gain-list length the parameter callback checks.
+  int pd_dof_{0};
   std::array<int, kDemoJointMaxHands> hand_dof_{};
   // Which of hand_dof_[h]'s two sources won (#307). The diagnostic needs it: a
   // shortfall against a DECLARED width is a config mismatch the operator fixes

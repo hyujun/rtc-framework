@@ -375,4 +375,84 @@ TEST_F(G1LocoConfigure, AFixedRootOverrideHoldsTheStanceIdentically) {
   }
 }
 
+// ── The optional PD gains of the primary group ───────────────────────────────
+//
+// Unset (the shipped file) claims nothing, so the output is what it was; set
+// by YAML or by parameter, both lists ride the body device with pd_feedforward.
+
+TEST_F(G1LocoConfigure, TheShippedConfigClaimsNoPdGains) {
+  auto ctrl = BringUp(fx::ShippedModelConfig(kProfile), fx::ShippedModelBuilder(kProfile),
+                      "g1_loco_no_gains");
+  ASSERT_EQ(Configure(*ctrl), DemoJointController::CallbackReturn::SUCCESS);
+  const ControllerOutput out = ctrl->Compute(StandState(cfg_));
+  EXPECT_FALSE(out.devices[0].has_pd_gains);
+  EXPECT_FALSE(out.devices[1].has_pd_gains);
+}
+
+TEST_F(G1LocoConfigure, PdGainsFromTheYamlAndFromParametersRideTheBody) {
+  YAML::Node cfg = ShippedJointConfig();
+  std::vector<double> kp(kBodyDof, 20.0);
+  std::vector<double> kd(kBodyDof, 1.0);
+  kp[3] = 35.0;
+  cfg["pd_feedforward"]["kp"] = kp;
+  cfg["pd_feedforward"]["kd"] = kd;
+  rclcpp::NodeOptions opts;
+  opts.use_global_arguments(false);
+  node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("g1_loco_gains", "", opts);
+  auto ctrl = std::make_unique<DemoJointController>("");
+  ctrl->SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
+  ctrl->SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
+  ctrl->SetControlRate(fx::kShippedProfileControlRateHz);
+  cfg_ = cfg;
+  ASSERT_EQ(ctrl->PreConfigure(node_, cfg_), DemoJointController::CallbackReturn::SUCCESS);
+  ctrl->SetDeviceNameConfigs(ShippedDevices(cfg_));
+  ASSERT_EQ(Configure(*ctrl), DemoJointController::CallbackReturn::SUCCESS);
+
+  ControllerState state = StandState(cfg_);
+  ControllerOutput out = ctrl->Compute(state);
+  ASSERT_TRUE(out.devices[0].has_pd_gains);
+  for (int i = 0; i < kBodyDof; ++i) {
+    EXPECT_EQ(out.devices[0].pd_kp[static_cast<std::size_t>(i)], kp[static_cast<std::size_t>(i)]);
+    EXPECT_EQ(out.devices[0].pd_kd[static_cast<std::size_t>(i)], kd[static_cast<std::size_t>(i)]);
+  }
+  EXPECT_FALSE(out.devices[1].has_pd_gains);  // the primary group only
+
+  // A runtime change lands on the next tick; a malformed list is refused whole.
+  std::vector<double> soft(kBodyDof, 5.0);
+  EXPECT_TRUE(node_->set_parameter(rclcpp::Parameter("pd_feedforward.kp", soft)).successful);
+  EXPECT_FALSE(
+      node_->set_parameter(rclcpp::Parameter("pd_feedforward.kd", std::vector<double>(3, 1.0)))
+          .successful);
+  std::vector<double> negative(kBodyDof, 1.0);
+  negative[0] = -1.0;
+  EXPECT_FALSE(node_->set_parameter(rclcpp::Parameter("pd_feedforward.kd", negative)).successful);
+  state.iteration += 1;
+  out = ctrl->Compute(state);
+  ASSERT_TRUE(out.devices[0].has_pd_gains);
+  EXPECT_EQ(out.devices[0].pd_kp[3], 5.0);
+  EXPECT_EQ(out.devices[0].pd_kd[3], 1.0);  // unchanged by the refused sets
+
+  // Emptying one list withdraws the claim.
+  EXPECT_TRUE(node_->set_parameter(rclcpp::Parameter("pd_feedforward.kd", std::vector<double>{}))
+                  .successful);
+  state.iteration += 1;
+  out = ctrl->Compute(state);
+  EXPECT_FALSE(out.devices[0].has_pd_gains);
+}
+
+TEST_F(G1LocoConfigure, PdGainsWithoutPdFeedforwardAreRefused) {
+  YAML::Node cfg = ShippedJointConfig();
+  cfg["command_type"] = "position";
+  cfg["pd_feedforward"]["kp"] = std::vector<double>(kBodyDof, 20.0);
+  cfg["pd_feedforward"]["kd"] = std::vector<double>(kBodyDof, 1.0);
+  rclcpp::NodeOptions opts;
+  opts.use_global_arguments(false);
+  node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>("g1_loco_gains_pos", "", opts);
+  auto ctrl = std::make_unique<DemoJointController>("");
+  ctrl->SetSystemModelConfig(fx::ShippedModelConfig(kProfile));
+  ctrl->SetSharedModelBuilder(fx::ShippedModelBuilder(kProfile));
+  ctrl->SetControlRate(fx::kShippedProfileControlRateHz);
+  EXPECT_NE(ctrl->PreConfigure(node_, cfg), DemoJointController::CallbackReturn::SUCCESS);
+}
+
 }  // namespace
