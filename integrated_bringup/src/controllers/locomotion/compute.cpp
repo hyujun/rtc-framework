@@ -506,6 +506,7 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   if (diag_log_handle_) {
     diag_log_handle_.Push(diag_);
   }
+  status_lock_.Store(diag_);  // the status topic's record
 }
 
 }  // namespace integrated_bringup

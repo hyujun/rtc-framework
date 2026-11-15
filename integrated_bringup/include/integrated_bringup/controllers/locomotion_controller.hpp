@@ -90,15 +90,39 @@
 // 1 / sanity.wrench_scale and sanity.wrench_scale × the robot's weight.
 // The MPC thread runs on the `mpc` layout role: activation is refused under a
 // launch profile that dropped it (enable_mpc:=false) while mpc.enabled is true.
+//
+// The velocity command (mpc.enabled, and `velocity_command: {topic}` present):
+//   velocity_command: {topic: <name>}   # geometry_msgs/Twist; absent = no command path
+// linear.x / linear.y / angular.z = v_x / v_y / yaw rate, linear.z = the base
+// height RATE (rtc_mpc command_filter.hpp). The subscription (depth 1, the
+// node's default callback group) only stores the message with the steady time
+// it arrived; a wall timer at command.sample_rate_hz (a mutually exclusive
+// group, on the CM's nrt_callback executor) steps the command filter with it
+// (stale after command.t_stale, a non-finite axis keeps its last accepted
+// value) and hands the output to the phase manager — the filter's one writer.
+// Nothing stepped yet, or stale: the command decays to rest at
+// command.base_height. The timer runs from activation to deactivation; an
+// activation resets the filter (the height back to command.base_height). The
+// key is accepted without mpc.enabled and does nothing (the plan is the
+// command's only consumer), so a profile may keep it while the MPC is off.
+//
+// The status topic `<body group>/locomotion_status` (diagnostic_msgs/
+// DiagnosticStatus, published with the CM's non-RT snapshot, ≈ 50 Hz): level
+// and values from locomotion/locomotion_status.hpp — the reference source, the
+// mode, the fault cause, the plan (id, age, convergence, contact mask, epochs),
+// the MPC thread's counters (as of the last 1 Hz read), the QP tick, and the
+// command the filter last put out. Published with or without an MPC.
 #ifndef INTEGRATED_BRINGUP_CONTROLLERS_LOCOMOTION_CONTROLLER_HPP_
 #define INTEGRATED_BRINGUP_CONTROLLERS_LOCOMOTION_CONTROLLER_HPP_
 
 #include "integrated_bringup/controllers/locomotion/humanoid_model_config.hpp"
+#include "integrated_bringup/controllers/locomotion/locomotion_status.hpp"
 #include "integrated_bringup/controllers/locomotion/measured_state_source.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/joint_feedforward_log_pod.hpp"
 #include "integrated_bringup/logging/locomotion_diag_log_pod.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
@@ -121,8 +145,10 @@
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
+#include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logger.hpp>
+#include <rclcpp/subscription.hpp>
 #include <rclcpp/timer.hpp>
 
 #include <Eigen/Core>
@@ -132,11 +158,13 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -169,12 +197,26 @@ struct LocomotionControllerConfig {
   std::vector<double> damping_kd;
   YAML::Node whole_body_qp;
   LocomotionMpcConfig mpc;
+  std::string velocity_command_topic;  ///< `velocity_command.topic`; empty = no command path
 };
 
+/// @brief One Twist as the subscription stores it for the command timer.
+struct RawVelocityCommandSample {
+  rtc::mpc::RawVelocityCommand twist{};
+  /// Steady clock at the callback. Before the first message: a stamp no clock
+  /// is within t_stale of, so the filter reads it as stale (its age test is
+  /// overflow-safe).
+  std::int64_t recv_steady_ns{std::numeric_limits<std::int64_t>::min()};
+  std::uint64_t sequence{0};  ///< +1 per message
+};
+
+static_assert(std::is_trivially_copyable_v<RawVelocityCommandSample>,
+              "RawVelocityCommandSample travels through a SeqLock");
+
 /// @throws std::invalid_argument naming the key on a missing / unknown key of
-///         `pd_feedforward`, `fault` or `mpc`, a gain that is negative or not finite, a
-///         `command_type` other than pd_feedforward, or a model / estimator section
-///         its own parser refuses.
+///         `pd_feedforward`, `fault`, `mpc` or `velocity_command`, a gain that is negative
+///         or not finite, a `command_type` other than pd_feedforward, an empty command
+///         topic, or a model / estimator section its own parser refuses.
 [[nodiscard]] LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg);
 
 class LocomotionController final : public rtc::RTControllerInterface {
@@ -256,6 +298,19 @@ class LocomotionController final : public rtc::RTControllerInterface {
     return fault_latched_tick_ ? ReferenceSource::kFault : ref_source_;
   }
 
+  /// True when a Twist subscription exists (mpc.enabled and a topic configured).
+  [[nodiscard]] bool VelocityCommandSubscribed() const noexcept { return velocity_sub_ != nullptr; }
+
+  /// The command filter's last output (what the phase manager was last given).
+  [[nodiscard]] rtc::mpc::FilteredCommand LastCommand() const noexcept {
+    return command_out_.Load();
+  }
+
+  /// Twist messages the subscription stored since the last activation.
+  [[nodiscard]] std::uint64_t VelocityCommandsReceived() const noexcept {
+    return raw_command_.Load().sequence;
+  }
+
  protected:
   void OnDeviceConfigsSet() override;
 
@@ -277,8 +332,16 @@ class LocomotionController final : public rtc::RTControllerInterface {
   void BuildMpc(const YAML::Node& cfg);
   [[nodiscard]] bool SpawnMpcThread(std::unique_ptr<rtc::mpc::MPCHandlerBase> handler) noexcept;
   void StopMpcThread() noexcept;
-  void PauseMpc() noexcept;  ///< sampling off, the thread paused (deactivation)
+  void PauseMpc() noexcept;  ///< the command timer off, sampling off, the thread paused
   void LogMpcTick() noexcept;
+  // The velocity command (command.cpp). Off the RT thread: the subscription
+  // callback (Store only), the timer (the filter's one writer).
+  void OnVelocityCommand(const geometry_msgs::msg::Twist& msg) noexcept;
+  void StepCommand() noexcept;
+  void PushCommand(const rtc::mpc::FilteredCommand& cmd) noexcept;
+  void StartCommandTimer() noexcept;  ///< activation: the filter reset, the timer up
+  void StopCommandTimer() noexcept;   ///< from PauseMpc and StopMpcThread
+  void StoreMpcCounters() noexcept;   ///< the 1 Hz timer (and the thread's stop: zeros)
   // On the RT thread, in tick order.
   void WriteMpcState() noexcept;
   void FollowPlan(const rtc::ControllerState& state) noexcept;
@@ -376,6 +439,7 @@ class LocomotionController final : public rtc::RTControllerInterface {
 
   // ── Topics, logs ───────────────────────────────────────────────────────────
   ControllerTopicHandles owned_topics_;
+  rtc::SeqLock<LocomotionDiagLogPod> status_lock_;  ///< the tick's row, RT tick → publish thread
   rtc::ControllerLogSet log_set_{"locomotion_controller"};
   std::vector<rtc::LogHandle<DeviceStateLogPod>> state_log_handles_;
   rtc::LogHandle<JointFeedforwardLogPod> joint_log_handle_;
@@ -414,6 +478,15 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::atomic<std::uint64_t> plausibility_rejects_{0};  ///< written by the RT tick only
   std::atomic<std::uint8_t> last_reject_check_{0};      ///< the check the last refusal failed
   double u_fb_norm_{0.0};
+  // The velocity command: the subscription stores, the timer steps the filter.
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocity_sub_;
+  rtc::SeqLock<RawVelocityCommandSample> raw_command_;  ///< callback → timer
+  rclcpp::CallbackGroup::SharedPtr command_cb_group_;
+  rclcpp::TimerBase::SharedPtr command_timer_;
+  rtc::SeqLock<rtc::mpc::FilteredCommand> command_out_;  ///< timer → publish thread, tests
+  /// The MPC thread's counters as the 1 Hz timer last read them (the publish
+  /// thread reads this, never the thread).
+  rtc::SeqLock<LocomotionMpcCounters> mpc_counters_;
   // The 1 Hz aux timer: the MPC tick-timing CSV and the counters.
   rtc::mpc::MpcTimingLogger mpc_timing_logger_;
   rclcpp::CallbackGroup::SharedPtr mpc_timing_cb_group_;

@@ -28,6 +28,8 @@
   <depend>nav_msgs</depend>
   <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>
+  <!-- locomotion_controller's status topic (DiagnosticStatus). -->
+  <depend>diagnostic_msgs</depend>
   <depend>std_msgs</depend>
   <depend>tf2_msgs</depend>
   <depend>rtc_controller_manager</depend>

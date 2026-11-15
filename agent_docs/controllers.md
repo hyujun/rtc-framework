@@ -116,6 +116,7 @@
 - 자기 PD 게인을 매 tick wire 에 **선언**한다 (`has_pd_gains`). sim 의 게인은 sticky 라, 게인을 선언하지 않는 컨트롤러는 직전 컨트롤러의 게인을 물려받는다.
 - fault latch 출력은 감쇠뿐이다 (hold 를 합성하지 않는다). latch 는 reset 서비스와 **재활성화** 가 푼다 — 활성화가 latch 를 유지하는 다른 컨트롤러와 다른 이유는 헤더가 갖는다.
 - MPC plan 은 **잃었을 때만** latch 자세로 돌아간다 (미수렴 online 해는 유지) — 접촉이 정지 양발 지지가 아니면 재latch 대신 fault. 타당성에 걸린 plan 은 fault 가 아니다. `mpc:` 없음과 `mpc.enabled: false` 는 bit 동일해야 한다.
+- Twist 명령은 구독 콜백이 **저장만** 하고 (`SeqLock`), 필터 `Step` 과 phase manager `SetCommand` 는 timer 하나가 한다 (유일 writer — 콜백에서 Step 하면 주기가 메시지에 끌려간다). 상태 토픽은 RT tick 의 POD Store → publish thread 의 문자열 조립이다 (RT 쪽 포매팅 금지).
 
 **HandJointController** (손 1 군, `pd_feedforward` = 관절 reference + 모델 feedforward — 중력 + 관성 `M(q)·q̈_ref`):
 

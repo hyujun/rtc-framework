@@ -2,8 +2,9 @@
 #
 # A fragment of ../locomotion_controller.yaml (its `include:` list). Schema and
 # checks: integrated_bringup controllers/locomotion_controller.hpp (every key of
-# pd_feedforward and fault is required, an unknown key is refused) and
-# controllers/locomotion/measured_state_source.hpp (estimator.*).
+# pd_feedforward and fault is required, an unknown key is refused;
+# velocity_command is optional) and controllers/locomotion/measured_state_source.hpp
+# (estimator.*).
 locomotion_controller:
   command_type: "pd_feedforward"   # the only accepted value
 
@@ -32,6 +33,14 @@ locomotion_controller:
     source: truth
     body_max_age_ms: 10.0
     hand_max_age_ms: 50.0
+
+  # The operator's velocity command (geometry_msgs/Twist, under the controller's
+  # namespace): linear.x / linear.y / angular.z = v_x / v_y / yaw rate,
+  # linear.z = pelvis height rate; command.yaml filters it. Read only with
+  # mpc.enabled (the plan is its consumer); without the key no command is taken
+  # and the MPC stands in place.
+  velocity_command:
+    topic: "g1/cmd_vel"
 
   # Device slots, in this order: model.body_group, then model.hand_groups. The
   # joint_goal lanes are the ones the other controllers of the profile use;

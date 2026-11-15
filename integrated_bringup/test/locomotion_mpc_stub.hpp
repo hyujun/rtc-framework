@@ -7,6 +7,7 @@
 
 #include "locomotion_controller_rig.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
+#include "rtc_mpc/reference/stage_reference.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
 #pragma GCC diagnostic push
@@ -73,6 +74,10 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
                                 const rtc::mpc::MPCStateSnapshot& state,
                                 rtc::mpc::MPCSolution& out) noexcept override {
     std::this_thread::sleep_for(std::chrono::microseconds(sleep_us.load()));
+    if (ctx.horizon != nullptr) {  // what the phase manager built from the command
+      horizon_command_sequence.store(ctx.horizon->command_sequence);
+      horizon_base_vx.store(ctx.horizon->stages[0].v[0]);
+    }
     if (fail.load()) {
       return rtc::mpc::MPCSolveError::kSolverException;
     }
@@ -172,6 +177,9 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
   std::atomic<double> base_vx{0.0};     ///< [m/s] the plan's base velocity
   std::atomic<double> pull{0.0};        ///< [N] normal force moved between the soles
   std::atomic<double> joint_rate{0.0};  ///< the first joint's rate, flipping sign each node [rad/s]
+  // Read back from the last Solve's horizon: the command the planner integrated.
+  std::atomic<std::uint64_t> horizon_command_sequence{0};
+  std::atomic<double> horizon_base_vx{0.0};  ///< node 0 base v_x [m/s]
 
  private:
   double weight_;

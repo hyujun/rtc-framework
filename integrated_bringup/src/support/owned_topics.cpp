@@ -2,6 +2,7 @@
 
 #include <rtc_base/tracing/trace_scope.hpp>
 #include <rtc_controllers/catching/transition_table.hpp>
+#include <rtc_mpc/reference/command_filter.hpp>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/logging.hpp>
@@ -427,6 +428,55 @@ void SetupCatchingStatePublisher(rtc::RTControllerInterface& ctrl, ControllerTop
   }
 }
 
+void SetupLocomotionStatusPublisher(rtc::RTControllerInterface& ctrl,
+                                    ControllerTopicHandles& handles, const std::string& topic_name,
+                                    const std::string& name, const std::string& hardware_id) {
+  if (handles.locomotion_status_pub) {
+    return;
+  }
+  auto node = ctrl.get_lifecycle_node();
+  if (!node) {
+    throw std::runtime_error(
+        "SetupLocomotionStatusPublisher: controller has no LifecycleNode (on_configure "
+        "not yet called?)");
+  }
+  rclcpp::QoS status_qos{1};
+  handles.locomotion_status_pub =
+      node->create_publisher<diagnostic_msgs::msg::DiagnosticStatus>(topic_name, status_qos);
+  auto& msg = handles.locomotion_status_msg;
+  msg.level = diagnostic_msgs::msg::DiagnosticStatus::WARN;
+  msg.name = name;
+  msg.hardware_id = hardware_id;
+  msg.message.reserve(kLocomotionStatusValueChars);
+  // Sized ONCE, keys in enum order. The publish path assigns each value within
+  // the capacity reserved here and never resizes the array.
+  msg.values.clear();
+  msg.values.resize(kLocomotionStatusKeyCount);
+  for (std::size_t i = 0; i < kLocomotionStatusKeyCount; ++i) {
+    msg.values[i].key = LocomotionStatusKeyName(static_cast<LocomotionStatusKey>(i));
+    msg.values[i].value.reserve(kLocomotionStatusValueChars);
+  }
+}
+
+void PublishLocomotionStatus(ControllerTopicHandles& handles, const LocomotionDiagLogPod& status,
+                             bool mpc_enabled, const rtc::mpc::FilteredCommand& cmd,
+                             const LocomotionMpcCounters& counters) noexcept {
+  if (!handles.locomotion_status_pub) {
+    return;
+  }
+  RTC_TRACE_SCOPE("locomotion_status_publish");
+  auto& msg = handles.locomotion_status_msg;
+  msg.level = LocomotionStatusLevel(status, mpc_enabled);
+  msg.message.assign(LocomotionSourceName(status.ref_source));
+  char buf[kLocomotionStatusValueChars];
+  for (std::size_t i = 0; i < msg.values.size(); ++i) {  // sized at setup
+    FormatLocomotionStatusValue(static_cast<LocomotionStatusKey>(i), status, cmd, counters, buf,
+                                sizeof(buf));
+    msg.values[i].value.assign(buf);
+  }
+  handles.locomotion_status_pub->publish(msg);
+}
+
 void PublishCatchingStateFromSnapshot(const rtc::PublishSnapshot& snap,
                                       ControllerTopicHandles& handles,
                                       const CatchingDiagLogPod& tick,
@@ -646,6 +696,9 @@ void ActivateOwnedTopics(const rclcpp_lifecycle::State& /*prev*/,
   if (handles.catching_pub) {
     handles.catching_pub->on_activate();
   }
+  if (handles.locomotion_status_pub) {
+    handles.locomotion_status_pub->on_activate();
+  }
   if (handles.tf_pub) {
     handles.tf_pub->on_activate();
   }
@@ -668,6 +721,9 @@ void DeactivateOwnedTopics(const rclcpp_lifecycle::State& /*prev*/,
   if (handles.catching_pub) {
     handles.catching_pub->on_deactivate();
   }
+  if (handles.locomotion_status_pub) {
+    handles.locomotion_status_pub->on_deactivate();
+  }
   if (handles.tf_pub) {
     handles.tf_pub->on_deactivate();
   }
@@ -683,6 +739,8 @@ void ResetOwnedTopics(ControllerTopicHandles& handles) noexcept {
   handles.wbc_pub.reset();
   handles.payload_pub.reset();
   handles.catching_pub.reset();
+  handles.locomotion_status_pub.reset();
+  handles.locomotion_status_msg = diagnostic_msgs::msg::DiagnosticStatus{};
   handles.tf_pub.reset();
   handles.tf_msg.transforms.clear();
   for (auto& slot : handles.tf_slots) {
