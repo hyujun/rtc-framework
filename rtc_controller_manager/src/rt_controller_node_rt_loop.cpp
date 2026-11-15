@@ -867,6 +867,14 @@ void RtControllerNode::ControlLoop() {
         std::copy_n(dout.trajectory_positions.data(), onc, gc.trajectory_positions.data());
         std::copy_n(dout.trajectory_velocities.data(), onc, gc.trajectory_velocities.data());
         std::copy_n(dout.feedforward.data(), onc, gc.feedforward.data());
+        // A hold never claims gains (its devices are rebuilt field by field),
+        // so the actuator keeps the last set it was handed — see the
+        // rtc_mujoco_sim README for what "keeps" means on the sim side.
+        gc.has_pd_gains = dout.has_pd_gains;
+        if (dout.has_pd_gains) {
+          std::copy_n(dout.pd_kp.data(), onc, gc.pd_kp.data());
+          std::copy_n(dout.pd_kd.data(), onc, gc.pd_kd.data());
+        }
         // Resolve per-device command type: nullopt inherits the global default,
         // so single-mode controllers keep their existing behaviour while mixed
         // controllers (WBC arm=kPosition, hand=kPdFeedforward) override per group.

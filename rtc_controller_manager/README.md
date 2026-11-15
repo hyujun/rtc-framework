@@ -146,7 +146,7 @@ ros2 lifecycle set /integrated_rt_controller activate     # 재개
 
 **워치독 (50 Hz)** 은 설정된 모든 그룹을 감시한다. `device_timeout_names` / `device_timeout_values` 는 그룹별 timeout **값**만 주고, 목록에 없는 그룹은 `device_timeout_default_ms` 로 감시된다. 초과하면 `{group}_timeout` E-STOP 이다. 한 번도 보고 않은 그룹은 워치독이 아니라 준비 게이트 몫이다. 오버런한 tick 은 건너뛰고 주기를 재정렬하며 (burst 없음) 연속 10회면 E-STOP 이다.
 
-**Per-group command type**: `DeviceOutput::command_type` (per-device, nullopt = 상속) 이 있으면 `ControllerOutput::command_type` 을 override 한다. Mixed-command 컨트롤러 (예: WBC — arm `kPosition`, hand `kPdFeedforward`) 가 그룹마다 다른 타입을 낼 수 있는 이유다. `kPdFeedforward` 는 position target 에 per-joint feedforward torque 를 얹으며 wire 에는 `"pd_feedforward"` 로 인코딩된다. feedforward 채널을 모르는 backend 는 position tracking 으로 폴백한다.
+**Per-group command type**: `DeviceOutput::command_type` (per-device, nullopt = 상속) 이 있으면 `ControllerOutput::command_type` 을 override 한다. Mixed-command 컨트롤러 (예: WBC — arm `kPosition`, hand `kPdFeedforward`) 가 그룹마다 다른 타입을 낼 수 있는 이유다. `kPdFeedforward` 는 position target 에 per-joint feedforward torque 를 얹으며 wire 에는 `"pd_feedforward"` 로 인코딩된다. feedforward 채널을 모르는 backend 는 position tracking 으로 폴백한다. `DeviceOutput::has_pd_gains` 가 서면 per-joint `pd_kp`/`pd_kd` 도 slot 에 실리고, hold 는 게인을 싣지 않는다.
 
 **Sim 모드** (`use_sim_time_sync=true`): tick 을 시계가 아니라 sim step 완료로 깨운다. step 이 `sim_sync_timeout_sec` 안에 완성되지 않으면 `sim_sync_timeout` E-STOP 후 노드가 종료한다. tick 은 `sim_sync_tick_devices` 의 모든 그룹이 새 state 를 낸 뒤에만 한 번 돈다.
 

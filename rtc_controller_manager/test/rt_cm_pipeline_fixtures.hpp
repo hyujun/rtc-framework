@@ -46,6 +46,10 @@ class PipelineTestController : public RTControllerInterface {
  public:
   static constexpr double kCmd0 = 1.5;
   static constexpr double kCmd1 = -2.5;
+  static constexpr double kKp0 = 30.0;
+  static constexpr double kKp1 = 12.5;
+  static constexpr double kKd0 = 1.25;
+  static constexpr double kKd1 = 0.5;
 
   // Captured YAML values (post-override). Static: the registry factory creates
   // the instance CM-side, so tests read these after on_configure.
@@ -88,6 +92,7 @@ class PipelineTestController : public RTControllerInterface {
     kDeviceCount,       ///< num_devices disagrees with the state
     kChannelCount,      ///< num_channels past what the device reported
     kNonFiniteCommand,  ///< NaN in commands[]
+    kInvalidPdGain,     ///< claimed gains with a negative kp
   };
   static inline std::atomic<OutputFault> output_fault{OutputFault::kNone};
 
@@ -125,6 +130,9 @@ class PipelineTestController : public RTControllerInterface {
   // Ticks on which the override was actually emitted — ground truth for the
   // node's own tally.
   static inline std::atomic<int> injected_command_type_ticks{0};
+
+  // Makes Compute() claim per-joint PD gains (kKp* / kKd*) on device 0.
+  static inline std::atomic<bool> emit_pd_gains{false};
 
   // Instances the registry factory has built (issue #196 Phase 5). The
   // duplicate-config_key scan runs before Pass 1, so a refused bring-up must
@@ -209,6 +217,7 @@ class PipelineTestController : public RTControllerInterface {
     device0_command_type.store(-1, std::memory_order_relaxed);
     device0_command_type_ticks.store(-1, std::memory_order_relaxed);
     injected_command_type_ticks.store(0, std::memory_order_relaxed);
+    emit_pd_gains.store(false, std::memory_order_relaxed);
     instances_created.store(0, std::memory_order_relaxed);
     cleanup_count.store(0, std::memory_order_relaxed);
     fail_on_configure.store(false, std::memory_order_relaxed);
@@ -340,6 +349,13 @@ class PipelineTestController : public RTControllerInterface {
     out.devices[0].num_channels = output_num_channels.load(std::memory_order_relaxed);
     out.devices[0].commands[0] = kCmd0;
     out.devices[0].commands[1] = kCmd1;
+    if (emit_pd_gains.load(std::memory_order_relaxed)) {
+      out.devices[0].has_pd_gains = true;
+      out.devices[0].pd_kp[0] = kKp0;
+      out.devices[0].pd_kp[1] = kKp1;
+      out.devices[0].pd_kd[0] = kKd0;
+      out.devices[0].pd_kd[1] = kKd1;
+    }
     InjectDevice0CommandType(out);
     InjectOutputFault(out);
     return out;
@@ -402,6 +418,10 @@ class PipelineTestController : public RTControllerInterface {
         break;
       case OutputFault::kNonFiniteCommand:
         out.devices[0].commands[1] = std::numeric_limits<double>::quiet_NaN();
+        break;
+      case OutputFault::kInvalidPdGain:
+        out.devices[0].has_pd_gains = true;
+        out.devices[0].pd_kp[1] = -1.0;
         break;
       case OutputFault::kNone:
         break;
@@ -671,6 +691,9 @@ class PipelineStubBackend : public DeviceBackend {
     last_actual_num_channels_ = slot.actual_num_channels;
     last_commands_[0] = slot.commands[0];
     last_commands_[1] = slot.commands[1];
+    last_has_pd_gains_ = slot.has_pd_gains;
+    last_pd_kp_ = {slot.pd_kp[0], slot.pd_kp[1]};
+    last_pd_kd_ = {slot.pd_kd[0], slot.pd_kd[1]};
     last_actual_positions_[0] = slot.actual_positions[0];
     last_actual_positions_[1] = slot.actual_positions[1];
     write_count_.fetch_add(1, std::memory_order_release);
@@ -719,6 +742,12 @@ class PipelineStubBackend : public DeviceBackend {
 
   CommandType LastCommandType() const { return last_command_type_; }
 
+  bool LastHasPdGains() const { return last_has_pd_gains_; }
+
+  const std::array<double, 2>& LastPdKp() const { return last_pd_kp_; }
+
+  const std::array<double, 2>& LastPdKd() const { return last_pd_kd_; }
+
   /// Ticks on which this position-only backend was handed kTorque — the count
   /// the #342 guard must hold at zero for the whole run.
   int TorqueWriteCount() const { return torque_write_count_.load(std::memory_order_relaxed); }
@@ -735,6 +764,9 @@ class PipelineStubBackend : public DeviceBackend {
   int last_actual_num_channels_{0};
   CommandType last_command_type_{CommandType::kPosition};
   std::array<double, 2> last_commands_{};
+  bool last_has_pd_gains_{false};
+  std::array<double, 2> last_pd_kp_{};
+  std::array<double, 2> last_pd_kd_{};
   std::array<double, 2> last_actual_positions_{};
 };
 
