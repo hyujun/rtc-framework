@@ -736,6 +736,9 @@ inline SystemThreadConfigs SelectThreadConfigsForCoreCount(int ncpu) noexcept {
     if (ncpu >= 8) {
       return {.slots = {4, 5, 6, 7}, .count = 4};
     }
+    if (ncpu >= 6) {
+      return {.slots = {4}, .count = 1};
+    }
     return {};
   }
   return {};
