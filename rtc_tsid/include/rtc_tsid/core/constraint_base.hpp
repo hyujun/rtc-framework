@@ -71,8 +71,9 @@ class ConstraintBase {
 
   // Lower `margins` to the slack of the inequality rows this constraint wrote
   // for `contacts` (C_block / l_block / u_block: exactly those rows, as the
-  // formulation assembled them) at the solution x, by the kind of bound each
-  // row is (WbcMargins). The default writes nothing: a constraint without
+  // formulation assembled them: a block of its column-major QPData, bound
+  // without a copy) at the solution x, by the kind of bound each row is
+  // (WbcMargins). The default writes nothing: a constraint without
   // inequality rows, or one whose rows are of no WbcMargins kind. RT-safe.
   virtual void MinSlack(const ContactState& /*contacts*/,
                         const Eigen::Ref<const Eigen::MatrixXd>& /*C_block*/,

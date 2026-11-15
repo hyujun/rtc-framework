@@ -21,16 +21,23 @@ namespace rtc::tsid {
 //
 //   state     | a good tick                      | a bad tick
 //   ----------|----------------------------------|---------------------------------
-//   Nominal   | Nominal                          | Degraded, or Fault when the run
-//             |                                  | of bad ticks > max_invalid_ticks
+//   Nominal   | Nominal                          | Degraded, or Fault when the bad
+//             |                                  | ticks > max_invalid_ticks
 //   Degraded  | Nominal after recover_valid_ticks| Degraded, or Fault as above
 //             | good ticks in a row              |
 //   Fault     | Nominal after recover_valid_ticks| Fault (the good-tick run restarts)
 //             | good ticks in a row              |
 //
-// max_invalid_ticks < 0 (the default) never enters Fault. Reset() returns to
-// Nominal with both runs cleared. It only classifies: the torque is the
-// owner's to keep or replace. Single-threaded (the owner's tick); RT-safe.
+// The bad ticks are counted since the state was last Nominal (a good tick
+// that does not complete the recovery does not clear them), so a failure that
+// recurs between short good stretches still faults. max_invalid_ticks 0
+// faults on the first bad tick (no Degraded); < 0 (the default) never faults.
+// Ticks are Update() calls: ticks on which the owner does not run the QP are
+// not counted. Reset() returns to Nominal with both counts cleared — a Fault
+// is left by recover_valid_ticks good ticks or by Reset(). It only classifies:
+// the torque is the owner's to keep or replace. Update / Reset / the
+// accessors: the owner's tick thread, RT-safe; Configure and
+// ParseSolveHealthConfig: init only.
 // ────────────────────────────────────────────────
 
 enum class SolveHealthState : std::uint8_t { kNominal, kDegraded, kFault };
@@ -65,7 +72,7 @@ class SolveHealth {
   }
 
   // One tick: `tau_valid` and, when it is true, that tick's margins.
-  SolveHealthState Update(bool tau_valid, const WbcMargins& margins) noexcept;
+  [[nodiscard]] SolveHealthState Update(bool tau_valid, const WbcMargins& margins) noexcept;
 
   void Reset() noexcept {
     state_ = SolveHealthState::kNominal;
@@ -75,6 +82,7 @@ class SolveHealth {
 
   [[nodiscard]] SolveHealthState State() const noexcept { return state_; }
 
+  // Bad ticks since the state was last Nominal; good ticks in a row.
   [[nodiscard]] int BadRun() const noexcept { return bad_run_; }
 
   [[nodiscard]] int GoodRun() const noexcept { return good_run_; }

@@ -16,7 +16,10 @@ namespace rtc::tsid {
 // +inf: no such rows this tick (the constraint is absent or off, every contact
 // of that kind released). The margin is the QP's own rows — a linearised
 // friction pyramid is measured as the pyramid, not as the cone it
-// approximates.
+// approximates. Rows that together hold an equality (the yaw pair with a zero
+// torsional coefficient, the CoP pair of a zero patch, a joint box collapsed
+// to one value) sit at 0 ± eps_abs on every tick: a floor on that kind has to
+// be below −eps_abs, or off.
 //
 // Filled by FormulationBase::AccumulateSlack from the rows the last solve
 // assembled (ConstraintBase::MinSlack). Plain data, no allocation.
@@ -29,7 +32,8 @@ struct WbcMargins {
   double yaw_nm{kNone};           // yaw (torsional) moment [N·m]
   double torque_nm{kNone};        // actuator torque (and torque-rate) box [N·m]
   double joint_accel_box{kNone};  // joint position / velocity / acceleration box [rad/s²]
-  // CommandOutput::eom_residual_inf of the same tick [N, N·m]; NaN when unknown.
+  // max |A x − b| over the EOM rows at the published solution [N, N·m] (on a
+  // WQP the tick's CommandOutput::eom_residual_inf); NaN when unknown.
   double eom_residual_inf{std::numeric_limits<double>::quiet_NaN()};
   // Not this tick's: no tick has published a solution yet, or the last tick
   // did not (tau_valid false) — the values are the last valid tick's.

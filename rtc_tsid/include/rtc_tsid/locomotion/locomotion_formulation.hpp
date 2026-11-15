@@ -117,7 +117,12 @@ class LocomotionFormulationBuilder {
 
   // The last tick's margins (WbcMargins; stale until a valid tick and after an
   // invalid one) and the fail-safe classification (SolveHealth, configured by
-  // whole_body_qp.health).
+  // whole_body_qp.health). Both are kept by this builder's Compute and Reset
+  // only — ticking or resetting through Controller() bypasses them. The
+  // references alias plain members the next Compute / Reset / Init rewrites:
+  // read them on the owner's tick thread; a reader on another thread needs a
+  // copy handed over by the tick (SeqLock / SPSC). A failed Init leaves the
+  // builder unusable until an Init succeeds.
   [[nodiscard]] const WbcMargins& Margins() const noexcept { return margins_; }
 
   [[nodiscard]] const SolveHealth& Health() const noexcept { return health_; }

@@ -88,19 +88,21 @@ bool SolveHealth::MarginsPass(const SolveHealthConfig& config, const WbcMargins&
 SolveHealthState SolveHealth::Update(bool tau_valid, const WbcMargins& margins) noexcept {
   const bool good = tau_valid && MarginsPass(config_, margins);
   if (good) {
-    bad_run_ = 0;
     good_run_ = Saturating(good_run_);
+    // The bad ticks count until the state is Nominal again: a failure that
+    // keeps coming back between short good stretches still reaches Fault.
     if (state_ != SolveHealthState::kNominal && good_run_ >= config_.recover_valid_ticks) {
       state_ = SolveHealthState::kNominal;
+      bad_run_ = 0;
     }
   } else {
     good_run_ = 0;
     bad_run_ = Saturating(bad_run_);
-    if (config_.max_invalid_ticks >= 0 && bad_run_ > config_.max_invalid_ticks) {
-      state_ = SolveHealthState::kFault;
-    } else if (state_ != SolveHealthState::kFault) {
-      state_ = SolveHealthState::kDegraded;
-    }
+    // In Fault the count is already past the limit (it clears only on
+    // reaching Nominal), so a bad tick keeps it there.
+    state_ = config_.max_invalid_ticks >= 0 && bad_run_ > config_.max_invalid_ticks
+                 ? SolveHealthState::kFault
+                 : SolveHealthState::kDegraded;
   }
   return state_;
 }

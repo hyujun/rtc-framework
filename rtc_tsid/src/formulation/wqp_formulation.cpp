@@ -252,6 +252,7 @@ void WQPFormulation::AccumulateSlack(const ContactState& contacts,
     constraints_[k]->MinSlack(contacts, qp.C.middleRows(row, dim), qp.l.segment(row, dim),
                               qp.u.segment(row, dim), result_.x_opt, margins);
   }
+  margins.eom_residual_inf = EqualityRowResidualInf(qp, eom_row_, eom_dim_, result_.x_opt);
 }
 
 }  // namespace rtc::tsid

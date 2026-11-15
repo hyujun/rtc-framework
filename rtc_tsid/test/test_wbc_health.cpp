@@ -261,6 +261,7 @@ TEST(WbcMargins, TheHqpReportsTheSameKindsOfMargin) {
     EXPECT_TRUE(std::isfinite(v));
   }
   EXPECT_LE(std::abs(m.yaw_nm), 10.0 * kEpsAbs);  // m_z = 0 rows (μ_τ 0)
+  EXPECT_LE(m.eom_residual_inf, kEpsAbs) << "the published solution's EOM rows";
 }
 
 // ── SolveHealth, deterministic sequences ──────────────────────────────────────
@@ -319,6 +320,33 @@ TEST(SolveHealth, MoreBadTicksThanAllowedFaultAndOnlyARunOfGoodOnesRecovers) {
   EXPECT_EQ(h.State(), SolveHealthState::kNominal);
   EXPECT_EQ(h.BadRun(), 0);
   EXPECT_EQ(h.GoodRun(), 0);
+}
+
+// Bad ticks count until the state is Nominal again: a failure that recurs
+// between good stretches shorter than recover_valid_ticks still faults.
+TEST(SolveHealth, AFailureThatKeepsComingBackStillFaults) {
+  SolveHealthConfig c;
+  c.max_invalid_ticks = 3;
+  c.recover_valid_ticks = 5;
+  SolveHealth h;
+  h.Configure(c);
+  const auto bad = [&] { return h.Update(false, Good()); };
+  const auto good = [&] { return h.Update(true, Good()); };
+  EXPECT_EQ(bad(), SolveHealthState::kDegraded);
+  EXPECT_EQ(bad(), SolveHealthState::kDegraded);
+  for (int k = 0; k < 4; ++k) {
+    EXPECT_EQ(good(), SolveHealthState::kDegraded) << "4 < recover_valid_ticks";
+  }
+  EXPECT_EQ(h.BadRun(), 2) << "a recovery not completed keeps the count";
+  EXPECT_EQ(bad(), SolveHealthState::kDegraded);
+  EXPECT_EQ(bad(), SolveHealthState::kFault) << "the 4th bad tick since Nominal";
+  EXPECT_EQ(h.BadRun(), 4);
+  // A completed recovery does clear the count.
+  for (int k = 0; k < 5; ++k) {
+    (void)h.Update(true, Good());
+  }
+  EXPECT_EQ(h.State(), SolveHealthState::kNominal);
+  EXPECT_EQ(h.BadRun(), 0);
 }
 
 // Margin floors apply to valid ticks only; off, they still refuse NaN.
