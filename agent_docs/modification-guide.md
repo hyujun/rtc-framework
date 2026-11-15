@@ -105,7 +105,7 @@ Group 이름은 config YAML 밖에도 박혀 있어서 `devices:` 블록만 고�
 - **YAML config** — 추가 / 제거 / 이름변경된 parameter, `topics:` 섹션, valid range · unit 주석. robot-specific 값은 integration 패키지에, 기본값은 agnostic 패키지에
 - **Doc** — package README 의 사용자 표면 (conventions.md §README), inline Doxygen, cross-package 면 root README + `docs/*.md`
 
-`rtc_base` / `rtc_msgs` 변경은 전체 downstream 빌드·테스트다 (PROC-3).
+`rtc_base` / `rtc_msgs` 변경은 전체 downstream 빌드·테스트다 (PROC-3). `ControllerOutput` 에 필드를 늘리면 크기 tripwire 가 정상 발화한다 — 필드별 비교 목록을 먼저 늘리고 상수는 PROC-6 commit 쌍으로 다시 고정한다.
 
 ## Completion Checklist
 
