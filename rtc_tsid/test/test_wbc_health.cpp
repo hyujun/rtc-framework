@@ -44,7 +44,7 @@ const WQPFormulation& Wqp(LocoRig& r) {
 // The margins recomputed from the last assembled QP and the published x: the
 // rows in the builder's constraint order (friction cone, joint limit, torque
 // limit), each friction block per active contact 4 faces + 1 unilateral, then
-// 4 CoP and 2 yaw rows. Also the rounding bound the comparison is held to.
+// (surface contacts) 4 CoP and 2 yaw rows. Also the rounding bound the comparison is held to.
 struct Oracle {
   WbcMargins m;
   double tol{0.0};
@@ -78,6 +78,9 @@ Oracle Recompute(LocoRig& r, const Eigen::VectorXd& x) {
     }
     for (int k = 0; k < 5; ++k) {
       o.m.friction_n = std::min(o.m.friction_n, slack(row++));
+    }
+    if (r.b.Contacts().contacts[c].contact_dim != 6) {
+      continue;  // a point contact: faces and the unilateral row only
     }
     for (int k = 0; k < 4; ++k) {
       o.m.cop_nm = std::min(o.m.cop_nm, slack(row++));
@@ -150,6 +153,22 @@ TEST(WbcMargins, OverAGaitEveryTicksMarginsAreItsRowsSlack) {
     ++checked;
   }
   EXPECT_EQ(checked, 40);
+}
+
+// Mixed contacts (a point foot and a surface foot): with the point foot
+// released, the surface foot's rows are read as its own — a released contact
+// takes no rows, so the next one's kinds stay aligned.
+TEST(WbcMargins, WithMixedContactsAReleasedContactTakesNoRows) {
+  LocomotionModelSpec spec = test::LocoSpec();
+  spec.contacts[0].dim = 3;
+  LocoRig r(YAML::Load(test::kLocoWbq), spec);
+  r.Set(test::QStand(*r.model), Eigen::VectorXd::Zero(r.model->nv));
+  r.ref.lambda_des.setZero();
+  r.ref.lambda_des(3 + 2) = 300.0;
+  ExpectMarginsMatch(r, r.Solve(), "both");
+  r.Release(0);
+  ExpectMarginsMatch(r, r.Solve(), "point foot released");
+  EXPECT_TRUE(std::isfinite(r.b.Margins().cop_nm)) << "premise: the surface foot's rows";
 }
 
 // All contacts released: the friction cone writes no rows, and its MinSlack
