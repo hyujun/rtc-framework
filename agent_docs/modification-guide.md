@@ -60,8 +60,8 @@ Out of scope: <명시적으로 하지 않을 것 — drift 방지>
 - **Gains struct 는 trivially copyable** 이어야 한다 (`rtc::SeqLock<Gains>`). RT path 는 method entry 에서 한 번 `Load()` 한다.
 - **게인 하한은 로더와 tick 양쪽에 건다** — 바인딩 `Compute()` 가 코어 파서와 같은 floor helper 를 한 번 더 부른다 ([invariants.md](invariants.md) §NUM floor 규약). 그 패키지 테스트에 "tick 에서 floor 된다" 케이스를 넣되, σ₀ 는 랭크 결손 자세에서 판정한다 (잘 조건화된 자세에서는 공허하다).
 - **YAML** — production 은 바인딩과 같은 패키지의 `config/<robot>/controllers/` 다 (`rtc_controllers/examples/` 에 추가하지 않는다). `topics:` 섹션을 반드시 포함한다. 유효한 `role:` 문자열은 [rtc_controller_interface/README.md](../rtc_controller_interface/README.md) §구독 역할 · §퍼블리시 역할 이 SSoT 다 — 추측하지 말고 표를 본다 (없는 문자열은 configure 실패).
-- **토픽을 소유하는 바인딩** 은 lifecycle 훅과 `PublishNonRtSnapshot` 을 override 하고 `owned_topics` 헬퍼에 위임한다. **`on_activate` override 는 base 를 먼저 호출한다** (base 가 activation generation 증분과 target 초기화 reset 을 한다 — 누락하면 stale target 이 재활성화 첫 tick 에 적용된다). target-init latch reset 은 `ResetTargetInitialization()` override 에 둔다.
-- **등록** — `RTC_REGISTER_CONTROLLER()` 의 대상은 항상 바인딩이고 integration 패키지의 `controller_registration.cpp` 에 둔다. `config_key` 는 전역 유일, `config_package` 는 자기 패키지다 (`rtc_*` 이름을 넣으면 ARCH-1).
+- **토픽을 소유하는 바인딩** 은 lifecycle 훅과 `PublishNonRtSnapshot` 을 override 하고 `owned_topics` 헬퍼에 위임한다. **`on_activate` override 는 base 를 반드시 호출한다** (base 가 activation generation 증분과 target 초기화 reset 을 한다 — 누락하면 stale target 이 재활성화 첫 tick 에 적용된다; 호출 순서는 [rtc_controller_interface README](../rtc_controller_interface/README.md#lifecycle-훅-ros2_control-정렬-기본-구현-제공)). target-init latch reset 은 `ResetTargetInitialization()` override 에 둔다.
+- **등록** — `RTC_REGISTER_CONTROLLER()` 의 대상은 항상 바인딩이고 integration 패키지의 `controller_registration.cpp` 에 둔다. `config_key` 는 전역 유일, `config_package` 는 자기 패키지다 (`rtc_*` 이름을 넣으면 ARCH-1). `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 는 그 YAML 을 가진 **모든** profile 에서 configure 를 요구한다 — 하나라도 실패하면 그 profile 의 bring-up 전체가 거부되므로, YAML 을 두는 profile 마다 configure 가 통과하는지 테스트로 본다.
 
 ## Adding a New Message Type
 

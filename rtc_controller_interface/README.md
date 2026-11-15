@@ -162,7 +162,7 @@ off-RT ingress → RT drain marshal 은 이 패키지 소유다. 큐는 depth 4 
 **3-pass bring-up 계약**: CM 은 (1) `PreConfigure(node, yaml)` → (2) 모든 컨트롤러의 `topic_config_` 로 `active_groups_` 를 빌드하고 `LoadDeviceNameConfigs()` + 컨트롤러별 `SetDeviceNameConfigs(...)` (→ `OnDeviceConfigsSet`) → (3) `on_configure(state, node, yaml)` 순서로 호출한다. 그래서 `on_configure` 의 `RegisterLog` 가 device-name 정보를 capture 할 때 `OnDeviceConfigsSet` 은 이미 실행돼 있다. configure-time 검증을 어느 pass 에 둘지는 [invariants.md](../agent_docs/invariants.md) AP-PROC-9 가 정한다.
 
 **Override 규약**:
-- `on_configure` / `on_activate` 등을 override 하면 base 를 **먼저** 호출한 뒤 `node_->create_subscription(...)` / `create_publisher(...)` 로 확장한다. `PreConfigure` 는 override 하지 않는다.
+- 훅을 override 하면 base 를 **반드시 호출하고 그 반환값을 따른다**. `on_configure` 는 base 를 먼저 부른 뒤 `node_->create_subscription(...)` / `create_publisher(...)` 로 확장하고, `on_activate` 는 출하 바인딩의 관례대로 자기 reset 뒤 `return RTControllerInterface::on_activate(prev)` 로 끝낸다 (그 증분을 첫 tick 이 본다). `PreConfigure` 는 override 하지 않는다.
 - RT 경로 (`Compute`, `SetDeviceTarget` 등) 에서는 **절대 `node_` 에 접근하지 않는다**. ROS2 API 는 non-RT 훅에서만 쓰고 RT 는 사전 할당된 SeqLock/SPSC 버퍼로 값을 읽는다.
 - 실패 경로 로그는 `rclcpp::get_logger("rtc_controller_interface")` + 메시지 본문 `[<controller_name>]` prefix ([conventions.md](../agent_docs/conventions.md) Logging).
 
@@ -303,7 +303,7 @@ rtc_controller_interface/
 | configure 가 `Topic group '<g>': ...` 로 실패 | `topics:` 형식 오류 | 위 fail-closed 표를 대조한다 |
 | 한 컨트롤러 때문에 로봇의 모든 컨트롤러 bring-up 이 거부됨 | 그 로봇 설정으로 만들 수 없는 컨트롤러를 일반 매크로로 등록 | `RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG` 로 바꾸고 YAML 을 싣지 않는다 |
 | goal 을 보내도 안 움직이고 `target_unhandled_count` 가 오른다 | `PushPendingTarget` 만 하고 `ApplyPendingTarget` 을 override 하지 않음 | override 해서 slot 에 쓴다 |
-| 재활성화 직후 목표가 옛 값으로 튄다 | `on_activate` override 가 base 를 호출하지 않음 | base `on_activate` 를 먼저 호출한다 |
+| 재활성화 직후 목표가 옛 값으로 튄다 | `on_activate` override 가 base 를 호출하지 않음 | base `on_activate` 를 호출해 그 반환을 돌려준다 |
 | 컨트롤러가 링크됐는데 `GetEntries()` 에 없다 | 정적 라이브러리의 등록 TU 가 링커에서 제거됨 | `--whole-archive` 로 링크한다 |
 
 ## 더 읽기
