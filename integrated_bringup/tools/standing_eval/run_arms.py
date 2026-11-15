@@ -18,7 +18,11 @@ message for ``--duration`` s. The arms differ only in the switch step:
 
 With ``--mpc-layout`` every arm runs under enable_mpc:=true (the same CPU
 layout), and loco turns the MPC off again with sim_overlay:=mpc_off — the
-control arm of an MPC evaluation. ``--rtf R`` runs the sim at R × real time
+control arm of an MPC evaluation. ``--mpc-threads N`` solves on N threads:
+every arm launched with enable_mpc:=true also gets layout_profile:=mpc_par_sim
+(the simulation worker profile, whose worker cores are the absent drivers'
+slots) and mpc_threads:=N; the launch refuses a count the profile cannot seat
+on the host. ``--rtf R`` runs the sim at R × real time
 (``max_rtf:=R``): settle, lead and the recording are sim seconds scaled by
 1 / R (the sim stamps its sensor messages with the wall clock, so the
 recorder's duration, its wall limit and its JSON's times are wall seconds), so
@@ -49,13 +53,22 @@ LOCO = "locomotion_controller"
 ARMS = ("servo", "loco", "lowpd", "mpc", "mpc_fb")
 
 
-def launch_args(arm: str, mpc_layout: bool, overlays: dict[str, str]) -> list[str]:
+def launch_args(
+    arm: str, mpc_layout: bool, overlays: dict[str, str], mpc_threads: int | None = None
+) -> list[str]:
     """The arm's launch arguments (module docstring); `overlays` replaces an arm's overlay."""
-    mpc_arm = arm in ("mpc", "mpc_fb")
+    under_mpc = arm in ("mpc", "mpc_fb") or mpc_layout
     default = {"mpc_fb": "mpc_riccati", "loco": "mpc_off" if mpc_layout else None}.get(arm)
     overlay = overlays.get(arm, default)
-    return (["enable_mpc:=true"] if mpc_arm or mpc_layout else []) + (
-        [f"sim_overlay:={overlay}"] if overlay else []
+    pool = (
+        ["layout_profile:=mpc_par_sim", f"mpc_threads:={mpc_threads}"]
+        if under_mpc and mpc_threads is not None
+        else []
+    )
+    return (
+        (["enable_mpc:=true"] if under_mpc else [])
+        + pool
+        + ([f"sim_overlay:={overlay}"] if overlay else [])
     )
 
 
@@ -142,7 +155,7 @@ def newest_session(root: Path, after: float) -> Path | None:
 def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
     out = args.out / f"{arm}_{k}"
     out.mkdir(parents=True, exist_ok=True)
-    extra = launch_args(arm, args.mpc_layout, args.overlay) + args.launch_arg
+    extra = launch_args(arm, args.mpc_layout, args.overlay, args.mpc_threads) + args.launch_arg
     wall = 1.0
     if args.rtf:
         extra.append(f"max_rtf:={args.rtf}")
@@ -237,6 +250,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="every arm under enable_mpc:=true; loco with sim_overlay:=mpc_off",
     )
+    p.add_argument(
+        "--mpc-threads",
+        type=int,
+        default=None,
+        metavar="N",
+        help="MPC solver threads, on the simulation worker profile (module docstring)",
+    )
     p.add_argument("-k", type=int, default=5, help="runs per arm")
     p.add_argument("--launch", default="sim_g1_loco.launch.py")
     p.add_argument(
@@ -270,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--logging-root", type=Path, required=True)
     args = p.parse_args(argv)
+    if args.mpc_threads is not None and args.mpc_threads < 1:
+        p.error("--mpc-threads must be at least 1")
     args.overlay = dict(o.split("=", 1) for o in args.overlay)
     notes = []
     for k in range(args.k):

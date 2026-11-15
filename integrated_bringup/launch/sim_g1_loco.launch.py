@@ -23,6 +23,9 @@ Usage:
   # This profile ships none, so pass a path.
   ros2 launch integrated_bringup sim_g1_loco.launch.py sim_overlay:=/path/to/overlay.yaml
 
+  # MPC on a 2-thread solve: the worker profile seats the second thread
+  ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true layout_profile:=mpc_par_sim mpc_threads:=2
+
   # Measurement lanes: per-step clock phase + ball contact truth, written to
   # <session>/sim/{clock_lane,ball_contact_lane}.csv
   ros2 launch integrated_bringup sim_g1_loco.launch.py sim_lanes:=true
@@ -40,7 +43,9 @@ feedforward torque is zero. The operator switches to locomotion_controller.
 `locomotion_controller.mpc.enabled`: true shields the MPC cores and the
 controller follows its MPC's plan; false leaves the cores to the system and the
 controller holds the latched pose. A `sim_overlay:=` file applies after it, so
-an overlay can turn the MPC off again under the MPC layout.
+an overlay can turn the MPC off again under the MPC layout. `layout_profile`
+names the profile instead (a worker profile seats a pooled solve) and
+`mpc_threads` sets the solver's thread count, checked against that profile.
 
 The robot model (URDF + MJCF) is `robot_descriptions`' public G1 with the
 synthetic hand of `robots/p1b_surrogate` — no private package is needed.
@@ -191,12 +196,23 @@ def launch_setup(context, *args, **kwargs):
     ctrl_overrides["max_log_sessions"] = session.max_sessions
     # One mapping for both consumers: the cset shield and the controller's
     # activation gate must agree on which profile is in force (#350).
-    layout_profile = shield.mpc_layout_profile(enable_mpc)
+    layout_profile = shield.resolve_layout_profile(
+        LaunchConfiguration("layout_profile").perform(context), enable_mpc
+    )
 
     # The controller refuses to activate a structurally MPC-enabled config under
     # a profile that dropped the MPC cores — otherwise the shield hands those
     # cores back while a SCHED_FIFO thread still runs on one (#350).
     ctrl_overrides["rt_layout_profile"] = layout_profile
+
+    # `mpc_threads` sets the MPC solver's thread count. After the overlay, so
+    # the count the launch checked against the profile's worker slots is the
+    # one the controller reads; an empty value keeps the YAML's.
+    mpc_threads = shield.mpc_solver_threads(
+        LaunchConfiguration("mpc_threads").perform(context), layout_profile
+    )
+    if mpc_threads is not None:
+        ctrl_overrides["locomotion_controller.mpc.solver.num_threads"] = mpc_threads
 
     # Optional: override initial_controller
     initial_controller = LaunchConfiguration("initial_controller").perform(context)
@@ -520,6 +536,27 @@ def generate_launch_description():
         ),
     )
 
+    mpc_threads_arg = DeclareLaunchArgument(
+        "mpc_threads",
+        default_value="",
+        description=(
+            "locomotion_controller's MPC solver threads (mpc.solver.num_threads); "
+            "empty (the default) keeps the YAML's 1. N > 1 needs N - 1 worker "
+            "cores in the layout profile (layout_profile:=mpc_par_sim); the launch "
+            "refuses a count the profile cannot seat."
+        ),
+    )
+
+    layout_profile_arg = DeclareLaunchArgument(
+        "layout_profile",
+        default_value="",
+        description=(
+            "CPU layout profile by name (mpc_on, mpc_off, mpc_par, mpc_par_sim); empty "
+            "(the default) derives it from enable_mpc. mpc_par_sim adds MPC solver "
+            "worker cores — the slots the absent arm and hand drivers free."
+        ),
+    )
+
     enable_tracing_arg = DeclareLaunchArgument(
         "enable_tracing",
         default_value="false",
@@ -577,6 +614,8 @@ def generate_launch_description():
             use_cpu_affinity_arg,
             initial_controller_arg,
             enable_mpc_arg,
+            layout_profile_arg,
+            mpc_threads_arg,
             enable_tracing_arg,
             trace_session_name_arg,
             trace_events_ust_arg,

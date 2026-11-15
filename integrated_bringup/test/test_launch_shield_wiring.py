@@ -91,10 +91,18 @@ def test_shield_probe_receives_the_mpc_profile(filename):
     """
     tree = ast.parse(_source(filename))
     called = _called_functions(_source(filename))
-    assert "mpc_layout_profile" in called, (
-        f"{filename}: the profile must come from cpu_shield.mpc_layout_profile — deriving "
+    # The sims also take the profile by name (`layout_profile:=`), whose resolver
+    # falls back to the same mapping; the robot launches take only enable_mpc.
+    resolver = "resolve_layout_profile" if filename.startswith("sim_") else "mpc_layout_profile"
+    assert resolver in called, (
+        f"{filename}: the profile must come from cpu_shield.{resolver} — deriving "
         "it locally is how the shield and the controller gate drift apart"
     )
+    if filename.startswith("robot_"):
+        assert "resolve_layout_profile" not in called, (
+            f"{filename}: robot launches do not take a profile by name until the "
+            "control-PC soak decides the worker layout"
+        )
     calls = [
         node
         for node in ast.walk(tree)

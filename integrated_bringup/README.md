@@ -114,6 +114,8 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `max_log_sessions` | `10` (그 profile 의 YAML) | 세션 폴더 최대 보관 수 |
 | `initial_controller` | `""` (YAML) | 시작 컨트롤러. 기본은 profile 의 `sim.yaml` (`ur5e_p1a` · `iiwa7_leap` 은 wbc, `p2` · `p2_left` 는 `hand_joint_controller`, 나머지는 `demo_joint_controller`). 기동 완료 신호는 `RtControllerNode reached Active state` 로그 |
 | `enable_mpc` | `""` (YAML) | `mpc.enabled` 를 launch 시점에 덮는다 — `sim_iiwa7_leap` 은 `demo_wbc_controller` 의 것 (YAML 기본 `false`), `sim_g1_loco` 는 `locomotion_controller` 의 것, 나머지 sim 은 CPU layout 만 (기본 `false`) |
+| `layout_profile` | `""` (`enable_mpc`) | CPU layout profile 이름. `mpc_par_sim` 은 sim 에 없는 driver 의 slot 을 MPC worker 로 쓴다. 모르는 이름은 거부 |
+| `mpc_threads` | `""` (YAML 1) | `locomotion_controller` 의 `mpc.solver.num_threads`. profile 의 worker 가 N − 1 개 미만이면 거부 (`sim_g1_loco` 만) |
 | `mpc_engine` | `""` (YAML) | `mock` / `handler` (`demo_wbc_controller` 의 MPC 엔진). `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2` 에는 없다 |
 | `sim_overlay` | `""` | 출하 씬을 건드리지 않고 바꾸는 overlay (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2`). [Scene overlay](#scene-overlay-sim_overlay--출하-씬을-건드리지-않고-바꾸기) |
 | `sim_lanes` | `false` | clock 위상 · 공 접촉 측정 lane 을 켜고 `<session>/sim/` 에 쓴다 (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2`) |
@@ -177,7 +179,7 @@ ros2 service call /sim/reset std_srvs/srv/Trigger                               
 - 기동해 서 있는 것은 sim 의 `stand` keyframe (`reset_keyframe`) + MJCF `<position>` servo 다 — `locomotion_controller` 로는 `/rtc_cm/switch_controller` 로 넘어간다 ([locomotion-controller.md](docs/locomotion-controller.md)). `demo_joint_controller` (시작 컨트롤러) 는 측정 자세를 `pd_feedforward` 로 hold 하고 feedforward 는 0 이다 — 첫 명령에서 sim 이 `g1` 군을 PD-feedforward 모드로 바꾸고 중력 보상을 끄므로 그 뒤의 자세는 servo 의 것이다. 지표 (`run_stance_metrics`, [rtc_tools README](../rtc_tools/README.md)) 는 그 전환 뒤부터 잰다.
 - 컨트롤러 모델의 root 는 **부동** (`urdf.root_joint_type: "floating"`) 이다. full · actuated 모델이 pelvis 에 free-flyer 를 갖고, tree 모델은 그것을 잠그며, 손의 폐쇄 체인 handle 은 seed (단위) 자세로 hold 한다 — 손끝 FK 와 관절 블록은 고정 root 모델과 같다 (`test_g1_loco_configure` 가 대조한다). 부동 베이스의 ground truth 는 `devices.g1.backend.base_state` lane, 두 IMU 는 `imu_state` lane ([기구학 모델 설정](#기구학-모델-설정) 의 두 키, 같은 토픽) 으로 들어오지만 아직 모델의 base 로 배선되지 않는다. 발 접촉은 `fingertip_wrench_topics` 의 두 sole 토픽 (`/g1/{left,right}_sole_contact/contact_wrench`) 이다.
 - MJCF 의 `<option timestep>` 0.002 는 **제어 주기**다 (sim 이 `n_substeps` 3 으로 나눈다). `use_yaml_servo_gains` 는 `false` 가 기본이고 YAML 은 `servo_kp` / `servo_kd` 를 싣지 않는다.
-- `enable_mpc` 는 CPU layout 과 `locomotion_controller.mpc.enabled` 를 고른다 (기본 `false` = latch 자세, `true` = MPC plan 으로 서기). `mpc_engine` 인자는 없다. 평가용 overlay `mpc_off` (MPC layout 에서 MPC 끔) · `mpc_riccati` 를 출하한다.
+- `enable_mpc` 는 CPU layout 과 `locomotion_controller.mpc.enabled` 를 고른다 (기본 `false` = latch 자세, `true` = MPC plan 으로 서기). `mpc_engine` 인자는 없다. 평가용 overlay `mpc_off` (MPC layout 에서 MPC 끔) · `mpc_riccati` 를 출하한다. 병렬 solve 는 `layout_profile:=mpc_par_sim mpc_threads:=N`.
 
 GUI 는 `ros2 run integrated_bringup demo_controller_gui --robot g1_loco`.
 
