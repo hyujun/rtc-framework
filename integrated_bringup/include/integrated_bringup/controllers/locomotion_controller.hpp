@@ -12,7 +12,8 @@
 // The reference is fixed for now: the measured pose at the first valid tick,
 // zero velocity and acceleration, and the static contact wrench of that pose
 // (two contacts: the weight split and the centres of pressure placed so that
-// they balance gravity at the CoM; otherwise an equal share of the weight). A planner replaces it later through the same ControlReference.
+// they balance gravity at the CoM; otherwise an equal share of the weight). A planner replaces it
+// later through the same ControlReference.
 //
 // Modes (LocomotionDiagLogPod::Mode):
 //   waiting   no valid state since activation — damping on the raw body lane

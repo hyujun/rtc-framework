@@ -2453,6 +2453,8 @@ if(BUILD_TESTING)
     test_controller_target_cb_group_invariant
     test_payload_estimate_topic
     test_g1_loco_configure
+    test_locomotion_controller
+    test_locomotion_controller_alloc
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
