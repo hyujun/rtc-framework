@@ -635,6 +635,9 @@ TEST(SamplerProvenance, TheReferenceCarriesThePlansProvenance) {
   plan.state_epoch = 0;
   plan.schedule_id = 0x5555AAAA5555AAAAULL;
   plan.schedule_epoch = 9;
+  plan.solve_duration_ns = 12345;
+  plan.converged = true;
+  plan.initial_solve = true;
   mgr.PublishSolution(plan);
   Eigen::VectorXd q = Eigen::VectorXd::Zero(l.nq), v = Eigen::VectorXd::Zero(l.nv);
   WbcReference ref{};
@@ -644,6 +647,9 @@ TEST(SamplerProvenance, TheReferenceCarriesThePlansProvenance) {
   EXPECT_EQ(ref.observation_source_sequence, 0xABCDEF0123ULL);
   EXPECT_EQ(ref.schedule_id, 0x5555AAAA5555AAAAULL);
   EXPECT_EQ(ref.schedule_epoch, 9u);
+  EXPECT_EQ(ref.solve_duration_ns, 12345u);
+  EXPECT_TRUE(ref.converged);
+  EXPECT_TRUE(ref.initial_solve);
   EXPECT_EQ(ref.plan_id, 1u);
   EXPECT_EQ(ref.receive_stamp_ns, At(kOrigin));
   EXPECT_EQ(ref.nq, l.nq);
