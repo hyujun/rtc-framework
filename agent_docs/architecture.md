@@ -26,12 +26,12 @@
 **MPC**:
 
 - **RT 루프에 해를 공급하는 solver 스레드는 `mpc` role 을 공유한다** — layout role 을 새로 만들지 않는다 (`MPCThread`, `CatchingPlannerThread`). 각 컨트롤러는 `on_deactivate` 에서 자기 solver 를 `Pause` 하므로 그 코어에서 도는 것은 하나다. 같은 이름의 스레드가 여럿일 수 있으므로 판정은 검증기의 name→TID 맵이 아니라 `/proc/<pid>/task/*` 로 한다.
-- **MPC solve 는 단일 스레드다.** solver 에 외부 `std::jthread` 를 넘기지 않는다 — 병렬화가 필요하면 경로는 solver 의 OpenMP (`setNumThreads(n)` + 그 풀의 affinity) 이고, 그때 manifest 에 슬롯을 넣는다 (E-7).
+- **MPC solve 는 기본 1 스레드다.** solver 에 외부 `std::jthread` 를 넘기지 않는다 — 병렬화는 solver 의 OpenMP (`setNumThreads(n)` + 그 풀의 affinity) 뿐이고, worker 슬롯은 profile 의 `worker_slots` 가 갖는다 (E-7).
 - **MPC 강등 축은 launch profile 하나다.** solver 축의 강등 상태를 enum 으로 다시 선언하지 않는다 — 돌아온다면 solver 의 thread budget 옆에서 파생된다 (재선언이 아니라 재구현).
 
 **Launch profile** — tier 가 "어느 role 이 어느 슬롯에" 를 정한다면 profile 은 "이번 실행에서 어느 role 이 도는가" 를 정한다:
 
-- profile 은 launch 단계의 **명시적 opt-out** 이다 (런타임 자동 감지 없음). launch 가 정한 값이 `rt_layout_profile` 파라미터로 controller 에, `--profile` 로 shield / 검증기에 **같은 값** 으로 전달된다. shield 계산 · 검증기의 기대 / 금지 표 · controller activation gate 셋이 이 축을 따른다.
+- profile 은 launch 단계에서 정한다 (자동 감지 없음, sim 은 이름으로도). launch 가 정한 값이 `rt_layout_profile` 파라미터로 controller 에, `--profile` 로 shield / 검증기에 **같은 값** 으로 전달된다. shield 계산 · 검증기의 기대 / 금지 표 · controller activation gate 셋이 이 축을 따른다.
 - profile 이 뺀 role 을 controller config 가 요구하면 `on_activate` 가 **첫 side effect 전에** FAILURE 를 낸다.
 - GRUB `nohz_full` / `rcu_nocbs` 는 profile 을 타지 않는다 (boot-static).
 
