@@ -166,6 +166,9 @@ template <std::size_t N>
   if (a.command_type != b.command_type) {
     return ::testing::AssertionFailure() << p << "command_type";
   }
+  if (a.has_pd_gains != b.has_pd_gains) {
+    return ::testing::AssertionFailure() << p << "has_pd_gains";
+  }
   for (const auto& [lhs, rhs, name] :
        {std::tuple{&a.commands, &b.commands, "commands"},
         std::tuple{&a.goal_positions, &b.goal_positions, "goal_positions"},
@@ -173,7 +176,8 @@ template <std::size_t N>
         std::tuple{&a.target_velocities, &b.target_velocities, "target_velocities"},
         std::tuple{&a.trajectory_positions, &b.trajectory_positions, "trajectory_positions"},
         std::tuple{&a.trajectory_velocities, &b.trajectory_velocities, "trajectory_velocities"},
-        std::tuple{&a.feedforward, &b.feedforward, "feedforward"}}) {
+        std::tuple{&a.feedforward, &b.feedforward, "feedforward"},
+        std::tuple{&a.pd_kp, &b.pd_kp, "pd_kp"}, std::tuple{&a.pd_kd, &b.pd_kd, "pd_kd"}}) {
     const auto r = SameArray(*lhs, *rhs, (p + name).c_str());
     if (!r) {
       return r;

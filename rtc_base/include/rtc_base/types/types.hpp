@@ -613,6 +613,14 @@ struct DeviceOutput {
   // Per-joint feedforward torque (Nm), consumed only when the resolved command
   // type is kPdFeedforward. Zero-initialised; ignored by kPosition/kTorque.
   std::array<double, kMaxDeviceChannels> feedforward{};
+  // Per-joint PD gains the controller wants the actuator servo to run with
+  // (kp [N·m/rad], kd [N·m·s/rad], both >= 0), carried to the backend only when
+  // has_pd_gains is set and the resolved command type is kPdFeedforward. Unset
+  // (the default) leaves the gains to the backend: the wire carries none and
+  // the actuator keeps whatever it last ran with. [0, num_channels) is read.
+  std::array<double, kMaxDeviceChannels> pd_kp{};
+  std::array<double, kMaxDeviceChannels> pd_kd{};
+  bool has_pd_gains{false};
   GoalType goal_type{GoalType::kJoint};
   // Per-device command type override. nullopt → inherit ControllerOutput::
   // command_type (the global default), so single-mode controllers need not set

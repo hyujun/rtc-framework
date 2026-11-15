@@ -51,6 +51,12 @@ struct PublishSnapshot {
     // Per-joint feedforward torque (Nm) — mirrors DeviceOutput::feedforward.
     // Consumed by the backend only when command_type == kPdFeedforward.
     std::array<double, kMaxDeviceChannels> feedforward{};
+    // Per-joint PD gains — mirror DeviceOutput::pd_kp / pd_kd / has_pd_gains.
+    // Copied only when has_pd_gains is set; the backend forwards them only for
+    // kPdFeedforward and only when they cover every command channel.
+    std::array<double, kMaxDeviceChannels> pd_kp{};
+    std::array<double, kMaxDeviceChannels> pd_kd{};
+    bool has_pd_gains{false};
     // Resolved per-group command type (DeviceOutput::command_type override
     // collapsed against the global default by the RT loop). The backend reads
     // this — NOT the snapshot-global command_type — so mixed-command output
