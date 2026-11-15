@@ -43,8 +43,9 @@ namespace rtc {
 //     receiver, which reorders by `joint_names`.
 //   - PD gains ride along only for kPdFeedforward, only when the slot claims
 //     them (`has_pd_gains`) and only when the slot covers every command joint
-//     — the receiver ignores a partial set. A message without them leaves the
-//     receiver on the gains it last applied (sticky).
+//     — the receiver ignores a partial set (and, with a warning, a set that
+//     misses any joint of its own group, which this side cannot see). A message without them leaves
+//     the receiver on the gains it last applied (sticky).
 //
 // Floating-base lane — optional, YAML-enabled:
 //   - `devices.<group>.backend.base_state.sensor_topic` names the group's

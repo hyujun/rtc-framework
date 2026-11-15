@@ -236,7 +236,7 @@ TEST(TruthStateSource, NormalisesANearUnitQuaternion) {
   auto state = MakeState();
   auto& p = state.devices[kBodyDevice].base_pose;
   for (std::size_t i = 3; i < 7; ++i) {
-    p[i] *= 1.01;
+    p[i] *= 1.0 + 5e-4;  // inside the tolerance
   }
   MeasuredRobotState out{};
   ASSERT_TRUE(src.Update(state, idx, kNow, out));
@@ -291,6 +291,14 @@ TEST(TruthStateSource, ReportsTheFirstBodyOrBaseFault) {
          p[3] = p[4] = p[5] = p[6] = 0.0;
        },
        StateSourceStatus::kBaseInvalid},
+      {"quaternion 1 % off unit",
+       [](rtc::ControllerState& s) {
+         auto& p = s.devices[kBodyDevice].base_pose;
+         for (std::size_t i = 3; i < 7; ++i) {
+           p[i] *= 1.01;
+         }
+       },
+       StateSourceStatus::kBaseInvalid},
       {"NaN quaternion",
        [](rtc::ControllerState& s) { s.devices[kBodyDevice].base_pose[6] = kNaN; },
        StateSourceStatus::kBaseInvalid},
@@ -313,6 +321,40 @@ TEST(TruthStateSource, ReportsTheFirstBodyOrBaseFault) {
     EXPECT_FALSE(out.valid) << c.what;
     EXPECT_EQ(c.expected, out.status) << c.what << ": " << ToString(out.status);
   }
+}
+
+TEST(TruthStateSource, AFailedLaneReadsNeutralAndClaimsNoSample) {
+  const auto idx = MakeIndices();
+  TruthStateSource src(MakeParams());
+  auto state = MakeState();
+  state.devices[kBodyDevice].positions[1] = kNaN;  // body joints non-finite
+  state.devices[kBodyDevice].base_valid = false;   // base missing
+  MeasuredRobotState out{};
+  out.q.fill(5.0);  // whatever the caller's buffer held
+  out.v.fill(5.0);
+
+  EXPECT_FALSE(src.Update(state, idx, kNow, out));
+  EXPECT_EQ(StateSourceStatus::kBaseMissing, out.status);  // precedes non-finite
+  EXPECT_EQ(0U, out.valid_mask & (kBodyJointsBit | kBaseBit));
+  EXPECT_EQ(0U, out.fresh_mask & (kBodyJointsBit | kBaseBit));
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_EQ(0.0, out.v[i]) << i;
+  }
+  EXPECT_EQ(0.0, out.q[0]);
+  EXPECT_EQ(1.0, out.q[6]);  // identity, not the stale 5.0
+  EXPECT_EQ(state.devices[kBodyDevice].joint_recv_steady_ns, out.stamp_steady_ns);
+}
+
+TEST(TruthStateSource, AReceiptStampedAfterNowIsFresh) {
+  const auto idx = MakeIndices();
+  TruthStateSource src(MakeParams());
+  auto state = MakeState();
+  state.devices[kBodyDevice].joint_recv_steady_ns = kNow + 3000;
+  state.devices[kBodyDevice].base_recv_steady_ns = kNow + 5000;
+  state.devices[kHandDevice].joint_recv_steady_ns = kNow + 1000;
+  MeasuredRobotState out{};
+  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  EXPECT_EQ(kBodyJointsBit | kBaseBit | HandBit(0), out.fresh_mask);
 }
 
 TEST(TruthStateSource, AStaleHandHoldsItsJointsAtRestWithoutFailingTheState) {

@@ -77,6 +77,16 @@ bool Fresh(int64_t age_ns, int64_t max_age_ns) noexcept {
   return age_ns >= 0 && age_ns <= max_age_ns;
 }
 
+// Age of a lane's last receipt; negative when it never arrived. A receipt
+// stamped after `now` (the lane landed between the caller's clock read and the
+// state copy) is age 0 — the freshest sample there is, not a stale one.
+int64_t LaneAgeNs(int64_t recv_steady_ns, int64_t now_steady_ns) noexcept {
+  if (recv_steady_ns <= 0) {
+    return -1;
+  }
+  return std::max<int64_t>(0, now_steady_ns - recv_steady_ns);
+}
+
 }  // namespace
 
 const char* ToString(StateSourceStatus status) noexcept {
@@ -203,52 +213,70 @@ bool TruthStateSource::Update(const rtc::ControllerState& state, const DeviceInd
   out.valid_mask = 0;
   out.stamp_steady_ns = 0;
   out.sequence = 0;
-  StateSourceStatus status = StateSourceStatus::kOk;
-  const auto fail = [&status](StateSourceStatus s) {
-    if (status == StateSourceStatus::kOk) {
-      status = s;
-    }
-  };
+  // A lane that fails this tick reads as the neutral state (zero joints, the
+  // identity base), never as whatever the caller's buffer held.
+  out.q.fill(0.0);
+  out.q[6] = 1.0;
+  out.v.fill(0.0);
+
+  bool body_unreadable = false;
+  bool body_stale = false;
+  bool base_missing = false;
+  bool base_stale = false;
+  bool base_invalid = false;
+  bool non_finite = false;
 
   // ── body: joints + floating base ──────────────────────────────────────────
   const int body = indices.body.device;
   if (body < 0 || body >= state.num_devices || body >= rtc::ControllerState::kMaxDevices) {
-    fail(StateSourceStatus::kBodyUnreadable);
+    body_unreadable = true;
+    base_missing = true;
   } else {
     const auto& dev = state.devices[static_cast<std::size_t>(body)];
     const int nc = indices.body.num_channels;
     if (!JointLanesReadable(dev, nc)) {
-      fail(StateSourceStatus::kBodyUnreadable);
+      body_unreadable = true;
     } else {
+      bool finite = true;
       for (int c = 0; c < nc; ++c) {
         const auto ci = static_cast<std::size_t>(c);
         const auto a = static_cast<std::size_t>(indices.body.joint[ci]);
         out.q[7 + a] = dev.positions[ci];
         out.v[6 + a] = dev.velocities[ci];
+        finite = finite && std::isfinite(dev.positions[ci]) && std::isfinite(dev.velocities[ci]);
       }
-      out.valid_mask |= kBodyJointsBit;
-      if (Fresh(rtc::JointAgeNs(dev, now_steady_ns), params_.body_max_age_ns)) {
-        out.fresh_mask |= kBodyJointsBit;
+      if (!finite) {
+        non_finite = true;
       } else {
-        fail(StateSourceStatus::kBodyStale);
+        out.valid_mask |= kBodyJointsBit;
+        if (Fresh(LaneAgeNs(dev.joint_recv_steady_ns, now_steady_ns), params_.body_max_age_ns)) {
+          out.fresh_mask |= kBodyJointsBit;
+        } else {
+          body_stale = true;
+        }
       }
     }
     out.sequence = dev.joint_sequence;
+    out.stamp_steady_ns = dev.joint_recv_steady_ns;
 
-    if (!dev.base_valid || rtc::BaseAgeNs(dev, now_steady_ns) < 0) {
-      fail(StateSourceStatus::kBaseMissing);
+    if (!dev.base_valid || dev.base_recv_steady_ns <= 0) {
+      base_missing = true;
     } else {
-      if (rtc::IsBaseFresh(dev, now_steady_ns, params_.body_max_age_ns)) {
-        out.fresh_mask |= kBaseBit;
-      } else {
-        fail(StateSourceStatus::kBaseStale);
-      }
       const auto& p = dev.base_pose;
       const double norm = std::sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5] + p[6] * p[6]);
-      // A truth quaternion is unit to rounding; one this far off is a broken
+      bool finite = true;
+      for (std::size_t i = 0; i < 3; ++i) {
+        finite = finite && std::isfinite(p[i]);
+      }
+      for (std::size_t i = 0; i < 6; ++i) {
+        finite = finite && std::isfinite(dev.base_twist[i]);
+      }
+      // A truth quaternion is unit to rounding; one further off is a broken
       // producer, not drift to renormalise away. NaN fails the test as well.
-      if (!(norm >= 0.5 && norm <= 1.5)) {
-        fail(StateSourceStatus::kBaseInvalid);
+      if (!(std::abs(norm - 1.0) <= kQuaternionNormTolerance)) {
+        base_invalid = true;
+      } else if (!finite) {
+        non_finite = true;
       } else {
         for (std::size_t i = 0; i < 3; ++i) {
           out.q[i] = p[i];
@@ -260,9 +288,14 @@ bool TruthStateSource::Update(const rtc::ControllerState& state, const DeviceInd
           out.v[i] = dev.base_twist[i];
         }
         out.valid_mask |= kBaseBit;
+        if (Fresh(LaneAgeNs(dev.base_recv_steady_ns, now_steady_ns), params_.body_max_age_ns)) {
+          out.fresh_mask |= kBaseBit;
+        } else {
+          base_stale = true;
+        }
+        out.stamp_steady_ns = std::min(out.stamp_steady_ns, dev.base_recv_steady_ns);
       }
     }
-    out.stamp_steady_ns = std::min(dev.joint_recv_steady_ns, dev.base_recv_steady_ns);
   }
 
   // ── hands: fresh → copy and hold; stale → the held joints, at rest ────────
@@ -274,8 +307,9 @@ bool TruthStateSource::Update(const rtc::ControllerState& state, const DeviceInd
                          map.device < rtc::ControllerState::kMaxDevices;
     const rtc::DeviceState* dev =
         present ? &state.devices[static_cast<std::size_t>(map.device)] : nullptr;
-    bool fresh = dev != nullptr && JointLanesReadable(*dev, map.num_channels) &&
-                 Fresh(rtc::JointAgeNs(*dev, now_steady_ns), params_.hand_max_age_ns);
+    bool fresh =
+        dev != nullptr && JointLanesReadable(*dev, map.num_channels) &&
+        Fresh(LaneAgeNs(dev->joint_recv_steady_ns, now_steady_ns), params_.hand_max_age_ns);
     // A hand sample with a NaN in it is a stale hand, not a failed state.
     for (int c = 0; fresh && c < map.num_channels; ++c) {
       const auto ci = static_cast<std::size_t>(c);
@@ -297,17 +331,20 @@ bool TruthStateSource::Update(const rtc::ControllerState& state, const DeviceInd
     out.valid_mask |= hands_seen_ & HandBit(h);
   }
 
-  if (status == StateSourceStatus::kOk) {
-    for (std::size_t i = 0; i < 7 + n; ++i) {
-      if (!std::isfinite(out.q[i])) {
-        fail(StateSourceStatus::kNonFinite);
-      }
-    }
-    for (std::size_t i = 0; i < 6 + n; ++i) {
-      if (!std::isfinite(out.v[i])) {
-        fail(StateSourceStatus::kNonFinite);
-      }
-    }
+  // The documented precedence, whatever order the lanes were read in.
+  StateSourceStatus status = StateSourceStatus::kOk;
+  if (body_unreadable) {
+    status = StateSourceStatus::kBodyUnreadable;
+  } else if (body_stale) {
+    status = StateSourceStatus::kBodyStale;
+  } else if (base_missing) {
+    status = StateSourceStatus::kBaseMissing;
+  } else if (base_stale) {
+    status = StateSourceStatus::kBaseStale;
+  } else if (base_invalid) {
+    status = StateSourceStatus::kBaseInvalid;
+  } else if (non_finite) {
+    status = StateSourceStatus::kNonFinite;
   }
   out.status = status;
   out.valid = status == StateSourceStatus::kOk;

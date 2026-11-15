@@ -20,9 +20,13 @@
 // an estimator (IMU + kinematics) is the second implementation. Both run on the
 // RT tick: Update() is noexcept and allocation-free.
 //
-// Verdict. `status` is the first failure found, in this order: body joints
+// Verdict. `status` is the first failure in this order: body joints
 // unreadable, body joints stale, base missing, base stale, base pose invalid,
-// non-finite value. `valid` is status == kOk. A hand that is stale, has never
+// non-finite value. `valid` is status == kOk. A lane that fails reads as the
+// neutral state (zero joints, the identity base, zero velocity) and its
+// valid_mask bit stays clear; with `valid` false, q / v are not a state —
+// only the lanes valid_mask names hold a real sample. A lane stamped after the
+// caller's `now` counts as age 0. A hand that is stale, has never
 // reported or reports a non-finite value does NOT fail the state — its joints keep the last fresh
 // value (0 until the first) with zero velocity, and only its bit in fresh_mask / valid_mask says
 // so: the hands are held still and their frames only place the end-effectors.
@@ -50,6 +54,8 @@ inline constexpr std::size_t kMaxStateHands =
     static_cast<std::size_t>(rtc::ControllerState::kMaxDevices) - 1;
 /// Contacts the prior mask can name.
 inline constexpr int kMaxStateContacts = 32;
+/// |‖q_base‖ − 1| a truth quaternion may carry and still be renormalised.
+inline constexpr double kQuaternionNormTolerance = 1e-3;
 
 /// fresh_mask / valid_mask bits.
 inline constexpr uint32_t kBodyJointsBit = 1U << 0;
@@ -70,7 +76,7 @@ enum class StateSourceStatus : uint8_t {
   kBodyStale,       ///< body joint lane older than the body age limit
   kBaseMissing,     ///< base lane never received, or its producer says invalid
   kBaseStale,       ///< base lane older than the body age limit
-  kBaseInvalid,     ///< base quaternion not normalisable (norm outside [0.5, 1.5])
+  kBaseInvalid,     ///< base quaternion norm off 1 by more than kQuaternionNormTolerance
   kNonFinite,       ///< a NaN / Inf in q or v
 };
 
@@ -170,11 +176,13 @@ class MeasuredStateSource {
   MeasuredStateSource(MeasuredStateSource&&) = delete;
   MeasuredStateSource& operator=(MeasuredStateSource&&) = delete;
 
-  /// Forget everything held across ticks and bump the state epoch. Non-RT
-  /// (activation) or RT — it does not allocate.
+  /// Forget everything held across ticks and bump the state epoch. Allocation-free,
+  /// but not synchronised with Update(): call it from the thread that runs
+  /// Update(), or while Update() cannot run (activation).
   virtual void Reset() noexcept = 0;
 
   /// Fill `out` from this tick's `state`. RT: no allocation, no throw.
+  /// @param now_steady_ns  the steady clock, read on this tick
   /// @return out.valid
   [[nodiscard]] virtual bool Update(const rtc::ControllerState& state, const DeviceIndices& indices,
                                     int64_t now_steady_ns, MeasuredRobotState& out) noexcept = 0;
