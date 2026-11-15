@@ -65,6 +65,17 @@ def diag_header() -> list[str]:
         "com_x",
         "com_y",
         "com_z",
+        "ref_source",
+        "plan_id",
+        "policy_age_us",
+        "mpc_converged",
+        "mpc_initial_solve",
+        "mpc_solve_us",
+        "schedule_epoch",
+        "contact_mask",
+        "plausibility_rejects",
+        "u_fb_norm",
+        "mpc_state_epoch",
     ]
     for c in CONTACTS:
         cols += [f"foot_{c}_{a}" for a in "xyz"]
@@ -140,6 +151,12 @@ def diag_rows() -> list[dict]:
                 "lambda_lfoot_fz": 100.0,
                 "lambda_rfoot_fz": 90.0,
                 "tau_servo_j_a": 0.5,
+                # idle for 2 rows, stand for 4, then the fault
+                "ref_source": 0 if i < 2 else (1 if i < 6 else 3),
+                "policy_age_us": -1.0 if i < 2 else 1000.0 * i,
+                "ref_base_pz": 0.79 if 2 <= i < 6 else 0.7,
+                "plausibility_rejects": 1 if i >= 4 else 0,
+                "mpc_state_epoch": 1,
             }
         )
     return rows
@@ -225,6 +242,22 @@ def test_summary(session: Path):
     # servo share: row 0 has ff_norm 0 and is left out
     assert s["series"]["servo_share"]["p50"] == pytest.approx(0.25)
     assert s["series"]["servo_share"]["n"] == N - 1
+    assert s["rows_per_reference_source"] == {"idle": 2, "stand": 4, "fault": 4}
+    assert s["stand_fraction"] == pytest.approx(0.4)
+    assert s["time_to_stand_s"] == pytest.approx(0.2)
+    assert s["walk_rows"] == 0
+    assert s["plausibility_rejects"] == 1
+    assert s["stand_ref_base_z_mean_m"] == pytest.approx(0.79)
+    assert s["policy_age_us"]["n"] == N - 2
+    assert s["policy_age_us"]["min"] == pytest.approx(2000.0)
+
+
+def test_summary_of_a_log_without_the_mpc_columns(tmp_path: Path):
+    header = [h for h in diag_header() if h not in ("ref_source", "policy_age_us")]
+    write_csv(tmp_path / "old" / ld.SUBDIR / ld.DIAG_FILE, header, diag_rows())
+    s = ld.summarize(ld.load_session(tmp_path / "old").diag)
+    assert "stand_fraction" not in s
+    assert s["rows"] == N
 
 
 def test_z_ref_and_tilt(session: Path):

@@ -127,7 +127,10 @@ class StanceRecorder(Node):
         if self._samples and self._samples[-1].t - self._samples[0].t >= self._args.duration:
             return True
         # Sim time may stall (paused sim); bound the wait by wall time too.
-        return time.monotonic() - self._start_wall > 3.0 * self._args.duration + 5.0
+        limit = self._args.wall_limit
+        if limit is None:
+            limit = 3.0 * self._args.duration + 5.0
+        return time.monotonic() - self._start_wall > limit
 
     @property
     def samples(self) -> list[sm.Sample]:
@@ -172,6 +175,13 @@ def _parser() -> argparse.ArgumentParser:
         type=float,
         default=60.0,
         help="give up when neither the start condition nor a sample arrives within this [wall s]",
+    )
+    parser.add_argument(
+        "--wall-limit",
+        type=float,
+        default=None,
+        help="stop after this long once recording [wall s]; default 3 × duration + 5 — "
+        "raise it for a sim slowed below real time (max_rtf)",
     )
     parser.add_argument("--json", type=Path, default=None, help="also write the metrics here")
     start = parser.add_mutually_exclusive_group()

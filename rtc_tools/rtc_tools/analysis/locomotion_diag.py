@@ -76,7 +76,8 @@ MARGINS = (
     "margin_joint_accel",
 )
 MODE_NAMES = ("waiting", "nominal", "degraded", "fault")
-FAULT_CAUSE_NAMES = ("none", "solve health", "source", "non-finite", "model epoch")
+FAULT_CAUSE_NAMES = ("none", "solve health", "source", "non-finite", "model epoch", "plan loss")
+REFERENCE_SOURCE_NAMES = ("idle", "stand", "walk", "fault")
 HEALTH_NAMES = ("nominal", "degraded", "fault")
 SOURCE_STATUS_NAMES = (
     "ok",
@@ -350,7 +351,39 @@ def summarize(diag: Table, z_ref: float | None = None) -> dict:
         "max_tick_gap": float(gaps.max()) if gaps.size else 0.0,
         "missing_ticks": int(np.sum(gaps[gaps > 1] - 1)) if gaps.size else 0,
         "series": {name: series_stats(v) for name, v in series.items()},
+        **_mpc_summary(diag),
     }
+
+
+def _mpc_summary(diag: Table) -> dict:
+    """The MPC columns (a session without them — an older log — gets none)."""
+    if "ref_source" not in diag:
+        return {}
+    src = diag["ref_source"]
+    t = diag["t_relative_s"]
+    stand = src == 1
+    age = diag["policy_age_us"]
+    out: dict = {
+        "rows_per_reference_source": {
+            REFERENCE_SOURCE_NAMES[int(m)]
+            if 0 <= int(m) < len(REFERENCE_SOURCE_NAMES)
+            else str(int(m)): int(c)
+            for m, c in zip(*_mode_counts(src), strict=True)
+        },
+        "stand_fraction": float(np.mean(stand)) if src.size else 0.0,
+        # From the first row (the activation, or the window's start).
+        "time_to_stand_s": float(t[np.argmax(stand)] - t[0]) if stand.any() else None,
+        "walk_rows": int(np.sum(src == 2)),
+        "plausibility_rejects": int(np.nanmax(diag["plausibility_rejects"])) if src.size else 0,
+        "mpc_state_epoch_max": int(np.nanmax(diag["mpc_state_epoch"])) if src.size else 0,
+        # The base height the stand followed: the sampled plan's z.
+        "stand_ref_base_z_mean_m": float(np.mean(diag["ref_base_pz"][stand]))
+        if stand.any()
+        else None,
+        "policy_age_us": series_stats(np.where(age >= 0.0, age, np.nan)),
+    }
+    out["policy_age_us"]["n_nonfinite"] = 0  # the rows without a plan, not bad data
+    return out
 
 
 # ── figures ────────────────────────────────────────────────────────────────
@@ -536,6 +569,8 @@ def plot_modes(sess: Session, path: Path) -> None:
         ("health", HEALTH_NAMES),
         ("source_status", SOURCE_STATUS_NAMES),
     )
+    if "ref_source" in sess.diag:
+        specs = (*specs, ("ref_source", REFERENCE_SOURCE_NAMES))
     fig, axes = plt.subplots(len(specs), 1, figsize=(10, 8), sharex=True)
     for ax, (col, names) in zip(axes, specs, strict=True):
         ax.step(t, sess.diag[col], where="post")
@@ -544,7 +579,7 @@ def plot_modes(sess: Session, path: Path) -> None:
         ax.set_ylabel(col, fontsize=8)
         ax.grid(alpha=0.3)
     axes[-1].set_xlabel("t [s]")
-    fig.suptitle("Mode, fault cause, health and source status")
+    fig.suptitle("Mode, fault cause, health, source status (and reference source)")
     _save(fig, path)
 
 
