@@ -47,6 +47,7 @@ struct LocomotionDiagLogPod {
   std::uint64_t tick{0};        ///< ControllerState::iteration
   std::uint64_t tick_count{0};  ///< ticks since this activation (1 = the first)
   std::uint8_t mode{0};
+  bool estop{false};  ///< E-STOP active: the body got damping whatever `mode` says
   std::uint8_t fault_cause{0};
   bool fault_latched{false};
   std::uint32_t fault_count{0};  ///< latches since configure
@@ -117,7 +118,7 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
                                          const std::vector<std::string>& contact_names,
                                          const std::vector<std::string>& joint_names,
                                          const LocomotionDiagLogColumns& cols) {
-  os << "t_relative_s,tick,tick_count,mode,fault_cause,fault_latched,fault_count,"
+  os << "t_relative_s,tick,tick_count,mode,estop,fault_cause,fault_latched,fault_count,"
         "source_status,source_fresh_mask,source_valid_mask,source_bad_ticks,source_sequence,"
         "source_age_us,"
         "health,health_bad_run,tau_valid,qp_converged,qp_status,qp_iterations,rows_dropped,"
@@ -147,10 +148,10 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
 inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogPod& p,
                                       const LocomotionDiagLogColumns& cols) {
   os << p.t_relative_s << ',' << p.tick << ',' << p.tick_count << ','
-     << static_cast<unsigned>(p.mode) << ',' << static_cast<unsigned>(p.fault_cause) << ','
-     << (p.fault_latched ? 1 : 0) << ',' << p.fault_count << ','
-     << static_cast<unsigned>(p.source_status) << ',' << p.source_fresh_mask << ','
-     << p.source_valid_mask << ',' << p.source_bad_ticks << ',' << p.source_sequence << ','
+     << static_cast<unsigned>(p.mode) << ',' << (p.estop ? 1 : 0) << ','
+     << static_cast<unsigned>(p.fault_cause) << ',' << (p.fault_latched ? 1 : 0) << ','
+     << p.fault_count << ',' << static_cast<unsigned>(p.source_status) << ',' << p.source_fresh_mask
+     << ',' << p.source_valid_mask << ',' << p.source_bad_ticks << ',' << p.source_sequence << ','
      << p.source_age_us << ',' << static_cast<unsigned>(p.health) << ',' << p.health_bad_run << ','
      << (p.tau_valid ? 1 : 0) << ',' << (p.qp_converged ? 1 : 0) << ',' << p.qp_status << ','
      << p.qp_iterations << ',' << p.rows_dropped << ',' << p.solve_time_us << ',' << p.wbc_tick_us

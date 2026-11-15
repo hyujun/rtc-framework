@@ -216,10 +216,21 @@ std::string LocomotionController::WireDevices() {
       hand_joint_names_.push_back(hand->joint_state_names);
     }
     indices_ = loco::BuildDeviceIndices(full_joint_order_, /*body_device=*/0, roster, hands, ctx);
+    // The damping clamp: the roster's max_torque, one positive finite value per
+    // joint, or none at all (then the damping is unclamped).
     tau_max_.fill(std::numeric_limits<double>::infinity());
-    if (body->joint_limits && body->joint_limits->max_torque.size() == nb_) {
+    if (body->joint_limits && !body->joint_limits->max_torque.empty()) {
+      const auto& lim = body->joint_limits->max_torque;
+      if (lim.size() != nb_) {
+        return "devices." + cfg_.model.body_group + ".joint_limits.max_torque has " +
+               std::to_string(lim.size()) + " values for " + std::to_string(nb_) + " joints";
+      }
       for (std::size_t i = 0; i < nb_; ++i) {
-        tau_max_[i] = body->joint_limits->max_torque[i];
+        if (!(std::isfinite(lim[i]) && lim[i] > 0.0)) {
+          return "devices." + cfg_.model.body_group + ".joint_limits.max_torque[" +
+                 std::to_string(i) + "] must be finite and > 0";
+        }
+        tau_max_[i] = lim[i];
       }
     }
     for (std::size_t i = 0; i < nb_; ++i) {

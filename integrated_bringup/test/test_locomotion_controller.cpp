@@ -146,6 +146,22 @@ TEST_F(LocomotionControllerTest, TheHandsHoldThePoseTheyHadAtTheLatch) {
   EXPECT_EQ(out.devices[kHand].commands[2], 0.3);  // held, not following
 }
 
+TEST_F(LocomotionControllerTest, AHandNotSeenAtTheLatchIsHeldWhereItFirstReports) {
+  BringUp();
+  state_.devices[kHand].valid = false;  // the hand has not reported yet
+  rtc::ControllerOutput out = Tick();
+  ASSERT_EQ(LastMode(), Mode::kNominal);
+  EXPECT_EQ(out.devices[kHand].num_channels, 0);  // no hold at a made-up pose
+  state_.devices[kHand].valid = true;
+  state_.devices[kHand].positions[4] = 0.2;
+  out = Tick();
+  ASSERT_EQ(out.devices[kHand].num_channels, 10);
+  EXPECT_EQ(out.devices[kHand].commands[4], 0.2);
+  state_.devices[kHand].positions[4] = 0.5;
+  out = Tick();
+  EXPECT_EQ(out.devices[kHand].commands[4], 0.2);  // and held there
+}
+
 // ── Degraded and fault ──────────────────────────────────────────────────────
 
 TEST_F(LocomotionControllerTest, AShortSourceDropHoldsTheTorqueAndALongOneLatches) {

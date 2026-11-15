@@ -1055,7 +1055,7 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
     PdGains pd{};
     // Captured here, off the RT thread: arm_dof_ itself may still be resolved
     // by the first tick when the YAML does not name it.
-    pd_dof_ = arm_dof_;
+    pd_dof_ = std::min(arm_dof_, static_cast<int>(rtc::kMaxDeviceChannels));
     if (const YAML::Node node = cfg["pd_feedforward"]; node) {
       if (command_type_ != CommandType::kPdFeedforward) {
         throw std::runtime_error(
@@ -1067,7 +1067,7 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
                                    " must be a list");
         }
         const auto v = node[key].as<std::vector<double>>();
-        if (static_cast<int>(v.size()) != arm_dof_) {
+        if (static_cast<int>(v.size()) != pd_dof_ || pd_dof_ <= 0) {
           throw std::runtime_error(std::string("demo_joint_controller: pd_feedforward.") + key +
                                    " needs one gain per primary joint (" +
                                    std::to_string(arm_dof_) + ")");

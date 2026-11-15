@@ -197,11 +197,12 @@ class LocomotionController final : public rtc::RTControllerInterface {
   void FillOutput(const rtc::ControllerState& state, rtc::ControllerOutput& out) noexcept;
   void FillDamping(const rtc::ControllerState& state, rtc::DeviceOutput& body) noexcept;
   void FillHands(const rtc::ControllerState& state, rtc::ControllerOutput& out) noexcept;
-  void FillLogs(const rtc::ControllerState& state, const rtc::ControllerOutput& out,
+  void FillLogs(const rtc::ControllerState& state, const rtc::ControllerOutput& out, int64_t now_ns,
                 double tick_us) noexcept;
+  void RestartReference() noexcept;  ///< re-latch on the next valid tick, QP reset
+  void ClearLatch() noexcept;
 
   rclcpp::Logger logger_;
-  rclcpp::Clock log_clock_{RCL_STEADY_TIME};
 
   // ── Configuration (Pass 1 / Pass 3; read-only once configured) ────────────
   LocomotionControllerConfig cfg_;
@@ -257,9 +258,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   uint32_t serviced_estop_epoch_{0};
   std::array<double, kLocomotionMaxBodyJoints> tau_{};       ///< this tick's feedforward
   std::array<double, kLocomotionMaxBodyJoints> tau_prev_{};  ///< the last valid QP torque
-  /// The hand joints' hold targets, by full-model joint index.
+  /// The hand joints' hold targets, by full-model joint index; bit h = hand h is held.
   std::array<double, locomotion::kMaxStateJoints> hand_hold_{};
-  bool hand_hold_set_{false};
+  uint32_t hand_hold_mask_{0};
   LocomotionDiagLogPod diag_{};
   JointFeedforwardLogPod joint_log_{};
 
@@ -268,7 +269,6 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::atomic<uint32_t> estop_epoch_{0};
   std::atomic<uint32_t> fault_reset_epoch_{0};
   std::atomic<bool> fault_latched_{false};
-  std::atomic<bool> dropped_on_activate_{false};
 
   // ── Topics, logs ───────────────────────────────────────────────────────────
   ControllerTopicHandles owned_topics_;

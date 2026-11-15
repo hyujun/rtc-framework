@@ -12,6 +12,10 @@ locomotion_controller:
   # N·m·s/rad]. They ride the wire with every command and stay in the simulator
   # after a switch (sticky). Provisional, the g1_loco values per limb, until a
   # gain selection on this profile's sim settles them.
+  # This profile's demo_joint_controller does not declare its servo gains yet
+  # (the scene's values live with the model, outside this repository): after a
+  # switch back from this controller the body keeps these low gains. Declare
+  # them there (as g1_loco does) before switching back on this profile.
   pd_feedforward:
     kp: [60, 60, 60, 60, 60, 60,  60, 60, 60, 60, 60, 60,  30, 30, 30, 30, 30, 30, 30,  30, 30, 30, 30, 30, 30, 30]
     kd: [4, 4, 4, 4, 4, 4,  4, 4, 4, 4, 4, 4,  1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5,  1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]

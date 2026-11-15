@@ -59,7 +59,7 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
   FillOutput(state, out);
   const double tick_us =
       std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
-  FillLogs(state, out, tick_us);
+  FillLogs(state, out, now_ns, tick_us);
   return out;
 }
 
@@ -72,18 +72,11 @@ void LocomotionController::ServiceRequests() noexcept {
     serviced_generation_ = generation;
     activation_seen_ = true;
     tick_count_ = 0;
-    reference_latched_ = false;
-    hand_hold_set_ = false;
-    source_bad_ticks_ = 0;
-    tau_prev_.fill(0.0);
-    tau_.fill(0.0);
-    qp_.Reset();
+    RestartReference();
     if (source_) {
       source_->Reset();
     }
-    fault_latched_tick_ = false;
-    fault_cause_ = FaultCause::kNone;
-    fault_latched_.store(false, std::memory_order_release);
+    ClearLatch();
     serviced_reset_epoch_ = fault_reset_epoch_.load(std::memory_order_acquire);
     serviced_estop_epoch_ = estop_epoch_.load(std::memory_order_acquire);
   }
@@ -92,14 +85,8 @@ void LocomotionController::ServiceRequests() noexcept {
   if (reset_epoch != serviced_reset_epoch_) {
     serviced_reset_epoch_ = reset_epoch;
     if (fault_latched_tick_) {
-      fault_latched_tick_ = false;
-      fault_cause_ = FaultCause::kNone;
-      fault_latched_.store(false, std::memory_order_release);
-      reference_latched_ = false;
-      hand_hold_set_ = false;
-      source_bad_ticks_ = 0;
-      tau_prev_.fill(0.0);
-      qp_.Reset();
+      ClearLatch();
+      RestartReference();
     }
   }
 
@@ -109,11 +96,23 @@ void LocomotionController::ServiceRequests() noexcept {
     // Either edge: the robot was not following this controller in between, so
     // the reference starts again from where the robot is.
     serviced_estop_epoch_ = estop_epoch;
-    reference_latched_ = false;
-    hand_hold_set_ = false;
-    tau_prev_.fill(0.0);
-    qp_.Reset();
+    RestartReference();
   }
+}
+
+void LocomotionController::RestartReference() noexcept {
+  reference_latched_ = false;
+  hand_hold_mask_ = 0;
+  source_bad_ticks_ = 0;
+  tau_prev_.fill(0.0);
+  tau_.fill(0.0);
+  qp_.Reset();
+}
+
+void LocomotionController::ClearLatch() noexcept {
+  fault_latched_tick_ = false;
+  fault_cause_ = FaultCause::kNone;
+  fault_latched_.store(false, std::memory_order_release);
 }
 
 void LocomotionController::ReadState(const ControllerState& state, int64_t now_ns) noexcept {
@@ -195,14 +194,20 @@ void LocomotionController::LatchReference(const ControllerState& state) noexcept
     }
     offset += cfg_.model.contacts[i].dim;
   }
+  // A hand is held where it is — only a hand the source has a real sample of;
+  // one it has not seen yet is latched by FillHands on its first readable tick.
   for (int h = 0; h < indices_.num_hands; ++h) {
-    const auto& map = indices_.hands[static_cast<std::size_t>(h)];
+    const auto hu = static_cast<std::size_t>(h);
+    if ((measured_.valid_mask & loco::HandBit(hu)) == 0) {
+      continue;
+    }
+    const auto& map = indices_.hands[hu];
     for (int c = 0; c < map.num_channels; ++c) {
       const auto a = static_cast<std::size_t>(map.joint[static_cast<std::size_t>(c)]);
       hand_hold_[a] = measured_.q[7 + a];
     }
+    hand_hold_mask_ |= 1U << hu;
   }
-  hand_hold_set_ = true;
   tau_prev_.fill(0.0);
   qp_.Reset();
   reference_latched_ = true;
@@ -310,16 +315,26 @@ void LocomotionController::FillHands(const ControllerState& state, ControllerOut
     hand.command_type = rtc::CommandType::kPosition;
     hand.goal_type = rtc::GoalType::kJoint;
     const auto& dev = state.devices[slot];
-    const bool readable = rtc::IsDeviceReadable(dev, map.num_channels);
-    if (!hand_hold_set_ && !readable) {
-      hand.num_channels = 0;
-      continue;
+    const uint32_t bit = 1U << static_cast<uint32_t>(h);
+    if ((hand_hold_mask_ & bit) == 0) {
+      if (!rtc::IsDeviceReadable(dev, map.num_channels)) {
+        hand.num_channels = 0;  // nothing honest to hold yet
+        continue;
+      }
+      if (reference_latched_) {  // the first readable tick after the latch: hold here
+        for (int c = 0; c < map.num_channels; ++c) {
+          const auto uc = static_cast<std::size_t>(c);
+          hand_hold_[static_cast<std::size_t>(map.joint[uc])] = dev.positions[uc];
+        }
+        hand_hold_mask_ |= bit;
+      }
     }
+    const bool held = (hand_hold_mask_ & bit) != 0;
     hand.num_channels = map.num_channels;
     for (int c = 0; c < map.num_channels; ++c) {
       const auto uc = static_cast<std::size_t>(c);
       const auto a = static_cast<std::size_t>(map.joint[uc]);
-      const double target = hand_hold_set_ ? hand_hold_[a] : dev.positions[uc];
+      const double target = held ? hand_hold_[a] : dev.positions[uc];
       hand.commands[uc] = target;
       hand.goal_positions[uc] = target;
       hand.target_positions[uc] = target;
@@ -331,7 +346,7 @@ void LocomotionController::FillHands(const ControllerState& state, ControllerOut
 // ── Logs ────────────────────────────────────────────────────────────────────
 
 void LocomotionController::FillLogs(const ControllerState& state, const ControllerOutput& out,
-                                    double tick_us) noexcept {
+                                    int64_t now_ns, double tick_us) noexcept {
   const auto slot = static_cast<std::size_t>(indices_.body.device);
   const auto& dev = state.devices[slot];
   const auto& body = out.devices[slot];
@@ -342,6 +357,7 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   d.tick = state.iteration;
   d.tick_count = tick_count_;
   d.mode = static_cast<std::uint8_t>(mode_);
+  d.estop = estop_active_;
   d.fault_cause = static_cast<std::uint8_t>(fault_cause_);
   d.fault_latched = fault_latched_tick_;
   d.fault_count = fault_count_;
@@ -350,9 +366,6 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   d.source_valid_mask = measured_.valid_mask;
   d.source_bad_ticks = source_bad_ticks_;
   d.source_sequence = measured_.sequence;
-  const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                          std::chrono::steady_clock::now().time_since_epoch())
-                          .count();
   d.source_age_us = measured_.stamp_steady_ns > 0
                         ? static_cast<double>(now_ns - measured_.stamp_steady_ns) * 1e-3
                         : -1.0;

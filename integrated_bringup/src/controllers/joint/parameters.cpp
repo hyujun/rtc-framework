@@ -186,6 +186,8 @@ rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSe
 
   auto g = gains_lock_.Load();
   bool gains_dirty = false;
+  PdGains pd = pd_gains_lock_.Load();
+  bool pd_dirty = false;
 
   for (const auto& p : params) {
     const auto& name = p.get_name();
@@ -240,7 +242,8 @@ rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSe
         g.grasp_hand_mode = requested;
         gains_dirty = true;
       } else if (name == "pd_feedforward.kp" || name == "pd_feedforward.kd") {
-        PdGains pd = pd_gains_lock_.Load();
+        // Staged like the other gains: nothing reaches the RT path unless every
+        // parameter of this set is accepted, and kp / kd set together land together.
         const bool is_kp = name == "pd_feedforward.kp";
         if (const char* why = SetPdGainList(p.as_double_array(), is_kp ? pd.kp : pd.kd,
                                             is_kp ? pd.kp_size : pd.kd_size);
@@ -249,7 +252,7 @@ rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSe
           result.reason = why;
           return result;
         }
-        pd_gains_lock_.Store(pd);
+        pd_dirty = true;
       } else if (IsVirtualTcpParameter(name)) {
         // #847: inactive only — the gate and why are in virtual_tcp_params.hpp.
         if (const char* why = ApplyVirtualTcpSet(p, active_.load(std::memory_order_acquire),
@@ -271,6 +274,9 @@ rcl_interfaces::msg::SetParametersResult DemoJointController::OnGainParametersSe
 
   if (gains_dirty) {
     gains_lock_.Store(g);
+  }
+  if (pd_dirty) {
+    pd_gains_lock_.Store(pd);
   }
   return result;
 }
