@@ -41,6 +41,10 @@ namespace rtc {
 //   - Direct copy: `slot.commands` is already in `joint_command_names` order
 //     (the message label order). Wire-order differences are absorbed by the
 //     receiver, which reorders by `joint_names`.
+//   - PD gains ride along only for kPdFeedforward, only when the slot claims
+//     them (`has_pd_gains`) and only when the slot covers every command joint
+//     — the receiver ignores a partial set. A message without them leaves the
+//     receiver on the gains it last applied (sticky).
 //
 // Floating-base lane — optional, YAML-enabled:
 //   - `devices.<group>.backend.base_state.sensor_topic` names the group's
@@ -198,11 +202,15 @@ class MujocoNativeBackend : public DeviceBackend {
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr state_sub_;
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::JointCommand>::SharedPtr cmd_pub_;
 
-  // Pre-allocated JointCommand message (no per-tick allocation).
+  // Pre-allocated JointCommand messages (no per-tick allocation): one with
+  // empty kp/kd and one with them sized to the command joints. Two messages
+  // rather than one resized in place, because resizing on the RT path would
+  // allocate.
   rtc_msgs::msg::JointCommand cmd_msg_{};
-  // Set once cmd_msg_ has been published at least once — before that there
-  // is no known-good command to fall back on.
-  bool cmd_published_{false};
+  rtc_msgs::msg::JointCommand cmd_msg_gains_{};
+  // The message last published, null until the first — before that there is
+  // no known-good command to fall back on.
+  const rtc_msgs::msg::JointCommand* last_published_{nullptr};
 
   // Fingertip wrench SeqLock — non-RT executor writes (OnWrench), RT reads
   // (ReadSensorState). SPSC contract: every wrench callback MUST run on a
