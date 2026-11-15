@@ -153,6 +153,21 @@ def test_falling_is_dropping_past_the_height_or_tilting_past_the_angle():
     assert compute(rows, settle_s=0.5, force_threshold_n=5.0, fall_tilt_rad=0.7).fallen is False
 
 
+def test_a_non_finite_base_sample_is_an_error_not_a_still_robot():
+    rows = standing(1000)
+    rows[700] = Sample(
+        rows[700].t, rows[700].pos, (math.nan,) * 4, rows[700].feet, rows[700].loads
+    )
+    with pytest.raises(ValueError, match="non-finite"):
+        compute(rows, settle_s=0.5, force_threshold_n=5.0)
+    rows = standing(1000)
+    rows[300] = Sample(
+        rows[300].t, (0.0, 0.0, math.inf), rows[300].quat, rows[300].feet, rows[300].loads
+    )
+    with pytest.raises(ValueError, match="non-finite"):
+        compute(rows, settle_s=0.5, force_threshold_n=5.0)
+
+
 def test_a_foot_at_or_under_the_threshold_counts_the_sample():
     rows = standing(1000)
     for i in (600, 601, 602):

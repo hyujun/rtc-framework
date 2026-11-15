@@ -21,12 +21,17 @@ Three more say whether the robot stayed where it stood and stayed up:
   window's first sample [m],
 * ``fallen``               — whether any sample in the window had the base under
   ``z_ref − fall_height_m`` or tilted past ``fall_tilt_rad`` (defaults 0.30 m
-  and 0.50 rad — a robot that far down has fallen, whatever its servos do),
+  and 0.50 rad — a robot that far down has fallen, whatever its servos do).
+  This one is a definition, not a gate: it says what "fell" means. Its height
+  half needs an absolute ``z_ref`` — against the window's first sample, a robot
+  that sank during the settle time starts the window already down,
 * ``time_to_fall_s``       — from the window's first sample to the first fallen
   one, ``None`` when it did not fall.
 
-Like the four above, these measure; the caller judges. The thresholds are not here: this module measures, the caller
-judges (the Sprint Contract numbers live with the issue that set them).
+The gate thresholds are not here: this module measures, the caller judges
+(the Sprint Contract numbers live with the issue that set them). A non-finite
+base sample is an error, not a number: NaN compares false against every bound,
+so it would read as a robot standing perfectly still.
 
 Two more numbers say whether the samples themselves can be trusted:
 ``sample_dt_median_s`` (the sensor period the recording ran at) and
@@ -141,6 +146,9 @@ def compute(
             f"no sample after the settle time ({settle_s} s) — the recording lasted "
             f"{rows[-1].t - t0:.3f} s"
         )
+    for s in window:
+        if not all(math.isfinite(v) for v in (*s.pos, *s.quat)):
+            raise ValueError(f"non-finite base sample at t = {s.t}")
     first = window[0]
     num_feet = len(first.feet)
     ref_z = first.pos[2] if z_ref is None else z_ref
