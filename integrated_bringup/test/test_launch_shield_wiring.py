@@ -103,6 +103,11 @@ def test_shield_probe_receives_the_mpc_profile(filename):
             f"{filename}: robot launches do not take a profile by name until the "
             "control-PC soak decides the worker layout"
         )
+    else:
+        assert "layout_profile_argument" in called, (
+            f"{filename}: declare layout_profile with cpu_shield.layout_profile_argument "
+            "so the help text follows the manifest"
+        )
     calls = [
         node
         for node in ast.walk(tree)

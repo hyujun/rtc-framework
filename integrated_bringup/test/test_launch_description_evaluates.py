@@ -312,6 +312,19 @@ def _on_exit_target(handler: OnProcessExit):
         ) from exc
 
 
+def _text(token) -> str:
+    """A command token's literal text.
+
+    ExecuteProcess normalises cmd into List[List[Substitution]], so a plain str
+    never survives to here — the literal lives in a TextSubstitution's .text.
+    str() on the list yields repr addresses and would silently match nothing,
+    which is how the shield matcher below first shipped.
+    """
+    if isinstance(token, (list, tuple)):
+        return "".join(_text(part) for part in token)
+    return str(getattr(token, "text", token))
+
+
 def _shield_actions(entities) -> list:
     """The cset-shield ``ExecuteProcess`` among ``entities``.
 
@@ -319,16 +332,6 @@ def _shield_actions(entities) -> list:
     (``rtc_cpu_shield``), which is the one token in that command line that
     exists to name it.
     """
-
-    def _text(token) -> str:
-        # ExecuteProcess normalises cmd into List[List[Substitution]], so a
-        # plain str never survives to here — the literal lives in a
-        # TextSubstitution's .text. str() on the list yields repr addresses and
-        # would silently match nothing, which is how this helper first shipped.
-        if isinstance(token, (list, tuple)):
-            return "".join(_text(part) for part in token)
-        return str(getattr(token, "text", token))
-
     found = []
     for entity in entities:
         if not isinstance(entity, ExecuteProcess):
@@ -508,12 +511,6 @@ def test_the_wbc_sims_still_send_the_mpc_overrides():
 
 def _shield_command_text(shield) -> str:
     """The shield action's command line as one string (its tokens' literals)."""
-
-    def _text(token) -> str:
-        if isinstance(token, (list, tuple)):
-            return "".join(_text(part) for part in token)
-        return str(getattr(token, "text", token))
-
     return " ".join(_text(token) for token in shield.cmd or [])
 
 
@@ -536,7 +533,7 @@ def test_a_named_layout_profile_reaches_the_shield_and_the_controller(filename, 
         assert len(shields) == 1, (filename, overrides)
         # argv after the inline script: $0 (rtc_cpu_shield), the profile, pin_enabled.
         argv = _shield_command_text(shields[0]).split()
-        name = len(argv) - 1 - argv[::-1].index("rtc_cpu_shield")
+        name = max(i for i, token in enumerate(argv) if token == "rtc_cpu_shield")
         assert argv[name + 1] == expected, (filename, overrides, argv[name:])
 
 

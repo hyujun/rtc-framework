@@ -483,15 +483,7 @@ def generate_launch_description():
         ),
     )
 
-    layout_profile_arg = DeclareLaunchArgument(
-        "layout_profile",
-        default_value="",
-        description=(
-            "CPU layout profile by name (mpc_on, mpc_off, mpc_par, mpc_par_sim); empty "
-            "(the default) derives it from enable_mpc. mpc_par_sim adds MPC solver "
-            "worker cores — the slots the absent arm and hand drivers free."
-        ),
-    )
+    layout_profile_arg = shield.layout_profile_argument()
 
     mpc_engine_arg = DeclareLaunchArgument(
         "mpc_engine",
