@@ -51,6 +51,7 @@ def test_a_motionless_robot_measures_zero():
     assert m.num_feet == 2
     assert m.num_samples == 5500 - 500
     assert m.z_ref == Z0
+    assert m.base_pos_drift_max == 0.0
 
 
 def test_a_sliding_foot_is_slip_of_that_foot_alone():
@@ -105,6 +106,51 @@ def test_tilt_is_the_angle_of_the_body_z_axis():
     rows[700] = Sample(rows[700].t, rows[700].pos, q, rows[700].feet, rows[700].loads)
     m = compute(rows, settle_s=0.5, force_threshold_n=5.0)
     assert m.base_tilt_max == pytest.approx(0.1, abs=1e-12)
+
+
+def test_base_drift_is_the_xy_excursion_of_the_base_alone():
+    rows = standing(1000)
+    # The base slides 4 mm in y while the feet stay — drift, not slip.
+    for i in range(600, 1000):
+        s = rows[i]
+        rows[i] = Sample(s.t, (0.0, 0.004 * (i - 599) / 400, Z0), s.quat, s.feet, s.loads)
+    m = compute(rows, settle_s=0.5, force_threshold_n=5.0)
+    assert m.base_pos_drift_max == pytest.approx(0.004, abs=1e-12)
+    assert m.foot_slip_max == 0.0
+    # A vertical move is height, never drift.
+    rows = [Sample(s.t, (0.0, 0.0, Z0 - 0.01), s.quat, s.feet, s.loads) for s in standing(1000)]
+    assert compute(rows, settle_s=0.5, force_threshold_n=5.0, z_ref=Z0).base_pos_drift_max == 0.0
+
+
+def test_a_robot_that_stays_up_has_not_fallen():
+    m = compute(standing(1000), settle_s=0.5, force_threshold_n=5.0)
+    assert m.fallen is False
+    assert m.time_to_fall_s is None
+
+
+def test_falling_is_dropping_past_the_height_or_tilting_past_the_angle():
+    # Down past z_ref - 0.30 m at sample 800 (window opens at 250).
+    rows = standing(1000)
+    for i in range(800, 1000):
+        s = rows[i]
+        rows[i] = Sample(s.t, (0.0, 0.0, Z0 - 0.31), s.quat, s.feet, s.loads)
+    m = compute(rows, settle_s=0.5, force_threshold_n=5.0, z_ref=Z0)
+    assert m.fallen is True
+    assert m.time_to_fall_s == pytest.approx((800 - 250) * DT, abs=1e-9)
+    # 0.29 m down is a deep squat, not a fall.
+    rows = [Sample(s.t, (0.0, 0.0, Z0 - 0.29), s.quat, s.feet, s.loads) for s in standing(1000)]
+    assert compute(rows, settle_s=0.5, force_threshold_n=5.0, z_ref=Z0).fallen is False
+    # Tilted 0.6 rad (pitch about y) from sample 900.
+    q = (math.cos(0.3), 0.0, math.sin(0.3), 0.0)
+    rows = standing(1000)
+    for i in range(900, 1000):
+        s = rows[i]
+        rows[i] = Sample(s.t, s.pos, q, s.feet, s.loads)
+    m = compute(rows, settle_s=0.5, force_threshold_n=5.0)
+    assert m.fallen is True
+    assert m.time_to_fall_s == pytest.approx((900 - 250) * DT, abs=1e-9)
+    # The thresholds are the caller's to move.
+    assert compute(rows, settle_s=0.5, force_threshold_n=5.0, fall_tilt_rad=0.7).fallen is False
 
 
 def test_a_foot_at_or_under_the_threshold_counts_the_sample():
