@@ -162,20 +162,25 @@ def test_the_controller_choice_reads_the_same_spellings(enable_mpc, expected):
 
 
 @pytest.mark.parametrize("enable_mpc", ["", "true", "false", "0", " YES ", "maybe"])
-def test_an_empty_layout_profile_keeps_the_enable_mpc_mapping(enable_mpc):
+@pytest.mark.parametrize("empty", ["", "  "])
+def test_an_empty_layout_profile_keeps_the_enable_mpc_mapping(empty, enable_mpc):
     """The argument's default is the launch line as it was before the argument."""
-    assert cpu_shield.resolve_layout_profile("", enable_mpc) == cpu_shield.mpc_layout_profile(
-        enable_mpc
-    )
-    assert cpu_shield.resolve_layout_profile("  ", enable_mpc) == cpu_shield.mpc_layout_profile(
-        enable_mpc
-    )
+    expected = cpu_shield.mpc_layout_profile(enable_mpc)
+    assert cpu_shield.resolve_layout_profile(empty, enable_mpc) == expected
 
 
 @pytest.mark.parametrize("profile", ["mpc_on", "mpc_off", "mpc_par", "mpc_par_sim"])
 def test_a_declared_layout_profile_is_taken_as_named(profile):
     assert cpu_shield.resolve_layout_profile(profile, "false") == profile
     assert cpu_shield.resolve_layout_profile(f" {profile} ", "") == profile
+
+
+def test_the_layout_profile_argument_lists_the_declared_profiles():
+    argument = cpu_shield.layout_profile_argument()
+    assert argument.name == "layout_profile"
+    assert argument.default_value[0].text == ""
+    for profile in ("mpc_on", "mpc_off", "mpc_par", "mpc_par_sim"):
+        assert profile in argument.description
 
 
 @pytest.mark.parametrize("profile", ["mpc_parr", "MPC_PAR", "mpc", "mpc_par_robot"])

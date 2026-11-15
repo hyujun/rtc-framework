@@ -35,7 +35,13 @@ dangerous case — active shield, adopt failed — holds the lifecycle back.
 
 from __future__ import annotations
 
-from launch.actions import EmitEvent, ExecuteProcess, LogInfo, RegisterEventHandler
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    ExecuteProcess,
+    LogInfo,
+    RegisterEventHandler,
+)
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -130,6 +136,23 @@ def resolve_layout_profile(layout_profile: str, enable_mpc: str) -> str:
             f"declared: {', '.join(LAYOUT_PROFILES)}"
         )
     return value
+
+
+def layout_profile_argument() -> DeclareLaunchArgument:
+    """The ``layout_profile`` argument every simulation launch declares.
+
+    One declaration, so the help text lists the profiles the manifest declares
+    rather than a copy that goes stale in seven launch files.
+    """
+    return DeclareLaunchArgument(
+        "layout_profile",
+        default_value="",
+        description=(
+            f"CPU layout profile by name ({', '.join(LAYOUT_PROFILES)}); empty (the "
+            "default) derives it from enable_mpc. mpc_par_sim adds MPC solver worker "
+            "cores: the slots the absent arm and hand drivers free."
+        ),
+    )
 
 
 def mpc_solver_threads(
