@@ -55,3 +55,9 @@ locomotion_controller:
       friction_cone: {}
       joint_limit: {position_margin: 0.05, velocity_margin: 0.1}
       torque_limit: {tau_scale: 1.0}
+    # Solve health: a run of more than 5 ticks without a valid torque (or with
+    # the margins below their floors) is a Fault and latches the controller;
+    # 50 good ticks in a row return Degraded to Nominal.
+    health:
+      max_invalid_ticks: 5
+      recover_valid_ticks: 50

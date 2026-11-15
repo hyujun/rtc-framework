@@ -78,6 +78,10 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   # Humanoid locomotion controller config (W1-F03 #1026; the controller is W6-F03)
   src/controllers/locomotion/humanoid_model_config.cpp
   src/controllers/locomotion/measured_state_source.cpp
+  src/controllers/locomotion/controller.cpp
+  src/controllers/locomotion/compute.cpp
+  src/controllers/locomotion/lifecycle.cpp
+  src/controllers/locomotion/parameters.cpp
   # Learned-policy binding. Its law half lives in rtc_controllers/inference
   # (tensor marshalling) — this side owns the ControllerState/engine contract.
   src/controllers/inference/controller.cpp
@@ -2156,6 +2160,64 @@ if(BUILD_TESTING)
     rtc_base
     pinocchio
   )
+
+  # locomotion_controller on the installed g1_loco profile and the CM's model:
+  # configure, the standing tick, the fault latch and its exits, E-STOP, refusals.
+  ament_add_gtest(test_locomotion_controller test/test_locomotion_controller.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_locomotion_controller PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_locomotion_controller PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_controller
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_controller
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # Its RT tick on every path under the global operator-new gate. Own binary:
+  # alloc_gate.hpp replaces operator new (one TU per binary).
+  ament_add_gtest(test_locomotion_controller_alloc test/test_locomotion_controller_alloc.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_locomotion_controller_alloc PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_compile_definitions(test_locomotion_controller_alloc PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_controller_alloc
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_controller_alloc
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+  target_compile_options(test_locomotion_controller_alloc PRIVATE -Wno-mismatched-new-delete)
 
   # locomotion_controller.command.* (W2-F01): the shipped g1_loco fragment through
   # rtc::LoadControllerConfig into rtc_mpc's reference/ loaders. No node.

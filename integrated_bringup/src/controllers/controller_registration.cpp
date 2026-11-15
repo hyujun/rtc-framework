@@ -12,6 +12,7 @@
 #include "integrated_bringup/controllers/demo_task_controller.hpp"
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/controllers/hand_joint_controller.hpp"
+#include "integrated_bringup/controllers/locomotion_controller.hpp"
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_inference/onnx/onnx_engine.hpp"
 
@@ -99,3 +100,10 @@ RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
 RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
     hand_joint_controller, "", "integrated_bringup",
     std::make_unique<integrated_bringup::HandJointController>(urdf))
+
+// The humanoid whole-body controller (floating base, pd_feedforward). REQUIRING_CONFIG:
+// its contacts, frames and gains have no defaults, so only a profile that ships
+// a locomotion_controller.yaml runs it — and every such profile must configure.
+RTC_REGISTER_CONTROLLER_REQUIRING_CONFIG(
+    locomotion_controller, "", "integrated_bringup",
+    std::make_unique<integrated_bringup::LocomotionController>(urdf))
