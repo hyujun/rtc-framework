@@ -1143,6 +1143,10 @@ test_get_rt_shield_cpus_smt_primaries_first() {
   got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/shield_smt_std_cpuinfo" \
         RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus)
   expect_eq "shield.smt_primaries.6c" "1-3,7-9" "$got"
+  # sim worker profile: slot 4 (driver 가 비운 slot) 과 그 sibling 10 이 더해진다.
+  got=$(RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/shield_smt_std_cpuinfo" \
+        RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 get_rt_shield_cpus mpc_par_sim)
+  expect_eq "shield.smt_primaries.6c.par_sim" "1-4,7-10" "$got"
 }
 
 test_get_rt_shield_cpus_smt_interleaved() {
@@ -1281,8 +1285,16 @@ test_layout_profile_workers_take_spare_slots_only() {
   done
   for n in 1 4 5 6 7; do
     expect_eq "worker.par.${n}"     "" "$(get_mpc_worker_slots "$n" mpc_par)"
-    expect_eq "worker.par_sim.${n}" "" "$(get_mpc_worker_slots "$n" mpc_par_sim)"
     expect_eq "rt.par.${n}" "$(get_rt_cores "$n")" "$(get_rt_cores "$n" mpc_par)"
+  done
+  for n in 1 4 5; do
+    expect_eq "worker.par_sim.${n}" "" "$(get_mpc_worker_slots "$n" mpc_par_sim)"
+  done
+  # 6 core tier 는 driver 둘이 slot 4 를 나눠 쓴다 — sim 에서는 그 slot 하나가 pool 이다.
+  for n in 6 7; do
+    expect_eq "worker.par_sim.${n}" "4" "$(get_mpc_worker_slots "$n" mpc_par_sim)"
+    expect_eq "rt.par_sim.${n}"     "1,2,3,4" "$(get_rt_cores "$n" mpc_par_sim)"
+    expect_eq "mpc.par_sim.${n}"    "3,4" "$(get_mpc_cores "$n" mpc_par_sim)"
   done
   for n in 8 9; do
     expect_eq "worker.par.${n}" "6,7" "$(get_mpc_worker_slots "$n" mpc_par)"
@@ -1309,6 +1321,9 @@ test_layout_profile_workers_take_spare_slots_only() {
   expect_eq "worker.exp.sim.8" \
     "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:60:pool mpc_worker_1:5:1:60:pool mpc_worker_2:6:1:60:pool mpc_worker_3:7:1:60:pool nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
     "$(rtc_expected_threads 8 mpc_par_sim | tr '\n' ' ' | sed 's/ $//')"
+  expect_eq "worker.exp.sim.6" \
+    "rt_control:1:1:90 rt_callback:2:1:70 mpc_main:3:1:60 mpc_worker_0:4:1:60:pool nrt_logging:2:0:0 nrt_callback:2:0:0 nrt_publish:2:0:0" \
+    "$(rtc_expected_threads 6 mpc_par_sim | tr '\n' ' ' | sed 's/ $//')"
   # worker 가 없는 tier 의 worker profile 기대 표는 default 와 같다.
   expect_eq "worker.exp.6" "$(rtc_expected_threads 6)" "$(rtc_expected_threads 6 mpc_par)"
   # 역사적 profile 의 기대 표에는 worker 행이 없다 — 출하 run 의 검증 결과 불변.
@@ -2133,6 +2148,7 @@ test_verifier_pool_rows_count_and_require_contiguity() {
     "$(_verifier_pool_summary 12 mpc_par mpc_worker_1 mpc_worker_3)"
   expect_eq "pool.sim8"  "3 4 mpc_worker_3 -" \
     "$(_verifier_pool_summary 8 mpc_par_sim mpc_worker_0 mpc_worker_1 mpc_worker_2)"
+  expect_eq "pool.sim6"  "1 1 - -" "$(_verifier_pool_summary 6 mpc_par_sim mpc_worker_0)"
   # worker 를 선언하지 않는 profile 은 pool 행이 없다.
   expect_eq "pool.on"    "0 0 - -" "$(_verifier_pool_summary 12 mpc_on)"
   expect_eq "pool.par6"  "0 0 - -" "$(_verifier_pool_summary 6 mpc_par)"

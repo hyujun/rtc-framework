@@ -99,6 +99,8 @@ SIM_COMBOS: list[tuple[str, dict[str, str]]] = [
     # The axis #350 added and #397 broke — MPC_OFF is the only value that is not
     # the fallback, so it is the one a mapping bug hides behind.
     ("mpc_off", {"enable_mpc": "false"}),
+    # A profile by name rather than through enable_mpc: the worker profile.
+    ("worker_profile", {"enable_mpc": "true", "layout_profile": "mpc_par_sim"}),
     (
         "all_overrides",
         {
@@ -310,6 +312,19 @@ def _on_exit_target(handler: OnProcessExit):
         ) from exc
 
 
+def _text(token) -> str:
+    """A command token's literal text.
+
+    ExecuteProcess normalises cmd into List[List[Substitution]], so a plain str
+    never survives to here — the literal lives in a TextSubstitution's .text.
+    str() on the list yields repr addresses and would silently match nothing,
+    which is how the shield matcher below first shipped.
+    """
+    if isinstance(token, (list, tuple)):
+        return "".join(_text(part) for part in token)
+    return str(getattr(token, "text", token))
+
+
 def _shield_actions(entities) -> list:
     """The cset-shield ``ExecuteProcess`` among ``entities``.
 
@@ -317,16 +332,6 @@ def _shield_actions(entities) -> list:
     (``rtc_cpu_shield``), which is the one token in that command line that
     exists to name it.
     """
-
-    def _text(token) -> str:
-        # ExecuteProcess normalises cmd into List[List[Substitution]], so a
-        # plain str never survives to here — the literal lives in a
-        # TextSubstitution's .text. str() on the list yields repr addresses and
-        # would silently match nothing, which is how this helper first shipped.
-        if isinstance(token, (list, tuple)):
-            return "".join(_text(part) for part in token)
-        return str(getattr(token, "text", token))
-
     found = []
     for entity in entities:
         if not isinstance(entity, ExecuteProcess):
@@ -502,6 +507,65 @@ def test_the_wbc_sims_still_send_the_mpc_overrides():
     values = _override_values(nodes["integrated_rt_controller"], context)
     assert values.get("demo_wbc_controller.mpc.enabled") is True, sorted(values)
     assert values.get("demo_wbc_controller.mpc.engine") == "handler", sorted(values)
+
+
+def _shield_command_text(shield) -> str:
+    """The shield action's command line as one string (its tokens' literals)."""
+    return " ".join(_text(token) for token in shield.cmd or [])
+
+
+@pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
+@pytest.mark.parametrize("enable_mpc", ["true", "false"])
+def test_a_named_layout_profile_reaches_the_shield_and_the_controller(filename, enable_mpc):
+    """`layout_profile:=` names the profile; both consumers get that name.
+
+    Without the argument both still get the `enable_mpc` mapping — the launch
+    line as it was before the argument existed.
+    """
+    for overrides, expected in (
+        ({"enable_mpc": enable_mpc}, "mpc_on" if enable_mpc == "true" else "mpc_off"),
+        ({"enable_mpc": enable_mpc, "layout_profile": "mpc_par_sim"}, "mpc_par_sim"),
+    ):
+        nodes, context = _nodes_by_name(overrides, filename)
+        values = _override_values(nodes["integrated_rt_controller"], context)
+        assert values.get("rt_layout_profile") == expected, (filename, overrides)
+        shields = _shield_actions(_evaluate(filename, overrides))
+        assert len(shields) == 1, (filename, overrides)
+        # argv after the inline script: $0 (rtc_cpu_shield), the profile, pin_enabled.
+        argv = _shield_command_text(shields[0]).split()
+        name = max(i for i, token in enumerate(argv) if token == "rtc_cpu_shield")
+        assert argv[name + 1] == expected, (filename, overrides, argv[name:])
+
+
+@pytest.mark.parametrize("filename", SIM_LAUNCH_FILES)
+def test_an_undeclared_layout_profile_refuses_the_launch(filename):
+    with pytest.raises(RuntimeError, match="not a declared layout profile"):
+        _evaluate(filename, {"use_cpu_affinity": "false", "layout_profile": "mpc_parr"})
+
+
+def test_g1_loco_mpc_threads_sets_the_solver_thread_count():
+    """`mpc_threads:=N` reaches locomotion_controller's solver when the profile
+    seats N - 1 workers on this host, and refuses the launch when it does not;
+    unset, the controller gets no thread count and keeps the YAML's."""
+    from rtc_tools.launch.thread_layout import get_mpc_worker_slots, get_physical_cpu_count
+
+    key = "locomotion_controller.mpc.solver.num_threads"
+    base = {"use_cpu_affinity": "false", "enable_mpc": "true"}
+    nodes, context = _nodes_by_name(base, G1_LOCO_SIM)
+    assert key not in _override_values(nodes["integrated_rt_controller"], context)
+
+    seats = len(get_mpc_worker_slots("mpc_par_sim", get_physical_cpu_count()))
+    pooled = {**base, "layout_profile": "mpc_par_sim", "mpc_threads": str(seats + 1)}
+    nodes, context = _nodes_by_name(pooled, G1_LOCO_SIM)
+    values = _override_values(nodes["integrated_rt_controller"], context)
+    assert values.get(key) == seats + 1, sorted(values)
+    assert values.get("rt_layout_profile") == "mpc_par_sim"
+
+    with pytest.raises(RuntimeError, match="needs .* MPC worker slot"):
+        _evaluate(G1_LOCO_SIM, {**pooled, "mpc_threads": str(seats + 2)})
+    # The default profile seats no worker: a pooled count needs the worker profile.
+    with pytest.raises(RuntimeError, match="layout profile 'mpc_on' reserves 0"):
+        _evaluate(G1_LOCO_SIM, {**base, "mpc_threads": "2"})
 
 
 # ── sim_overlay (ur5e_p1b sim) ───────────────────────────────────────────────

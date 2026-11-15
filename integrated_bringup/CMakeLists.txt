@@ -2440,6 +2440,9 @@ if(BUILD_TESTING)
   # against rtc_mujoco_sim's C++, and report.py on planted stores. The rig
   # itself needs mujoco: test_docking_ident_rig.py skips under colcon and is
   # run by hand with the workspace venv (its header).
+  # tools/standing_eval/run_arms.py (same: read from the source tree): each
+  # arm's launch arguments, with and without a pooled MPC solve.
+  ament_add_pytest_test(test_standing_eval_run_arms test/test_standing_eval_run_arms.py)
   ament_add_pytest_test(test_docking_ident_config test/test_docking_ident_config.py)
   ament_add_pytest_test(test_docking_ident_rig test/test_docking_ident_rig.py)
 

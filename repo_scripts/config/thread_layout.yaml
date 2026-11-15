@@ -256,12 +256,15 @@ roles:
 #                the controller YAML's num_threads decides how many are used.
 #   mpc_par_sim  simulation. No arm or hand driver process exists there, so the
 #                profile drops both and the pool takes their slots 4-5 as well
-#                as 6-7 — the whole pool fits on an 8-core box.
+#                as 6-7 — the whole pool fits on an 8-core box. On the 6-core
+#                tier the drivers share slot 4, so the pool gets that one slot
+#                (a 2-thread solve); slot 5 stays with the system cpuset, where
+#                the simulator and the viewer run unpinned.
 #
 # Neither profile is selected automatically, and neither enables a pool by
 # itself: the solver's thread count lives in the controller YAML, and the code
 # that starts a pool must check it against SelectMpcWorkerSlots(profile).count.
-# Below 8 cores neither profile has workers.
+# Below 8 cores mpc_par has no workers; below 6, neither profile has.
 #
 # On a hybrid CPU, slots run P-cores first, then E-cores, so where the P-core
 # block ends decides which workers land on E-cores (on a 4P box every slot
@@ -299,6 +302,7 @@ profiles:
       - arm_driver
       - hand_driver
     worker_slots:
+      6: [4]
       8: [4, 5, 6, 7]
 
 # Emission order of verify_rt_runtime.sh's expected-thread table. Only roles

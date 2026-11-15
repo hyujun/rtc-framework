@@ -191,7 +191,9 @@ def launch_setup(context, *args, **kwargs):
     enable_mpc = LaunchConfiguration("enable_mpc").perform(context)
     # One mapping for both consumers: the cset shield and the controller's
     # activation gate must agree on which profile is in force (#350).
-    layout_profile = shield.mpc_layout_profile(enable_mpc)
+    layout_profile = shield.resolve_layout_profile(
+        LaunchConfiguration("layout_profile").perform(context), enable_mpc
+    )
 
     # The controller refuses to activate a structurally MPC-enabled config under
     # a profile that dropped the MPC cores — otherwise the shield hands those
@@ -537,6 +539,8 @@ def generate_launch_description():
         ),
     )
 
+    layout_profile_arg = shield.layout_profile_argument()
+
     mpc_engine_arg = DeclareLaunchArgument(
         "mpc_engine",
         default_value="",
@@ -633,6 +637,7 @@ def generate_launch_description():
             use_cpu_affinity_arg,
             initial_controller_arg,
             enable_mpc_arg,
+            layout_profile_arg,
             mpc_engine_arg,
             enable_tracing_arg,
             trace_session_name_arg,

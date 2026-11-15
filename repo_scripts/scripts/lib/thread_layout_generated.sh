@@ -193,7 +193,7 @@ get_mpc_cores() {
     "6|mpc_on") echo "3" ;;
     "6|mpc_off") echo "" ;;
     "6|mpc_par") echo "3" ;;
-    "6|mpc_par_sim") echo "3" ;;
+    "6|mpc_par_sim") echo "3,4" ;;
     "8|mpc_on") echo "3" ;;
     "8|mpc_off") echo "" ;;
     "8|mpc_par") echo "3,6,7" ;;
@@ -238,7 +238,7 @@ get_rt_cores() {
     "6|mpc_on") echo "1,2,3" ;;
     "6|mpc_off") echo "1,2" ;;
     "6|mpc_par") echo "1,2,3" ;;
-    "6|mpc_par_sim") echo "1,2,3" ;;
+    "6|mpc_par_sim") echo "1,2,3,4" ;;
     "8|mpc_on") echo "1,2,3" ;;
     "8|mpc_off") echo "1,2" ;;
     "8|mpc_par") echo "1,2,3,6,7" ;;
@@ -281,7 +281,7 @@ get_mpc_worker_slots() {
     "6|mpc_on") echo "" ;;
     "6|mpc_off") echo "" ;;
     "6|mpc_par") echo "" ;;
-    "6|mpc_par_sim") echo "" ;;
+    "6|mpc_par_sim") echo "4" ;;
     "8|mpc_on") echo "" ;;
     "8|mpc_off") echo "" ;;
     "8|mpc_par") echo "6,7" ;;
@@ -437,6 +437,7 @@ rtc_expected_threads() {
       echo "rt_control:1:1:90"
       echo "rt_callback:2:1:70"
       echo "mpc_main:3:1:60"
+      echo "mpc_worker_0:4:1:60:pool"
       echo "nrt_logging:2:0:0"
       echo "nrt_callback:2:0:0"
       echo "nrt_publish:2:0:0"
