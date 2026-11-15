@@ -132,7 +132,7 @@ robot 그룹은 command 의 `command_type` 으로 모드를 바꾼다.
 - 전역 중력은 항상 켜져 있어 같은 씬의 free body (들어올릴 object) 는 정상적으로 떨어진다.
 - `JointState.effort` = `qfrc_actuator + qfrc_applied + qfrc_gravcomp` — 모드와 무관하게 관절에 작용하는 일반화력 전부이며 실기와 같은 의미다.
 - **torque 모드의 한계**: 서보 (`<position>` · `<velocity>`) actuator 는 torque 모드에서 `ctrlrange` clamp 가 꺼지고 `forcerange` / `actuatorfrcrange` 만 토크를 묶는다. 둘 다 없으면 한계가 없다.
-- **`pd_feedforward`** (sim 전용): `kp·(q_d−q) − kd·qvel + tau_ff`. `values` = 위치 타겟, `feedforward[]` = `tau_ff` [N·m] (**중력 포함**, 빠지면 팔이 처진다), `kp[]` / `kd[]` = 런타임 게인 (sticky, all-or-nothing, 둘 다 ≥ 0). 현재 rtc 컨트롤러 스택은 이 값을 발행하지 못하고 테스트나 직접 publish 로만 도달한다.
+- **`pd_feedforward`** (sim 전용): `kp·(q_d−q) − kd·qvel + tau_ff`. `values` = 위치 타겟, `feedforward[]` = `tau_ff` [N·m] (**중력 포함**, 빠지면 팔이 처진다), `kp[]` / `kd[]` = 런타임 게인 (sticky, all-or-nothing, 둘 다 ≥ 0). rtc 스택에서는 컨트롤러가 `DeviceOutput::has_pd_gains` 로 게인을 선언할 때 `mujoco_native` backend 가 싣는다. **sticky 의 뜻**: 게인 없는 메시지 (다른 컨트롤러 · E-STOP hold · `position` 모드) 는 MJCF 값으로 되돌리지 않고 마지막 wire 게인을 유지하며, sim 재시작 전까지 MJCF 게인으로 돌아갈 길은 그 값을 다시 보내는 것뿐이다.
 
 근거 · 구현 노트는 [sim-rationale.md](../docs/reference/sim-rationale.md#제어-모드와-effort).
 

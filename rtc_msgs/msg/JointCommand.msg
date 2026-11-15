@@ -24,6 +24,9 @@ string command_type       # "position" | "torque" | "pd_feedforward"
 #   으로 두므로 컨트롤러가 중력보상까지 전부 제공해야 한다. 비면 0.
 # kp/kd: PD gain (둘 다 >=0). sticky — 비면 현재 게인 유지, 채우면 갱신 후 지속.
 #   all-or-nothing: kp/kd 중 하나만 채우거나 그룹 조인트 전체를 덮지 못하면 무시된다.
+#   발행: integrated_bringup mujoco_native backend 가 pd_feedforward 이고 컨트롤러가
+#   DeviceOutput::has_pd_gains 로 게인을 선언했을 때만 채운다 (그 외에는 비움).
+#   소비: mujoco_sim 만 (udp_hand_driver 는 무시).
 float64[] feedforward
 float64[] kp
 float64[] kd
