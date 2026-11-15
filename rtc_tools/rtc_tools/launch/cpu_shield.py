@@ -44,6 +44,8 @@ from launch_ros.events.lifecycle import ChangeState
 from lifecycle_msgs.msg import Transition
 
 from rtc_tools.launch.pinning import adopt_process_into_shield, cpu_shield_path
+from rtc_tools.launch.thread_layout import get_mpc_worker_slots, get_physical_cpu_count
+from rtc_tools.launch.thread_layout_generated import LAYOUT_PROFILES
 
 SHIELD_MODES = ("--robot", "--sim")
 
@@ -103,6 +105,63 @@ def mpc_enabled_choice(enable_mpc: str) -> bool | None:
     if value in _MPC_TRUTHY:
         return True
     return None
+
+
+def resolve_layout_profile(layout_profile: str, enable_mpc: str) -> str:
+    """The layout profile a simulation launch runs under.
+
+    ``layout_profile:=`` names one explicitly; empty (the default) keeps the
+    :func:`mpc_layout_profile` mapping of ``enable_mpc``, so a launch line that
+    does not use the argument gets exactly the profile it got before it existed.
+    An undeclared id raises: read as "the default", a misspelt worker profile
+    would quietly shield no worker cores while the controller asks for a pool.
+
+    The simulation launches only — no robot launch takes the argument, and
+    ``cpu_shield.sh --robot`` refuses the ``sim_only`` profiles regardless.
+    Which profile suits which ``enable_mpc`` is not checked here: the controller
+    already refuses an MPC under a profile that drops the MPC cores.
+    """
+    value = layout_profile.strip()
+    if not value:
+        return mpc_layout_profile(enable_mpc)
+    if value not in LAYOUT_PROFILES:
+        raise RuntimeError(
+            f"layout_profile '{value}' is not a declared layout profile; "
+            f"declared: {', '.join(LAYOUT_PROFILES)}"
+        )
+    return value
+
+
+def mpc_solver_threads(
+    mpc_threads: str, layout_profile: str, physical_cores: int | None = None
+) -> int | None:
+    """``mpc_threads:=`` as the MPC solver's thread count; None when unset.
+
+    A solve with N threads runs N - 1 OpenMP workers, one per worker slot of the
+    layout profile on this host (``get_mpc_worker_slots``). The controller
+    refuses a count the profile cannot seat, but only at activation — after the
+    launch, the settle and the switch. Refusing here, from the same table, turns
+    that into an error on the launch line. ``physical_cores`` overrides the host
+    count (tests).
+    """
+    value = mpc_threads.strip()
+    if not value:
+        return None
+    try:
+        threads = int(value)
+    except ValueError:
+        raise RuntimeError(f"mpc_threads '{value}' is not an integer") from None
+    if threads < 1:
+        raise RuntimeError(f"mpc_threads {threads} is below 1")
+    cores = get_physical_cpu_count() if physical_cores is None else physical_cores
+    slots = get_mpc_worker_slots(layout_profile, cores)
+    if threads - 1 > len(slots):
+        raise RuntimeError(
+            f"mpc_threads {threads} needs {threads - 1} MPC worker slot(s); layout profile "
+            f"'{layout_profile}' reserves {len(slots)} on this {cores}-core host. Pick a "
+            "worker profile with layout_profile:= (mpc_par_sim in simulation) or fewer threads."
+        )
+    return threads
 
 
 def enable_cpu_shield(

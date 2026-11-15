@@ -161,6 +161,77 @@ def test_the_controller_choice_reads_the_same_spellings(enable_mpc, expected):
     assert dropped == (expected is False)
 
 
+@pytest.mark.parametrize("enable_mpc", ["", "true", "false", "0", " YES ", "maybe"])
+def test_an_empty_layout_profile_keeps_the_enable_mpc_mapping(enable_mpc):
+    """The argument's default is the launch line as it was before the argument."""
+    assert cpu_shield.resolve_layout_profile("", enable_mpc) == cpu_shield.mpc_layout_profile(
+        enable_mpc
+    )
+    assert cpu_shield.resolve_layout_profile("  ", enable_mpc) == cpu_shield.mpc_layout_profile(
+        enable_mpc
+    )
+
+
+@pytest.mark.parametrize("profile", ["mpc_on", "mpc_off", "mpc_par", "mpc_par_sim"])
+def test_a_declared_layout_profile_is_taken_as_named(profile):
+    assert cpu_shield.resolve_layout_profile(profile, "false") == profile
+    assert cpu_shield.resolve_layout_profile(f" {profile} ", "") == profile
+
+
+@pytest.mark.parametrize("profile", ["mpc_parr", "MPC_PAR", "mpc", "mpc_par_robot"])
+def test_an_undeclared_layout_profile_raises(profile):
+    with pytest.raises(RuntimeError, match="not a declared layout profile"):
+        cpu_shield.resolve_layout_profile(profile, "true")
+
+
+@pytest.mark.parametrize(
+    ("threads", "profile", "cores", "expected"),
+    [
+        ("", "mpc_on", 6, None),
+        (" ", "mpc_par_sim", 6, None),
+        ("1", "mpc_on", 6, 1),
+        ("2", "mpc_par_sim", 6, 2),
+        ("2", "mpc_par_sim", 7, 2),
+        ("5", "mpc_par_sim", 8, 5),
+        ("3", "mpc_par", 8, 3),
+        ("5", "mpc_par", 12, 5),
+    ],
+)
+def test_mpc_threads_within_the_profiles_workers(threads, profile, cores, expected):
+    assert cpu_shield.mpc_solver_threads(threads, profile, cores) == expected
+
+
+@pytest.mark.parametrize(
+    ("threads", "profile", "cores"),
+    [
+        ("2", "mpc_on", 12),  # the default profiles seat no worker
+        ("2", "mpc_off", 12),
+        ("3", "mpc_par_sim", 6),  # one worker slot on the 6-core tier
+        ("2", "mpc_par", 6),
+        ("6", "mpc_par_sim", 16),
+        ("4", "mpc_par", 8),
+    ],
+)
+def test_mpc_threads_beyond_the_profiles_workers_raise(threads, profile, cores):
+    with pytest.raises(RuntimeError, match=f"reserves .* on this {cores}-core host"):
+        cpu_shield.mpc_solver_threads(threads, profile, cores)
+
+
+@pytest.mark.parametrize("threads", ["0", "-1", "two", "2.0"])
+def test_mpc_threads_must_be_a_positive_integer(threads):
+    with pytest.raises(RuntimeError, match="mpc_threads"):
+        cpu_shield.mpc_solver_threads(threads, "mpc_par_sim", 8)
+
+
+def test_mpc_threads_reads_the_host_when_no_count_is_given():
+    seats = len(
+        cpu_shield.get_mpc_worker_slots("mpc_par_sim", cpu_shield.get_physical_cpu_count())
+    )
+    assert cpu_shield.mpc_solver_threads(str(seats + 1), "mpc_par_sim") == seats + 1
+    with pytest.raises(RuntimeError):
+        cpu_shield.mpc_solver_threads(str(seats + 2), "mpc_par_sim")
+
+
 def test_profile_mapping_survives_an_unresolved_substitution():
     """The robot launches map a ``LaunchConfiguration``, resolved at run time.
 
