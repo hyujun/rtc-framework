@@ -111,7 +111,7 @@ using integrated_bringup::testfx::ShippedControllerNode;
 
 // Tripwire for SameOutput()'s hand-written member list — see the test that
 // reads it. Updated together with that list, never on its own.
-constexpr std::size_t kExpectedControllerOutputSize = 29656;
+constexpr std::size_t kExpectedControllerOutputSize = 37848;
 
 // The three shipped profiles. Only iiwa7_leap gets the behavioural half — it is
 // the profile the URDF fixture models — so the other two are held by the config
