@@ -137,6 +137,15 @@ TEST_F(LocomotionControllerTest, TheReferenceStaysLatchedWhileTheRobotMoves) {
   EXPECT_EQ(out.devices[kBody].commands[3], q0);  // the target does not follow
 }
 
+TEST_F(LocomotionControllerTest, TheHandsHoldThePoseTheyHadAtTheLatch) {
+  BringUp();
+  state_.devices[kHand].positions[2] = 0.3;
+  Tick();
+  state_.devices[kHand].positions[2] = 0.7;  // the hand drifts (or is pushed)
+  const rtc::ControllerOutput out = Tick();
+  EXPECT_EQ(out.devices[kHand].commands[2], 0.3);  // held, not following
+}
+
 // ── Degraded and fault ──────────────────────────────────────────────────────
 
 TEST_F(LocomotionControllerTest, AShortSourceDropHoldsTheTorqueAndALongOneLatches) {
