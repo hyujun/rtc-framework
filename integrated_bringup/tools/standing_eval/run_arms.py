@@ -21,9 +21,11 @@ layout), and loco turns the MPC off again with sim_overlay:=mpc_off — the
 control arm of an MPC evaluation. ``--mpc-threads N`` solves on N threads:
 every arm launched with enable_mpc:=true also gets layout_profile:=mpc_par_sim
 (the simulation worker profile, whose worker cores are the absent drivers'
-slots) and mpc_threads:=N. The tool refuses up front a count the profile cannot
-seat on this host and a ``--launch`` that declares no ``mpc_threads`` (the
-argument would be ignored and the run would still be recorded as N threads). ``--rtf R`` runs the sim at R × real time
+slots) and mpc_threads:=N. A pool needs mpc_main's SCHED_FIFO (realtime
+rights on the host); without them activation is refused. The tool refuses up
+front a count the profile cannot seat on this host and a ``--launch`` that
+declares no ``mpc_threads`` (the argument would be ignored and the run would
+still be recorded as N threads). ``--rtf R`` runs the sim at R × real time
 (``max_rtf:=R``): settle, lead and the recording are sim seconds scaled by
 1 / R (the sim stamps its sensor messages with the wall clock, so the
 recorder's duration, its wall limit and its JSON's times are wall seconds), so
