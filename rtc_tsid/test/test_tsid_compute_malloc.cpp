@@ -452,5 +452,52 @@ TEST(TsidComputeMallocTest, TheResetMuWarmStartAddsNothingOnAnyKindOfTick) {
   }
 }
 
+// The margins and the health classification after the solve add nothing: on
+// a valid tick (row slacks gathered, health updated) Compute allocates what
+// the solve alone does, and a refused tick (SkipTick, margins kept and marked
+// stale, health degraded) allocates nothing.
+TEST(TsidComputeMallocTest, TheMarginsAndTheHealthAddNothing) {
+  YAML::Node wbq = YAML::Load(test::kLocoWbq);
+  wbq["health"] = YAML::Load("{max_invalid_ticks: 2, min_torque_margin: 0.0}");
+  test::LocoRig a(wbq);
+  test::LocoRig b(wbq);
+  const Eigen::VectorXd q = test::QStand(*a.model);
+  for (test::LocoRig* r : {&a, &b}) {
+    r->Set(q, Eigen::VectorXd::Zero(r->model->nv));
+    r->WeightOn({0, 1});
+    for (int i = 0; i < 3; ++i) {
+      ASSERT_TRUE(r->Solve().tau_valid);
+    }
+  }
+  std::size_t solve_only = 0;
+  {
+    rtc::testing::ScopedMallocGate gate;
+    EXPECT_TRUE(a.b.UpdateReferences(a.ref, a.contacts));
+    (void)a.b.Controller().Formulation().Solve(a.cache, a.ref, a.contacts, a.info);
+    solve_only = gate.count();
+  }
+  std::size_t compute = 0;
+  bool valid = false;
+  {
+    rtc::testing::ScopedMallocGate gate;
+    valid = b.Solve().tau_valid;
+    compute = gate.count();
+  }
+  EXPECT_TRUE(valid);
+  EXPECT_FALSE(b.b.Margins().stale) << "premise: the margins were gathered";
+  EXPECT_EQ(compute, solve_only);
+
+  b.ref.q_des.segment<4>(3).setZero();  // refused: SkipTick
+  std::size_t skipped = 0;
+  {
+    rtc::testing::ScopedMallocGate gate;
+    valid = b.Solve().tau_valid;
+    skipped = gate.count();
+  }
+  EXPECT_FALSE(valid);
+  EXPECT_EQ(b.b.Health().State(), SolveHealthState::kDegraded) << "premise: health updated";
+  EXPECT_EQ(skipped, 0U);
+}
+
 }  // namespace
 }  // namespace rtc::tsid

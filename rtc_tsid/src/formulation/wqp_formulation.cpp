@@ -52,6 +52,7 @@ void WQPFormulation::AddConstraint(std::unique_ptr<ConstraintBase> constraint) {
     eom_ = constraint.get();
   }
   constraints_.push_back(std::move(constraint));
+  ineq_rows_.emplace_back(0, 0);
   ResizeQp();
 }
 
@@ -169,7 +170,9 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
   qp_data_.u.head(max_n_ineq_).setConstant(std::numeric_limits<double>::infinity());
 
   int n_ineq_used = 0;
-  for (const auto& con : constraints_) {
+  for (std::size_t k = 0; k < constraints_.size(); ++k) {
+    const auto& con = constraints_[k];
+    ineq_rows_[k] = {0, 0};
     if (!con->IsActive())
       continue;
     const int id = con->IneqDim(contacts);
@@ -185,6 +188,7 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
     auto u_view = qp_data_.u.segment(n_ineq_used, id);
     // ComputeInequality 가 l/u 를 덮어쓰므로 padding 의미는 active 영역 밖에서만 유효.
     con->ComputeInequality(cache, contacts, robot_info, n_vars, C_view, l_view, u_view);
+    ineq_rows_[k] = {n_ineq_used, id};
     n_ineq_used += id;
   }
 
@@ -235,6 +239,20 @@ void WQPFormulation::OnTorqueApplied(const Eigen::VectorXd& tau) noexcept {
   for (const auto& con : constraints_) {
     con->OnTorqueApplied(tau);
   }
+}
+
+void WQPFormulation::AccumulateSlack(const ContactState& contacts,
+                                     WbcMargins& margins) const noexcept {
+  const QPData& qp = qp_data_;
+  for (std::size_t k = 0; k < constraints_.size() && k < ineq_rows_.size(); ++k) {
+    const auto [row, dim] = ineq_rows_[k];
+    if (dim <= 0) {
+      continue;
+    }
+    constraints_[k]->MinSlack(contacts, qp.C.middleRows(row, dim), qp.l.segment(row, dim),
+                              qp.u.segment(row, dim), result_.x_opt, margins);
+  }
+  margins.eom_residual_inf = EqualityRowResidualInf(qp, eom_row_, eom_dim_, result_.x_opt);
 }
 
 }  // namespace rtc::tsid

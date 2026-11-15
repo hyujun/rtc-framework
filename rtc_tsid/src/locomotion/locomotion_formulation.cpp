@@ -75,12 +75,15 @@ void LocomotionFormulationBuilder::Init(const pinocchio::Model& model,
   if (!wbq || !wbq.IsMap()) {
     throw std::invalid_argument("whole_body_qp: missing or not a map");
   }
-  RefuseUnknownKeys(
-      wbq, {"formulation_type", "solver", "contact", "contact_overrides", "tasks", "constraints"},
-      "whole_body_qp");
+  RefuseUnknownKeys(wbq,
+                    {"formulation_type", "solver", "contact", "contact_overrides", "tasks",
+                     "constraints", "health"},
+                    "whole_body_qp");
   if (!(std::isfinite(control_period) && control_period > 0.0)) {
     throw std::invalid_argument("whole_body_qp: control_period must be finite and > 0");
   }
+  // Committed at the end, once everything else is built.
+  const SolveHealthConfig health = ParseSolveHealthConfig(wbq["health"]);
   // A re-Init replaces the formulation: drop every pointer into the old one first.
   feet_.clear();
   torso_ = nullptr;
@@ -261,6 +264,8 @@ void LocomotionFormulationBuilder::Init(const pinocchio::Model& model,
   std::vector<pinocchio::FrameIndex> frames = contact_ids;
   frames.push_back(model.getFrameId(spec.torso_frame));
   kinematics_.Init(model, robot_info, frames, com_ != nullptr);
+  health_.Configure(health);
+  margins_ = WbcMargins{};
 }
 
 ContactState LocomotionFormulationBuilder::MakeContactState() const {
@@ -306,11 +311,25 @@ const CommandOutput& LocomotionFormulationBuilder::Compute(const ControlState& s
                                                            const ControlReference& ref,
                                                            const PinocchioCache& cache,
                                                            const ContactState& contacts) noexcept {
-  if (!UpdateReferences(ref, contacts)) {
-    // The frame tasks would track a stale (or never set) reference: no solve.
-    return controller_.SkipTick();
+  // The frame tasks would track a stale (or never set) reference: no solve.
+  const CommandOutput& out = UpdateReferences(ref, contacts)
+                                 ? controller_.Compute(state, ref, cache, contacts)
+                                 : controller_.SkipTick();
+  if (out.tau_valid) {
+    margins_.ClearSlack();
+    controller_.Formulation().AccumulateSlack(contacts, margins_);
+    margins_.stale = false;
+  } else {
+    margins_.stale = true;
   }
-  return controller_.Compute(state, ref, cache, contacts);
+  (void)health_.Update(out.tau_valid, margins_);
+  return out;
+}
+
+void LocomotionFormulationBuilder::Reset() noexcept {
+  controller_.Reset();
+  health_.Reset();
+  margins_ = WbcMargins{};
 }
 
 }  // namespace rtc::tsid

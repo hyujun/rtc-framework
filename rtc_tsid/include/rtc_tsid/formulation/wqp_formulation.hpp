@@ -4,6 +4,7 @@
 #include "rtc_tsid/solver/qp_solver_wrapper.hpp"
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace rtc::tsid {
@@ -33,6 +34,7 @@ class WQPFormulation final : public FormulationBase {
 
   void Reset() noexcept override;
   void OnTorqueApplied(const Eigen::VectorXd& tau) noexcept override;
+  void AccumulateSlack(const ContactState& contacts, WbcMargins& margins) const noexcept override;
 
   [[nodiscard]] std::string_view Type() const noexcept override { return "wqp"; }
 
@@ -62,6 +64,10 @@ class WQPFormulation final : public FormulationBase {
   QPSolverConfig solver_cfg_;
   // The constraint named "eom" (if added) and its rows on the last Solve().
   const ConstraintBase* eom_{nullptr};
+  // Per constraint (constraints_ order): its inequality rows on the last
+  // Solve() — {first row, count}, count 0 when it wrote none. Sized at
+  // AddConstraint.
+  std::vector<std::pair<int, int>> ineq_rows_;
   int eom_row_{0};
   int eom_dim_{0};
 
