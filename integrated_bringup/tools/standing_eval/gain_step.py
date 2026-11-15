@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hanging step response of a PD servo gain set — the first check of a gain choice.
 
-The robot hangs (its floating base pinned in the air, like a crane), the
+The robot hangs (its floating base welded in place, contacts off, like a crane), the
 servos run the candidate PD gains with no feedforward and no gravity
 compensation, and each actuated joint in turn is commanded a step of
 ``--step`` rad from the keyframe pose while the others hold it. Per joint the
@@ -37,8 +37,26 @@ def load_gains(path: Path, key: str) -> tuple[list[float], list[float]]:
     return [float(x) for x in section["kp"]], [float(x) for x in section["kd"]]
 
 
+def pinned_model(mjcf: Path, base_body: str) -> mujoco.MjModel:
+    """The scene with its floating base welded to the world and contacts off.
+
+    Resetting the free joint after each step is not a pin: inside the step the
+    base falls, and the legs fall with it — weightless, so a gain that sags
+    under gravity would pass. The weld holds the base at its reference pose
+    (qpos0) during the step.
+    """
+    spec = mujoco.MjSpec.from_file(str(mjcf))
+    weld = spec.add_equality()
+    weld.type = mujoco.mjtEq.mjEQ_WELD
+    weld.objtype = mujoco.mjtObj.mjOBJ_BODY
+    weld.name1 = base_body
+    model = spec.compile()
+    model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_CONTACT)
+    return model
+
+
 def run(args: argparse.Namespace) -> dict:
-    model = mujoco.MjModel.from_xml_path(str(args.mjcf))
+    model = pinned_model(args.mjcf, args.base_body)
     data = mujoco.MjData(model)
     key = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, args.keyframe)
     if key < 0:
@@ -51,7 +69,11 @@ def run(args: argparse.Namespace) -> dict:
     if len(kp) != nu or len(kd) != nu:
         raise SystemExit(f"{len(kp)} / {len(kd)} gains for {nu} actuators")
     for a in range(nu):
-        model.actuator_gainprm[a, 0] = kp[a]
+        if model.actuator_trntype[a] != mujoco.mjtTrn.mjTRN_JOINT:
+            raise SystemExit(f"actuator {a} does not drive a joint")
+        model.actuator_gaintype[a] = mujoco.mjtGain.mjGAIN_FIXED
+        model.actuator_biastype[a] = mujoco.mjtBias.mjBIAS_AFFINE
+        model.actuator_gainprm[a, 0] = kp[a]  # force = kp·ctrl − kp·q − kd·q̇
         model.actuator_biasprm[a, 0] = 0.0
         model.actuator_biasprm[a, 1] = -kp[a]
         model.actuator_biasprm[a, 2] = -kd[a]
@@ -63,32 +85,44 @@ def run(args: argparse.Namespace) -> dict:
     results = []
     for a in range(nu):
         mujoco.mj_resetDataKeyframe(model, data, key)
-        data.qpos[2] += args.hang_height
-        base = data.qpos[:7].copy()
+        data.qpos[:7] = model.qpos0[:7]  # the weld's reference pose
+        data.qvel[:] = 0.0
+        data.ctrl[:] = [data.qpos[q] for q in qadr]  # every other joint holds where it is
         q0 = data.qpos[qadr[a]]
         lo, hi = model.jnt_range[joint_of[a]]
         sign = 1.0 if (hi - q0) >= (q0 - lo) else -1.0
-        target = q0 + sign * args.step
-        data.ctrl[:] = model.key_ctrl[key]
+        step = args.step
+        if model.jnt_limited[joint_of[a]]:
+            step = min(step, (hi - q0) if sign > 0 else (q0 - lo))
+        target = q0 + sign * step
+        lo_c, hi_c = model.actuator_ctrlrange[a]
+        if model.actuator_ctrllimited[a]:
+            target = min(max(target, lo_c), hi_c)
+        step = abs(target - q0)
         data.ctrl[a] = target
         peak = 0.0
+        diverged = False
         for _ in range(steps):
             mujoco.mj_step(model, data)
-            data.qpos[:7] = base  # the crane: the base does not move
-            data.qvel[:6] = 0.0
-            peak = max(peak, sign * (data.qpos[qadr[a]] - q0))
-        covered = sign * (data.qpos[qadr[a]] - q0) / args.step
-        overshoot = max(0.0, peak / args.step - 1.0)
+            x = sign * (data.qpos[qadr[a]] - q0)
+            if not math.isfinite(x) or data.warning[mujoco.mjtWarning.mjWARN_BADQACC].number:
+                diverged = True
+                break
+            peak = max(peak, x)
+        covered = sign * (data.qpos[qadr[a]] - q0) / step if step > 0 and not diverged else 0.0
+        overshoot = max(0.0, peak / step - 1.0) if step > 0 and not diverged else 0.0
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, a)
-        ok = covered >= args.min_coverage and overshoot <= args.max_overshoot
+        ok = not diverged and covered >= args.min_coverage and overshoot <= args.max_overshoot
         results.append(
             {
                 "actuator": name,
                 "kp": kp[a],
                 "kd": kd[a],
+                "step_rad": step,
                 "coverage": covered,
                 "overshoot": overshoot,
-                "pass": bool(ok and math.isfinite(covered)),
+                "diverged": diverged,
+                "pass": bool(ok),
             }
         )
     return {
@@ -114,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--kd", type=float, default=None)
     p.add_argument("--step", type=float, default=0.2, help="[rad]")
     p.add_argument("--window", type=float, default=2.0, help="[s]")
-    p.add_argument("--hang-height", type=float, default=0.5, help="base raised by [m]")
+    p.add_argument("--base-body", default="pelvis", help="the floating base body to weld")
     p.add_argument("--min-coverage", type=float, default=0.5)
     p.add_argument("--max-overshoot", type=float, default=0.2)
     p.add_argument("--json", type=Path, default=None)

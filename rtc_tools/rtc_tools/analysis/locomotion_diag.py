@@ -236,14 +236,23 @@ def tilt_rad(qx: np.ndarray, qy: np.ndarray) -> np.ndarray:
 
 
 def base_series(diag: Table, z_ref: float | None = None) -> dict[str, np.ndarray]:
-    """Height deviation, xy drift from the first sample and tilt, per row."""
+    """Height deviation, xy drift from the first sample and tilt, per row.
+
+    Only rows whose state source was ok carry a measured base (a failed source
+    logs the neutral state, the origin and the identity); the others are NaN,
+    and the first ok row is the reference.
+    """
     px, py, pz = diag["base_px"], diag["base_py"], diag["base_pz"]
-    first = int(np.argmax(np.isfinite(pz) & np.isfinite(px) & np.isfinite(py)))
+    ok = (diag["source_status"] == 0) & np.isfinite(pz) & np.isfinite(px) & np.isfinite(py)
+    nan = np.full(len(pz), math.nan)
+    if not ok.any():
+        return {"base_height_dev_m": nan, "base_xy_drift_m": nan, "base_tilt_rad": nan.copy()}
+    first = int(np.argmax(ok))
     ref = pz[first] if z_ref is None else z_ref
     return {
-        "base_height_dev_m": pz - ref,
-        "base_xy_drift_m": np.hypot(px - px[first], py - py[first]),
-        "base_tilt_rad": tilt_rad(diag["base_qx"], diag["base_qy"]),
+        "base_height_dev_m": np.where(ok, pz - ref, math.nan),
+        "base_xy_drift_m": np.where(ok, np.hypot(px - px[first], py - py[first]), math.nan),
+        "base_tilt_rad": np.where(ok, tilt_rad(diag["base_qx"], diag["base_qy"]), math.nan),
     }
 
 
@@ -332,7 +341,9 @@ def summarize(diag: Table, z_ref: float | None = None) -> dict:
         "tau_valid_false_rows": int(np.sum(diag["tau_valid"] < 0.5)),
         "qp_status_histogram": histogram(diag["qp_status"]),
         "qp_status_nonzero_rows": int(np.sum(diag["qp_status"] != 0)),
-        "fault_latches": int(np.sum(latched[1:] & ~latched[:-1])),
+        # Rising edges, plus a latch already up in the first row.
+        "fault_latches": int(np.sum(latched[1:] & ~latched[:-1])) + int(bool(latched[:1].any())),
+        "estop_rows": int(np.sum(diag["estop"] > 0.5)) if "estop" in diag else 0,
         "fault_latched_rows": int(latched.sum()),
         "source_not_ok_rows": int(np.sum(diag["source_status"] != 0)),
         "margins_stale_rows": int(np.sum(diag["margins_stale"] > 0.5)),

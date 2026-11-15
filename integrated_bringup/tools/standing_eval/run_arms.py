@@ -36,7 +36,12 @@ LOCO = "locomotion_controller"
 
 
 def sh(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    """Run a command; a timeout is a failed result (rc 124), not an exception."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        return subprocess.CompletedProcess(cmd, 124, out, "timeout")
 
 
 def wait_topic(topic: str, timeout: float) -> bool:

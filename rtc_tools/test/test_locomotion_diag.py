@@ -231,7 +231,10 @@ def test_z_ref_and_tilt(session: Path):
     diag = ld.load_session(session).diag
     base = ld.base_series(diag, z_ref=0.9)
     assert base["base_height_dev_m"][0] == pytest.approx(-0.1)
-    assert float(base["base_tilt_rad"].max()) == 0.0
+    assert float(ld.np.nanmax(base["base_tilt_rad"])) == 0.0
+    # The row whose source was not ok carries no measured base.
+    assert math.isnan(base["base_height_dev_m"][2])
+    assert math.isnan(base["base_xy_drift_m"][2])
     tilt = ld.tilt_rad(ld.np.array([math.sin(0.25)]), ld.np.array([0.0]))
     assert tilt[0] == pytest.approx(0.5)
 
