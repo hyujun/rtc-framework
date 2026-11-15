@@ -46,6 +46,8 @@ constexpr double kRelatchBaseSpeed = 0.1;  // [m/s]
 constexpr double kPullTolerance = 0.02;
 // A unit quaternion to this tolerance on its squared norm.
 constexpr double kQuaternionTolerance = 1e-6;
+// The command filter's timer period stays at least a millisecond.
+constexpr double kMaxCommandRateHz = 1000.0;
 
 double Norm3(const double* v) noexcept {
   return Eigen::Map<const Eigen::Vector3d>(v).norm();
@@ -188,6 +190,10 @@ void LocomotionController::BuildMpc(const YAML::Node& cfg) {
       command_filter_.Reset(command.base_height) != mpc::CommandFilterError::kNoError) {
     Fail("the command filter refused command:");
   }
+  if (command.sample_rate_hz > kMaxCommandRateHz) {
+    Fail("command.sample_rate_hz must be at most " + std::to_string(kMaxCommandRateHz) +
+         " (the command filter's wall timer)");
+  }
   phase_->SetCommand(command_filter_.output());
 
   mpc_manager_.Init(m, layout, reduced_model_.get());
@@ -275,6 +281,7 @@ bool LocomotionController::SpawnMpcThread(std::unique_ptr<mpc::MPCHandlerBase> h
 }
 
 void LocomotionController::PauseMpc() noexcept {
+  StopCommandTimer();  // its writer is the paused thread's phase manager
   mpc_manager_.SetEnabled(false);
   if (mpc_thread_) {
     mpc_thread_->Pause();
@@ -282,6 +289,7 @@ void LocomotionController::PauseMpc() noexcept {
 }
 
 void LocomotionController::StopMpcThread() noexcept {
+  StopCommandTimer();  // before the thread: the timer writes its phase manager
   mpc_manager_.SetEnabled(false);
   mpc_timing_timer_.reset();
   mpc_timing_cb_group_.reset();
@@ -290,6 +298,7 @@ void LocomotionController::StopMpcThread() noexcept {
     mpc_thread_.reset();
     phase_ = nullptr;  // owned by the thread
   }
+  StoreMpcCounters();        // zeros: no thread
   mpc_failed_reported_ = 0;  // a later thread counts from 0
   mpc_timing_ticks_ = 0;
 }
@@ -298,6 +307,7 @@ void LocomotionController::LogMpcTick() noexcept {
   if (!mpc_thread_) {
     return;
   }
+  StoreMpcCounters();
   mpc_thread_->TimingProducer().Drain([this](const rtc::RtTickTimingSample& s) {
     if (mpc_timing_logger_.IsOpen()) {
       mpc_timing_logger_.Log(s);

@@ -44,7 +44,8 @@ LocomotionController::LocomotionController(std::string_view urdf_path)
 
 LocomotionController::~LocomotionController() {
   // Before any member goes: the MPC thread borrows the model handler, the
-  // phase manager it owns runs on it, and it writes the plan sampler.
+  // phase manager it owns runs on it (and the command timer writes that phase
+  // manager), and it writes the plan sampler.
   StopMpcThread();
 }
 
@@ -301,10 +302,6 @@ void LocomotionController::ResetFault() noexcept {
 
 bool LocomotionController::HasLatchedFault() const noexcept {
   return fault_latched_.load(std::memory_order_acquire);
-}
-
-void LocomotionController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
-  PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
 }
 
 }  // namespace integrated_bringup

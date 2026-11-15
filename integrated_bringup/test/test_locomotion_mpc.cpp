@@ -7,6 +7,10 @@
 // runs the installed MPC itself.
 #include "locomotion_mpc_stub.hpp"
 
+#include <geometry_msgs/msg/twist.hpp>
+#include <rclcpp/executors/single_threaded_executor.hpp>
+
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
@@ -14,9 +18,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -431,8 +438,335 @@ TEST_F(LocomotionMpcTest, TheStageReferenceMustNameTheHandsAndNoStrangers) {
   refused([](YAML::Node& c) { c.remove("gait"); }, "no gait");
   refused([](YAML::Node& c) { c["reference"]["q_default"]["thumb_mcp_joint"] = 0.4; },
           "a hand hold off the dynamics model's lock");
+  refused(
+      [](YAML::Node& c) {
+        c["command"]["sample_rate_hz"] = 2000.0;
+        c["command"]["cutoff_hz"] = 2.4;
+      },
+      "a command timer faster than a millisecond");
   // Positive control: the installed sections build.
   BringUpWithStub();
+}
+
+// ── The velocity command and the status topic ────────────────────────────────
+//
+// The controller's node is spun here (the CM's nrt_callback executor in a run):
+// the Twist callback, the command timer and the status subscription all run on
+// it, between ticks.
+
+using integrated_bringup::LocomotionStatusKey;
+using DiagnosticStatus = diagnostic_msgs::msg::DiagnosticStatus;
+
+class LocomotionCommandTest : public LocomotionMpcTest {
+ protected:
+  static constexpr const char* kTwistTopic = "/g1/cmd_vel";
+  static constexpr const char* kStatusTopic = "/g1/locomotion_status";
+
+  void SetUp() override {
+    helper_ = std::make_shared<rclcpp::Node>("test_locomotion_command_helper");
+    twist_pub_ = helper_->create_publisher<geometry_msgs::msg::Twist>(kTwistTopic, rclcpp::QoS(1));
+    status_sub_ = helper_->create_subscription<DiagnosticStatus>(
+        kStatusTopic, rclcpp::QoS(1), [this](DiagnosticStatus::ConstSharedPtr m) {
+          last_status_ = *m;
+          ++status_count_;
+        });
+    executor_.add_node(helper_);
+  }
+
+  void TearDown() override {
+    StopSpinning();
+    executor_.remove_node(helper_);
+  }
+
+  void BringUpSpinning(YAML::Node cfg = MpcConfig()) {
+    BringUpWithStub(cfg);
+    SpinController();
+  }
+
+  void SpinController() {
+    spun_ = node_->get_node_base_interface();
+    executor_.add_node(spun_);
+  }
+
+  void StopSpinning() {
+    if (spun_) {
+      executor_.remove_node(spun_);
+      spun_.reset();
+    }
+  }
+
+  // Spin the executor and tick the controller for `d`, publishing `twist` at
+  // 50 Hz when given.
+  void SpinFor(std::chrono::milliseconds d, const geometry_msgs::msg::Twist* twist = nullptr) {
+    const auto end = std::chrono::steady_clock::now() + d;
+    auto next_pub = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() < end) {
+      if (twist != nullptr && std::chrono::steady_clock::now() >= next_pub) {
+        twist_pub_->publish(*twist);
+        next_pub += 20ms;
+      }
+      executor_.spin_some(1ms);
+      if (ctrl_) {
+        last_out_ = Tick();
+      }
+      std::this_thread::sleep_for(2ms);
+    }
+  }
+
+  static geometry_msgs::msg::Twist Twist(double vx, double vy = 0.0, double wz = 0.0) {
+    geometry_msgs::msg::Twist t;
+    t.linear.x = vx;
+    t.linear.y = vy;
+    t.angular.z = wz;
+    return t;
+  }
+
+  // One snapshot publish, then the message the helper received.
+  bool PublishStatus() {
+    const auto before = status_count_;
+    rtc::PublishSnapshot snap{};
+    snap.stamp_ns = NowNs();
+    ctrl_->PublishNonRtSnapshot(snap);
+    const auto end = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < end && status_count_ == before) {
+      executor_.spin_some(1ms);
+      std::this_thread::sleep_for(2ms);
+    }
+    return status_count_ != before;
+  }
+
+  const std::string& Value(LocomotionStatusKey key) const {
+    return last_status_.values[static_cast<std::size_t>(key)].value;
+  }
+
+  rclcpp::executors::SingleThreadedExecutor executor_;
+  rclcpp::node_interfaces::NodeBaseInterface::SharedPtr spun_;  ///< the controller node, when added
+  rclcpp::Node::SharedPtr helper_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr twist_pub_;
+  rclcpp::Subscription<DiagnosticStatus>::SharedPtr status_sub_;
+  DiagnosticStatus last_status_{};
+  int status_count_{0};
+};
+
+TEST_F(LocomotionCommandTest, ATwistReachesTheFilterAndThePlanner) {
+  BringUpSpinning();
+  ASSERT_TRUE(ctrl_->VelocityCommandSubscribed());
+  EXPECT_EQ(helper_->count_subscribers(kTwistTopic), 1U);
+  ReachStand();
+  const auto seq0 = stub_->horizon_command_sequence.load();
+  const auto twist = Twist(0.3);
+  SpinFor(800ms, &twist);
+  EXPECT_GT(ctrl_->VelocityCommandsReceived(), 10U);
+  const auto cmd = ctrl_->LastCommand();
+  EXPECT_TRUE(cmd.valid);
+  EXPECT_TRUE(cmd.fresh);
+  EXPECT_NEAR(cmd.v_x, 0.3, 0.02) << "the Bessel stage settled on the command";
+  EXPECT_EQ(cmd.v_y, 0.0);
+  EXPECT_EQ(cmd.base_height, cfg_["command"]["base_height"].as<double>());
+  EXPECT_GT(cmd.sequence, 20U) << "one filter step per timer period (100 Hz nominal; a loaded host "
+                                  "skips periods)";
+  EXPECT_EQ(cmd.nonfinite_count, 0U);
+  // The planner integrated it: the horizon's node 0 base velocity is the command.
+  EXPECT_GT(stub_->horizon_command_sequence.load(), seq0);
+  EXPECT_NEAR(stub_->horizon_base_vx.load(), cmd.v_x, 0.02);
+}
+
+TEST_F(LocomotionCommandTest, AStaleTwistDecaysToRestAndStaysValid) {
+  BringUpSpinning();
+  const auto twist = Twist(0.3);
+  SpinFor(600ms, &twist);
+  ASSERT_NEAR(ctrl_->LastCommand().v_x, 0.3, 0.02);
+  SpinFor(1200ms);  // nothing published: stale after command.t_stale (0.5 s)
+  const auto cmd = ctrl_->LastCommand();
+  EXPECT_TRUE(cmd.valid) << "a sample was seen since the reset";
+  EXPECT_FALSE(cmd.fresh);
+  EXPECT_GT(cmd.stale_count, 0U);
+  EXPECT_NEAR(cmd.v_x, 0.0, 1e-3);
+  EXPECT_EQ(cmd.base_height, cfg_["command"]["base_height"].as<double>());
+}
+
+TEST_F(LocomotionCommandTest, ANonFiniteAxisKeepsTheLastAcceptedValue) {
+  BringUpSpinning();
+  const auto good = Twist(0.3);
+  SpinFor(600ms, &good);
+  ASSERT_NEAR(ctrl_->LastCommand().v_x, 0.3, 0.02);
+  const auto bad = Twist(std::numeric_limits<double>::quiet_NaN(), 0.2);
+  SpinFor(600ms, &bad);
+  const auto cmd = ctrl_->LastCommand();
+  EXPECT_TRUE(cmd.fresh);
+  EXPECT_NEAR(cmd.v_x, 0.3, 0.02) << "the NaN axis holds the last accepted value";
+  EXPECT_NEAR(cmd.v_y, 0.2, 0.02) << "the other axes pass";
+  EXPECT_GT(cmd.nonfinite_count, 0U);
+  ASSERT_TRUE(PublishStatus());
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdNonFiniteTicks), std::to_string(cmd.nonfinite_count))
+      << "the operator's NaN shows on the status topic";
+}
+
+TEST_F(LocomotionCommandTest, WithoutATopicKeyNothingIsSubscribed) {
+  YAML::Node cfg = MpcConfig();
+  cfg.remove("velocity_command");
+  BringUpSpinning(cfg);
+  EXPECT_FALSE(ctrl_->VelocityCommandSubscribed());
+  EXPECT_EQ(helper_->count_subscribers(kTwistTopic), 0U);
+  const auto twist = Twist(0.3);
+  SpinFor(200ms, &twist);
+  EXPECT_EQ(ctrl_->VelocityCommandsReceived(), 0U);
+  EXPECT_EQ(ctrl_->LastCommand().sequence, 0U) << "no timer either";
+}
+
+TEST_F(LocomotionCommandTest, WithoutAnMpcTheTopicKeyIsInert) {
+  YAML::Node cfg = ShippedConfig();  // mpc.enabled false
+  ASSERT_TRUE(cfg["velocity_command"]);
+  BringUp(cfg);
+  EXPECT_FALSE(ctrl_->MpcEnabled());
+  EXPECT_FALSE(ctrl_->VelocityCommandSubscribed());
+  EXPECT_EQ(helper_->count_subscribers(kTwistTopic), 0U);
+}
+
+TEST_F(LocomotionCommandTest, AnActivationResetsTheCommand) {
+  BringUpSpinning();
+  const auto twist = Twist(0.3);
+  SpinFor(600ms, &twist);
+  ASSERT_NEAR(ctrl_->LastCommand().v_x, 0.3, 0.02);
+  Deactivate();
+  const auto seq = ctrl_->LastCommand().sequence;
+  SpinFor(100ms, &twist);
+  EXPECT_EQ(ctrl_->LastCommand().sequence, seq) << "no filter step while inactive";
+  Activate();
+  const auto cmd = ctrl_->LastCommand();
+  EXPECT_EQ(cmd.sequence, 0U);
+  EXPECT_FALSE(cmd.valid);
+  EXPECT_EQ(cmd.v_x, 0.0);
+  EXPECT_EQ(cmd.base_height, cfg_["command"]["base_height"].as<double>());
+  SpinFor(600ms, &twist);  // and the path is up again
+  EXPECT_NEAR(ctrl_->LastCommand().v_x, 0.3, 0.02);
+}
+
+TEST_F(LocomotionCommandTest, TheStatusTopicCarriesTheSourceThePlanAndTheCommand) {
+  BringUpSpinning();
+  ReachStand();
+  const auto twist = Twist(0.3);
+  SpinFor(1200ms, &twist);  // past one 1 Hz read of the MPC counters
+  ASSERT_TRUE(PublishStatus());
+  EXPECT_EQ(last_status_.level, DiagnosticStatus::OK);
+  EXPECT_EQ(last_status_.message, "stand");
+  EXPECT_EQ(last_status_.name, "locomotion_controller");
+  EXPECT_EQ(last_status_.hardware_id, cfg_["model"]["body_group"].as<std::string>());
+  ASSERT_EQ(last_status_.values.size(), integrated_bringup::kLocomotionStatusKeyCount);
+  for (std::size_t i = 0; i < last_status_.values.size(); ++i) {
+    EXPECT_EQ(last_status_.values[i].key,
+              integrated_bringup::LocomotionStatusKeyName(static_cast<LocomotionStatusKey>(i)));
+  }
+  EXPECT_EQ(Value(LocomotionStatusKey::kSource), "stand");
+  EXPECT_EQ(Value(LocomotionStatusKey::kMode), "nominal");
+  EXPECT_EQ(Value(LocomotionStatusKey::kFaultCause), "none");
+  EXPECT_EQ(Value(LocomotionStatusKey::kPlanId), std::to_string(ctrl_->LastDiag().plan_id));
+  EXPECT_EQ(Value(LocomotionStatusKey::kContactMask), "3");
+  EXPECT_EQ(Value(LocomotionStatusKey::kConverged), "1");
+  EXPECT_GT(std::stoull(Value(LocomotionStatusKey::kSolves)), 0U) << "the 1 Hz counter read";
+  EXPECT_EQ(Value(LocomotionStatusKey::kFailedSolves), "0");
+  EXPECT_NEAR(std::stod(Value(LocomotionStatusKey::kCmdVx)), 0.3, 0.02);
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdValid), "1");
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdFresh), "1");
+  char height[integrated_bringup::kLocomotionStatusValueChars];
+  std::snprintf(height, sizeof(height), "%.6g", cfg_["command"]["base_height"].as<double>());
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdHeight), height);
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdNonFiniteTicks), "0");
+  EXPECT_NE(Value(LocomotionStatusKey::kPolicyAgeMs), "-1");
+  // The fault: the plan lost off a still double support.
+  state_.devices[kBody].base_twist[0] = 0.3;
+  stub_->fail = true;
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->HasLatchedFault(); }));
+  ASSERT_TRUE(PublishStatus());
+  EXPECT_EQ(last_status_.level, DiagnosticStatus::ERROR);
+  EXPECT_EQ(last_status_.message, "fault");
+  EXPECT_EQ(Value(LocomotionStatusKey::kFaultCause), "plan_loss");
+  EXPECT_EQ(Value(LocomotionStatusKey::kMode), "fault");
+}
+
+TEST_F(LocomotionCommandTest, TheStatusPublisherIsSilentBeforeActivation) {
+  Configure(MpcConfig(), rclcpp::NodeOptions{}, "test_locomotion_mpc");
+  SpinController();
+  SpinFor(200ms);  // the helper's subscription matches
+  EXPECT_FALSE(PublishStatus()) << "a lifecycle publisher publishes only while active";
+}
+
+TEST(LocomotionStatus, TheLevelFollowsTheModeAndTheSource) {
+  using integrated_bringup::LocomotionStatusLevel;
+  LocomotionDiagLogPod s{};
+  s.mode = static_cast<std::uint8_t>(Mode::kNominal);
+  s.ref_source = static_cast<std::uint8_t>(Source::kIdle);
+  EXPECT_EQ(LocomotionStatusLevel(s, false), DiagnosticStatus::OK)
+      << "no MPC: the latched pose is the plan";
+  EXPECT_EQ(LocomotionStatusLevel(s, true), DiagnosticStatus::WARN)
+      << "an MPC without a usable plan";
+  s.ref_source = static_cast<std::uint8_t>(Source::kStand);
+  EXPECT_EQ(LocomotionStatusLevel(s, true), DiagnosticStatus::OK);
+  s.ref_source = static_cast<std::uint8_t>(Source::kWalk);
+  EXPECT_EQ(LocomotionStatusLevel(s, true), DiagnosticStatus::OK);
+  s.mode = static_cast<std::uint8_t>(Mode::kDegraded);
+  EXPECT_EQ(LocomotionStatusLevel(s, true), DiagnosticStatus::WARN);
+  s.mode = static_cast<std::uint8_t>(Mode::kWaiting);
+  EXPECT_EQ(LocomotionStatusLevel(s, true), DiagnosticStatus::WARN);
+  s.mode = static_cast<std::uint8_t>(Mode::kNominal);
+  s.estop = true;
+  EXPECT_EQ(LocomotionStatusLevel(s, true), DiagnosticStatus::ERROR);
+  s.estop = false;
+  s.fault_latched = true;
+  s.ref_source = static_cast<std::uint8_t>(Source::kFault);
+  EXPECT_EQ(LocomotionStatusLevel(s, true), DiagnosticStatus::ERROR);
+}
+
+TEST(LocomotionStatus, EveryKeyHasADistinctNameAndEveryValueFormats) {
+  std::set<std::string> names;
+  LocomotionDiagLogPod s{};
+  s.policy_age_us = 12345.0;
+  rtc::mpc::FilteredCommand cmd{};
+  cmd.v_x = 0.25;
+  cmd.nonfinite_count = 3;
+  cmd.ignored_axis_count = 4;
+  integrated_bringup::LocomotionMpcCounters c{};
+  c.solves = 7;
+  for (std::size_t i = 0; i < integrated_bringup::kLocomotionStatusKeyCount; ++i) {
+    const auto key = static_cast<LocomotionStatusKey>(i);
+    const std::string name = integrated_bringup::LocomotionStatusKeyName(key);
+    EXPECT_FALSE(name.empty());
+    EXPECT_NE(name, "unknown");
+    EXPECT_TRUE(names.insert(name).second) << name;
+    char buf[integrated_bringup::kLocomotionStatusValueChars];
+    integrated_bringup::FormatLocomotionStatusValue(key, s, cmd, c, buf, sizeof(buf));
+    EXPECT_GT(std::strlen(buf), 0U) << name;
+  }
+  const auto value = [&](LocomotionStatusKey key) {
+    char buf[integrated_bringup::kLocomotionStatusValueChars];
+    integrated_bringup::FormatLocomotionStatusValue(key, s, cmd, c, buf, sizeof(buf));
+    return std::string(buf);
+  };
+  EXPECT_EQ(value(LocomotionStatusKey::kPolicyAgeMs), "-1") << "no plan (plan_id 0)";
+  s.plan_id = 9;
+  EXPECT_EQ(value(LocomotionStatusKey::kPolicyAgeMs), "12.345");
+  EXPECT_EQ(value(LocomotionStatusKey::kCmdVx), "0.25");
+  EXPECT_EQ(value(LocomotionStatusKey::kSolves), "7");
+  EXPECT_EQ(value(LocomotionStatusKey::kCmdNonFiniteTicks), "3");
+  EXPECT_EQ(value(LocomotionStatusKey::kCmdIgnoredAxisTicks), "4");
+}
+
+TEST(LocomotionCommandConfig, TheTopicKeyIsOptionalAndChecked) {
+  const auto refused = [](const std::function<void(YAML::Node&)>& spoil, const char* what) {
+    YAML::Node cfg = MpcConfig();
+    spoil(cfg);
+    EXPECT_THROW(static_cast<void>(ParseLocomotionControllerConfig(cfg)), std::invalid_argument)
+        << what;
+  };
+  refused([](YAML::Node& c) { c["velocity_command"]["topic"] = ""; }, "empty topic");
+  refused([](YAML::Node& c) { c["velocity_command"].remove("topic"); }, "no topic");
+  refused([](YAML::Node& c) { c["velocity_command"]["qos"] = 1; }, "unknown key");
+  refused([](YAML::Node& c) { c["velocity_command"] = "g1/cmd_vel"; }, "not a map");
+  const auto parsed = ParseLocomotionControllerConfig(MpcConfig());
+  EXPECT_EQ(parsed.velocity_command_topic, "g1/cmd_vel");
+  YAML::Node without = MpcConfig();
+  without.remove("velocity_command");
+  EXPECT_TRUE(ParseLocomotionControllerConfig(without).velocity_command_topic.empty());
 }
 
 TEST(LocomotionDiagLog, TheHeaderAndARowHaveTheSameColumns) {

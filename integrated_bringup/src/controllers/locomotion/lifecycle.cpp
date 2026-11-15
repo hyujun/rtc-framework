@@ -16,23 +16,6 @@ namespace integrated_bringup {
 namespace {
 constexpr int kLogDrainPeriodMs = 100;
 
-const char* CauseName(LocomotionDiagLogPod::FaultCause cause) noexcept {
-  switch (cause) {
-    case LocomotionDiagLogPod::FaultCause::kNone:
-      return "none";
-    case LocomotionDiagLogPod::FaultCause::kSolveHealth:
-      return "solve_health";
-    case LocomotionDiagLogPod::FaultCause::kSource:
-      return "source";
-    case LocomotionDiagLogPod::FaultCause::kNonFinite:
-      return "non_finite";
-    case LocomotionDiagLogPod::FaultCause::kModelEpoch:
-      return "model_epoch";
-    case LocomotionDiagLogPod::FaultCause::kPlanLoss:
-      return "plan_loss";
-  }
-  return "unknown";
-}
 }  // namespace
 
 rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
@@ -84,6 +67,33 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
       const std::string profile = ReadLayoutProfile(*node);
       layout_profile_drops_mpc_ = LayoutProfileDropsMpc(profile);
       mpc_worker_slots_ = rtc::SelectMpcWorkerSlots(profile);
+    }
+
+    // The status topic, with or without an MPC.
+    SetupLocomotionStatusPublisher(*this, owned_topics_,
+                                   cfg_.model.body_group + "/locomotion_status",
+                                   "locomotion_controller", cfg_.model.body_group);
+
+    // The velocity command: a subscription only with a consumer (the plan).
+    velocity_sub_.reset();
+    raw_command_.Store(RawVelocityCommandSample{});
+    command_out_.Store(rtc::mpc::FilteredCommand{});
+    const std::string& topic = cfg_.velocity_command_topic;
+    if (topic.empty()) {
+      // no command path
+    } else if (!mpc_enabled_ || !node) {
+      RCLCPP_INFO(logger_,
+                  "[locomotion] velocity_command.topic '%s' is not subscribed: no MPC in this "
+                  "configuration (mpc.enabled false or `mpc:` absent)",
+                  topic.c_str());
+    } else {
+      // ARCH-6: depth 1 — a latest-wins lane; reliability as the node's default.
+      rclcpp::QoS qos(rclcpp::KeepLast(1));
+      velocity_sub_ = node->create_subscription<geometry_msgs::msg::Twist>(
+          topic, qos,
+          [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) { OnVelocityCommand(*msg); });
+      RCLCPP_INFO(logger_, "[locomotion] velocity command: %s (Twist, %.0f Hz filter)",
+                  topic.c_str(), command_filter_.config().sample_rate_hz);
     }
 
     if (!log_set_.empty() && node_) {
@@ -156,6 +166,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
     // A plan from before this activation is not sampled (the manager's
     // re-enable fence); the first tick restarts the state stream.
     mpc_manager_.SetEnabled(true);
+    StartCommandTimer();
   }
   // The first tick of this activation drops a latch left from the last one
   // (header); say so here, off the RT thread.
@@ -163,7 +174,8 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
     RCLCPP_WARN(logger_,
                 "[locomotion] a latched fault (cause %s) is dropped by this activation; the "
                 "reference re-latches from the measured state",
-                CauseName(fault_cause_.load(std::memory_order_relaxed)));
+                LocomotionFaultCauseName(
+                    static_cast<std::uint8_t>(fault_cause_.load(std::memory_order_relaxed))));
   }
   ActivateOwnedTopics(prev, owned_topics_);
   const auto rc = rtc::RTControllerInterface::on_activate(prev);
@@ -187,6 +199,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_deactivate(
 
 rtc::RTControllerInterface::CallbackReturn LocomotionController::on_cleanup(
     const rclcpp_lifecycle::State& prev) noexcept {
+  velocity_sub_.reset();
   StopMpcThread();
   ResetOwnedTopics(owned_topics_);
   log_drain_timer_.reset();

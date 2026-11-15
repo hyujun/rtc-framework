@@ -14,6 +14,7 @@ non-RT 외부 통신 토픽은 **컨트롤러가 소유**한다. 아래 경로�
 | `payload_estimate` (joint · task · compliance · wbc) | 컨트롤러 | `rtc_msgs/PayloadEstimate`. 발행 조건은 payload 추정기가 아니라 momentum observer 활성이다 (잔차만으로도 메시지가 성립). `joint_names` 가 잔차의 device order 를 자기기술한다 |
 | `tof_snapshot` (joint · task · compliance) | 컨트롤러 | `SeqLock<ToFSnapshotData>` + `SetupToFSnapshotPublisher()` |
 | `catching_state` (catching) | 컨트롤러 | `/<config_key>/catching_state` ([demo-catching-controller.md](demo-catching-controller.md#상태-토픽)) |
+| `locomotion_status` (locomotion) | 컨트롤러 | `SeqLock<LocomotionDiagLogPod>` + `SetupLocomotionStatusPublisher()` — `/<config_key>/<body group>/locomotion_status` (`diagnostic_msgs/DiagnosticStatus`, [locomotion-controller.md](locomotion-controller.md#속도-명령과-상태-토픽-mpcenabled)). 속도 명령 `<body group>/cmd_vel` (`geometry_msgs/Twist`) 도 컨트롤러 소유 구독이다 |
 | `robot_transforms` | 컨트롤러 | YAML `role: robot_transforms` — `<config_key>/transforms` (`tf2_msgs/TFMessage`). frame 목록은 아래 |
 | `state` (group 별 `joint_states`) | CM | `/rtc_cm/<group>/joint_states` (`JointState`) |
 | device-wire command (`joint_command`, `ros2_command`) | DeviceBackend | `devices.<group>.backend:` — backend 구현체가 직접 publish |

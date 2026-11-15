@@ -179,6 +179,17 @@ LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg
   if (cfg["mpc"]) {
     out.mpc = ParseMpc(cfg["mpc"], root + ".mpc");
   }
+  // `velocity_command:` — the Twist topic, no default: a misspelt key or an
+  // empty name must not fall back to a topic nobody publishes on.
+  if (cfg["velocity_command"]) {
+    const std::string where = root + ".velocity_command";
+    CheckKeys(cfg["velocity_command"], where, {"topic"});
+    const YAML::Node t = cfg["velocity_command"]["topic"];
+    if (!t.IsScalar() || t.Scalar().empty()) {
+      Refuse(where + ".topic", "expected a non-empty topic name, got " + Spelling(t));
+    }
+    out.velocity_command_topic = t.Scalar();
+  }
   return out;
 }
 

@@ -32,6 +32,7 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(rtc_controller_interface REQUIRED)
 find_package(rtc_controllers REQUIRED)
@@ -83,6 +84,8 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/locomotion/lifecycle.cpp
   src/controllers/locomotion/parameters.cpp
   src/controllers/locomotion/mpc_reference.cpp
+  src/controllers/locomotion/command.cpp
+  src/controllers/locomotion/locomotion_status.cpp
   # Learned-policy binding. Its law half lives in rtc_controllers/inference
   # (tensor marshalling) — this side owns the ControllerState/engine contract.
   src/controllers/inference/controller.cpp
@@ -132,6 +135,7 @@ ament_target_dependencies(${PROJECT_NAME}_demo_controllers
   std_msgs
   sensor_msgs
   geometry_msgs
+  diagnostic_msgs
   tf2_msgs
   rtc_controller_interface
   rtc_controllers
@@ -2209,6 +2213,8 @@ if(BUILD_TESTING)
     ament_index_cpp
     rclcpp
     rclcpp_lifecycle
+    geometry_msgs
+    diagnostic_msgs
     rtc_controller_interface
     rtc_controller_manager
     rtc_controllers

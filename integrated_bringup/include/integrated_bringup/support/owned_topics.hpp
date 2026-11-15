@@ -10,6 +10,7 @@
 // own fixed publishers and DeviceBackend device-wire lanes are separate.
 
 #include "integrated_bringup/controllers/catching/traj_input.hpp"
+#include "integrated_bringup/controllers/locomotion/locomotion_status.hpp"
 #include "integrated_bringup/controllers/tof_snapshot.hpp"
 #include "integrated_bringup/controllers/wbc/wbc_state.hpp"
 #include "integrated_bringup/logging/catching_diag_log_pod.hpp"
@@ -29,6 +30,8 @@
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <rclcpp_lifecycle/state.hpp>
 #include <tf2_msgs/msg/tf_message.hpp>
+
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
 
 #include <array>
 #include <atomic>
@@ -222,6 +225,14 @@ struct ControllerTopicHandles {
   rclcpp_lifecycle::LifecyclePublisher<rtc_msgs::msg::PayloadEstimate>::SharedPtr payload_pub{};
   rtc_msgs::msg::PayloadEstimate payload_msg{};
 
+  // Locomotion status publisher — the locomotion controller
+  // (diagnostic_msgs/DiagnosticStatus). Created via
+  // SetupLocomotionStatusPublisher, which fixes the key list and the value
+  // strings' capacity; the publish path writes into existing values only.
+  rclcpp_lifecycle::LifecyclePublisher<diagnostic_msgs::msg::DiagnosticStatus>::SharedPtr
+      locomotion_status_pub{};
+  diagnostic_msgs::msg::DiagnosticStatus locomotion_status_msg{};
+
   // ── Per-controller TF publisher (kRobotTransforms) ────────────────────
   // Single publisher per controller. The set of
   // frames is fixed at on_configure (parent/child frame_id + source slot)
@@ -377,6 +388,26 @@ void SetupPayloadEstimatePublisher(rtc::RTControllerInterface& ctrl,
                                    ControllerTopicHandles& handles, const std::string& topic_name,
                                    const std::vector<std::string>& joint_names,
                                    const std::string& payload_frame);
+
+// Create the locomotion status publisher (diagnostic_msgs/DiagnosticStatus) and
+// pre-fill what is fixed for the life of the configuration: `name`, `hardware_id`
+// (the body device group) and the values' keys — every LocomotionStatusKey, in
+// enum order, so a consumer indexes them without this build's header. The
+// value strings are reserved to kLocomotionStatusValueChars; the publish path
+// assigns within that capacity and never resizes the array.
+void SetupLocomotionStatusPublisher(rtc::RTControllerInterface& ctrl,
+                                    ControllerTopicHandles& handles, const std::string& topic_name,
+                                    const std::string& name, const std::string& hardware_id);
+
+// Publish the locomotion status from the RT tick's diagnostic row, the command
+// filter's last output and the MPC thread's counters. Called from the
+// controller's PublishNonRtSnapshot (CM publish thread) — must be noexcept. A
+// SEPARATE ENTRY POINT, as the catching state: the locomotion controller
+// publishes none of PublishOwnedTopicsFromSnapshot's roles. `level` and the
+// values are LocomotionStatusLevel / FormatLocomotionStatusValue (pure).
+void PublishLocomotionStatus(ControllerTopicHandles& handles, const LocomotionDiagLogPod& status,
+                             bool mpc_enabled, const rtc::mpc::FilteredCommand& cmd,
+                             const LocomotionMpcCounters& counters) noexcept;
 
 // Stamp the reference frame the GraspState / WbcState / PayloadEstimate *vector*
 // payloads are expressed in — the FK reference the controller resolves fingertip rotations
