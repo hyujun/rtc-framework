@@ -37,10 +37,10 @@ ros2 topic echo /locomotion_controller/g1/locomotion_status      # level · sour
 
 | 모드 | 언제 | 출력 |
 |---|---|---|
-| waiting | 활성화 뒤 아직 유효 상태가 없음 | 감쇠 (아래) |
+| waiting | latch 된 reference 가 없음 — 활성화 뒤 아직 유효 상태가 없거나, **E-STOP 중**이거나, 자세 가드가 측정 자세를 거부하는 동안 | 감쇠 (아래); QP · plan · MPC 상태 쓰기 없음, 로그 · 상태 토픽은 매 tick |
 | nominal | QP 가 풀림 | 위치 = reference, feedforward = QP τ |
 | degraded | QP 실패 또는 짧은 상태 불량 | 직전 유효 τ 유지 |
-| fault (latch) | QP health Fault · 상태 불량이 `fault.max_source_bad_ticks` 초과 · 출력 비유한 · 모델 epoch 불일치 · 정지 양발 지지가 아닌 채 plan 상실 | 감쇠: feedforward = −`damping_kd`·v (토크 한계로 clamp), 위치 = 측정 q, 게인 불변 |
+| fault (latch) | QP health Fault · reference 가 latch 된 채 상태 불량이 `fault.max_source_bad_ticks` 초과 (`source`) · 출력 비유한 · 모델 epoch 불일치 · 정지 양발 지지가 아닌 채 plan 상실 (`plan_loss`) · 자세 가드가 0.5 s 내내 거부 (`pose_guard`) | 감쇠: feedforward = −`damping_kd`·v (토크 한계로 clamp), 위치 = 측정 q, 게인 불변 |
 
 ## reference 출처 (`mpc.enabled` 일 때)
 
@@ -58,12 +58,20 @@ ros2 topic echo /locomotion_controller/g1/locomotion_status      # level · sour
 
 latch 는 `/rtc_cm/reset_fault` 나 **재활성화**로 풀린다 (다음 tick 에 reference 를 다시 잡는다). 원인이 남아 있으면 다시 latch 된다. E-STOP 의 두 edge 도 reference 를 다시 잡는다.
 
+## E-STOP 과 자세 가드
+
+- **E-STOP 중** (CM 의 글로벌 래치 — 검출기 또는 `/rtc_cm/trigger_estop`): tick 은 상태를 읽고 모델을 갱신하고 로그 · 상태 토픽을 쓰지만 reference 를 latch 하지 않고, QP 도 plan 샘플도 MPC 로의 상태 쓰기도 하지 않는다 — 모드 `waiting`, 출력은 감쇠 (wire 에는 CM 의 hold 가 나간다). CM hold 는 게인을 싣지 않으므로 sim 은 이 컨트롤러의 **저게인**을 그대로 유지한다 — hold 아래 로봇이 천천히 주저앉는 것은 의도된 동작이다 (`run_arms.py --arms estop` 이 잰다). 해제 뒤 어느 컨트롤러가 뛰는지는 CM 의 `estop_on_clear` 가 정한다 (`rtc_controller_manager` README "운영자 E-STOP"); 두 humanoid sim 은 `demo_joint_controller` 로 돌아가고, `resume` 구성이면 이 컨트롤러가 아래 가드를 지나 재진입한다.
+- E-STOP 전에 latch 된 fault 는 E-STOP 을 지나도 남는다 (clear 는 reset 이 아니다); E-STOP 중의 reset 은 latch 를 풀고 `waiting` 을 유지하며, 가드는 clear 뒤 첫 유효 tick 에 돈다. 비활성 중 온 E-STOP · reset 요청은 활성화가 소비한다 (거짓 재시작 없음).
+- **자세 가드** (`fault.pose_guard`): reference 를 latch 하는 모든 입구 — 활성화 · reset · E-STOP 해제 · plan 상실 — 에서 측정 자세를 먼저 판정한다: base lane 이 유효 샘플이고, base 쿼터니언 · 속도 · 접촉 높이가 유한하며, 쿼터니언이 단위이고, 몸통 기울기 (R(2,2) = 1 − 2(x² + y²)) 가 `base_tilt_rad` 안. 통과 → 그 tick 에 latch (활성화 첫 tick 이 nominal 인 것은 그대로). 실패 → `waiting` (감쇠) 으로 매 유효 tick 다시 묻고, **0.5 s** (코드 상수, tick 수 = round(0.5 · control_rate)) 의 거부 뒤 `pose_guard` fault — 넘어진 로봇은 세우지 않고 잡아 둔다. 시계는 입구마다 0 에서 시작하고 E-STOP 중에는 돌지 않는다. 유효 상태가 없는 tick 은 판정이 아니다 (시계 없이 `waiting`). plan 상실 입구는 여기에 기존 상수 둘 (접촉 높이 퍼짐 ≤ 15 mm · base 속도 < 0.1 m/s) 을 더해 **즉시** `plan_loss` 다 (떠 있는 발은 기다릴 수 없다). 판정 비트는 `pose_guard_mask` (로그 열 · 상태 키; 0 = 통과) — `logging/locomotion_diag_log_pod.hpp` 가 가리키는 `controllers/locomotion/pose_guard.hpp` 의 비트. 출하값 30° (`0.5236`) 는 두 profile 공통 (b7 은 잠정); 각속도 · 높이 · 속도는 판정하지 않는다 (무릎 꿇은 자세는 빈틈 — sim 결과로 추가를 판단).
+- 손 hold 는 몸의 reference 와 무관하게 **첫 readable tick** 에 latch 된다 (E-STOP · `waiting` 중에도 손은 밀린 자리를 따라가지 않는다); 몸의 latch 가 손 목표를 옮기지 않는다. 입구 (활성화 · reset · E-STOP edge) 마다 손도 다시 latch 한다.
+- Walk 중 plan 상실은 감쇠 fault 뿐이다 (soft collapse) — 착지 fallback 은 이후 feature.
+
 ## YAML (`config/<robot>/controllers/locomotion_controller.yaml` + `locomotion/`)
 
 | 조각 | 키 |
 |---|---|
 | `model.yaml` | `model.*` — 본체 군 · 손 군 · 접촉 · 몸통 · 팔 끝 frame |
-| `runtime.yaml` | `command_type: pd_feedforward` · `pd_feedforward {kp, kd}` (본체 roster 순) · `fault {max_source_bad_ticks, damping_kd}` · `estimator {source: truth, body_max_age_ms, hand_max_age_ms}` · `velocity_command {topic}` (선택 — Twist 명령) · `topics` (본체 → 손 순) · `logs` |
+| `runtime.yaml` | `command_type: pd_feedforward` · `pd_feedforward {kp, kd}` (본체 roster 순) · `fault {max_source_bad_ticks, damping_kd, pose_guard {base_tilt_rad}}` ((0, π/2], 필수) · `estimator {source: truth, body_max_age_ms, hand_max_age_ms}` · `velocity_command {topic}` (선택 — Twist 명령) · `topics` (본체 → 손 순) · `logs` |
 | `whole_body_qp.yaml` | `whole_body_qp.*` — task · 제약 · `health {max_invalid_ticks, recover_valid_ticks}` · `com` task (수평 CoM 고정) |
 | `mpc.yaml` | `mpc.*` — 소비자 키 `enabled` · `period_nodes` · `max_policy_age_s` · `riccati {enabled, …}` · `sanity {joint_delta_rad, base_speed, joint_accel, wrench_scale}` (`mpc:` 가 있으면 전부 필수, 의미는 헤더) + OCP (`kinodynamic`) · `solver` |
 | `command.yaml` · `gait.yaml` · `swing.yaml` · `reference.yaml` | `mpc.enabled` 일 때 MPC 의 stage reference 로 조립 — `reference.q_default` 의 손 관절은 MPC 동안 손의 hold 자세 |
@@ -72,7 +80,7 @@ latch 는 `/rtc_cm/reset_fault` 나 **재활성화**로 풀린다 (다음 tick �
 
 ## 로그와 판정
 
-`<session>/controllers/locomotion_controller/` 에 `locomotion_diag.csv` (모드 · fault 원인 · 상태 판정 · QP 결과 · margin · base · CoM · reference 출처 · plan id · policy age · 수렴 · 접촉 mask · 타당성 거부 수 · state epoch · 발 · 접촉력 · 관절별 servo 몫, 열 계약은 `logging/locomotion_diag_log_pod.hpp`) · `joint_ff.csv` · 군별 `<group>_state.csv` 가 쓰인다.
+`<session>/controllers/locomotion_controller/` 에 `locomotion_diag.csv` (모드 · fault 원인 · `pose_guard_mask` · 상태 판정 · QP 결과 · margin · base · CoM · reference 출처 · plan id · policy age · 수렴 · 접촉 mask · 타당성 거부 수 · state epoch · 발 · 접촉력 · 관절별 servo 몫, 열 계약은 `logging/locomotion_diag_log_pod.hpp`) · `joint_ff.csv` · 군별 `<group>_state.csv` 가 쓰인다.
 
 ```bash
 ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv stance.csv
@@ -83,4 +91,4 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
 ## 평가 도구 (`tools/standing_eval/`)
 
 - `gain_step.py` — 매달린 로봇 (base 고정) 에서 관절마다 0.2 rad step: 2 s 도달률 · overshoot 로 PD 게인 후보를 거른다 (venv python, mujoco).
-- `run_arms.py` — sim 을 run 마다 새로 띄워 같은 시간축 (기동 → settle → 전환 단계 → lead → recorder) 으로 `servo` (MJCF servo) · `loco` (전환) · `lowpd` (demo_joint 에 같은 PD 게인, feedforward 없음) · `mpc` (`enable_mpc:=true` 로 전환) · `mpc_fb` (+ `mpc_riccati` overlay) 를 반복하고 (`--mpc-layout` 이면 모든 arm 이 같은 MPC layout, `loco` 는 `mpc_off` overlay; `--mpc-threads N` 이면 MPC layout 으로 뜨는 arm 이 `layout_profile:=mpc_par_sim mpc_threads:=N` 으로 N thread solve; `--overlay ARM=…` · `--launch-arg` 로 바꾼다) recorder CSV/JSON · 로그 세션을 모은다. `repo_scripts/scripts/with_verify_hold.sh` 아래에서 돌린다.
+- `run_arms.py` — sim 을 run 마다 새로 띄워 같은 시간축 (기동 → settle → 전환 단계 → lead → recorder) 으로 `servo` (MJCF servo) · `loco` (전환) · `lowpd` (demo_joint 에 같은 PD 게인, feedforward 없음) · `mpc` (`enable_mpc:=true` 로 전환) · `mpc_fb` (+ `mpc_riccati` overlay) · `reentry` (loco → demo_joint → loco 재진입, 녹음 하나에 창 둘) · `estop` (loco 중 `/rtc_cm/trigger_estop` → hold → `/rtc_cm/clear_estop` → demo_joint 복귀 확인 → loco 전환, 이벤트 시각 · 창 지표는 `run.json`; rtf 1 로 — clear 의 검증 기한이 wall 이라 느린 rtf 에서는 unverified 로 끝난다) 를 반복하고 (`--mpc-layout` 이면 모든 arm 이 같은 MPC layout, `loco` · `reentry` · `estop` 은 `mpc_off` overlay; `--mpc-threads N` 이면 MPC layout 으로 뜨는 arm 이 `layout_profile:=mpc_par_sim mpc_threads:=N` 으로 N thread solve; `--overlay ARM=…` · `--launch-arg` 로 바꾼다) recorder CSV/JSON · 로그 세션을 모은다. `repo_scripts/scripts/with_verify_hold.sh` 아래에서 돌린다.
