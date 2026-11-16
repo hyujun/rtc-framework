@@ -222,6 +222,8 @@ std::string LocomotionController::WireDevices() {
         [this](const std::string& g) { return GetDeviceNameConfig(g); }, ctx);
     const auto* body = GetDeviceNameConfig(cfg_.model.body_group);
     const auto& roster = body->joint_state_names;
+    contact_force_stride_ =
+        body->sensor_layout ? body->sensor_layout->inference_values_per_group : 0;
     if (cfg_.pd_kp.size() != nb_ || cfg_.pd_kd.size() != nb_ || cfg_.damping_kd.size() != nb_) {
       return "pd_feedforward.kp / kd and fault.damping_kd need one gain per body joint (" +
              std::to_string(nb_) + "), got " + std::to_string(cfg_.pd_kp.size()) + " / " +

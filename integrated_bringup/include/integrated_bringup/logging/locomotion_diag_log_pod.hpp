@@ -1,8 +1,9 @@
 // LocomotionDiagLog — one row per locomotion_controller tick: the mode and its
 // causes, the state source's verdict, the whole-body QP's outcome and margins,
-// the measured base, the contact forces, and the servo / feedforward split per
-// body joint. The joint lanes the generic joint log already carries (measured q,
-// the position target, gravity, feedforward) are in JointFeedforwardLog,
+// the measured base, the contact forces, the servo / feedforward split per body
+// joint, and what walking is judged against (the command, the gait, the plan's
+// base velocity, the measured contact normal forces). The joint lanes the generic joint log already
+// carries (measured q, the position target, gravity, feedforward) are in JointFeedforwardLog,
 // written by the same tick with the same `tick` column for the join.
 #ifndef INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_DIAG_LOG_POD_HPP_
 #define INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_DIAG_LOG_POD_HPP_
@@ -121,6 +122,28 @@ struct LocomotionDiagLogPod {
   std::uint8_t num_joints{0};
   std::array<double, kMaxJoints> v{};          ///< measured joint velocity [rad/s]
   std::array<double, kMaxJoints> tau_servo{};  ///< kp(q_cmd − q) − kd v [N·m]
+
+  // What walking is judged against. The command is the filter's output as the
+  // command timer last handed it over — what the planner was given, not what
+  // the sampled plan was solved for (that one is up to a filter period plus
+  // the MPC's latency older).
+  double cmd_vx{0.0};  ///< [m/s], heading frame
+  double cmd_vy{0.0};  ///< [m/s]
+  double cmd_wz{0.0};  ///< [rad/s]
+  double cmd_h{0.0};   ///< base height [m]
+  /// The filter had a fresh input at that step (false: no command path, or the
+  /// input was stale and the output is decaying to rest).
+  bool cmd_valid{false};
+  /// The phase manager's gait (an index into its gait table) when the timer
+  /// read it; −1 = no MPC. It is the latest gait the scheduler advanced to, so
+  /// it leads the sampled plan's contact_mask.
+  std::int32_t gait_latest{-1};
+  std::array<double, 3> ref_base_v{};  ///< the plan's base linear velocity, base frame; NaN = none
+  /// Bit c: contact c's lane group is fresh by its backend's own flag (inference_enable).
+  std::uint32_t meas_contact_valid{0};
+  /// The measured contact force's z per contact, in the sensor's frame (a
+  /// supporting sole reads negative); NaN when its bit above is clear.
+  std::array<double, kMaxContacts> meas_fz{};
 };
 
 static_assert(std::is_trivially_copyable_v<LocomotionDiagLogPod>,
@@ -170,6 +193,11 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
     for (std::size_t i = 0; i < cols.joints; ++i) {
       os << ',' << prefix << joint_names[i];
     }
+  }
+  os << ",cmd_vx,cmd_vy,cmd_wz,cmd_h,cmd_valid,gait_latest,ref_base_vx,ref_base_vy,ref_base_vz,"
+        "meas_contact_valid";
+  for (std::size_t c = 0; c < cols.contacts; ++c) {
+    os << ",meas_fz_" << contact_names[c];
   }
 }
 
@@ -221,6 +249,15 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
   }
   for (std::size_t i = 0; i < cols.joints; ++i) {
     os << ',' << p.tau_servo[i];
+  }
+  os << ',' << p.cmd_vx << ',' << p.cmd_vy << ',' << p.cmd_wz << ',' << p.cmd_h << ','
+     << (p.cmd_valid ? 1 : 0) << ',' << p.gait_latest;
+  for (double x : p.ref_base_v) {
+    os << ',' << x;
+  }
+  os << ',' << p.meas_contact_valid;
+  for (std::size_t c = 0; c < cols.contacts; ++c) {
+    os << ',' << p.meas_fz[c];
   }
 }
 

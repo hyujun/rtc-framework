@@ -31,16 +31,29 @@ message for ``--duration`` s. The arms differ only in the switch step:
           switch to the joint controller; the active controller must then be
           ``--joint-controller``) → ``--settle`` → switch to the locomotion
           controller → ``--lead`` → a window (``--duration``)   — the operator stop
+  walk    the loco switch with the MPC on (enable_mpc:=true, never mpc_off),
+          then the walking command script (twist_script.py, the sim-second
+          table of rtc_tools.analysis.walk_metrics.WALK_SCRIPT, published on
+          ``--cmd-topic``): its start is marked once the controller's
+          subscription matched; the stop window is its last ``--stop-window``
+          s; the run ends when the script has rested             — walking
+  walk_estop as walk, and ``--estop-at`` s into the script /rtc_cm/trigger_estop
+          (its reply must say success) → a ``hold`` window of ``--hold`` s →
+          the script stopped; no clear (its check runs on the wall clock)
+                                                                    — a stop while walking
 
-The two event arms start the recorder in the background for the whole script
+The event arms start the recorder in the background for the whole script
 (stopping it once the script is done) and mark every event in run.json with
 its wall offset from the recorder's start and its wall-clock stamp — the
 recorder CSV's time axis, since the sim stamps its sensor messages with the
 wall clock; the windows are judged from the CSV between their marks
 (``windows`` in run.json, the stance_metrics numbers), beside the recorder's
 own JSON over the whole run. A step whose reply is not what the script expects
-ends the run with ``error`` in run.json and a non-zero exit. They run with the plain launch (no MPC) or, under
-``--mpc-layout``, with sim_overlay:=mpc_off like loco.
+ends the run with ``error`` in run.json and a non-zero exit. reentry and
+estop run with the plain launch (no MPC) or, under ``--mpc-layout``, with
+sim_overlay:=mpc_off like loco; the walk arms always run under the MPC. The
+recorder and the command script are stopped whatever ends the script (an
+error, an exception): the script first, then the recorder, then the launch.
 
 With ``--mpc-layout`` every arm runs under enable_mpc:=true (the same CPU
 layout), and loco (and the two event arms) turn the MPC off again with
@@ -67,6 +80,7 @@ so no build starts between runs, with the workspace environment sourced.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -80,14 +94,19 @@ from pathlib import Path
 
 import yaml
 
-from rtc_tools.analysis import stance_metrics as sm
+from rtc_tools.analysis import stance_metrics as sm, walk_metrics as wm
 from rtc_tools.launch.cpu_shield import mpc_solver_threads
 
 LOCO = "locomotion_controller"
-ARMS = ("servo", "loco", "lowpd", "mpc", "mpc_fb", "reentry", "estop")
-# arms whose switch step activates the locomotion controller
+ARMS = ("servo", "loco", "lowpd", "mpc", "mpc_fb", "reentry", "estop", "walk", "walk_estop")
+# arms whose switch step activates the locomotion controller without its MPC
+# under --mpc-layout (the walk arms activate it with its MPC, always)
 LOCO_ARMS = ("loco", "reentry", "estop")
-EVENT_ARMS = ("reentry", "estop")  # a script (SCRIPTS) under a background recording
+WALK_ARMS = ("walk", "walk_estop")
+# a script (SCRIPTS) under a background recording
+EVENT_ARMS = ("reentry", "estop", *WALK_ARMS)
+TWIST_SCRIPT = Path(__file__).resolve().parent / "twist_script.py"
+TWIST_START_TIMEOUT_S = 90.0  # [wall] the script's wait for the controller's subscription
 WORKER_PROFILE = "mpc_par_sim"  # the simulation worker profile (--mpc-threads)
 OPERATOR_ESTOP_REASON = "operator_request"  # the CM's reason for /rtc_cm/trigger_estop
 # The event arms' recorder is stopped (SIGINT) once the script is done; its
@@ -102,7 +121,7 @@ def launch_args(
     arm: str, mpc_layout: bool, overlays: dict[str, str], mpc_threads: int | None = None
 ) -> list[str]:
     """The arm's launch arguments (module docstring); `overlays` replaces an arm's overlay."""
-    under_mpc = arm in ("mpc", "mpc_fb") or mpc_layout
+    under_mpc = arm in ("mpc", "mpc_fb", *WALK_ARMS) or mpc_layout
     default = {"mpc_fb": "mpc_riccati"}.get(arm)
     if arm in LOCO_ARMS and mpc_layout:
         default = "mpc_off"
@@ -332,9 +351,88 @@ def _clear_estop(args: argparse.Namespace) -> tuple[bool, dict, str]:
     return True, fields, ""
 
 
-# The event scripts (module docstring), one step per entry: ("sleep", the
-# argument holding its length), ("window", its name — `--duration` long,
-# marked at both ends), ("call", its mark name, the action). An action returns
+def stop_group(proc: subprocess.Popen | None, timeout: float = 60.0) -> int | None:
+    """SIGINT to the process's group, then SIGKILL after `timeout`; its exit code."""
+    if proc is None:
+        return None
+    if proc.poll() is None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGINT)
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        return proc.wait()
+
+
+def read_events(path: Path) -> list[dict]:
+    """The JSON lines of a command script's log (anything else is skipped)."""
+    out = []
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+    return out
+
+
+def _twist_start(args: argparse.Namespace) -> tuple[bool, dict, str]:
+    """Start the command script; ok once it reports its start (the subscriber matched)."""
+    log_path = args.run_out / "twist.log"
+    with open(log_path, "w") as log:
+        args.twist_proc = subprocess.Popen(
+            [
+                sys.executable,
+                str(TWIST_SCRIPT),
+                "--topic",
+                args.cmd_topic,
+                "--rtf",
+                str(args.rtf or 1.0),
+            ],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    end = time.monotonic() + TWIST_START_TIMEOUT_S
+    while time.monotonic() < end:
+        exited = args.twist_proc.poll() is not None  # before the read: its last line counts
+        started = [e for e in read_events(log_path) if e.get("event") == "start"]
+        if started:
+            return True, {"script_wall": started[0].get("wall")}, ""
+        if exited:
+            break
+        time.sleep(0.05)
+    return False, {"rc": args.twist_proc.poll()}, "the command script did not start"
+
+
+def _twist_end(args: argparse.Namespace) -> tuple[bool, dict, str]:
+    """The script's own end (its last sleep and the rest commands)."""
+    try:
+        rc = args.twist_proc.wait(timeout=60.0)
+    except subprocess.TimeoutExpired:
+        rc = stop_group(args.twist_proc)
+    args.twist_proc = None
+    return rc == 0, {"rc": rc}, "the command script did not end cleanly"
+
+
+def _twist_stop(args: argparse.Namespace) -> tuple[bool, dict, str]:
+    """Stop the script now (it rests on the way out)."""
+    rc = stop_group(args.twist_proc)
+    args.twist_proc = None
+    return rc is not None, {"rc": rc}, "the command script was not running"
+
+
+def walk_until_stop_window(args: argparse.Namespace) -> float:
+    """The script's length before its last ``--stop-window`` s [s, sim]."""
+    return wm.script_length() - args.stop_window
+
+
+# The event scripts (module docstring), one step per entry: ("sleep", its
+# length), ("window", its name[, its length] — `--duration` long without one,
+# marked at both ends), ("call", its mark name, the action). A length is the
+# argument holding it or a function of the arguments. An action returns
 # (ok, the fields its mark carries, what failed). The recorder's length is
 # derived from the same table (script_duration).
 SCRIPTS = {
@@ -361,7 +459,30 @@ SCRIPTS = {
         ("sleep", "lead"),
         ("window", "window"),
     ),
+    "walk": (
+        ("call", "twist_start", _twist_start),
+        ("sleep", walk_until_stop_window),
+        ("window", "stop", "stop_window"),
+        ("call", "twist_end", _twist_end),
+    ),
+    "walk_estop": (
+        ("call", "twist_start", _twist_start),
+        ("sleep", "estop_at"),
+        ("call", "trigger_estop", _trigger_estop),
+        ("window", "hold", "hold"),
+        ("call", "twist_stop", _twist_stop),
+    ),
 }
+
+
+def step_length(args: argparse.Namespace, length) -> float:
+    """A step's length [s, sim]: the argument it names, or the function of the arguments."""
+    return length(args) if callable(length) else getattr(args, length)
+
+
+def window_length(args: argparse.Namespace, step: tuple) -> float:
+    """A window step's length [s, sim]: its own, or `--duration`."""
+    return step_length(args, step[2]) if len(step) > 2 else args.duration
 
 
 def run_events(arm: str, args: argparse.Namespace, note: dict, clock, t0: float) -> bool:
@@ -383,10 +504,10 @@ def run_events(arm: str, args: argparse.Namespace, note: dict, clock, t0: float)
 
     for step in SCRIPTS[arm]:
         if step[0] == "sleep":
-            clock.sleep(getattr(args, step[1]) * wall)
+            clock.sleep(step_length(args, step[1]) * wall)
         elif step[0] == "window":
             mark(f"{step[1]}_start")
-            clock.sleep(args.duration * wall)
+            clock.sleep(window_length(args, step) * wall)
             mark(f"{step[1]}_end")
         else:
             ok, fields, what = step[2](args)
@@ -399,11 +520,13 @@ def run_events(arm: str, args: argparse.Namespace, note: dict, clock, t0: float)
 
 def script_duration(arm: str, args: argparse.Namespace) -> float:
     """The event script's length [s, sim]: its sleeps and windows (SCRIPTS)."""
-    return sum(
-        getattr(args, step[1]) if step[0] == "sleep" else args.duration
-        for step in SCRIPTS[arm]
-        if step[0] in ("sleep", "window")
-    )
+    total = 0.0
+    for step in SCRIPTS[arm]:
+        if step[0] == "sleep":
+            total += step_length(args, step[1])
+        elif step[0] == "window":
+            total += window_length(args, step)
+    return total
 
 
 def window_metrics(csv_path: Path, events: list[dict], z_ref: float) -> dict:
@@ -461,7 +584,17 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
     if args.rtf:
         extra.append(f"max_rtf:={args.rtf}")
         wall = 1.0 / args.rtf
-    note: dict = {"arm": arm, "k": k, "launch_args": extra}
+    # The run's own settings the judge (walk_gate.py) reads back.
+    note: dict = {
+        "arm": arm,
+        "k": k,
+        "launch_args": extra,
+        "rtf": args.rtf,
+        "z_ref": args.z_ref,
+        "stop_window": args.stop_window,
+    }
+    args.run_out = out
+    args.twist_proc = None
     t_start = time.time()
     with open(out / "launch.log", "w") as log:
         launch = subprocess.Popen(
@@ -528,16 +661,21 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                         stderr=subprocess.STDOUT,
                         start_new_session=True,
                     )
-                    t0 = time.monotonic()
-                    note["events_ok"] = run_events(arm, args, note, WallClock(), t0)
-                    time.sleep(RECORDER_GRACE_S * wall)
-                    if recorder.poll() is None:
-                        os.killpg(recorder.pid, signal.SIGINT)
                     try:
-                        note["recorder_rc"] = recorder.wait(timeout=60)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(recorder.pid, signal.SIGKILL)
-                        note["recorder_rc"] = recorder.wait()
+                        t0 = time.monotonic()
+                        note["events_ok"] = run_events(arm, args, note, WallClock(), t0)
+                        time.sleep(RECORDER_GRACE_S * wall)
+                    finally:
+                        # The script first (it rests the command), then the recorder —
+                        # the recorder whatever stopping the script raised.
+                        try:
+                            if args.twist_proc is not None:
+                                note["twist_rc"] = stop_group(args.twist_proc)
+                                args.twist_proc = None
+                        finally:
+                            note["recorder_rc"] = stop_group(recorder)
+                if arm in WALK_ARMS:
+                    note["twist_events"] = read_events(out / "twist.log")
                 note["windows"] = window_metrics(out / "stance.csv", note["events"], args.z_ref)
             else:
                 rec = sh(recorder_cmd, timeout=args.duration * 4 * wall + 60)
@@ -545,12 +683,7 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                 (out / "recorder.log").write_text(rec.stdout + rec.stderr)
             note["active_controller_end"] = active_controller()
         finally:
-            os.killpg(launch.pid, signal.SIGINT)
-            try:
-                launch.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                os.killpg(launch.pid, signal.SIGKILL)
-                launch.wait()
+            stop_group(launch, timeout=20.0)
             session = newest_session(args.logging_root, t_start)
             if session is not None:
                 # Only this run's files: a folder shared with an earlier run keeps its too.
@@ -635,6 +768,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--body-group", default="g1", help="reentry: the body device group (its roster)"
     )
+    p.add_argument(
+        "--cmd-topic",
+        default="/locomotion_controller/g1/cmd_vel",
+        help="walk arms: the controller's Twist topic",
+    )
+    p.add_argument(
+        "--stop-window",
+        type=float,
+        default=3.0,
+        help="walk: the judged stand at the script's end, its last seconds [s, sim]",
+    )
+    p.add_argument(
+        "--estop-at",
+        type=float,
+        default=8.0,
+        help="walk_estop: the stop's time into the command script [s, sim]",
+    )
     p.add_argument("--sensor-topic", default="/g1/sim_sensors")
     p.add_argument("--z-ref", type=float, default=0.764431)
     p.add_argument("--settle", type=float, default=2.0)
@@ -645,6 +795,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--logging-root", type=Path, required=True)
     args = p.parse_args(argv)
+    # The stop window inside the script's rest; the walking stop while it walks.
+    walking_s = wm.script_length(wm.WALK_SCRIPT[:-1])
+    if not 0.0 < args.stop_window <= wm.WALK_SCRIPT[-1].length_s:
+        p.error(f"--stop-window must be in (0, {wm.WALK_SCRIPT[-1].length_s}] s")
+    if not 0.0 < args.estop_at < walking_s:
+        p.error(f"--estop-at must be in (0, {walking_s}) s — inside the walking part")
     if args.mpc_threads is not None:
         check_mpc_threads(p, args.mpc_threads, args.launch)
     args.overlay = dict(o.split("=", 1) for o in args.overlay)

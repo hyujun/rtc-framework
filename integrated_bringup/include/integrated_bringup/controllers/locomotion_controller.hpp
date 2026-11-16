@@ -149,6 +149,15 @@
 // activation resets the filter (the height back to command.base_height). The
 // key is accepted without mpc.enabled and does nothing (the plan is the
 // command's only consumer), so a profile may keep it while the MPC is off.
+// Each step also hands the output and the phase manager's gait to the RT tick
+// through a wait-free triple buffer, for the diagnostic log only (the RT tick
+// never reads the phase manager or a SeqLock the timer writes).
+//
+// The diagnostic log's measured contact force: contact c reads group c of the
+// body group's inference lane (fx, fy, fz in values 1..3 of a group
+// `sensor_layout.inference_values_per_group` wide), so the profile lists that
+// lane's sources in the model's contact order. A lane narrower than 4 values,
+// or with another group count than the model's contacts, logs NaN.
 //
 // The status topic `<body group>/locomotion_status` (diagnostic_msgs/
 // DiagnosticStatus, published with the CM's non-RT snapshot, ≈ 50 Hz): level
@@ -169,6 +178,7 @@
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
+#include "rtc_mpc/comm/triple_buffer.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/logging/mpc_timing_logger.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
@@ -262,6 +272,19 @@ struct RawVelocityCommandSample {
 
 static_assert(std::is_trivially_copyable_v<RawVelocityCommandSample>,
               "RawVelocityCommandSample travels through a SeqLock");
+
+/// @brief What one command timer step hands the RT tick for the diagnostic log.
+struct LocomotionCommandLogSample {
+  double v_x{0.0};
+  double v_y{0.0};
+  double omega_z{0.0};
+  double base_height{0.0};
+  bool fresh{false};      ///< the filter's input was fresh at this step
+  std::int32_t gait{-1};  ///< the phase manager's gait index; −1 = none
+};
+
+static_assert(std::is_trivially_copyable_v<LocomotionCommandLogSample>,
+              "LocomotionCommandLogSample travels through a triple buffer");
 
 /// @throws std::invalid_argument naming the key on a missing / unknown key of
 ///         `pd_feedforward`, `fault`, `fault.pose_guard`, `mpc` or `velocity_command`, a
@@ -548,6 +571,10 @@ class LocomotionController final : public rtc::RTControllerInterface {
   rclcpp::CallbackGroup::SharedPtr command_cb_group_;
   rclcpp::TimerBase::SharedPtr command_timer_;
   rtc::SeqLock<rtc::mpc::FilteredCommand> command_out_;  ///< timer → publish thread, tests
+  /// timer → RT tick (the diagnostic log): one producer (PushCommand), one consumer (FillLogs).
+  rtc::mpc::TripleBuffer<LocomotionCommandLogSample> command_log_;
+  /// The body group's inference values per group (0 = no lane), from the device configs.
+  int contact_force_stride_{0};
   /// The MPC thread's counters as the 1 Hz timer last read them (the publish
   /// thread reads this, never the thread).
   rtc::SeqLock<LocomotionMpcCounters> mpc_counters_;

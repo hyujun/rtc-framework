@@ -496,6 +496,32 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
     }
     offset += dim;
   }
+  // The command timer's last step (a new one when it published since the last
+  // tick, else the one already held).
+  static_cast<void>(command_log_.TryAcquireLatest());
+  const LocomotionCommandLogSample& cmd = command_log_.Current();
+  d.cmd_vx = cmd.v_x;
+  d.cmd_vy = cmd.v_y;
+  d.cmd_wz = cmd.omega_z;
+  d.cmd_h = cmd.base_height;
+  d.cmd_valid = cmd.fresh;
+  d.gait_latest = cmd.gait;
+  for (std::size_t i = 0; i < 3; ++i) {
+    d.ref_base_v[i] = plan ? wbc_ref_.v_ref[i] : kNaN;
+  }
+  // Contact c is group c of the body's inference lane: fz is value 3 of the group.
+  const std::size_t nc = std::min(contact_frames_full_.size(), LocomotionDiagLogPod::kMaxContacts);
+  const auto stride = static_cast<std::size_t>(std::max(contact_force_stride_, 0));
+  const bool lane = stride >= 4 && dev.num_inference_groups == static_cast<int>(nc);
+  d.meas_contact_valid = 0;
+  for (std::size_t c = 0; c < nc; ++c) {
+    const std::size_t at = c * stride + 3;
+    const bool fresh = lane && at < dev.inference_data.size() && dev.inference_enable[c];
+    d.meas_fz[c] = fresh ? static_cast<double>(dev.inference_data[at]) : kNaN;
+    if (fresh) {
+      d.meas_contact_valid |= 1U << static_cast<std::uint32_t>(c);
+    }
+  }
   double servo2 = 0.0;
   double ff2 = 0.0;
   d.num_joints = static_cast<std::uint8_t>(nj);
