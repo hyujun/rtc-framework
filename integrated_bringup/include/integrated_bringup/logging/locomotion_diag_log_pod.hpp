@@ -2,9 +2,10 @@
 // causes, the state source's verdict, the whole-body QP's outcome and margins,
 // the measured base, the contact forces, the servo / feedforward split per body
 // joint, and what walking is judged against (the command, the gait, the plan's
-// base velocity, the measured contact normal forces). The joint lanes the generic joint log already
-// carries (measured q, the position target, gravity, feedforward) are in JointFeedforwardLog,
-// written by the same tick with the same `tick` column for the join.
+// base velocity, the measured contact normal forces), and the plan sampled this
+// tick before the plausibility check (a refused one too). The joint lanes the generic joint log
+// already carries (measured q, the position target, gravity, feedforward) are in
+// JointFeedforwardLog, written by the same tick with the same `tick` column for the join.
 #ifndef INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_DIAG_LOG_POD_HPP_
 #define INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_DIAG_LOG_POD_HPP_
 
@@ -23,6 +24,24 @@ namespace integrated_bringup {
 inline constexpr std::string_view kLocomotionDiagLogMsgType =
     "integrated_bringup/LocomotionDiagLog";
 inline constexpr std::string_view kLocomotionDiagLogInstance = "locomotion_diag";
+
+/// The plan the tick sampled, as it was before the plausibility check — a
+/// refused plan is here although `plan_id` (the followed one) is not.
+struct LocomotionPlanSampleDiag {
+  std::uint64_t plan_id{0};  ///< 0 = nothing sampled
+  bool converged{false};
+  std::int32_t iterations{0};
+  double prim_inf{0.0};        ///< the solve's primal residual
+  double prim_head{0.0};       ///< its largest node residual over the leading nodes
+  std::int32_t prim_node{-1};  ///< the node of its largest residual; −1 = none
+  double dual_inf{0.0};
+  std::uint32_t mask{0};         ///< the sample's contact mask
+  double progress{0.0};          ///< where in the horizon it sampled, [0, 1]
+  double a_joint_max{0.0};       ///< max |a_ref| over the body joints [rad/s²]
+  std::int32_t a_joint_idx{-1};  ///< its body joint (body order); −1 = none
+  std::uint8_t check{
+      0};  ///< the check it failed; 0 = passed or not checked (not the earlier plan's)
+};
 
 struct LocomotionDiagLogPod {
   static constexpr std::size_t kMaxJoints = 32;
@@ -144,6 +163,10 @@ struct LocomotionDiagLogPod {
   /// The measured contact force's z per contact, in the sensor's frame (a
   /// supporting sole reads negative); NaN when its bit above is clear.
   std::array<double, kMaxContacts> meas_fz{};
+  /// Refused plans in stand / walk that gave way to the plan followed
+  /// before them, total.
+  std::uint64_t plan_holds{0};
+  LocomotionPlanSampleDiag sample{};
 };
 
 static_assert(std::is_trivially_copyable_v<LocomotionDiagLogPod>,
@@ -199,6 +222,9 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
   for (std::size_t c = 0; c < cols.contacts; ++c) {
     os << ",meas_fz_" << contact_names[c];
   }
+  os << ",plan_holds,sample_plan_id,sample_converged,sample_iterations,sample_prim_inf,"
+        "sample_prim_head,sample_prim_node,sample_dual_inf,sample_mask,sample_progress,"
+        "sample_a_joint_max,sample_a_joint_idx,sample_check";
 }
 
 inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogPod& p,
@@ -259,6 +285,11 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
   for (std::size_t c = 0; c < cols.contacts; ++c) {
     os << ',' << p.meas_fz[c];
   }
+  const auto& s = p.sample;
+  os << ',' << p.plan_holds << ',' << s.plan_id << ',' << (s.converged ? 1 : 0) << ','
+     << s.iterations << ',' << s.prim_inf << ',' << s.prim_head << ',' << s.prim_node << ','
+     << s.dual_inf << ',' << s.mask << ',' << s.progress << ',' << s.a_joint_max << ','
+     << s.a_joint_idx << ',' << static_cast<unsigned>(s.check);
 }
 
 }  // namespace integrated_bringup

@@ -48,6 +48,7 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
   ReadState(state, now_ns);
   if (mpc_enabled_) {
     wbc_ref_.valid = false;  // a tick that does not sample the plan logs none
+    sample_diag_ = LocomotionPlanSampleDiag{};
   }
 
   if (fault_latched_tick_) {
@@ -473,6 +474,8 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   d.schedule_epoch = plan ? wbc_ref_.schedule_epoch : 0;
   d.contact_mask = contact_mask_;
   d.plausibility_rejects = plausibility_rejects_.load(std::memory_order_relaxed);
+  d.plan_holds = plan_holds_.load(std::memory_order_relaxed);
+  d.sample = sample_diag_;
   d.u_fb_norm = u_fb_norm_;
   d.mpc_state_epoch = mpc_state_epoch_;
   for (std::size_t i = 0; i < 4; ++i) {

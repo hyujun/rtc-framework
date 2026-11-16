@@ -31,6 +31,7 @@ constexpr const char* kKeyNames[kLocomotionStatusKeyCount] = {
     "schedule_epoch",
     "state_epoch",
     "plausibility_rejects",
+    "plan_holds",
     "solves",
     "failed_solves",
     "deadline_miss",
@@ -160,6 +161,8 @@ void FormatLocomotionStatusValue(LocomotionStatusKey key, const LocomotionDiagLo
       return u64(s.mpc_state_epoch);
     case Key::kPlausibilityRejects:
       return u64(s.plausibility_rejects);
+    case Key::kPlanHolds:
+      return u64(s.plan_holds);
     case Key::kSolves:
       return u64(c.solves);
     case Key::kFailedSolves:

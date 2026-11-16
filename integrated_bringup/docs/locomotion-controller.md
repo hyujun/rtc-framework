@@ -31,7 +31,7 @@ ros2 topic echo /locomotion_controller/g1/locomotion_status      # level · sour
 - `runtime.yaml` 의 `velocity_command: {topic}` 가 Twist 토픽이다 (출하 `g1/cmd_vel`, 컨트롤러 네임스페이스 아래). `linear.x` / `linear.y` / `angular.z` = v_x / v_y / yaw rate, `linear.z` = pelvis 높이 **rate** — `command.yaml` 의 필터 (clamp · Bessel · 적분, `rtc_mpc` `reference/command_filter.hpp`) 를 지나 planner 의 stage reference 가 된다. 구독은 depth 1 · reliability 기본 (reliable) 이라 best_effort 발행자는 연결되지 않는다. 키가 없으면 명령 경로가 없고 MPC 는 제자리에 선다; `mpc.enabled` 가 아니면 키는 받되 비활성이다.
 - 명령은 `command.t_stale` (0.5 s) 동안 새 메시지가 없으면 0 으로 돌아간다 (높이는 유지) — 발행자는 **주기적으로** 보낸다. 비유한 축은 직전 값을 유지한다. 활성화마다 필터가 리셋되어 높이는 `command.base_height` 로 돌아간다. 필터는 활성 동안만 돈다 (`command.sample_rate_hz`).
 - 지금의 FSM 은 **모든 접촉이 지지일 때만** stand 로 들어간다 — 속도 명령으로 gait 가 걸음으로 바뀌면 plan 의 mask 에 swing 이 생겨 walk 로 표시된다. 출하값의 보행은 sim 판정을 아직 통과하지 못했다 — 첫 gait 전환 (stance → slow_walk) 직후, 첫 swing 전에 미수렴 plan 하나가 타당성 검사에 걸리고 로봇이 움직이는 중이라 plan-loss fault 로 멈춘다 (아래 평가 도구의 `walk` arm 이 재현한다). 명령은 sim 에서만 쓴다.
-- `<body group>/locomotion_status` (`diagnostic_msgs/DiagnosticStatus`, ≈ 50 Hz, MPC 없이도 발행) — `level`: OK (stand · walk, 또는 MPC 없이 nominal) · WARN (waiting · degraded · MPC 가 있는데 idle) · ERROR (fault · E-STOP); `message` = reference 출처; `values` 는 고정 키 (순서 · 이름은 `controllers/locomotion/locomotion_status.hpp` 의 `LocomotionStatusKey`): source · mode · fault_cause · estop · tick_count · plan_id · policy_age_ms · converged · initial_solve · contact_mask · schedule_epoch · state_epoch · plausibility_rejects · solves · failed_solves · deadline_miss · withheld · overrun · wbc_tick_us · qp_iterations · cmd_vx · cmd_vy · cmd_wz · cmd_height · cmd_valid · cmd_fresh · cmd_stale_ticks · cmd_nonfinite_ticks · cmd_ignored_axis_ticks (필터 tick 수). MPC 카운터는 1 Hz 로 갱신된다. GUI (W8) 는 키로 읽는다.
+- `<body group>/locomotion_status` (`diagnostic_msgs/DiagnosticStatus`, ≈ 50 Hz, MPC 없이도 발행) — `level`: OK (stand · walk, 또는 MPC 없이 nominal) · WARN (waiting · degraded · MPC 가 있는데 idle) · ERROR (fault · E-STOP); `message` = reference 출처; `values` 는 고정 키 (순서 · 이름은 `controllers/locomotion/locomotion_status.hpp` 의 `LocomotionStatusKey`): source · mode · fault_cause · estop · tick_count · plan_id · policy_age_ms · converged · initial_solve · contact_mask · schedule_epoch · state_epoch · plausibility_rejects · plan_holds · solves · failed_solves · deadline_miss · withheld · overrun · wbc_tick_us · qp_iterations · cmd_vx · cmd_vy · cmd_wz · cmd_height · cmd_valid · cmd_fresh · cmd_stale_ticks · cmd_nonfinite_ticks · cmd_ignored_axis_ticks (필터 tick 수). MPC 카운터는 1 Hz 로 갱신된다. GUI (W8) 는 키로 읽는다.
 
 ## 모드
 
@@ -53,6 +53,7 @@ ros2 topic echo /locomotion_controller/g1/locomotion_status      # level · sour
 
 - online 해는 미수렴이어도 stand 를 유지한다 (publish 규칙이 잔차를 묶는다). stand · walk → idle 은 plan 을 **잃었을 때만** 이다 (나이 · epoch · 타당성). 그때 모든 접촉 frame 이 최저점 + 15 mm 안이고 base 가 0.1 m/s 아래면 측정 자세를 다시 latch 하고, 아니면 fault (`plan_loss`) — 떠 있는 발에 하중을 주지 않기 위해서다.
 - 타당성 검사 (`mpc.sanity`) 에 걸린 plan 은 fault 가 아니라 idle 이고, 그 plan 은 끝까지 다시 쓰지 않는다.
+- 단, stand · walk 중에 걸린 plan 은 **그 앞에 따르던 plan** 에 자리를 내준다 — 그 plan 이 아직 살아 있고 (epoch · `max_policy_age_s`) 그 tick 의 검사도 통과하면 계속 따른다. 다음 타당한 plan 이 오면 넘어가고, 앞 plan 이 나이로 빠지거나 다시 걸리면 위의 plan 상실 규칙대로다 (되돌아간 plan 의 앞은 없다). plan 이 늦게 올 때 허용하는 범위와 같다. idle → stand 의 조건은 바뀌지 않는다 (idle 은 아무 plan 도 따르지 않으므로 잡을 앞 plan 이 없고, idle 이 표본만 한 plan 은 잡지 않는다). 횟수는 `plan_holds` (로그 열 · 상태 키 · 10 s INFO 의 `held`).
 - reset · 활성화 · E-STOP 두 edge 는 MPC 의 상태 stream (state epoch) 과 gait 를 다시 시작한다 — 옛 stream 의 plan 은 다시 샘플되지 않는다. E-STOP 동안은 stand 로 넘어가지 않는다.
 - standing 해 (첫 solve) 는 수 초 걸릴 수 있고 그동안은 idle (latch 자세) 이다. online solve 가 publish deadline 을 못 맞추는 호스트에서는 stand 에 이르지 못한다 — 예산은 제어 PC 의 soak 가 정한다.
 
@@ -93,6 +94,8 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
 - `cmd_vx` · `cmd_vy` · `cmd_wz` · `cmd_h` · `cmd_valid` — 명령 필터의 출력을 timer 가 마지막으로 넘긴 값 (planner 에 준 명령; 표본 plan 이 풀린 명령보다 필터 주기 + MPC 지연만큼 새롭다). `cmd_valid` 는 그 step 의 입력이 신선했는지 (명령 경로가 없거나 stale 이면 0).
 - `gait_latest` — timer 가 읽은 phase manager 의 gait (`gait.sequence` 의 위치, −1 = MPC 없음). 스케줄러가 앞서 나간 gait 라 표본 plan 의 `contact_mask` 보다 앞선다 — 이벤트 정렬은 `contact_mask` 로 한다.
 - `ref_base_vx/y/z` — 표본 plan 의 base 선속도 (base frame, plan 이 없으면 NaN).
+- `plan_holds` — 걸려서 앞에 따르던 plan 에 자리를 내준 plan 수 (누적).
+- `sample_*` — 그 tick 에 표본한 plan, **타당성 판정 전** (걸린 plan 도 남는다; `plan_id` 는 따른 plan 이라 다를 수 있다): `sample_plan_id` (0 = 표본 없음) · `sample_converged` · `sample_iterations` · `sample_prim_inf` · `sample_dual_inf` · `sample_prim_head` (앞 node 3 개의 잔차 max) · `sample_prim_node` (잔차가 가장 큰 node) · `sample_mask` · `sample_progress` · `sample_a_joint_max` · `sample_a_joint_idx` (body 관절 \|a_ref\| 의 max 와 그 관절, body 순서) · `sample_check` (걸린 검사 번호, 0 = 통과 또는 검사 안 함).
 - `meas_contact_valid` · `meas_fz_<contact>` — 본체 군 inference lane 의 group c (접촉 순서) 의 fz (센서 frame, 지지하는 발은 음수). bit c 는 backend 자신의 신선도 판정 (`inference_enable` — sim 은 연속 누락 tick 수) 이고, 0 이면 (그 group 이 stale, group 수 ≠ 접촉 수, `sensor_layout.inference_values_per_group` < 4) NaN — backend 가 stale 로 본 유지값은 기록하지 않는다. 수신 나이 (`inference_recv_steady_ns`) 는 보지 않는다. lane 의 소스 순서는 profile 이 접촉 순서로 적는다 (`sim.yaml` 의 `fingertip_wrench_topics`).
 
 ## 평가 도구 (`tools/standing_eval/`)
@@ -119,7 +122,7 @@ repo_scripts/scripts/with_verify_hold.sh python3 integrated_bringup/tools/standi
   --out /tmp/walk --arms mpc walk walk_estop -k 3 --mpc-layout --mpc-threads 2 --rtf 0.1 \
   --overlay mpc=$O --overlay walk=$O --overlay walk_estop=$O \
   --lead 6 --duration 26 --runtime-yaml integrated_bringup/config/g1_loco/controllers/locomotion/runtime.yaml \
-  --logging-root ~/ros2_ws/rtc_ws/logging_data
+  --logging-root ~/ros2_ws/rtc_ws/logging_data --launch-arg max_log_sessions:=200
 python3 integrated_bringup/tools/standing_eval/walk_gate.py /tmp/walk \
   --gait-yaml integrated_bringup/config/g1_loco/controllers/locomotion/gait.yaml
 ```
