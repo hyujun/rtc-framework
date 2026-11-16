@@ -137,9 +137,9 @@ void RtControllerNode::ReleaseConfiguredResources() {
   // #224. Step 6 (the drain timer) is the caller's ShutDrainLaneLocked().
 
   // Services first: these two read the controller set released last.
-  // reset_fault and clear_estop stay up while Unconfigured and answer over an
-  // empty set — every service runs on the executor running this callback, so
-  // none is mid-call while the set goes.
+  // reset_fault, clear_estop and trigger_estop stay up while Unconfigured and
+  // answer over an empty set — every service runs on the executor running
+  // this callback, so none is mid-call while the set goes.
   list_controllers_srv_.reset();
   switch_controller_srv_.reset();
 
@@ -536,7 +536,7 @@ RtControllerNode::CallbackReturn RtControllerNode::on_error(
 
   // No drain lock: the reason is a seqlock (#935), written lock-free here as
   // on the RT loop, which may not be joined yet.
-  TriggerGlobalEstop("lifecycle_error");
+  static_cast<void>(TriggerGlobalEstop("lifecycle_error"));
   StopRtLoop();
   StopNrtPublishLoop();
   // RT joined: no one would ever close a verification window now, and the

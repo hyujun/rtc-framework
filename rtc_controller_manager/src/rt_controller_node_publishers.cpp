@@ -132,6 +132,13 @@ void RtControllerNode::ExposeTopicParameters() {
             result.reason = "Topic parameters are read-only after initialisation";
             return result;
           }
+          // Read once at configure (DeclareAndLoadParameters): a value changed
+          // afterwards would not be the one the clear service runs.
+          if (p.get_name() == "estop_on_clear") {
+            result.successful = false;
+            result.reason = "estop_on_clear is read-only after initialisation";
+            return result;
+          }
         }
         result.successful = true;
         return result;

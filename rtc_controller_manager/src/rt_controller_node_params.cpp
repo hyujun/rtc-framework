@@ -11,6 +11,7 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <lifecycle_msgs/msg/state.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <rclcpp/node_options.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/state.hpp>
@@ -551,6 +552,44 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   // Code default carries no assumption about which controllers are registered
   // (rtc_* stays robot-agnostic; controllers are registered by robot bringup).
   safe_declare("initial_controller", rclcpp::ParameterValue(std::string("")));
+  // What a verified /rtc_cm/clear_estop does next. Read ONCE here; every
+  // later set is refused by the topic-parameter callback (ExposeTopicParameters
+  // names this key beside `controllers.*`), so a policy cannot change under a
+  // clear in flight. A YAML override arrives auto-declared and writable, which
+  // is why the refusal is a callback and not a read-only descriptor.
+  {
+    const char* kKey = "estop_on_clear";
+    std::string on_clear = "resume";
+    if (has_parameter(kKey)) {
+      const auto current = get_parameter(kKey);
+      if (current.get_type() != rclcpp::ParameterType::PARAMETER_STRING) {
+        RCLCPP_ERROR(get_logger(),
+                     "'%s' must be a string ('resume' | 'initial_controller') — refusing to "
+                     "configure",
+                     kKey);
+        return false;
+      }
+      on_clear = current.as_string();
+    } else {
+      rcl_interfaces::msg::ParameterDescriptor desc;
+      desc.description =
+          "After a VERIFIED /rtc_cm/clear_estop: 'resume' keeps the previous controller, "
+          "'initial_controller' switches to initial_controller (a failed switch re-latches). "
+          "Read once at configure; later sets are refused";
+      declare_parameter(kKey, rclcpp::ParameterValue(on_clear), desc);
+    }
+    if (on_clear == "resume") {
+      estop_on_clear_ = EstopOnClear::kResume;
+    } else if (on_clear == "initial_controller") {
+      estop_on_clear_ = EstopOnClear::kInitialController;
+    } else {
+      RCLCPP_ERROR(get_logger(),
+                   "'%s' = '%s' is not one of 'resume' | 'initial_controller' — refusing to "
+                   "configure",
+                   kKey, on_clear.c_str());
+      return false;
+    }
+  }
   safe_declare("use_sim_time_sync", rclcpp::ParameterValue(false));
   safe_declare("sim_sync_timeout_sec", rclcpp::ParameterValue(5.0));
   // Device groups whose state completes a simulator step (issue #566). Empty
@@ -1332,7 +1371,20 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   const auto it = controller_name_to_idx_.find(initial_ctrl);
   if (it != controller_name_to_idx_.end()) {
     active_controller_idx_.store(it->second);
+    initial_controller_idx_ = it->second;
   } else {
+    // The index-0 fallback is for a profile that only starts somewhere; a
+    // policy that will SWITCH to this controller after every E-STOP must name
+    // it, or the switch target is whichever controller happened to register
+    // first (empty or misspelled names are the same refusal).
+    if (estop_on_clear_ == EstopOnClear::kInitialController) {
+      RCLCPP_ERROR(get_logger(),
+                   "estop_on_clear=initial_controller requires initial_controller to name a "
+                   "registered controller — '%s' does not — refusing to configure",
+                   initial_ctrl.c_str());
+      AbandonControllerBringUp();
+      return false;
+    }
     const std::string fallback_name =
         controllers_.empty() ? std::string{"<none>"} : std::string(controllers_.front()->Name());
     RCLCPP_WARN(get_logger(),
@@ -1340,6 +1392,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
                 "registered controller '%s'",
                 initial_ctrl.c_str(), fallback_name.c_str());
     active_controller_idx_.store(0);
+    initial_controller_idx_ = 0;
   }
 
   // No controller registered means there is no valid active candidate, and

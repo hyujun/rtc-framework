@@ -195,7 +195,7 @@ class ControllerLifecycleTestAccess {
   static bool HasEstopPublisher(const RtControllerNode& node) { return node.estop_pub_ != nullptr; }
 
   static void CallTriggerEstop(RtControllerNode& node, std::string_view reason) {
-    node.TriggerGlobalEstop(reason);
+    static_cast<void>(node.TriggerGlobalEstop(reason));
   }
 
   // Returns the outcome (issue #288) — a test that only wants the side effects
@@ -376,6 +376,12 @@ class ControllerLifecycleTestAccess {
     if (!node.cb_group_nrt_callback_) {
       node.cb_group_nrt_callback_ =
           node.create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    }
+    // The switch helper publishes the active name unconditionally, and a
+    // fixture that never ran on_configure has no publisher for it.
+    if (!node.active_ctrl_name_pub_) {
+      node.active_ctrl_name_pub_ =
+          node.create_publisher<std_msgs::msg::String>("/rtc_cm/active_controller_name", 1);
     }
     node.CreateServices();
   }
@@ -623,6 +629,38 @@ class ControllerLifecycleTestAccess {
   static void MarkActive(RtControllerNode& node, int idx) {
     node.active_controller_idx_.store(idx, std::memory_order_release);
     node.controller_states_[static_cast<std::size_t>(idx)].store(1, std::memory_order_release);
+  }
+
+  // ── Operator E-STOP · estop_on_clear ──────────────────────────────────────
+  using EstopOnClear = RtControllerNode::EstopOnClear;
+  // The two reasons the services latch with, re-exported for the same reason
+  // as the enum above.
+  static constexpr std::string_view kOperatorEstopReason = RtControllerNode::kOperatorEstopReason;
+  static constexpr std::string_view kPostClearSwitchFailedReason =
+      RtControllerNode::kPostClearSwitchFailedReason;
+
+  // The CAS result the operator service reports.
+  static bool CallTriggerEstopRaised(RtControllerNode& node, std::string_view reason) {
+    return node.TriggerGlobalEstop(reason);
+  }
+
+  // What DeclareAndLoadParameters leaves behind for the clear service.
+  static void SetEstopOnClear(RtControllerNode& node, EstopOnClear policy) {
+    node.estop_on_clear_ = policy;
+  }
+
+  static void SetInitialControllerIdx(RtControllerNode& node, int idx) {
+    node.initial_controller_idx_ = idx;
+  }
+
+  // The policy step on its own, for the states the service cannot be made to
+  // reach deterministically (a re-latch between the verification and the switch).
+  static void CallApplyEstopOnClearPolicy(RtControllerNode& node, bool& ok, std::string& message) {
+    node.ApplyEstopOnClearPolicy(ok, message);
+  }
+
+  static int GetControllerState(const RtControllerNode& node, std::size_t idx) {
+    return node.controller_states_[idx].load(std::memory_order_acquire);
   }
 };
 

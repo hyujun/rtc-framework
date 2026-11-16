@@ -38,6 +38,22 @@
 //   the window arithmetic and the re-trigger counter are in
 //   rtc_controller_manager/README.md §"글로벌 E-STOP 해제". Neither is restated
 //   here (conventions.md §Documentation Requirements).
+//
+// trigger_estop — raise the GLOBAL E-STOP latch from outside (std_srvs/Trigger,
+//   no request fields, no acknowledgement: raising the latch is the safe
+//   direction). The reply never pre-tests the latch: `success` is whether the
+//   latch stands after the call, and `message` says whether THIS call raised it
+//   or found it up (with the reason it found). Same callback group as the other
+//   services, so it queues behind a clear / reset / switch in progress — the
+//   README states that bound. This is not a hardware E-STOP.
+//
+// estop_on_clear — what a VERIFIED clear does next (ApplyEstopOnClearPolicy,
+//   bottom of this file). `resume` leaves the previous controller running and
+//   the reply exactly as it was; `initial_controller` switches to the
+//   configured initial controller first and prefixes the reply with the
+//   outcome. A switch that fails for any reason other than a re-latched E-STOP
+//   re-raises the latch: the alternative is a reply that says "cleared" over a
+//   controller the switch may have left half-activated.
 #include "rtc_controller_manager/rt_controller_node.hpp"
 
 #include <algorithm>
@@ -226,7 +242,7 @@ void RtControllerNode::CreateServices() {
         // two ticks plus overrun/jitter, and expiring is itself a diagnosis.
         static constexpr int kObservationDeadlinePeriods = 8;
         const auto period = ControlPeriod();
-        const auto poll_interval = std::max(period / 4, std::chrono::microseconds(100));
+        const auto poll_interval = ServicePollInterval();
         const std::uint64_t ticks_before = RtTickCount();
 
         active.ResetFault();
@@ -273,6 +289,43 @@ void RtControllerNode::CreateServices() {
       },
       srv_qos, cb_group_nrt_callback_);
 
+  trigger_estop_srv_ = create_service<std_srvs::srv::Trigger>(
+      "/rtc_cm/trigger_estop",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> resp) {
+        // The CAS result IS the answer to "did this call raise it". Testing
+        // IsGlobalEstopped() first and then triggering would let a trigger
+        // from another thread land in between and be reported as ours.
+        const bool raised = TriggerGlobalEstop(kOperatorEstopReason);
+        if (raised) {
+          resp->message =
+              "raised by this call (reason='" + std::string(kOperatorEstopReason) + "')";
+        } else {
+          // Already up. The reason reads "" for the few hundred nanoseconds
+          // between another trigger's latch and its reason write; one yield
+          // covers that, and the fallback names the miss rather than guess.
+          std::string reason = GlobalEstopReason();
+          if (reason.empty()) {
+            std::this_thread::yield();
+            reason = GlobalEstopReason();
+          }
+          if (reason.empty()) {
+            reason = "(reason pending)";
+          }
+          RCLCPP_WARN(get_logger(), "trigger_estop: already latched (reason='%s') — no change",
+                      reason.c_str());
+          resp->message = "already latched: " + reason;
+        }
+        // Read AFTER both branches, never assumed from `raised`: a clear racing
+        // this call can lower a latch this call raised, and the operator is
+        // owed the state of the arm, not of the call.
+        resp->success = IsGlobalEstopped();
+        if (!resp->success) {
+          resp->message += " — but the latch is DOWN now (a clear ran concurrently)";
+        }
+      },
+      srv_qos, cb_group_nrt_callback_);
+
   clear_estop_srv_ = create_service<rtc_msgs::srv::ClearEstop>(
       "/rtc_cm/clear_estop",
       [this](const std::shared_ptr<rtc_msgs::srv::ClearEstop::Request> req,
@@ -293,6 +346,18 @@ void RtControllerNode::CreateServices() {
           return " (controller '" + std::string(active.Name()) +
                  "' still has a latched fault — /rtc_cm/reset_fault clears that one)";
         };
+        // Only the ok=true path runs the estop_on_clear policy. Every reply in
+        // which the latch is down but this call cannot vouch for the window
+        // carries this: the previous controller resumes when the window
+        // closes, and the switch the policy promises will not happen on its
+        // own. A function of the state, so no such exit can miss it.
+        const std::string on_clear_note =
+            estop_on_clear_ == EstopOnClear::kInitialController
+                ? " [estop_on_clear=initial_controller: no switch was made on this call — the "
+                  "previous controller resumes when the window closes; switch to '" +
+                      InitialControllerName() + "' by hand once /system/estop_status reads false]"
+                : std::string{};
+        const auto unverified_note = [&]() { return fault_note() + on_clear_note; };
 
         if (!IsGlobalEstopped()) {
           // Latch down but an earlier clear's window still open — that call
@@ -305,7 +370,7 @@ void RtControllerNode::CreateServices() {
                 "the latch is DOWN but a previous clear is still being verified — the hold stays "
                 "on until the RT loop completes the verification window (if this persists the "
                 "loop is stalled, overrunning, or not running)" +
-                fault_note();
+                unverified_note();
             return;
           }
           resp->ok = true;
@@ -351,7 +416,7 @@ void RtControllerNode::CreateServices() {
         static constexpr long kDeadlineMultiple = 4;
         const auto window_ticks = static_cast<long>(EstopVerifyWindowTicks());
         const auto period = ControlPeriod();
-        const auto poll_interval = std::max(period / 4, std::chrono::microseconds(100));
+        const auto poll_interval = ServicePollInterval();
 
         const std::uint32_t token = BeginEstopClearVerification();
         const auto outcome = ClearGlobalEstop();
@@ -400,7 +465,7 @@ void RtControllerNode::CreateServices() {
               "') but unverified — the RT loop did not complete the verification window within "
               "the deadline, so no detector re-evaluated the cause (loop stalled, overrunning, or "
               "not running); the hold stays on until it does" +
-              fault_note();
+              unverified_note();
           return;
         }
 
@@ -427,16 +492,69 @@ void RtControllerNode::CreateServices() {
               "transition or replaced by another clear before the RT loop completed it. No "
               "detector re-evaluated the cause on this call's behalf and this window no longer "
               "holds the output: check /system/estop_status for what is in force now" +
-              fault_note();
+              unverified_note();
           return;
         }
 
         resp->ok = true;
         resp->message = "global E-STOP cleared (was: '" + latched_reason + "')" + fault_note();
+        // Verified, and only then: the policy switches on a wire the hold has
+        // just released. Note the order — fault_note() was read into the
+        // message BEFORE the switch, so it describes the controller that was
+        // active during the E-STOP, which is the one whose latch matters.
+        ApplyEstopOnClearPolicy(resp->ok, resp->message);
       },
       srv_qos, cb_group_nrt_callback_);
 
   RCLCPP_INFO(get_logger(),
               "Services ready: /rtc_cm/list_controllers, "
-              "/rtc_cm/switch_controller, /rtc_cm/reset_fault, /rtc_cm/clear_estop");
+              "/rtc_cm/switch_controller, /rtc_cm/reset_fault, /rtc_cm/clear_estop, "
+              "/rtc_cm/trigger_estop");
+}
+
+void RtControllerNode::ApplyEstopOnClearPolicy(bool& ok, std::string& message) {
+  if (estop_on_clear_ != EstopOnClear::kInitialController) {
+    return;  // resume: the previous controller is already running
+  }
+  // Resolved at configure, where an unresolvable name is refused; "" here
+  // fails the switch below as an unknown name and takes the FAILED path.
+  const std::string name = InitialControllerName();
+  const std::string head = "post-clear switch to '" + name + "'";
+  std::string note;
+
+  if (IsEstopHoldActive()) {
+    // Latched again between the verification read and now (a detector, or the
+    // operator): held for a reason of its own. Nothing to switch, nothing to
+    // re-raise — a second trigger would only lose the CAS while counting a
+    // request that is not one.
+    ok = false;
+    note = head + " not attempted: E-STOP re-latched before the switch ('" + GlobalEstopReason() +
+           "') — clear again";
+  } else if (active_controller_idx_.load(std::memory_order_acquire) == initial_controller_idx_) {
+    note = head + ": already active";
+  } else if (std::string sub; !SwitchActiveController(name, sub)) {
+    // Two causes share this branch and the reply must not pick one: the
+    // target's on_activate failed, or a detector latched inside the switch and
+    // the switch refused. Either way nothing was activated and the previous
+    // controller is still the active index. If the latch is up the arm is held
+    // already; if not, hold it — "cleared" would otherwise be reported over a
+    // controller the operator asked to leave.
+    if (!IsEstopHoldActive()) {
+      static_cast<void>(TriggerGlobalEstop(kPostClearSwitchFailedReason));
+    }
+    ok = false;
+    note = head + " FAILED (" + sub + ") — E-STOP latched ('" + GlobalEstopReason() +
+           "'); the previous controller is still the active one, held. Clear again to retry "
+           "the switch";
+  } else {
+    note = head + ": ok";
+  }
+  // Every ok exit re-reads the latch: the switch took a tick and a half, and
+  // even the no-op path sits after the verification read. A reply must not
+  // say ok over a held arm.
+  if (ok && IsGlobalEstopped()) {
+    ok = false;
+    note = "E-STOP re-latched ('" + GlobalEstopReason() + "') before this reply; " + note;
+  }
+  message = note + "; " + message;
 }

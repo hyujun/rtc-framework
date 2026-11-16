@@ -339,5 +339,77 @@ TEST_F(OnConfigureTest, MalformedControllerConfigFileRefusesConfigure) {
   EXPECT_EQ(0U, ControllerLifecycleTestAccess::GetControllerCount(*node));
 }
 
+// ── estop_on_clear ───────────────────────────────────────────────────────────
+//
+// The clear service's post-clear policy is fixed at configure. A value the
+// node does not know, and a policy that names a controller it cannot find,
+// are refused HERE rather than discovered at the first E-STOP — and the
+// parameter is read-only afterwards, so the policy an operator reads from
+// `ros2 param get` is the one the next clear runs.
+
+TEST_F(OnConfigureTest, RefusesAnUnknownEstopOnClearValue) {
+  auto node = MakeNode();
+  node->declare_parameter("estop_on_clear", std::string("bogus"));
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+}
+
+TEST_F(OnConfigureTest, RefusesTheInitialControllerPolicyWhenNoInitialControllerResolves) {
+  {
+    auto node = MakeNode();  // initial_controller "" — the fallback resume allows
+    node->declare_parameter("estop_on_clear", std::string("initial_controller"));
+    EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()))
+        << "an empty initial_controller would make the post-clear target 'whoever registered "
+           "first'";
+  }
+  {
+    auto node = MakeNode();
+    node->set_parameter(rclcpp::Parameter("initial_controller", std::string("no_such_controller")));
+    node->declare_parameter("estop_on_clear", std::string("initial_controller"));
+    EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  }
+}
+
+TEST_F(OnConfigureTest, AcceptsTheInitialControllerPolicyWhenTheNameResolvesEitherWay) {
+  for (const char* name : {"rtc_cm_test_ctrl", "OnConfigureTestController"}) {
+    auto node = MakeNode();
+    node->set_parameter(rclcpp::Parameter("initial_controller", std::string(name)));
+    node->declare_parameter("estop_on_clear", std::string("initial_controller"));
+    EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured())) << name;
+    EXPECT_EQ(node->get_parameter("estop_on_clear").as_string(), "initial_controller");
+    EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+  }
+}
+
+// The same guard refuses the key whether configure declared it or a YAML
+// override did: the topic-parameter callback answers false.
+void ExpectEstopOnClearRejected(RtControllerNode& node) {
+  const auto result =
+      node.set_parameter(rclcpp::Parameter("estop_on_clear", std::string("initial_controller")));
+  EXPECT_FALSE(result.successful) << "estop_on_clear was changed at runtime";
+}
+
+TEST_F(OnConfigureTest, EstopOnClearDefaultsToResumeAndIsReadOnlyAfterConfigure) {
+  auto node = MakeNode();
+  ASSERT_FALSE(node->has_parameter("estop_on_clear")) << "precondition: no override";
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(node->get_parameter("estop_on_clear").as_string(), "resume");
+  ExpectEstopOnClearRejected(*node);
+  EXPECT_EQ(node->get_parameter("estop_on_clear").as_string(), "resume");
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(OnConfigureTest, AnEstopOnClearOverrideIsReadOnlyAfterConfigureToo) {
+  // The YAML path: the override arrives auto-declared and writable (a set
+  // before configure goes through); after configure it is refused.
+  auto node = MakeNode();
+  node->declare_parameter("estop_on_clear", std::string("resume"));
+  ASSERT_TRUE(
+      node->set_parameter(rclcpp::Parameter("estop_on_clear", std::string("resume"))).successful);
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  ExpectEstopOnClearRejected(*node);
+  EXPECT_EQ(node->get_parameter("estop_on_clear").as_string(), "resume");
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 }  // namespace
 }  // namespace rtc

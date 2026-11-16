@@ -13,7 +13,7 @@ namespace urtc = rtc;
 
 // ── Global E-Stop
 // ──────────────────────────────────────────────────────────────
-void RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept {
+bool RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept {
   // Counted on EVERY entry, BEFORE the CAS — the calls the CAS turns away are
   // exactly the ones this has to see (issue #288). A trigger that arrives while
   // ClearGlobalEstop is mid-propagation finds the latch still up (that is the
@@ -34,7 +34,7 @@ void RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept {
   bool expected = false;
   if (!global_estop_.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
                                              std::memory_order_relaxed)) {
-    return;  // already estopped
+    return false;  // already estopped
   }
 
   // Fixed-size seqlock write — no heap allocation, no lock on the RT path.
@@ -54,6 +54,7 @@ void RtControllerNode::TriggerGlobalEstop(std::string_view reason) noexcept {
   // `global_estop_` carries the value, so the drain never needs a payload.
   estop_status_pending_.store(true, std::memory_order_release);
   estop_log_pending_.store(true, std::memory_order_release);
+  return true;
 }
 
 // ── E-STOP reason seqlock (#935) ─────────────────────────────────────────────
