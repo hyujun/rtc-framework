@@ -95,7 +95,8 @@ using Core = rtc::mpc::internal::MPCHandlerCore;
 constexpr int kTicks = 40;
 constexpr double kT0 = 20.0;
 
-/// The shipped solver section's tolerances and budgets.
+/// The tolerances and budgets these gates were registered with (the online
+/// pair then shipped; the walk window's bounds below are measured on it).
 MPCSolverConfig ShippedSolver() {
   MPCSolverConfig s;
   s.prim_tol = 1e-4;

@@ -101,7 +101,10 @@ enum class MPCLinearSolver {
 /// (`max_initial_iters`, `max_al_iters`), the standing solve; after that with
 /// (`max_iters`, `max_online_al_iters`). `max_iters` counts Newton iterations
 /// over the whole solve; every AL outer iteration re-evaluates the problem
-/// and its derivatives, so `max_online_al_iters` is a budget too.
+/// and its derivatives, so `max_online_al_iters` is a budget too. Aligator
+/// tests convergence at the head of the next iteration, so a solve that
+/// converges in N iterations reports it only when the ceiling is at least
+/// N + 1 — at exactly N the same iterates come back as `kMaxIters`.
 ///
 /// The step acceptance (non-monotone line search) and the Hessian
 /// approximation (Gauss-Newton) are Aligator's defaults and are not keys.
