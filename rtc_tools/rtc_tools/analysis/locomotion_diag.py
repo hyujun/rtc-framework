@@ -11,9 +11,12 @@ The locomotion controller writes one row per tick into a session directory:
 ``lambda_<c>_{fx,fy,fz,tx,ty,tz}``, per joint ``v_<j>`` and ``tau_servo_<j>``.
 Contact and joint names are read from the header (the ``lambda_*_fz`` and
 ``tau_servo_*`` columns), never assumed. Fixed columns used here:
-``t_relative_s``, ``tick``, ``mode`` (0 waiting, 1 nominal, 2 degraded,
-3 fault), ``fault_cause`` (0 none, 1 solve health, 2 source, 3 non-finite,
-4 model epoch), ``fault_latched``, ``source_status`` (0 ok, 1 body unreadable,
+``t_relative_s``, ``tick``, ``mode`` (0 waiting — no latched reference: before
+the first valid state, under the E-STOP or while the pose guard refuses the
+pose —, 1 nominal, 2 degraded, 3 fault), ``fault_cause`` (0 none, 1 solve
+health, 2 source, 3 non-finite, 4 model epoch, 5 plan loss, 6 pose guard),
+``fault_latched``, ``pose_guard_mask`` (optional; the guard's verdict bits,
+0 = passed), ``source_status`` (0 ok, 1 body unreadable,
 2 body stale, 3 base missing, 4 base stale, 5 base invalid, 6 non-finite),
 ``health`` (0 nominal, 1 degraded, 2 fault), ``tau_valid``, ``qp_status``,
 ``qp_iterations``, ``solve_time_us``, ``wbc_tick_us``, ``eom_residual_inf``,
@@ -76,7 +79,15 @@ MARGINS = (
     "margin_joint_accel",
 )
 MODE_NAMES = ("waiting", "nominal", "degraded", "fault")
-FAULT_CAUSE_NAMES = ("none", "solve health", "source", "non-finite", "model epoch", "plan loss")
+FAULT_CAUSE_NAMES = (
+    "none",
+    "solve health",
+    "source",
+    "non-finite",
+    "model epoch",
+    "plan loss",
+    "pose guard",
+)
 REFERENCE_SOURCE_NAMES = ("idle", "stand", "walk", "fault")
 HEALTH_NAMES = ("nominal", "degraded", "fault")
 SOURCE_STATUS_NAMES = (
@@ -350,6 +361,9 @@ def summarize(diag: Table, z_ref: float | None = None) -> dict:
         # Rising edges, plus a latch already up in the first row.
         "fault_latches": int(np.sum(latched[1:] & ~latched[:-1])) + int(bool(latched[:1].any())),
         "estop_rows": int(np.sum(diag["estop"] > 0.5)) if "estop" in diag else 0,
+        "pose_guard_refused_rows": (
+            int(np.sum(diag["pose_guard_mask"] > 0.5)) if "pose_guard_mask" in diag else None
+        ),
         "fault_latched_rows": int(latched.sum()),
         "source_not_ok_rows": int(np.sum(diag["source_status"] != 0)),
         "margins_stale_rows": int(np.sum(diag["margins_stale"] > 0.5)),

@@ -47,6 +47,7 @@ enum class LocomotionStatusKey : std::uint8_t {
   kMode,        ///< waiting / nominal / degraded / fault
   kFaultCause,
   kEstop,
+  kPoseGuardMask,  ///< the pose guard's last verdict (pose_guard.hpp bits; 0 = passed)
   kTickCount,
   kPlanId,
   kPolicyAgeMs,

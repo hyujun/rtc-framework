@@ -395,10 +395,7 @@ TEST_F(LocomotionMpcTest, NoMpcSectionAndADisabledOneGiveTheSameOutput) {
 
 TEST(LocomotionMpcConfig, TheConsumerKeysAreRequiredAndChecked) {
   const auto refused = [](const std::function<void(YAML::Node&)>& spoil, const char* what) {
-    YAML::Node cfg = MpcConfig();
-    spoil(cfg);
-    EXPECT_THROW(static_cast<void>(ParseLocomotionControllerConfig(cfg)), std::invalid_argument)
-        << what;
+    ExpectRefused(MpcConfig(), spoil, what);
   };
   refused([](YAML::Node& c) { c["mpc"].remove("enabled"); }, "no enabled");
   refused([](YAML::Node& c) { c["mpc"]["riccati"].remove("enabled"); }, "no riccati.enabled");
@@ -753,10 +750,7 @@ TEST(LocomotionStatus, EveryKeyHasADistinctNameAndEveryValueFormats) {
 
 TEST(LocomotionCommandConfig, TheTopicKeyIsOptionalAndChecked) {
   const auto refused = [](const std::function<void(YAML::Node&)>& spoil, const char* what) {
-    YAML::Node cfg = MpcConfig();
-    spoil(cfg);
-    EXPECT_THROW(static_cast<void>(ParseLocomotionControllerConfig(cfg)), std::invalid_argument)
-        << what;
+    ExpectRefused(MpcConfig(), spoil, what);
   };
   refused([](YAML::Node& c) { c["velocity_command"]["topic"] = ""; }, "empty topic");
   refused([](YAML::Node& c) { c["velocity_command"].remove("topic"); }, "no topic");

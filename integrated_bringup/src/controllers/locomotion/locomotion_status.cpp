@@ -21,6 +21,7 @@ constexpr const char* kKeyNames[kLocomotionStatusKeyCount] = {
     "mode",
     "fault_cause",
     "estop",
+    "pose_guard_mask",
     "tick_count",
     "plan_id",
     "policy_age_ms",
@@ -97,6 +98,8 @@ const char* LocomotionFaultCauseName(std::uint8_t cause) noexcept {
       return "model_epoch";
     case Cause::kPlanLoss:
       return "plan_loss";
+    case Cause::kPoseGuard:
+      return "pose_guard";
   }
   return "unknown";
 }
@@ -137,6 +140,8 @@ void FormatLocomotionStatusValue(LocomotionStatusKey key, const LocomotionDiagLo
       return str(LocomotionFaultCauseName(s.fault_cause));
     case Key::kEstop:
       return flag(s.estop);
+    case Key::kPoseGuardMask:
+      return u64(s.pose_guard_mask);
     case Key::kTickCount:
       return u64(s.tick_count);
     case Key::kPlanId:

@@ -205,7 +205,10 @@ def main(argv: list[str] | None = None) -> int:
         timed_out = node.timed_out
         started = node.started
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGINT: rclpy's own handler has already shut the context down (the
+        # loop then ends on rclpy.ok()), and a second shutdown raises — which
+        # lost the recording an interrupt is meant to end early.
+        rclpy.try_shutdown()
     if timed_out:
         what = (
             f"no {args.start_on!r} command on {args.command_topic}"

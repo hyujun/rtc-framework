@@ -648,4 +648,51 @@ TEST_F(LocoEstopOnClearTest, StopUnderLocomotionHoldsThenTheClearHandsBackToDemo
   EXPECT_FALSE(Access::IsEstopped(*node_));
 }
 
+// The `resume` policy (the default; the humanoid sims do not ship it): the
+// verified clear hands the wire straight back to the locomotion controller,
+// which passes its pose guard on the standing robot and declares its own
+// gains again on the first tick after the window.
+TEST_F(LocoEstopOnClearTest, UnderResumeTheClearGivesTheWireBackToLocomotionWithItsGains) {
+  Access::SetEstopOnClear(*node_, Access::EstopOnClear::kResume);
+  std::string msg;
+  ASSERT_TRUE(Access::CallSwitch(*node_, kLocoKey, msg)) << msg;
+  ASSERT_TRUE(WaitFor([this] { return Count(Wire::kLoco) >= 5; }, 3s));
+
+  const auto stop = CallTrigger();
+  ASSERT_NE(stop, nullptr);
+  ASSERT_TRUE(stop->success) << stop->message;
+  ASSERT_TRUE(WaitFor([this] { return Access::EstopSubstituted(*node_) > 3U; }, 3s));
+  const int loco_held = Count(Wire::kLoco);
+
+  clear_started_.store(true, std::memory_order_release);
+  const auto cleared = CallClear(std::string(Access::kOperatorEstopReason), nullptr);
+  ASSERT_NE(cleared, nullptr);
+  EXPECT_TRUE(cleared->ok) << cleared->message;
+  EXPECT_EQ(cleared->message.find("post-clear switch"), std::string::npos) << cleared->message;
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 1) << "no switch under resume";
+  ASSERT_TRUE(WaitFor([this, loco_held] { return Count(Wire::kLoco) >= loco_held + 5; }, 3s))
+      << "the locomotion controller did not come back on the wire";
+  StopTicking();
+  const WireWrite body = body_->Last();
+  ASSERT_TRUE(body.has_pd_gains);
+  ASSERT_EQ(body.num_channels, static_cast<int>(loco_kp_.size()));
+  const auto loco_kd = loco_cfg_["pd_feedforward"]["kd"].as<std::vector<double>>();
+  for (std::size_t i = 0; i < loco_kp_.size(); ++i) {
+    EXPECT_EQ(body.pd_kp[i], loco_kp_[i]) << i;
+    EXPECT_EQ(body.pd_kd[i], loco_kd[i]) << i;
+  }
+  EXPECT_EQ(static_cast<LocomotionController::Mode>(loco_->LastDiag().mode),
+            LocomotionController::Mode::kNominal);
+  EXPECT_EQ(loco_->LastDiag().pose_guard_mask, 0U);
+  EXPECT_EQ(loco_->LastDiag().fault_count, 0U);
+
+  const auto window_ticks = static_cast<std::uint64_t>(window_held_.load());
+  const auto expected = Access::VerifyWindowTicks(*node_);
+  RecordProperty("window_ticks", static_cast<int>(window_ticks));
+  EXPECT_TRUE(window_ticks == expected || window_ticks == expected - 1U)
+      << "window " << window_ticks << " ticks, expected " << expected << " or " << expected - 1U;
+  EXPECT_EQ(violations_.load(), 0);
+  EXPECT_FALSE(Access::IsEstopped(*node_));
+}
+
 }  // namespace

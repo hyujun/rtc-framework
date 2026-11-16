@@ -15,10 +15,30 @@ message for ``--duration`` s. The arms differ only in the switch step:
   mpc     the same switch, the launch with enable_mpc:=true: the controller
           stands on its MPC's plan
   mpc_fb  as mpc, with the plan's Riccati feedback on (sim_overlay:=mpc_riccati)
+  reentry the loco switch, then an EVENT SCRIPT under one long recording:
+          window A (``--duration``) → switch back to the joint controller →
+          ``--settle`` → switch to the locomotion controller again → ``--lead``
+          → window B (``--duration``)                              — re-entry
+  estop   the loco switch, then: ``--hold-lead`` → /rtc_cm/trigger_estop (its
+          reply must say success) → ``--hold`` under the CM's hold →
+          /rtc_cm/clear_estop (its reply must say ok and name the post-clear
+          switch to the joint controller; the active controller must then be
+          ``--joint-controller``) → ``--settle`` → switch to the locomotion
+          controller → ``--lead`` → a window (``--duration``)   — the operator stop
+
+The two event arms start the recorder in the background for the whole script
+(stopping it once the script is done) and mark every event in run.json with
+its wall offset from the recorder's start and its wall-clock stamp — the
+recorder CSV's time axis, since the sim stamps its sensor messages with the
+wall clock; the windows are judged from the CSV between their marks
+(``windows`` in run.json, the stance_metrics numbers), beside the recorder's
+own JSON over the whole run. A step whose reply is not what the script expects
+ends the run with ``error`` in run.json and a non-zero exit. They run with the plain launch (no MPC) or, under
+``--mpc-layout``, with sim_overlay:=mpc_off like loco.
 
 With ``--mpc-layout`` every arm runs under enable_mpc:=true (the same CPU
-layout), and loco turns the MPC off again with sim_overlay:=mpc_off — the
-control arm of an MPC evaluation. ``--mpc-threads N`` solves on N threads:
+layout), and loco (and the two event arms) turn the MPC off again with
+sim_overlay:=mpc_off — the control arm of an MPC evaluation. ``--mpc-threads N`` solves on N threads:
 every arm launched with enable_mpc:=true also gets layout_profile:=mpc_par_sim
 (the simulation worker profile, whose worker cores are the absent drivers'
 slots) and mpc_threads:=N. A pool needs mpc_main's SCHED_FIFO (realtime
@@ -49,15 +69,27 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import yaml
 
+from rtc_tools.analysis import stance_metrics as sm
 from rtc_tools.launch.cpu_shield import mpc_solver_threads
 
 LOCO = "locomotion_controller"
-ARMS = ("servo", "loco", "lowpd", "mpc", "mpc_fb")
+ARMS = ("servo", "loco", "lowpd", "mpc", "mpc_fb", "reentry", "estop")
+# arms whose switch step activates the locomotion controller
+LOCO_ARMS = ("loco", "reentry", "estop")
+EVENT_ARMS = ("reentry", "estop")  # a script (SCRIPTS) under a background recording
 WORKER_PROFILE = "mpc_par_sim"  # the simulation worker profile (--mpc-threads)
+OPERATOR_ESTOP_REASON = "operator_request"  # the CM's reason for /rtc_cm/trigger_estop
+# The event arms' recorder is stopped (SIGINT) once the script is done; its
+# own --duration is only a bound, this much past the script's sleeps: every
+# call is a `ros2` CLI call (0.5-1.5 s of start-up and discovery each) the
+# sleeps do not count.
+RECORDER_MARGIN_S = 30.0
+RECORDER_GRACE_S = 1.0  # recording past the last mark before the stop
 
 
 def launch_args(
@@ -65,7 +97,9 @@ def launch_args(
 ) -> list[str]:
     """The arm's launch arguments (module docstring); `overlays` replaces an arm's overlay."""
     under_mpc = arm in ("mpc", "mpc_fb") or mpc_layout
-    default = {"mpc_fb": "mpc_riccati", "loco": "mpc_off" if mpc_layout else None}.get(arm)
+    default = {"mpc_fb": "mpc_riccati"}.get(arm)
+    if arm in LOCO_ARMS and mpc_layout:
+        default = "mpc_off"
     overlay = overlays.get(arm, default)
     pool = (
         [f"layout_profile:={WORKER_PROFILE}", f"mpc_threads:={mpc_threads}"]
@@ -125,6 +159,53 @@ def gains(runtime_yaml: Path) -> tuple[list[float], list[float]]:
     return [float(x) for x in pd["kp"]], [float(x) for x in pd["kd"]]
 
 
+def service_call(service: str, srv_type: str, request: str) -> str:
+    """``ros2 service call``; its stdout (the reply's fields print as `name=value`)."""
+    return sh(["ros2", "service", "call", service, srv_type, request]).stdout
+
+
+def switch_controller(name: str) -> tuple[bool, str, str]:
+    """Activate `name`; (the reply said ok AND it is the active controller, the reply, the active one)."""
+    req = f"{{activate_controllers: ['{name}'], deactivate_controllers: [], strictness: 1}}"
+    out = service_call("/rtc_cm/switch_controller", "rtc_msgs/srv/SwitchController", req)
+    if "ok=True" not in out:
+        return False, out.strip()[-300:], ""
+    time.sleep(0.3)
+    active = active_controller()
+    return active == name, out.strip()[-300:], active
+
+
+def trigger_estop() -> tuple[bool, str]:
+    """The operator stop; (the reply said success, the reply)."""
+    out = service_call("/rtc_cm/trigger_estop", "std_srvs/srv/Trigger", "{}")
+    return "success=True" in out, out.strip()[-300:]
+
+
+def clear_estop(reason_ack: str) -> tuple[bool, str]:
+    """Clear the latch; (the reply said ok, the reply)."""
+    out = service_call(
+        "/rtc_cm/clear_estop", "rtc_msgs/srv/ClearEstop", f"{{reason_ack: '{reason_ack}'}}"
+    )
+    return "ok=True" in out, out.strip()[-400:]
+
+
+def post_clear_switch_ok(reply: str, joint_controller_class: str | None) -> bool:
+    """The clear's reply reports the post-clear switch (estop_on_clear) as ok.
+
+    The CM names the controller by its class (`Name()`), not its config key;
+    with `joint_controller_class` None only the ok is checked.
+    """
+    marker = "post-clear switch to '"
+    i = reply.find(marker)
+    if i < 0:
+        return False
+    rest = reply[i + len(marker) :]
+    name, sep, tail = rest.partition("': ")
+    if not sep or not tail.startswith("ok"):
+        return False
+    return joint_controller_class is None or name == joint_controller_class
+
+
 def switch_step(arm: str, args: argparse.Namespace, note: dict) -> bool:
     if arm == "servo":
         return True
@@ -136,23 +217,157 @@ def switch_step(arm: str, args: argparse.Namespace, note: dict) -> bool:
             if "successful" not in r.stdout.lower():
                 return False
         return True
-    req = f"{{activate_controllers: ['{LOCO}'], deactivate_controllers: [], strictness: 1}}"
-    r = sh(
-        [
-            "ros2",
-            "service",
-            "call",
-            "/rtc_cm/switch_controller",
-            "rtc_msgs/srv/SwitchController",
-            req,
-        ]
+    ok, reply, active = switch_controller(LOCO)
+    note["switch"] = reply
+    note["active_controller"] = active
+    return ok
+
+
+class WallClock:
+    """The event scripts' clock (a test substitutes its own).
+
+    `now` is the monotonic clock the marks' offsets are on; `epoch` is the
+    wall clock, which is the recorder's time axis: the simulator stamps its
+    sensor messages with it (module docstring), so a mark's `sim_stamp` is
+    read here instead of from a message.
+    """
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def now(self) -> float:
+        return time.monotonic()
+
+    def epoch(self) -> float:
+        return time.time()
+
+
+def _switch_joint(args: argparse.Namespace) -> tuple[bool, dict, str]:
+    ok, reply, active = switch_controller(args.joint_controller)
+    return (
+        ok,
+        {"active_controller": active, "reply": reply},
+        "the switch to the joint controller failed",
     )
-    note["switch"] = r.stdout.strip()[-300:]
-    if "ok=True" not in r.stdout:
-        return False
-    time.sleep(0.3)
-    note["active_controller"] = active_controller()
-    return note["active_controller"] == LOCO
+
+
+def _switch_loco(args: argparse.Namespace) -> tuple[bool, dict, str]:
+    ok, reply, active = switch_controller(LOCO)
+    return (
+        ok,
+        {"active_controller": active, "reply": reply},
+        "the switch to the locomotion controller failed",
+    )
+
+
+def _trigger_estop(args: argparse.Namespace) -> tuple[bool, dict, str]:
+    ok, reply = trigger_estop()
+    return ok, {"reply": reply}, "trigger_estop did not report success"
+
+
+def _clear_estop(args: argparse.Namespace) -> tuple[bool, dict, str]:
+    ok, reply = clear_estop(OPERATOR_ESTOP_REASON)
+    switched = post_clear_switch_ok(reply, args.joint_controller_class)
+    active = active_controller()
+    fields = {"post_clear_switch_ok": switched, "active_controller": active, "reply": reply}
+    if not ok:
+        return False, fields, "clear_estop did not report ok"
+    if not switched:
+        return False, fields, "the clear's reply does not report the post-clear switch as ok"
+    if active != args.joint_controller:
+        return False, fields, f"after the clear the active controller is {active!r}"
+    return True, fields, ""
+
+
+# The event scripts (module docstring), one step per entry: ("sleep", the
+# argument holding its length), ("window", its name — `--duration` long,
+# marked at both ends), ("call", its mark name, the action). An action returns
+# (ok, the fields its mark carries, what failed). The recorder's length is
+# derived from the same table (script_duration).
+SCRIPTS = {
+    "reentry": (
+        ("window", "window_a"),
+        ("call", "switch_joint", _switch_joint),
+        ("sleep", "settle"),
+        ("call", "switch_loco", _switch_loco),
+        ("sleep", "lead"),
+        ("window", "window_b"),
+    ),
+    "estop": (
+        ("sleep", "hold_lead"),
+        ("call", "trigger_estop", _trigger_estop),
+        ("sleep", "hold"),
+        ("call", "clear_estop", _clear_estop),
+        ("sleep", "settle"),
+        ("call", "switch_loco", _switch_loco),
+        ("sleep", "lead"),
+        ("window", "window"),
+    ),
+}
+
+
+def run_events(arm: str, args: argparse.Namespace, note: dict, clock, t0: float) -> bool:
+    """The arm's event script (SCRIPTS) with the recorder already running.
+
+    Every call and every window end appends a mark to note["events"] — its
+    name, the wall offset from `t0` (the recorder's start) and the wall-clock
+    stamp (`sim_stamp`, the recorder CSV's time axis); a call whose reply is
+    not the expected one stops the script with note["error"]. The windows'
+    marks bound the judged intervals.
+    """
+    wall = 1.0 / args.rtf if args.rtf else 1.0
+    events: list[dict] = note.setdefault("events", [])
+
+    def mark(name: str, **fields) -> None:
+        events.append(
+            {"name": name, "wall_s": clock.now() - t0, "sim_stamp": clock.epoch(), **fields}
+        )
+
+    for step in SCRIPTS[arm]:
+        if step[0] == "sleep":
+            clock.sleep(getattr(args, step[1]) * wall)
+        elif step[0] == "window":
+            mark(f"{step[1]}_start")
+            clock.sleep(args.duration * wall)
+            mark(f"{step[1]}_end")
+        else:
+            ok, fields, what = step[2](args)
+            mark(step[1], ok=ok, **fields)
+            if not ok:
+                note["error"] = what
+                return False
+    return True
+
+
+def script_duration(arm: str, args: argparse.Namespace) -> float:
+    """The event script's length [s, sim]: its sleeps and windows (SCRIPTS)."""
+    return sum(
+        getattr(args, step[1]) if step[0] == "sleep" else args.duration
+        for step in SCRIPTS[arm]
+        if step[0] in ("sleep", "window")
+    )
+
+
+def window_metrics(csv_path: Path, events: list[dict], z_ref: float) -> dict:
+    """stance_metrics over the CSV between each window's start and end marks."""
+    if not csv_path.is_file():
+        return {}
+    samples = sm.read_csv(csv_path)
+    marks = {e["name"]: e.get("sim_stamp") for e in events}
+    out: dict = {}
+    for name in sorted({n[: -len("_start")] for n in marks if n.endswith("_start")}):
+        t_start, t_end = marks.get(f"{name}_start"), marks.get(f"{name}_end")
+        if t_start is None or t_end is None:
+            out[name] = {"error": "a window mark has no sim stamp"}
+            continue
+        inside = [s for s in samples if t_start <= s.t <= t_end]
+        try:
+            m = sm.compute(inside, settle_s=0.0, force_threshold_n=5.0, z_ref=z_ref)
+        except ValueError as e:
+            out[name] = {"error": str(e)}
+            continue
+        out[name] = {"t_start": t_start, "t_end": t_end, **asdict(m)}
+    return out
 
 
 def solver_threads(launch_log: Path) -> int | None:
@@ -207,42 +422,69 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                 note["error"] = "switch step failed"
                 return note
             time.sleep(args.lead * wall)
-            rec = sh(
-                [
-                    "ros2",
-                    "run",
-                    "rtc_tools",
-                    "run_stance_metrics",
-                    "--sensor-topic",
-                    args.sensor_topic,
-                    "--pos",
-                    "pelvis_pos",
-                    "--quat",
-                    "pelvis_quat",
-                    "--foot-pos",
-                    "left_sole_pos",
-                    "right_sole_pos",
-                    "--contact",
-                    "left_sole_contact",
-                    "right_sole_contact",
-                    "--contact-sign",
-                    "-1",
-                    "--duration",
-                    str(args.duration * wall),
-                    "--settle",
-                    "0",
-                    "--z-ref",
-                    str(args.z_ref),
-                    "--start-now",
-                    "--csv",
-                    str(out / "stance.csv"),
-                    "--json",
-                    str(out / "stance.json"),
-                ],
-                timeout=args.duration * 4 * wall + 60,
-            )
-            note["recorder_rc"] = rec.returncode
-            (out / "recorder.log").write_text(rec.stdout + rec.stderr)
+            event_arm = arm in EVENT_ARMS
+            record_s = (
+                script_duration(arm, args) + RECORDER_MARGIN_S if event_arm else args.duration
+            ) * wall
+            recorder_cmd = [
+                "ros2",
+                "run",
+                "rtc_tools",
+                "run_stance_metrics",
+                "--sensor-topic",
+                args.sensor_topic,
+                "--pos",
+                "pelvis_pos",
+                "--quat",
+                "pelvis_quat",
+                "--foot-pos",
+                "left_sole_pos",
+                "right_sole_pos",
+                "--contact",
+                "left_sole_contact",
+                "right_sole_contact",
+                "--contact-sign",
+                "-1",
+                "--duration",
+                str(record_s),
+                "--settle",
+                "0",
+                "--z-ref",
+                str(args.z_ref),
+                "--start-now",
+                "--csv",
+                str(out / "stance.csv"),
+                "--json",
+                str(out / "stance.json"),
+            ]
+            if event_arm:
+                # The recorder in the background for the whole script; the
+                # script's marks window the CSV afterwards.
+                with open(out / "recorder.log", "w") as rec_log:
+                    # Its own session: `ros2 run` does not pass SIGINT on —
+                    # the group gets it, and the recorder writes its CSV and
+                    # JSON on that interrupt.
+                    recorder = subprocess.Popen(
+                        recorder_cmd,
+                        stdout=rec_log,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                    t0 = time.monotonic()
+                    note["events_ok"] = run_events(arm, args, note, WallClock(), t0)
+                    time.sleep(RECORDER_GRACE_S * wall)
+                    if recorder.poll() is None:
+                        os.killpg(recorder.pid, signal.SIGINT)
+                    try:
+                        note["recorder_rc"] = recorder.wait(timeout=60)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(recorder.pid, signal.SIGKILL)
+                        note["recorder_rc"] = recorder.wait()
+                note["windows"] = window_metrics(out / "stance.csv", note["events"], args.z_ref)
+            else:
+                rec = sh(recorder_cmd, timeout=args.duration * 4 * wall + 60)
+                note["recorder_rc"] = rec.returncode
+                (out / "recorder.log").write_text(rec.stdout + rec.stderr)
             note["active_controller_end"] = active_controller()
         finally:
             os.killpg(launch.pid, signal.SIGINT)
@@ -310,6 +552,20 @@ def main(argv: list[str] | None = None) -> int:
         help="passed to every launch (e.g. max_log_sessions:=200 while sessions are collected)",
     )
     p.add_argument("--joint-node", default="/demo_joint_controller/demo_joint_controller")
+    p.add_argument(
+        "--joint-controller",
+        default="demo_joint_controller",
+        help="the joint controller's config key (the switch service, active_controller_name)",
+    )
+    p.add_argument(
+        "--joint-controller-class",
+        default="DemoJointController",
+        help="its class name, as the clear's reply names the post-clear switch target",
+    )
+    p.add_argument(
+        "--hold-lead", type=float, default=2.0, help="estop: recording before the stop [s]"
+    )
+    p.add_argument("--hold", type=float, default=10.0, help="estop: time under the hold [s]")
     p.add_argument("--sensor-topic", default="/g1/sim_sensors")
     p.add_argument("--z-ref", type=float, default=0.764431)
     p.add_argument("--settle", type=float, default=2.0)
@@ -330,7 +586,7 @@ def main(argv: list[str] | None = None) -> int:
             notes.append(note)
             print(json.dumps(note), flush=True)
     (args.out / "runs.json").write_text(json.dumps(notes, indent=2) + "\n")
-    return 0 if all(n.get("recorder_rc") == 0 for n in notes) else 1
+    return 0 if all(n.get("recorder_rc") == 0 and n.get("events_ok", True) for n in notes) else 1
 
 
 if __name__ == "__main__":

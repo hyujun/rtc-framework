@@ -258,6 +258,18 @@ def test_summary_of_a_log_without_the_mpc_columns(tmp_path: Path):
     s = ld.summarize(ld.load_session(tmp_path / "old").diag)
     assert "stand_fraction" not in s
     assert s["rows"] == N
+    assert s["pose_guard_refused_rows"] is None, "a log without the column reports none"
+
+
+def test_summary_counts_the_pose_guards_refusals(tmp_path: Path):
+    header = [*diag_header(), "pose_guard_mask"]
+    rows = [
+        {**r, "pose_guard_mask": 8 if i in (1, 2, 3) else 0} for i, r in enumerate(diag_rows())
+    ]
+    write_csv(tmp_path / "pg" / ld.SUBDIR / ld.DIAG_FILE, header, rows)
+    s = ld.summarize(ld.load_session(tmp_path / "pg").diag)
+    assert s["pose_guard_refused_rows"] == 3
+    assert ld.FAULT_CAUSE_NAMES[6] == "pose guard"
 
 
 def test_z_ref_and_tilt(session: Path):

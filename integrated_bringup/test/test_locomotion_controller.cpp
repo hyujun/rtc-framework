@@ -271,10 +271,7 @@ TEST_F(LocomotionControllerTest, EstopDampsAndTheClearReLatchesFromWhereTheRobot
 
 TEST(LocomotionControllerConfig, RefusesEachMalformedRuntimeSection) {
   const auto refused = [](const std::function<void(YAML::Node&)>& spoil, const char* what) {
-    YAML::Node cfg = YAML::Clone(ShippedConfig());
-    spoil(cfg);
-    EXPECT_THROW(static_cast<void>(ParseLocomotionControllerConfig(cfg)), std::invalid_argument)
-        << what;
+    ExpectRefused(ShippedConfig(), spoil, what);
   };
   refused([](YAML::Node& c) { c["command_type"] = "torque"; }, "torque");
   refused([](YAML::Node& c) { c["pd_feedforward"]["kp"][0] = -1.0; }, "negative kp");

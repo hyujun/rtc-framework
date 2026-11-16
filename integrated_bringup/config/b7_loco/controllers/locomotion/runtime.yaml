@@ -2,7 +2,7 @@
 #
 # A fragment of ../locomotion_controller.yaml (its `include:` list). Schema and
 # checks: integrated_bringup controllers/locomotion_controller.hpp (every key of
-# pd_feedforward and fault is required, an unknown key is refused) and
+# pd_feedforward, fault and fault.pose_guard is required, an unknown key is refused) and
 # controllers/locomotion/measured_state_source.hpp (estimator.*).
 locomotion_controller:
   command_type: "pd_feedforward"   # the only accepted value
@@ -24,8 +24,17 @@ locomotion_controller:
   # target = the measured q, the gains above unchanged — a slow settle, not a
   # hold. max_source_bad_ticks: consecutive ticks without a valid state before
   # the latch (a shorter run holds the last torque).
+  # pose_guard: before the reference is latched (activation, fault reset,
+  # E-STOP clear, a lost MPC plan) the measured pose must have a valid, finite,
+  # unit base quaternion tilted at most base_tilt_rad from vertical; otherwise
+  # the controller waits in damping and latches the pose_guard fault after
+  # 0.5 s. (0, pi/2]: pi/2 refuses a body tipped past horizontal. Angular velocity,
+  # height and speed are not judged here — the lost-plan entry adds the fixed
+  # 15 mm foot spread and 0.1 m/s base speed checks of the controller.
   fault:
     max_source_bad_ticks: 5
+    pose_guard:
+      base_tilt_rad: 0.5236   # 30 deg — the g1_loco value, provisional until this profile's sim settles it
     damping_kd: [5, 5, 5, 5, 5, 5,  5, 5, 5, 5, 5, 5,  2, 2, 2, 2, 2, 2, 2,  2, 2, 2, 2, 2, 2, 2]
 
   # Where the measured state comes from. truth = the simulator's base and joint

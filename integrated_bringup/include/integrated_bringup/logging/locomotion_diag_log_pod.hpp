@@ -29,7 +29,8 @@ struct LocomotionDiagLogPod {
 
   /// What the controller commanded this tick.
   enum class Mode : std::uint8_t {
-    kWaiting = 0,   ///< no valid state yet: the reference is not latched, nothing commanded
+    kWaiting =
+        0,  ///< no latched reference (no valid state yet, the E-STOP, the pose guard): damping
     kNominal = 1,   ///< the QP's torque
     kDegraded = 2,  ///< the QP missed: the last valid torque, held
     kFault = 3,     ///< latched: damping only (feedforward −Kd·v, target = measured q)
@@ -42,6 +43,7 @@ struct LocomotionDiagLogPod {
     kNonFinite = 3,    ///< the output was not finite
     kModelEpoch = 4,   ///< the state is in another model layout than the controller's
     kPlanLoss = 5,     ///< the MPC plan was lost with the robot off a still double support
+    kPoseGuard = 6,    ///< the pose guard refused the measured pose for the whole settle time
   };
   /// Where this tick's reference came from.
   enum class ReferenceSource : std::uint8_t {
@@ -59,6 +61,9 @@ struct LocomotionDiagLogPod {
   std::uint8_t fault_cause{0};
   bool fault_latched{false};
   std::uint32_t fault_count{0};  ///< latches since configure
+  /// The pose guard's last verdict of this reference episode (locomotion/pose_guard.hpp
+  /// bits; 0 = passed or not asked yet). Kept while the guard's fault is latched.
+  std::uint32_t pose_guard_mask{0};
 
   std::uint8_t source_status{0};  ///< StateSourceStatus
   std::uint32_t source_fresh_mask{0};
@@ -140,7 +145,8 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
                                          const std::vector<std::string>& joint_names,
                                          const LocomotionDiagLogColumns& cols) {
   os << "t_relative_s,tick,tick_count,mode,estop,fault_cause,fault_latched,fault_count,"
-        "source_status,source_fresh_mask,source_valid_mask,source_bad_ticks,source_sequence,"
+        "pose_guard_mask,source_status,source_fresh_mask,source_valid_mask,source_bad_ticks,source_"
+        "sequence,"
         "source_age_us,"
         "health,health_bad_run,tau_valid,qp_converged,qp_status,qp_iterations,rows_dropped,"
         "solve_time_us,wbc_tick_us,qp_pri_res,qp_dua_res,eom_residual_inf,"
@@ -172,14 +178,15 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
   os << p.t_relative_s << ',' << p.tick << ',' << p.tick_count << ','
      << static_cast<unsigned>(p.mode) << ',' << (p.estop ? 1 : 0) << ','
      << static_cast<unsigned>(p.fault_cause) << ',' << (p.fault_latched ? 1 : 0) << ','
-     << p.fault_count << ',' << static_cast<unsigned>(p.source_status) << ',' << p.source_fresh_mask
-     << ',' << p.source_valid_mask << ',' << p.source_bad_ticks << ',' << p.source_sequence << ','
-     << p.source_age_us << ',' << static_cast<unsigned>(p.health) << ',' << p.health_bad_run << ','
-     << (p.tau_valid ? 1 : 0) << ',' << (p.qp_converged ? 1 : 0) << ',' << p.qp_status << ','
-     << p.qp_iterations << ',' << p.rows_dropped << ',' << p.solve_time_us << ',' << p.wbc_tick_us
-     << ',' << p.qp_pri_res << ',' << p.qp_dua_res << ',' << p.eom_residual_inf << ','
-     << p.margin_friction_n << ',' << p.margin_cop_nm << ',' << p.margin_yaw_nm << ','
-     << p.margin_torque_nm << ',' << p.margin_joint_accel << ',' << (p.margins_stale ? 1 : 0);
+     << p.fault_count << ',' << p.pose_guard_mask << ',' << static_cast<unsigned>(p.source_status)
+     << ',' << p.source_fresh_mask << ',' << p.source_valid_mask << ',' << p.source_bad_ticks << ','
+     << p.source_sequence << ',' << p.source_age_us << ',' << static_cast<unsigned>(p.health) << ','
+     << p.health_bad_run << ',' << (p.tau_valid ? 1 : 0) << ',' << (p.qp_converged ? 1 : 0) << ','
+     << p.qp_status << ',' << p.qp_iterations << ',' << p.rows_dropped << ',' << p.solve_time_us
+     << ',' << p.wbc_tick_us << ',' << p.qp_pri_res << ',' << p.qp_dua_res << ','
+     << p.eom_residual_inf << ',' << p.margin_friction_n << ',' << p.margin_cop_nm << ','
+     << p.margin_yaw_nm << ',' << p.margin_torque_nm << ',' << p.margin_joint_accel << ','
+     << (p.margins_stale ? 1 : 0);
   for (double x : p.base_p) {
     os << ',' << x;
   }

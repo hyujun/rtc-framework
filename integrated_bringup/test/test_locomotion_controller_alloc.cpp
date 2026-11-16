@@ -1,7 +1,8 @@
 // locomotion_controller's RT tick allocates nothing on any of its paths:
 // nominal (the QP), degraded (a short source drop), fault (damping), the reset
-// and E-STOP services, and a re-latch; with the MPC, the stand on its plan and
-// the fall back to the latched pose. Own binary: the gate replaces the global
+// and E-STOP services (the hold's waiting ticks, the clear's guard refusals,
+// the first passing tick), and a re-latch; with the MPC, the stand on its plan
+// and the fall back to the latched pose. Own binary: the gate replaces the global
 // `operator new` (alloc_gate.hpp contract item 1).
 //
 // WHAT THIS GATE SEES: global `operator new` across translation units, so the
@@ -14,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -54,9 +56,24 @@ TEST_F(LocomotionAlloc, EveryTickPathAllocatesNothing) {
   worst = std::max(worst, GatedTick(false));  // the reset and the re-latch
   ASSERT_EQ(LastMode(), Mode::kNominal);
   ctrl_->TriggerEstop();
-  worst = std::max(worst, GatedTick(false));
+  for (int k = 0; k < 10; ++k) {  // the hold: waiting, models updated, logs written
+    worst = std::max(worst, GatedTick(false));
+  }
+  ASSERT_EQ(LastMode(), Mode::kWaiting);
+  // The clear onto a pitched base: the guard refuses, the controller waits;
+  // then the base comes up and the first passing tick latches.
+  auto& pose = state_.devices[kBody].base_pose;
+  pose[4] = std::sin(0.5 * 0.7);
+  pose[6] = std::cos(0.5 * 0.7);
   ctrl_->ClearEstop();
-  worst = std::max(worst, GatedTick(false));
+  for (int k = 0; k < 10; ++k) {
+    worst = std::max(worst, GatedTick(false));
+  }
+  ASSERT_EQ(LastMode(), Mode::kWaiting);
+  ASSERT_NE(ctrl_->LastDiag().pose_guard_mask, 0U);
+  pose[4] = 0.0;
+  pose[6] = 1.0;
+  worst = std::max(worst, GatedTick(false));  // the guard passes: the latch
   for (int k = 0; k < 10; ++k) {
     worst = std::max(worst, GatedTick(false));
   }
