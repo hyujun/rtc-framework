@@ -99,7 +99,7 @@ CM RT loop · MPC thread · hand comm thread · rt_callback 이 **같은** gener
 
 - **E-STOP latch 가 서면 controller output 은 `BuildHoldOutput()` 으로 치환돼 backend 에 도달하지 않는다** — actuator 안전이 controller 의 E-STOP hook 구현에 의존하지 않게 하는 manager 측 방어선이다. 치환은 validation 을 우회하지 않고 그 뒤에 합성된다.
 - **CheckTimeouts** (50 Hz): per-group device timeout → `TriggerGlobalEstop("{group}_timeout")`
-- **E-STOP triggers**: group timeout, init timeout, >= 10 consecutive RT overruns, sim sync timeout
+- **E-STOP triggers**: group timeout, init timeout, >= 10 consecutive RT overruns, sim sync timeout, operator service `/rtc_cm/trigger_estop`, a failed post-clear switch (`estop_on_clear: initial_controller`)
 - **TriggerGlobalEstop**: idempotent (`compare_exchange_strong`, PROC-4), propagates to all controllers
 
 ## Data Flow
