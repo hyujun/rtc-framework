@@ -15,10 +15,16 @@ message for ``--duration`` s. The arms differ only in the switch step:
   mpc     the same switch, the launch with enable_mpc:=true: the controller
           stands on its MPC's plan
   mpc_fb  as mpc, with the plan's Riccati feedback on (sim_overlay:=mpc_riccati)
-  reentry the loco switch, then an EVENT SCRIPT under one long recording:
-          window A (``--duration``) → switch back to the joint controller →
-          ``--settle`` → switch to the locomotion controller again → ``--lead``
-          → window B (``--duration``)                              — re-entry
+  reentry the loco switch, then an EVENT SCRIPT under one long recording,
+          the operator's way back after a stop: window A (``--duration``) →
+          /rtc_cm/trigger_estop → ``--hold`` → /rtc_cm/clear_estop (the CM
+          hands back to the joint controller, checked as in estop) → the robot
+          stood up again: the joint controller's goal set to the stand pose
+          (``estop.arm_safe_position`` of its shipped YAML, the stand
+          keyframe's joints) → ``--upright-wait`` → /sim/reset (the whole scene
+          back to that keyframe, upright and still) → ``--settle`` → switch to
+          the locomotion controller → ``--lead`` → window B (``--duration``)
+                                                                    — re-entry
   estop   the loco switch, then: ``--hold-lead`` → /rtc_cm/trigger_estop (its
           reply must say success) → ``--hold`` under the CM's hold →
           /rtc_cm/clear_estop (its reply must say ok and name the post-clear
@@ -242,21 +248,68 @@ class WallClock:
         return time.time()
 
 
-def _switch_joint(args: argparse.Namespace) -> tuple[bool, dict, str]:
-    ok, reply, active = switch_controller(args.joint_controller)
-    return (
-        ok,
-        {"active_controller": active, "reply": reply},
-        "the switch to the joint controller failed",
-    )
-
-
 def _switch_loco(args: argparse.Namespace) -> tuple[bool, dict, str]:
     ok, reply, active = switch_controller(LOCO)
     return (
         ok,
         {"active_controller": active, "reply": reply},
         "the switch to the locomotion controller failed",
+    )
+
+
+def stand_goal(
+    runtime_yaml: Path, joint_controller: str, group: str
+) -> tuple[list[str], list[float]]:
+    """The joint controller's stand pose: its ``estop.arm_safe_position`` (the
+    stand keyframe's joints), named by the profile's ``devices.<group>`` roster.
+
+    Both files are the profile's own, found from the runtime fragment's place
+    (``config/<profile>/controllers/locomotion/runtime.yaml``).
+    """
+    profile = runtime_yaml.resolve().parents[2]
+    ctrl = yaml.safe_load((profile / "controllers" / f"{joint_controller}.yaml").read_text())
+    pose = [float(x) for x in ctrl[joint_controller]["estop"]["arm_safe_position"]]
+
+    def find_devices(node):
+        if isinstance(node, dict):
+            if isinstance(node.get("devices"), dict) and group in node["devices"]:
+                return node["devices"][group]
+            for v in node.values():
+                found = find_devices(v)
+                if found is not None:
+                    return found
+        return None
+
+    device = find_devices(yaml.safe_load((profile / "_base.yaml").read_text()))
+    if device is None:
+        raise ValueError(f"{profile}/_base.yaml has no devices.{group}")
+    names = [str(n) for n in device["joint_state_names"]]
+    if len(names) != len(pose):
+        raise ValueError(f"{len(pose)} stand-pose values for {len(names)} joints of {group}")
+    return names, pose
+
+
+def _stand_goal(args: argparse.Namespace) -> tuple[bool, dict, str]:
+    names, pose = stand_goal(args.runtime_yaml, args.joint_controller, args.body_group)
+    topic = f"/{args.joint_controller}/{args.body_group}/joint_goal"
+    msg = (
+        "{goal_type: joint, joint_names: ["
+        + ", ".join(names)
+        + "], joint_target: ["
+        + ", ".join(repr(x) for x in pose)
+        + "]}"
+    )
+    # -w 1: the active joint controller owns the topic; wait for it, then once.
+    r = sh(["ros2", "topic", "pub", "--once", "-w", "1", topic, "rtc_msgs/msg/RobotTarget", msg])
+    return r.returncode == 0, {"topic": topic}, f"the stand goal was not published on {topic}"
+
+
+def _sim_reset(args: argparse.Namespace) -> tuple[bool, dict, str]:
+    out = service_call("/sim/reset", "std_srvs/srv/Trigger", "{}")
+    return (
+        "success=True" in out,
+        {"reply": out.strip()[-200:]},
+        "/sim/reset did not report success",
     )
 
 
@@ -287,7 +340,12 @@ def _clear_estop(args: argparse.Namespace) -> tuple[bool, dict, str]:
 SCRIPTS = {
     "reentry": (
         ("window", "window_a"),
-        ("call", "switch_joint", _switch_joint),
+        ("call", "trigger_estop", _trigger_estop),
+        ("sleep", "hold"),
+        ("call", "clear_estop", _clear_estop),
+        ("call", "stand_goal", _stand_goal),
+        ("sleep", "upright_wait"),
+        ("call", "sim_reset", _sim_reset),
         ("sleep", "settle"),
         ("call", "switch_loco", _switch_loco),
         ("sleep", "lead"),
@@ -565,7 +623,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--hold-lead", type=float, default=2.0, help="estop: recording before the stop [s]"
     )
-    p.add_argument("--hold", type=float, default=10.0, help="estop: time under the hold [s]")
+    p.add_argument(
+        "--hold", type=float, default=10.0, help="estop / reentry: time under the hold [s]"
+    )
+    p.add_argument(
+        "--upright-wait",
+        type=float,
+        default=4.0,
+        help="reentry: the joint controller's time to reach the stand goal before /sim/reset [s]",
+    )
+    p.add_argument(
+        "--body-group", default="g1", help="reentry: the body device group (its roster)"
+    )
     p.add_argument("--sensor-topic", default="/g1/sim_sensors")
     p.add_argument("--z-ref", type=float, default=0.764431)
     p.add_argument("--settle", type=float, default=2.0)
