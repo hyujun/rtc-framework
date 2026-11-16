@@ -25,8 +25,11 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 
+#include <std_srvs/srv/trigger.hpp>
+
 // ── C++ stdlib
 // ────────────────────────────────────────────────────────────────
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -381,7 +384,25 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
 
   /// Trigger a global E-Stop that propagates to all subsystems.
   /// Safe to call from any thread. Idempotent — second call is a no-op.
-  void TriggerGlobalEstop(std::string_view reason) noexcept;
+  /// Returns true when THIS call raised the latch (won the CAS), false when it
+  /// was already up. The RT callers ignore it; the operator service reports it
+  /// and never pre-tests the latch, because a pre-test and the CAS can disagree.
+  [[nodiscard]] bool TriggerGlobalEstop(std::string_view reason) noexcept;
+
+  /// The reason the operator service latches with. One constant: the clear
+  /// service's acknowledgement has to echo it exactly.
+  static constexpr std::string_view kOperatorEstopReason = "operator_request";
+  /// The reason the clear service re-latches with when its post-clear switch
+  /// to the initial controller fails — the arm is held again, not left on a
+  /// controller that may be half-activated.
+  static constexpr std::string_view kPostClearSwitchFailedReason = "post_clear_switch_failed";
+
+  /// What /rtc_cm/clear_estop does once a clear is VERIFIED (parameter
+  /// `estop_on_clear`, read once at configure, read-only afterwards).
+  enum class EstopOnClear : std::uint8_t {
+    kResume,             ///< The controller that was active stays active (default).
+    kInitialController,  ///< Switch to `initial_controller`; a failed switch re-latches.
+  };
 
   /// What a ClearGlobalEstop() call actually did. The latch is only down after
   /// kCleared — the other two leave it exactly as it was found (issue #288).
@@ -453,6 +474,12 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   [[nodiscard]] std::chrono::microseconds ControlPeriod() const noexcept {
     const double rate_hz = (control_rate_ > 0.0) ? control_rate_ : rtc::kDefaultControlRateHz;
     return std::chrono::microseconds(static_cast<long>(1'000'000.0 / rate_hz));
+  }
+
+  /// How often a service callback re-reads a value the RT loop stores: a
+  /// quarter period, floored so a fast loop cannot turn the wait into a spin.
+  [[nodiscard]] std::chrono::microseconds ServicePollInterval() const noexcept {
+    return std::max(ControlPeriod() / 4, std::chrono::microseconds(100));
   }
 
   /// Completed RT ticks (loop_count_). Advances only at the END of a
@@ -535,6 +562,17 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<rtc_msgs::srv::SwitchController>::SharedPtr switch_controller_srv_;
   rclcpp::Service<rtc_msgs::srv::ResetFault>::SharedPtr reset_fault_srv_;
   rclcpp::Service<rtc_msgs::srv::ClearEstop>::SharedPtr clear_estop_srv_;
+  // Operator E-STOP (std_srvs/Trigger, no request fields). Same group as the
+  // other services, so it waits behind a clear_estop / reset_fault / switch in
+  // progress — the README states that bound; it is not a hardware E-STOP.
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr trigger_estop_srv_;
+
+  // Runs the `estop_on_clear` policy after a VERIFIED clear: switches to the
+  // initial controller and prefixes `message` with the outcome. Sets `ok`
+  // false — and re-latches with kPostClearSwitchFailedReason — when the
+  // switch fails for a reason other than a re-latched E-STOP. `resume` is a
+  // no-op that leaves both untouched. Service thread only.
+  void ApplyEstopOnClearPolicy(bool& ok, std::string& message);
 
   // The controller-output publish role (kRobotTransforms — the only one left
   // after issue #196 Phase 5) is owned by each controller's LifecycleNode via
@@ -823,6 +861,20 @@ class RtControllerNode : public rclcpp_lifecycle::LifecycleNode {
   double control_rate_{rtc::kDefaultControlRateHz};
   bool enable_logging_{true};
   bool enable_estop_{true};
+  // `estop_on_clear` and the controller it names, both fixed at configure:
+  // the index is resolved there (the name is refused when it does not resolve)
+  // so the clear service never looks a name up while the arm waits.
+  EstopOnClear estop_on_clear_{EstopOnClear::kResume};
+  int initial_controller_idx_{0};
+
+  // "" when the index does not name a controller — a state configure refuses,
+  // so the clear service treats it as any other unknown switch target.
+  [[nodiscard]] std::string InitialControllerName() const {
+    const auto idx = static_cast<std::size_t>(initial_controller_idx_);
+    return initial_controller_idx_ >= 0 && idx < controllers_.size()
+               ? std::string(controllers_[idx]->Name())
+               : std::string{};
+  }
 
   // Device-timeout watchdog cadence. CheckTimeouts() runs every Nth RT tick,
   // and the contract is a rate-independent kWatchdogCheckHz — a fixed divisor

@@ -12,6 +12,10 @@
     # the simulator's position servos carry the stance, the controller's
     # feedforward torque is zero until something writes it.
     initial_controller: "demo_joint_controller"
+    # A verified /rtc_cm/clear_estop switches back to that controller (it holds
+    # the pose with the scene gains); the locomotion controller is re-entered by
+    # an operator switch. Default is `resume` — rtc_controller_manager README.
+    estop_on_clear: "initial_controller"
 
     # ── Initialization timeout ────────────────────────────────────────────────
     init_timeout_sec: 0.0 # s. 0 = disabled (no real hardware init in sim)

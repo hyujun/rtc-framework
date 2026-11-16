@@ -427,7 +427,7 @@ void RtControllerNode::CheckTimeouts() {
       std::array<char, kEstopReasonBufferSize> reason{};
       static_cast<void>(
           std::snprintf(reason.data(), reason.size(), "%s_timeout", dt.group_name.c_str()));
-      TriggerGlobalEstop(reason.data());
+      static_cast<void>(TriggerGlobalEstop(reason.data()));
       return;
     }
   }
@@ -465,7 +465,7 @@ void RtControllerNode::ControlLoop() {
         static_cast<void>(
             std::snprintf(reason.data(), reason.size(), "%s_init_timeout",
                           device_timeouts_[static_cast<std::size_t>(unready)].group_name.c_str()));
-        TriggerGlobalEstop(reason.data());
+        static_cast<void>(TriggerGlobalEstop(reason.data()));
         rclcpp::shutdown();
       }
       return;
@@ -753,7 +753,7 @@ void RtControllerNode::ControlLoop() {
             hold_complete ? "invalid_controller_output" : "unholdable_controller_output",
             urtc::OutputRejectReasonToString(validation.reason)));
       }
-      TriggerGlobalEstop(reason.data());
+      static_cast<void>(TriggerGlobalEstop(reason.data()));
     }
   } else {
     consecutive_rejected_outputs_.store(0, std::memory_order_relaxed);
@@ -1377,7 +1377,7 @@ void RtControllerNode::ControlLoopThread::ArmSimSync() noexcept {
 
 void RtControllerNode::ControlLoopThread::OnOverrun(std::uint64_t consecutive) noexcept {
   if (consecutive >= RtControllerNode::kMaxConsecutiveOverruns) {
-    owner_->TriggerGlobalEstop("consecutive_overrun");
+    static_cast<void>(owner_->TriggerGlobalEstop("consecutive_overrun"));
   }
 }
 
@@ -1405,7 +1405,7 @@ void RtControllerNode::ControlLoopThread::OnLoopAborted() noexcept {
                used == 0 ? "The simulator may have crashed."
                          : "A group the simulator publishes at a decimated rate or as "
                            "fake_response must be left out of sim_sync_tick_devices.");
-  owner_->TriggerGlobalEstop("sim_sync_timeout");
+  static_cast<void>(owner_->TriggerGlobalEstop("sim_sync_timeout"));
   rclcpp::shutdown();
 }
 

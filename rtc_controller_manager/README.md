@@ -47,7 +47,8 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
 | `/rtc_cm/switch_controller` | `rtc_msgs/srv/SwitchController` | 활성 컨트롤러 전환 (sync, single-active). E-STOP 중에는 거부 |
 | `/rtc_cm/list_controllers` | `rtc_msgs/srv/ListControllers` | 모든 컨트롤러의 state 와 진단 4필드 |
 | `/rtc_cm/reset_fault` | `rtc_msgs/srv/ResetFault` | 래치된 **컨트롤러-local** fault 해제 (active 컨트롤러 이름 명시 필수) |
-| `/rtc_cm/clear_estop` | `rtc_msgs/srv/ClearEstop` | **글로벌** E-STOP 래치 해제 (`reason_ack` 필수) |
+| `/rtc_cm/clear_estop` | `rtc_msgs/srv/ClearEstop` | **글로벌** E-STOP 래치 해제 (`reason_ack` 필수). 검증 뒤 `estop_on_clear` 정책 |
+| `/rtc_cm/trigger_estop` | `std_srvs/srv/Trigger` | **글로벌** E-STOP 래치를 밖에서 올린다 (운영자 소프트웨어 E-STOP, 사유 `operator_request`). `success` = 호출 뒤 래치가 서 있다 |
 
 컨트롤러를 따로 load 하는 서비스는 없다. 등록된 컨트롤러는 시작 때 전부 인스턴스화되고 `switch_controller` 가 활성만 고른다. 요청·응답 필드는 각 `.srv` 주석이 SSoT 다. 서비스는 RT 경로와 분리된 `cb_group_nrt_callback_` 에서 처리된다.
 
@@ -114,7 +115,7 @@ controller YAML 에는 `ownership:` 필드가 없고 `topics:` entry 는 전부 
 | **rt_callback_executor** | SCHED_FIFO 70 | 이벤트 | 디바이스 JointState · MotorState · SensorState 구독 (`cb_group_rt_callback_`) |
 | **nrt_logging_executor** | SCHED_OTHER -5 | 100 Hz | 타이밍 CSV 드레인 · 1초 서머리 · deferred E-STOP 로그 |
 | **nrt_publish** | SCHED_OTHER 0 | 이벤트 | SPSC 드레인 → `PublishNonRtSnapshot` + per-group JointState. eventfd wakeup. `nrt_callback` 과 배치가 같고 이름만 다르다 |
-| **nrt_callback_executor** | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환 · E-STOP 상태 · lifecycle 서비스 · 컨트롤러 LifecycleNode 의 구독 |
+| **nrt_callback_executor** | SCHED_OTHER 0 | 이벤트 | 컨트롤러 전환 · E-STOP 해제 · 운영자 E-STOP · lifecycle 서비스 · 컨트롤러 LifecycleNode 의 구독 (한 스레드 — 서비스는 서로 뒤에 줄을 선다) |
 
 `mlockall(MCL_CURRENT | MCL_FUTURE)` 을 `rclcpp::init()` 전에 호출한다. 프로세스 시작은 `RtControllerMain()` 이 순서대로 처리한다: 노드 생성 (Unconfigured) → launch 가 configure/activate → Active 확인 → 전용 executor 로 전환.
 
@@ -212,6 +213,8 @@ deactivate 만 담은 요청은 거부된다 (single-active) — 내리려면 �
 | `sim_sync_timeout` | sim 모드에서 step 완료를 `sim_sync_timeout_sec` 안에 못 받음. 노드 종료 |
 | `invalid_controller_output_*` · `unholdable_controller_output_*` | `ControllerOutput` 이 actuator-boundary validation 을 연속 실패 (hold 를 못 만들면 첫 tick). 접미사가 `OutputRejectReason` |
 | `unhonoured_command_type_*` · `unholdable_unhonoured_command_type_*` | 해소된 per-device command type 을 그 slot 의 backend 가 받지 않음. 같은 consecutive 창. 접미사가 거부된 mode |
+| `operator_request` | `/rtc_cm/trigger_estop` 호출 (아래 §운영자 E-STOP) |
+| `post_clear_switch_failed` | `estop_on_clear: initial_controller` 에서 검증된 해제 뒤 initial controller 로의 전환이 `on_activate` 실패로 실패 — 다시 hold |
 
 #### 글로벌 E-STOP 동작
 
@@ -241,6 +244,23 @@ ros2 service call /rtc_cm/clear_estop rtc_msgs/srv/ClearEstop "{reason_ack: 'arm
 - `on_configure` · `on_activate` · `on_deactivate` · `on_error` 는 RT 스레드가 멈춘 상태에서 토큰과 latch 를 비운다. `ClearGlobalEstop()` 직접 호출 (테스트) 은 창이 없다
 
 근거: [architecture-rationale.md](../docs/reference/architecture-rationale.md#controller-manager--e-stop--command-type-근거).
+
+#### 운영자 E-STOP
+
+`/rtc_cm/trigger_estop` 이 올리고, 검증된 해제 뒤에 어느 컨트롤러가 뛰는지는 `estop_on_clear` 가 정한다.
+
+```bash
+ros2 service call /rtc_cm/trigger_estop std_srvs/srv/Trigger "{}"                     # 사유 operator_request
+ros2 service call /rtc_cm/clear_estop rtc_msgs/srv/ClearEstop "{reason_ack: 'operator_request'}"
+```
+
+- 요청 필드 · 인증 · ack 가 없다 (올리는 쪽은 안전 방향). 다른 `/rtc_cm` 서비스와 같은 신뢰 영역 — 네임스페이스에 닿는 누구나 정지시킬 수 있다. **하드웨어 E-STOP 의 대체가 아니다**
+- `success` = 호출 뒤 래치가 서 있다. `message` 가 `raised by this call` 과 `already latched: <reason>` 을 구분한다 (이미 걸려 있으면 사유 · 전파는 그대로고 `reason_ack` 는 그 사유다). 사전 검사 없이 CAS 결과로 판정한다. 검증 창 중 호출은 래치 재상승이다 — hold 목표는 그대로, 다음 해제는 창을 처음부터 돈다
+- **지연 상한이 없다.** 한 스레드의 같은 콜백 그룹이라 진행 중인 `clear_estop` (창 폴링 ≤ 4 × 창) · `reset_fault` · `switch_controller` (`on_activate` — MPC 컨트롤러의 첫 활성화는 수 초) 뒤에 처리된다. 실측은 `test_estop_hold_latch` · `test_loco_estop_on_clear` 의 `clear_plus_switch_ms`
+- **`estop_on_clear`** (파라미터, configure 에서 1 회 읽고 그 뒤 read-only — 그 전에는 다른 파라미터처럼 쓸 수 있다). `resume` (기본): 직전 컨트롤러가 그대로 재개하고 응답은 종전과 같다. `initial_controller`: 창 검증 **뒤** `initial_controller` 로 switch 하고 응답 앞에 `post-clear switch to '<x>': ok | already active` 를 붙인다. 이름이 비었거나 미등록이면 configure 거부
+  - `on_activate` 실패 → `post_clear_switch_failed` 로 **재래치**, `ok=false` (직전 컨트롤러 유지; 그 사유로 다시 해제하면 재시도). 검증과 switch 사이 재래치 → switch 거부, `ok=false`, 재상승 없음. switch 뒤 재래치 → `ok=false`
+  - timeout · 창 drop (`ok=false`) 에는 switch 가 없다 — 창이 늦게 닫히면 직전 컨트롤러가 재개하고 `message` 가 수동 switch 를 안내한다
+- 창 닫힘 → switch 사이 직전 컨트롤러 출력이 wire 에 나간다. 그 길이는 서비스 폴링 + 대상의 `on_activate` + 1.5 dt 라 **initial controller 는 가벼운 것** (hold 컨트롤러) 이어야 한다. 실측 (dev PC, 500 Hz, `test_loco_estop_on_clear`): 창 12 tick · 틈 1 tick · clear + switch 29 ms; test 상한 8 tick
 
 #### E-STOP 시 actuator command 차단
 
@@ -330,6 +350,7 @@ latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `Devi
 | `initial_controller` | string | `""` | 시작 컨트롤러 (이름 또는 config_key). 빈 값이면 bringup YAML 이 지정해야 한다 |
 | `init_timeout_sec` | double | `5.0` | 초기화 타임아웃 (초). state 미수신 시 E-STOP. sim 은 `0.0` 으로 끈다 |
 | `enable_estop` | bool | `true` | E-STOP 워치독 활성화 |
+| `estop_on_clear` | string | `"resume"` | 검증된 해제 뒤: `resume` 직전 컨트롤러 재개 · `initial_controller` 로 전환 (§운영자 E-STOP). read-only |
 | `device_timeout_names` | string[] | `[]` | 그룹별 timeout 을 줄 대상 이름 (감시 대상은 설정된 모든 그룹) |
 | `device_timeout_values` | double[] | `[]` | 각 그룹의 state 타임아웃 (ms) |
 | `device_timeout_default_ms` | double | `1000.0` | 위 목록에 없는 그룹의 timeout (ms) |
@@ -437,6 +458,7 @@ rtc_controller_manager/
 | 컨트롤러 override 가 안 먹는다 | 경로가 YAML 과 한 단계 어긋남 (`[param-override]` WARN) | WARN 의 접두 · 후보 키를 보고 경로를 고친다 |
 | `clear_estop` 이 거부된다 | `reason_ack` 가 현재 사유와 다름 | 빈 ack 로 불러 거부 메시지의 사유를 그대로 되돌린다. 컨트롤러 fault 는 `reset_fault` 로 따로 푼다 |
 | 해제 후에도 `estop_status` 가 true | 해제 검증 창 중이거나 원인이 남아 재 latch | 창은 수십 ms. 계속되면 사유 토큰으로 원인 확인 |
+| `trigger_estop` 응답이 늦다 | 같은 그룹의 `clear_estop` · `switch_controller` 가 진행 중 | 정상 (지연 상한 없음 — §운영자 E-STOP). 즉시 정지는 하드웨어 E-STOP |
 | goal 을 보냈는데 컨트롤러가 안 움직인다 | 큐 포화 · payload 거부 · 배선 결함 · fault 래치 | `list_controllers` 진단 4필드를 두 번 폴링해 어느 카운터가 움직이는지 본다 |
 | sim 에서 `sim_sync_timeout` | step 이 늦거나 `sim_sync_tick_devices` 에 step 과 무관한 그룹이 있음 | 해당 그룹을 `sim_sync_tick_devices` 에서 뺀다 |
 

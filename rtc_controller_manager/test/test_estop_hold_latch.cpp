@@ -21,6 +21,7 @@
 #include <std_msgs/msg/bool.hpp>
 
 #include <gtest/gtest.h>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <array>
 #include <atomic>
@@ -52,6 +53,35 @@ constexpr double kControllerCmd = 9.0;
 class EchoController : public RTControllerInterface {
  public:
   explicit EchoController(std::string name) : name_(std::move(name)) {}
+
+  // Lifecycle, counted, with two knobs for the estop_on_clear cases: a
+  // refusal to activate (the switch fails) and a hook that runs INSIDE
+  // on_activate (a detector latching mid-switch).
+  CallbackReturn on_activate(const rclcpp_lifecycle::State& prev) noexcept override {
+    activate_count.fetch_add(1, std::memory_order_relaxed);
+    if (on_activate_hook) {
+      on_activate_hook();
+    }
+    if (fail_activate.load(std::memory_order_relaxed)) {
+      return CallbackReturn::FAILURE;
+    }
+    return RTControllerInterface::on_activate(prev);
+  }
+
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& prev) noexcept override {
+    deactivate_count.fetch_add(1, std::memory_order_relaxed);
+    return RTControllerInterface::on_deactivate(prev);
+  }
+
+  bool HasLatchedFault() const noexcept override {
+    return fault_latched.load(std::memory_order_relaxed);
+  }
+
+  std::atomic<int> activate_count{0};
+  std::atomic<int> deactivate_count{0};
+  std::atomic<bool> fail_activate{false};
+  std::atomic<bool> fault_latched{false};
+  std::function<void()> on_activate_hook;
 
   ControllerOutput Compute(const ControllerState& state) noexcept override {
     ControllerOutput out{};
@@ -185,8 +215,12 @@ class EstopHoldLatchTest : public RclcppSuiteTest {
   void SetUp() override {
     node_ = std::make_shared<RtControllerNode>("test_estop_hold_latch_node");
     std::vector<std::unique_ptr<RTControllerInterface>> ctrls;
-    ctrls.push_back(std::make_unique<EchoController>("ctrl_a"));
-    ctrls.push_back(std::make_unique<EchoController>("ctrl_b"));
+    auto a = std::make_unique<EchoController>("ctrl_a");
+    auto b = std::make_unique<EchoController>("ctrl_b");
+    ctrl_a_ = a.get();
+    ctrl_b_ = b.get();
+    ctrls.push_back(std::move(a));
+    ctrls.push_back(std::move(b));
     Access::InjectControllers(*node_, std::move(ctrls), {"type_a", "type_b"});
     Access::HostGroups(*node_, 0, {"arm"}, {0});
     Access::HostGroups(*node_, 1, {"hand"}, {1});
@@ -212,6 +246,8 @@ class EstopHoldLatchTest : public RclcppSuiteTest {
   std::shared_ptr<RtControllerNode> node_;
   DriftingBackend* arm_{nullptr};
   DriftingBackend* hand_{nullptr};
+  EchoController* ctrl_a_{nullptr};
+  EchoController* ctrl_b_{nullptr};
 };
 
 constexpr double kStep = 1e-3;
@@ -506,6 +542,7 @@ class EstopClearServiceWindowTest : public EstopHoldLatchTest {
     EstopHoldLatchTest::SetUp();
     Access::AddDeviceTimeout(*node_, "arm", std::chrono::milliseconds(50), 0);
     Access::CallCreateFixedSafetyPublishers(*node_);
+    Access::SetInitialControllerIdx(*node_, 0);  // what configure resolves: ctrl_a
     Access::BringServicesOnline(*node_);
 
     obs_node_ = std::make_shared<rclcpp::Node>("test_estop_hold_latch_obs");
@@ -518,20 +555,19 @@ class EstopClearServiceWindowTest : public EstopHoldLatchTest {
           statuses_.push_back(m->data);
         });
     client_ = obs_node_->create_client<rtc_msgs::srv::ClearEstop>("/rtc_cm/clear_estop");
+    trigger_client_ = obs_node_->create_client<std_srvs::srv::Trigger>("/rtc_cm/trigger_estop");
     executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node(node_->get_node_base_interface());
     executor_->add_node(obs_node_);
     spin_thread_ = std::thread([this]() { executor_->spin(); });
     ASSERT_TRUE(client_->wait_for_service(std::chrono::seconds(2)));
+    ASSERT_TRUE(trigger_client_->wait_for_service(std::chrono::seconds(2)));
   }
 
   void TearDown() override {
     StopTicking();
     if (executor_) {
-      executor_->cancel();
-    }
-    if (spin_thread_.joinable()) {
-      spin_thread_.join();
+      StopSpinner(*executor_, spin_thread_);
     }
   }
 
@@ -574,11 +610,39 @@ class EstopClearServiceWindowTest : public EstopHoldLatchTest {
   rtc_msgs::srv::ClearEstop::Response::SharedPtr CallClear(const std::string& ack) {
     auto req = std::make_shared<rtc_msgs::srv::ClearEstop::Request>();
     req->reason_ack = ack;
-    auto fut = client_->async_send_request(req);
-    if (fut.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
-      return nullptr;
-    }
-    return fut.get();
+    return CallService(*client_, std::move(req));
+  }
+
+  std_srvs::srv::Trigger::Response::SharedPtr CallTrigger() {
+    return CallService(*trigger_client_, std::make_shared<std_srvs::srv::Trigger::Request>());
+  }
+
+  // The wall time one clear took, from the caller's side: with
+  // estop_on_clear=initial_controller it includes the switch, and the operator
+  // trigger behind it in the same callback group waits that long.
+  struct TimedClear {
+    rtc_msgs::srv::ClearEstop::Response::SharedPtr resp;
+    std::chrono::milliseconds elapsed{0};
+  };
+
+  TimedClear TimedCallClear(const std::string& ack) {
+    const auto t0 = std::chrono::steady_clock::now();
+    TimedClear out;
+    out.resp = CallClear(ack);
+    out.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0);
+    return out;
+  }
+
+  void UseInitialControllerPolicy() {
+    Access::SetEstopOnClear(*node_, Access::EstopOnClear::kInitialController);
+  }
+
+  // Switches to ctrl_b the way an operator would before an E-STOP under it.
+  void SwitchToB() {
+    std::string msg;
+    ASSERT_TRUE(Access::CallSwitch(*node_, "ctrl_b", msg)) << msg;
+    ASSERT_EQ(Access::GetActiveIdx(*node_), 1);
   }
 
   static bool WaitFor(const std::function<bool()>& pred,
@@ -601,6 +665,7 @@ class EstopClearServiceWindowTest : public EstopHoldLatchTest {
   std::shared_ptr<rclcpp::Node> obs_node_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr status_sub_;
   rclcpp::Client<rtc_msgs::srv::ClearEstop>::SharedPtr client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr trigger_client_;
   std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
   std::thread spin_thread_;
   std::thread tick_thread_;
@@ -768,6 +833,287 @@ TEST_F(EstopClearServiceWindowTest, AWindowDroppedByALifecycleResetIsNotReported
   ASSERT_NE(resp, nullptr);
   EXPECT_FALSE(resp->ok) << "replied '" << resp->message << "' for a window nobody ran";
   EXPECT_NE(resp->message.find("NOT verified"), std::string::npos) << resp->message;
+}
+
+// ── The operator trigger against the hold and the window ─────────────────────
+
+TEST_F(EstopClearServiceWindowTest, ATriggerBeforeTheFirstTickHoldsThatTick) {
+  // Latched before the loop ever ran (configure done, activation pending): the
+  // first tick after activation is already a hold, not one controller tick.
+  const auto resp = CallTrigger();
+  ASSERT_NE(resp, nullptr);
+  EXPECT_TRUE(resp->success) << resp->message;
+  ASSERT_TRUE(Access::IsEstopped(*node_));
+  Tick();
+  EXPECT_EQ(Access::GetEstopSubstitutedOutputCount(*node_), 1U);
+  EXPECT_EQ(arm_->ControllerWrites(), 0);
+  EXPECT_DOUBLE_EQ(arm_->LastCommand(0), arm_->Measured(0)) << "held where the device is";
+}
+
+TEST_F(EstopClearServiceWindowTest, ATriggerInsideTheWindowRelatchesAndKeepsTheHoldTarget) {
+  Tick();
+  ASSERT_NE(CallTrigger(), nullptr);
+  Tick();
+  const double latched = arm_->Measured(0);
+  const std::string reason(Access::kOperatorEstopReason);
+
+  // No ticking: the clear lowers the latch and times out with its window open.
+  const auto cleared = CallClear(reason);
+  ASSERT_NE(cleared, nullptr);
+  ASSERT_FALSE(cleared->ok);
+  ASSERT_FALSE(Access::IsEstopped(*node_));
+  ASSERT_TRUE(Access::IsClearVerifying(*node_));
+  DriftAndTick(kStep);
+  ASSERT_DOUBLE_EQ(arm_->LastCommand(0), latched) << "the window holds";
+
+  // The operator presses again inside the window: the latch is down, so this
+  // call raises it; the window stays open behind it.
+  const auto again = CallTrigger();
+  ASSERT_NE(again, nullptr);
+  EXPECT_TRUE(again->success) << again->message;
+  EXPECT_NE(again->message.find("raised by this call"), std::string::npos) << again->message;
+  EXPECT_TRUE(Access::IsEstopped(*node_));
+  EXPECT_TRUE(Access::IsClearVerifying(*node_));
+
+  // The hold never paused, so its target is the ORIGINAL latch, bit for bit —
+  // not a recapture at the re-trigger.
+  for (int t = 0; t < kDriftTicks; ++t) {
+    DriftAndTick(kStep);
+    ASSERT_DOUBLE_EQ(arm_->LastCommand(0), latched) << "tick " << t;
+  }
+
+  // The next clear owes a FULL window: the ticks the first one survived do
+  // not carry over.
+  const auto second = CallClear(reason);
+  ASSERT_NE(second, nullptr);
+  ASSERT_FALSE(second->ok);  // no ticking — unverified, window open
+  const auto window = Access::VerifyWindowTicks(*node_);
+  for (std::uint64_t t = 0; t < window; ++t) {
+    DriftAndTick(kStep);
+    ASSERT_DOUBLE_EQ(arm_->LastCommand(0), latched) << "tick " << t << " of the second window";
+    ASSERT_TRUE(Access::IsClearVerifying(*node_)) << "tick " << t;
+  }
+  DriftAndTick(kStep);
+  EXPECT_FALSE(Access::IsClearVerifying(*node_));
+  EXPECT_DOUBLE_EQ(arm_->LastCommand(0), kControllerCmd);
+}
+
+// ── estop_on_clear ───────────────────────────────────────────────────────────
+
+TEST_F(EstopClearServiceWindowTest, ResumeLeavesTheControllerAndTheReplyExactlyAsTheyWere) {
+  // The default policy: no switch, no publish, and the reply byte for byte the
+  // string every existing consumer parses.
+  StartTicking();
+  ASSERT_TRUE(WaitFor([this] { return arm_->ControllerWrites() > 3; }));
+  Access::CallTriggerEstop(*node_, "test_estop");
+  ASSERT_TRUE(WaitFor([this] { return Access::GetEstopSubstitutedOutputCount(*node_) > 3U; }));
+
+  const auto timed = TimedCallClear("test_estop");
+  ASSERT_NE(timed.resp, nullptr);
+  EXPECT_TRUE(timed.resp->ok) << timed.resp->message;
+  EXPECT_EQ(timed.resp->message, "global E-STOP cleared (was: 'test_estop')");
+  RecordProperty("clear_resume_ms", static_cast<int>(timed.elapsed.count()));
+
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 0);
+  EXPECT_EQ(ctrl_a_->activate_count.load(), 0);
+  EXPECT_EQ(ctrl_a_->deactivate_count.load(), 0);
+  EXPECT_EQ(ctrl_b_->activate_count.load(), 0);
+  EXPECT_EQ(ctrl_b_->deactivate_count.load(), 0);
+}
+
+TEST_F(EstopClearServiceWindowTest, ResumeKeepsTheFaultNoteWordForWord) {
+  ctrl_a_->fault_latched.store(true);
+  StartTicking();
+  ASSERT_TRUE(WaitFor([this] { return arm_->ControllerWrites() > 3; }));
+  Access::CallTriggerEstop(*node_, "test_estop");
+  ASSERT_TRUE(WaitFor([this] { return Access::GetEstopSubstitutedOutputCount(*node_) > 3U; }));
+
+  const auto resp = CallClear("test_estop");
+  ASSERT_NE(resp, nullptr);
+  EXPECT_TRUE(resp->ok) << resp->message;
+  EXPECT_EQ(resp->message,
+            "global E-STOP cleared (was: 'test_estop') (controller 'ctrl_a' still has a latched "
+            "fault — /rtc_cm/reset_fault clears that one)");
+}
+
+TEST_F(EstopClearServiceWindowTest, InitialControllerPolicySwitchesBackOnceVerified) {
+  UseInitialControllerPolicy();
+  StartTicking();
+  ASSERT_TRUE(WaitFor([this] { return arm_->ControllerWrites() > 3; }));
+  SwitchToB();
+  const int b_activations = ctrl_b_->activate_count.load();
+
+  Access::CallTriggerEstop(*node_, "test_estop");
+  ASSERT_TRUE(WaitFor([this] { return Access::GetEstopSubstitutedOutputCount(*node_) > 3U; }));
+  ASSERT_EQ(Access::GetActiveIdx(*node_), 1) << "the stop does not switch; the clear does";
+
+  const auto timed = TimedCallClear("test_estop");
+  ASSERT_NE(timed.resp, nullptr);
+  EXPECT_TRUE(timed.resp->ok) << timed.resp->message;
+  EXPECT_EQ(
+      timed.resp->message.rfind("post-clear switch to 'ctrl_a': ok; global E-STOP cleared", 0), 0U)
+      << timed.resp->message;
+  // The bound an operator trigger queued behind this call waits for.
+  RecordProperty("clear_plus_switch_ms", static_cast<int>(timed.elapsed.count()));
+
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 0);
+  EXPECT_EQ(Access::GetControllerState(*node_, 0), 1);
+  EXPECT_EQ(Access::GetControllerState(*node_, 1), 0);
+  EXPECT_EQ(ctrl_a_->activate_count.load(), 1);
+  EXPECT_EQ(ctrl_b_->deactivate_count.load(), 1);
+  EXPECT_EQ(ctrl_b_->activate_count.load(), b_activations);
+  EXPECT_FALSE(Access::IsEstopped(*node_));
+  EXPECT_EQ(violations_.load(), 0);
+}
+
+TEST_F(EstopClearServiceWindowTest, InitialControllerPolicyIsANoOpWhenItIsAlreadyActive) {
+  UseInitialControllerPolicy();
+  StartTicking();
+  ASSERT_TRUE(WaitFor([this] { return arm_->ControllerWrites() > 3; }));
+  Access::CallTriggerEstop(*node_, "test_estop");
+  ASSERT_TRUE(WaitFor([this] { return Access::GetEstopSubstitutedOutputCount(*node_) > 3U; }));
+
+  const auto resp = CallClear("test_estop");
+  ASSERT_NE(resp, nullptr);
+  EXPECT_TRUE(resp->ok) << resp->message;
+  EXPECT_EQ(resp->message.rfind("post-clear switch to 'ctrl_a': already active; ", 0), 0U)
+      << resp->message;
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 0);
+  EXPECT_EQ(ctrl_a_->activate_count.load(), 0);
+  EXPECT_EQ(ctrl_a_->deactivate_count.load(), 0);
+}
+
+TEST_F(EstopClearServiceWindowTest, AFailedPostClearSwitchReRaisesTheEstopAndHoldsAgain) {
+  UseInitialControllerPolicy();
+  StartTicking();
+  ASSERT_TRUE(WaitFor([this] { return arm_->ControllerWrites() > 3; }));
+  SwitchToB();
+  ctrl_a_->fail_activate.store(true);
+
+  Access::CallTriggerEstop(*node_, "test_estop");
+  ASSERT_TRUE(WaitFor([this] { return Access::GetEstopSubstitutedOutputCount(*node_) > 3U; }));
+  ASSERT_TRUE(WaitFor([this] {
+    const auto s = Statuses();
+    return !s.empty() && s.back();
+  }));
+  const std::size_t reported = Statuses().size();
+  const auto substituted_before = Access::GetEstopSubstitutedOutputCount(*node_);
+
+  const auto resp = CallClear("test_estop");
+  ASSERT_NE(resp, nullptr);
+  EXPECT_FALSE(resp->ok) << resp->message;
+  EXPECT_NE(resp->message.find("FAILED"), std::string::npos) << resp->message;
+  EXPECT_NE(resp->message.find(Access::kPostClearSwitchFailedReason), std::string::npos)
+      << resp->message;
+
+  // Held again, for a reason of its own, with the state the switch left:
+  // ctrl_b still the active one, ctrl_a never activated (its on_activate was
+  // asked and refused).
+  EXPECT_TRUE(Access::IsEstopped(*node_));
+  EXPECT_EQ(Access::GetGlobalEstopReason(*node_),
+            std::string(Access::kPostClearSwitchFailedReason));
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 1);
+  EXPECT_EQ(Access::GetControllerState(*node_, 1), 1);
+  EXPECT_EQ(Access::GetControllerState(*node_, 0), 0);
+  EXPECT_EQ(ctrl_a_->activate_count.load(), 1);
+  EXPECT_EQ(ctrl_b_->deactivate_count.load(), 0);
+  ASSERT_TRUE(WaitFor([this, substituted_before] {
+    return Access::GetEstopSubstitutedOutputCount(*node_) > substituted_before + 5U;
+  })) << "the re-raised latch is not holding the wire";
+  EXPECT_EQ(violations_.load(), 0);
+  // estop_status is latch OR window: the RT side may publish false for the
+  // few ms between the window closing and the service re-raising. What is
+  // pinned is that it reads true again once it has.
+  ASSERT_TRUE(WaitFor([this, reported] {
+    const auto s = Statuses();
+    return s.size() > reported && s.back();
+  })) << "estop_status did not report the re-raised latch";
+
+  // The re-raised reason is the acknowledgement of the next clear, and the
+  // switch is retried on it.
+  ctrl_a_->fail_activate.store(false);
+  const auto retry = CallClear(std::string(Access::kPostClearSwitchFailedReason));
+  ASSERT_NE(retry, nullptr);
+  EXPECT_TRUE(retry->ok) << retry->message;
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 0);
+  EXPECT_EQ(ctrl_a_->activate_count.load(), 2);
+  EXPECT_FALSE(Access::IsEstopped(*node_));
+}
+
+TEST_F(EstopClearServiceWindowTest, ARelatchBeforeTheSwitchRefusesItWithoutReRaising) {
+  // The one gap the service cannot be made to hit on cue: a detector latching
+  // between the verification read and the switch. The policy step is called
+  // with the latch already up.
+  UseInitialControllerPolicy();
+  Access::MarkActive(*node_, 1);
+  Access::CallTriggerEstop(*node_, "relatched");
+  const auto requests = Access::GetEstopTriggerRequestCount(*node_);
+
+  bool ok = true;
+  std::string message = "global E-STOP cleared (was: 'x')";
+  Access::CallApplyEstopOnClearPolicy(*node_, ok, message);
+  EXPECT_FALSE(ok);
+  EXPECT_NE(message.find("not attempted"), std::string::npos) << message;
+  EXPECT_EQ(ctrl_a_->activate_count.load(), 0);
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 1);
+  EXPECT_EQ(Access::GetEstopTriggerRequestCount(*node_), requests) << "re-raised over a latch";
+  EXPECT_EQ(Access::GetGlobalEstopReason(*node_), "relatched");
+}
+
+TEST_F(EstopClearServiceWindowTest, ARelatchDuringTheSwitchIsReportedNotHidden) {
+  UseInitialControllerPolicy();
+  Access::MarkActive(*node_, 1);
+  ctrl_a_->on_activate_hook = [this]() { Access::CallTriggerEstop(*node_, "mid_switch"); };
+
+  bool ok = true;
+  std::string message = "global E-STOP cleared (was: 'x')";
+  Access::CallApplyEstopOnClearPolicy(*node_, ok, message);
+  // The switch itself went through (on_activate returned SUCCESS, the index
+  // moved) — and the reply must still not say ok over a held arm.
+  EXPECT_FALSE(ok);
+  EXPECT_NE(message.find("re-latched"), std::string::npos) << message;
+  EXPECT_NE(message.find("mid_switch"), std::string::npos) << message;
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 0);
+  EXPECT_TRUE(Access::IsEstopped(*node_));
+}
+
+TEST_F(EstopClearServiceWindowTest, ATimedOutClearMakesNoSwitchAndTheLateWindowResumesTheOld) {
+  UseInitialControllerPolicy();
+  // Ticked by hand, so the switch is observable tick by tick. ctrl_b owns the
+  // HAND group, so its wire is hand_ (arm_ keeps ctrl_a's last write).
+  Tick();
+  SwitchToB();
+  Tick();
+  ASSERT_DOUBLE_EQ(hand_->LastCommand(0), kControllerCmd);
+  Access::CallTriggerEstop(*node_, "test_estop");
+  Tick();
+  const double latched = hand_->Measured(0);
+
+  // No stand-in RT thread: the service waits out its deadline.
+  const auto resp = CallClear("test_estop");
+  ASSERT_NE(resp, nullptr);
+  EXPECT_FALSE(resp->ok);
+  EXPECT_NE(resp->message.find("the latch is DOWN"), std::string::npos) << resp->message;
+  // The reply tells the operator the switch did not happen and what to do.
+  EXPECT_NE(resp->message.find("no switch was made"), std::string::npos) << resp->message;
+  EXPECT_NE(resp->message.find("ctrl_a"), std::string::npos) << resp->message;
+  EXPECT_EQ(ctrl_a_->activate_count.load(), 0);
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 1);
+
+  // The loop comes back and closes the window: the PREVIOUS controller
+  // resumes; nothing switches on the RT side.
+  const auto window = Access::VerifyWindowTicks(*node_);
+  for (std::uint64_t t = 0; t < window; ++t) {
+    hand_->offset.store(hand_->offset.load() + kStep);
+    Tick();
+    ASSERT_DOUBLE_EQ(hand_->LastCommand(0), latched) << "tick " << t;
+  }
+  hand_->offset.store(hand_->offset.load() + kStep);
+  Tick();
+  EXPECT_FALSE(Access::IsClearVerifying(*node_));
+  EXPECT_DOUBLE_EQ(hand_->LastCommand(0), kControllerCmd);
+  EXPECT_EQ(Access::GetActiveIdx(*node_), 1);
+  EXPECT_EQ(ctrl_a_->activate_count.load(), 0);
 }
 
 // ── A publisher that starts with the value it stands for (#607) ──────────────

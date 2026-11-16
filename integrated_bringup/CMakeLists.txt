@@ -30,6 +30,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
@@ -2194,6 +2195,38 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # The CM's operator stop and estop_on_clear policy over the two g1_loco
+  # controllers (demo_joint + locomotion, MPC off) on the CM's own tick body:
+  # the hold on the wire, the verified clear handing back to demo_joint, and
+  # the measured window / hand-over gap.
+  ament_add_gtest(test_loco_estop_on_clear test/test_loco_estop_on_clear.cpp
+    TIMEOUT 120
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_loco_estop_on_clear PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_loco_estop_on_clear PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_loco_estop_on_clear
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_loco_estop_on_clear
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    rtc_msgs
+    std_srvs
+    pinocchio
+    Eigen3
+  )
+
   # Its MPC: the reference sources, the plausibility check, the contact mask,
   # the state stream's restarts, the thread's lifetime, the `mpc:` schema — on a
   # stub handler, and one smoke run of the installed MPC.
@@ -2328,6 +2361,9 @@ if(BUILD_TESTING)
   # ── demo_controller_gui static robot profiles (pure-Python) ────────────────
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_robot_profiles test/test_robot_profiles.py)
+  # estop_on_clear ships on the two humanoid sims only; every other profile
+  # resumes, and a profile that switches must name a controller it ships.
+  ament_add_pytest_test(test_estop_on_clear_profiles test/test_estop_on_clear_profiles.py)
   ament_add_pytest_test(test_cm_rt_params_wiring test/test_cm_rt_params_wiring.py)
   # Shipped initial_qpos: length/type (always) + MJCF keyframe agreement (skips
   # without the mujoco pip module, which CI installs and /usr/bin/python3 lacks).
@@ -2497,6 +2533,7 @@ if(BUILD_TESTING)
     test_locomotion_controller
     test_locomotion_controller_alloc
     test_locomotion_mpc
+    test_loco_estop_on_clear
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
@@ -2518,6 +2555,7 @@ if(BUILD_TESTING)
     test_catching_tracking
     test_catching_supervisor_scenarios
     test_locomotion_mpc
+    test_loco_estop_on_clear
     PROPERTIES RUN_SERIAL TRUE)
 
   # Every gtest binary logs into its own throwaway session directory

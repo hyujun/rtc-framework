@@ -30,6 +30,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(pinocchio REQUIRED)
@@ -66,6 +67,7 @@ ament_target_dependencies(rtc_controller_manager_lib
   rclcpp_lifecycle
   sensor_msgs
   std_msgs
+  std_srvs
   ament_index_cpp
   rtc_controller_interface
   rtc_controllers
@@ -121,6 +123,7 @@ ament_export_dependencies(
   rclcpp_lifecycle
   sensor_msgs
   std_msgs
+  std_srvs
   ament_index_cpp
   rtc_controller_interface
   rtc_controllers
@@ -265,7 +268,7 @@ if(BUILD_TESTING)
   if(TARGET test_estop_hold_latch)
     target_include_directories(test_estop_hold_latch PRIVATE include test)
     ament_target_dependencies(test_estop_hold_latch
-      rclcpp rclcpp_lifecycle std_msgs sensor_msgs
+      rclcpp rclcpp_lifecycle std_msgs std_srvs sensor_msgs
       rtc_controller_interface rtc_base rtc_msgs)
     target_link_libraries(test_estop_hold_latch
       rtc_controller_manager_lib)
@@ -280,6 +283,18 @@ if(BUILD_TESTING)
       rclcpp rclcpp_lifecycle std_msgs sensor_msgs
       rtc_controller_interface rtc_base rtc_msgs)
     target_link_libraries(test_clear_estop_service
+      rtc_controller_manager_lib)
+  endif()
+
+  ament_add_gtest(test_trigger_estop_service
+    test/test_trigger_estop_service.cpp
+    ENV ROS_DOMAIN_ID=44)
+  if(TARGET test_trigger_estop_service)
+    target_include_directories(test_trigger_estop_service PRIVATE include test)
+    ament_target_dependencies(test_trigger_estop_service
+      rclcpp rclcpp_lifecycle std_msgs std_srvs sensor_msgs
+      rtc_controller_interface rtc_base rtc_msgs)
+    target_link_libraries(test_trigger_estop_service
       rtc_controller_manager_lib)
   endif()
 
