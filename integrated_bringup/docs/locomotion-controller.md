@@ -30,7 +30,7 @@ ros2 topic echo /locomotion_controller/g1/locomotion_status      # level · sour
 
 - `runtime.yaml` 의 `velocity_command: {topic}` 가 Twist 토픽이다 (출하 `g1/cmd_vel`, 컨트롤러 네임스페이스 아래). `linear.x` / `linear.y` / `angular.z` = v_x / v_y / yaw rate, `linear.z` = pelvis 높이 **rate** — `command.yaml` 의 필터 (clamp · Bessel · 적분, `rtc_mpc` `reference/command_filter.hpp`) 를 지나 planner 의 stage reference 가 된다. 구독은 depth 1 · reliability 기본 (reliable) 이라 best_effort 발행자는 연결되지 않는다. 키가 없으면 명령 경로가 없고 MPC 는 제자리에 선다; `mpc.enabled` 가 아니면 키는 받되 비활성이다.
 - 명령은 `command.t_stale` (0.5 s) 동안 새 메시지가 없으면 0 으로 돌아간다 (높이는 유지) — 발행자는 **주기적으로** 보낸다. 비유한 축은 직전 값을 유지한다. 활성화마다 필터가 리셋되어 높이는 `command.base_height` 로 돌아간다. 필터는 활성 동안만 돈다 (`command.sample_rate_hz`).
-- 지금의 FSM 은 **모든 접촉이 지지일 때만** stand 로 들어간다 — 속도 명령으로 gait 가 걸음으로 바뀌면 plan 의 mask 에 swing 이 생겨 walk 로 표시된다. 보행의 안정 · 게이트는 이후 feature 가 평가한다; 그 전까지 명령은 sim 에서만 쓴다.
+- 지금의 FSM 은 **모든 접촉이 지지일 때만** stand 로 들어간다 — 속도 명령으로 gait 가 걸음으로 바뀌면 plan 의 mask 에 swing 이 생겨 walk 로 표시된다. 출하값의 보행은 sim 판정을 아직 통과하지 못했다 — 첫 gait 전환 (stance → slow_walk) 직후, 첫 swing 전에 미수렴 plan 하나가 타당성 검사에 걸리고 로봇이 움직이는 중이라 plan-loss fault 로 멈춘다 (아래 평가 도구의 `walk` arm 이 재현한다). 명령은 sim 에서만 쓴다.
 - `<body group>/locomotion_status` (`diagnostic_msgs/DiagnosticStatus`, ≈ 50 Hz, MPC 없이도 발행) — `level`: OK (stand · walk, 또는 MPC 없이 nominal) · WARN (waiting · degraded · MPC 가 있는데 idle) · ERROR (fault · E-STOP); `message` = reference 출처; `values` 는 고정 키 (순서 · 이름은 `controllers/locomotion/locomotion_status.hpp` 의 `LocomotionStatusKey`): source · mode · fault_cause · estop · tick_count · plan_id · policy_age_ms · converged · initial_solve · contact_mask · schedule_epoch · state_epoch · plausibility_rejects · solves · failed_solves · deadline_miss · withheld · overrun · wbc_tick_us · qp_iterations · cmd_vx · cmd_vy · cmd_wz · cmd_height · cmd_valid · cmd_fresh · cmd_stale_ticks · cmd_nonfinite_ticks · cmd_ignored_axis_ticks (필터 tick 수). MPC 카운터는 1 Hz 로 갱신된다. GUI (W8) 는 키로 읽는다.
 
 ## 모드
@@ -86,9 +86,40 @@ latch 는 `/rtc_cm/reset_fault` 나 **재활성화**로 풀린다 (다음 tick �
 ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv stance.csv
 ```
 
-그림 7 장과 `locomotion_diag_summary.json` (MPC 열이 있으면 stand 비율 · `time_to_stand_s` · policy age 분포 · plan 의 base z 평균) 은 `rtc_tools` README §locomotion_diag 를 본다. MPC thread 의 tick 시간은 `<session>/timing/mpc_timing_log.csv`, solve · 거부 카운터는 10 s 마다 INFO 한 줄이다.
+그림 7 장과 `locomotion_diag_summary.json` (MPC 열이 있으면 stand 비율 · `time_to_stand_s` · policy age 분포 · plan 의 base z 평균) 은 `rtc_tools` README §locomotion_diag 를 본다. MPC thread 의 tick 시간은 `<session>/timing/mpc_timing_log.csv`, solve · 거부 카운터는 10 s 마다 INFO 한 줄 (누적) 이다.
+
+보행 판정 열 (끝에 붙는다):
+
+- `cmd_vx` · `cmd_vy` · `cmd_wz` · `cmd_h` · `cmd_valid` — 명령 필터의 출력을 timer 가 마지막으로 넘긴 값 (planner 에 준 명령; 표본 plan 이 풀린 명령보다 필터 주기 + MPC 지연만큼 새롭다). `cmd_valid` 는 그 step 의 입력이 신선했는지 (명령 경로가 없거나 stale 이면 0).
+- `gait_latest` — timer 가 읽은 phase manager 의 gait (`gait.sequence` 의 위치, −1 = MPC 없음). 스케줄러가 앞서 나간 gait 라 표본 plan 의 `contact_mask` 보다 앞선다 — 이벤트 정렬은 `contact_mask` 로 한다.
+- `ref_base_vx/y/z` — 표본 plan 의 base 선속도 (base frame, plan 이 없으면 NaN).
+- `meas_contact_valid` · `meas_fz_<contact>` — 본체 군 inference lane 의 group c (접촉 순서) 의 fz (센서 frame, 지지하는 발은 음수). bit c 는 backend 자신의 신선도 판정 (`inference_enable` — sim 은 연속 누락 tick 수) 이고, 0 이면 (그 group 이 stale, group 수 ≠ 접촉 수, `sensor_layout.inference_values_per_group` < 4) NaN — backend 가 stale 로 본 유지값은 기록하지 않는다. 수신 나이 (`inference_recv_steady_ns`) 는 보지 않는다. lane 의 소스 순서는 profile 이 접촉 순서로 적는다 (`sim.yaml` 의 `fingertip_wrench_topics`).
 
 ## 평가 도구 (`tools/standing_eval/`)
 
 - `gain_step.py` — 매달린 로봇 (base 고정) 에서 관절마다 0.2 rad step: 2 s 도달률 · overshoot 로 PD 게인 후보를 거른다 (venv python, mujoco).
-- `run_arms.py` — sim 을 run 마다 새로 띄워 같은 시간축 (기동 → settle → 전환 단계 → lead → recorder) 으로 `servo` (MJCF servo) · `loco` (전환) · `lowpd` (demo_joint 에 같은 PD 게인, feedforward 없음) · `mpc` (`enable_mpc:=true` 로 전환) · `mpc_fb` (+ `mpc_riccati` overlay) · `reentry` (실기의 복귀 절차: loco 정지 창 → `/rtc_cm/trigger_estop` → hold → `/rtc_cm/clear_estop` (demo_joint 복귀 확인) → demo_joint 에 서는 자세 goal (`estop.arm_safe_position`) → `/sim/reset` 으로 로봇을 세움 → loco 재진입 창, 녹음 하나에 창 둘) · `estop` (loco 중 `/rtc_cm/trigger_estop` → hold → `/rtc_cm/clear_estop` → demo_joint 복귀 확인 → loco 전환, 이벤트 시각 · 창 지표는 `run.json`; 두 arm 모두 rtf 1 로 — clear 의 검증 기한이 wall 이라 느린 rtf 에서는 unverified 로 끝난다) 를 반복하고 (`--mpc-layout` 이면 모든 arm 이 같은 MPC layout, `loco` · `reentry` · `estop` 은 `mpc_off` overlay; `--mpc-threads N` 이면 MPC layout 으로 뜨는 arm 이 `layout_profile:=mpc_par_sim mpc_threads:=N` 으로 N thread solve; `--overlay ARM=…` · `--launch-arg` 로 바꾼다) recorder CSV/JSON · 로그 세션을 모은다. `repo_scripts/scripts/with_verify_hold.sh` 아래에서 돌린다.
+- `run_arms.py` — sim 을 run 마다 새로 띄워 같은 시간축 (기동 → settle → 전환 단계 → lead → recorder) 으로 `servo` (MJCF servo) · `loco` (전환) · `lowpd` (demo_joint 에 같은 PD 게인, feedforward 없음) · `mpc` (`enable_mpc:=true` 로 전환) · `mpc_fb` (+ `mpc_riccati` overlay) · `reentry` (실기의 복귀 절차: loco 정지 창 → `/rtc_cm/trigger_estop` → hold → `/rtc_cm/clear_estop` (demo_joint 복귀 확인) → demo_joint 에 서는 자세 goal (`estop.arm_safe_position`) → `/sim/reset` 으로 로봇을 세움 → loco 재진입 창, 녹음 하나에 창 둘) · `estop` (loco 중 `/rtc_cm/trigger_estop` → hold → `/rtc_cm/clear_estop` → demo_joint 복귀 확인 → loco 전환, 이벤트 시각 · 창 지표는 `run.json`; 두 arm 모두 rtf 1 로 — clear 의 검증 기한이 wall 이라 느린 rtf 에서는 unverified 로 끝난다) · `walk` (MPC 를 켠 채 전환 → 명령 스크립트 `twist_script.py` (ramp 0 → 0.5 m/s 2 s · hold 8 s · yaw 0.3 rad/s 4 s · hold 2 s · 정지 10 s, sim 초; `--cmd-topic` 에 20 Hz wall, 컨트롤러의 구독이 붙은 뒤 시작) → 마지막 `--stop-window` s 가 정지 창) · `walk_estop` (같은 스크립트의 `--estop-at` s 에 `/rtc_cm/trigger_estop` → hold 창, clear 없음) 를 반복하고 (`--mpc-layout` 이면 모든 arm 이 같은 MPC layout, `loco` · `reentry` · `estop` 은 `mpc_off` overlay, `walk` · `walk_estop` 은 언제나 MPC; `--mpc-threads N` 이면 MPC layout 으로 뜨는 arm 이 `layout_profile:=mpc_par_sim mpc_threads:=N` 으로 N thread solve; `--overlay ARM=…` · `--launch-arg` 로 바꾼다) recorder CSV/JSON · 로그 세션을 모은다. `repo_scripts/scripts/with_verify_hold.sh` 아래에서 돌린다.
+- `walk_gate.py` — `run_arms.py` 의 `--out` 디렉토리에서 `walk_<k>` · `walk_estop_<k>` 를 판정한다 (`walk_gate.json`): 보행 지표는 `rtc_tools.analysis.walk_metrics` (스케줄러와 같은 yaw 정렬 속도 · 구간은 로그의 `cmd_vx` 열로 · 접촉 에지 1:1 짝짓기 · 체중은 그 run 의 stand 구간), 정지 창은 `mpc_<k>` (대조군) 의 같은 길이 꼬리와 비교, `walk_estop` 은 edge (E-STOP 열 유지 · waiting · fault 불변 · CM 거부 줄 0) 를 판정하고 hold 아래 낙하를 보고한다. 문턱은 파일 머리의 상수고, rtf · `z_ref` · 정지 창 길이는 각 run 의 `run.json` 에서 읽는다 (run 끼리 다르면 거부). `--probe` 는 dev PC rtf 를 고르는 기준 (나이 거부 0 · stand 뒤 plan 없는 row 0 · policy age p99 ≤ 100 ms) 만 본다. 성능 (solve 시간 · overrun · `wbc_tick_us`) 은 보고만 한다 — 판정은 제어 PC 다.
+
+dev PC (rtf < 1) 에서는 MPC 의 `publish_deadline_ms` (wall) 를 끄는 overlay 를 repo 밖에 두고 세 arm 에 준다 — 없으면 모든 solve 가 기한을 넘겨 plan 이 하나도 발행되지 않는다:
+
+```yaml
+# /tmp/no_publish_deadline.yaml
+integrated_rt_controller:
+  ros__parameters:
+    locomotion_controller:
+      mpc:
+        solver:
+          publish_deadline_ms: 0.0
+```
+
+```bash
+O=/tmp/no_publish_deadline.yaml
+repo_scripts/scripts/with_verify_hold.sh python3 integrated_bringup/tools/standing_eval/run_arms.py \
+  --out /tmp/walk --arms mpc walk walk_estop -k 3 --mpc-layout --mpc-threads 2 --rtf 0.1 \
+  --overlay mpc=$O --overlay walk=$O --overlay walk_estop=$O \
+  --lead 6 --duration 26 --runtime-yaml integrated_bringup/config/g1_loco/controllers/locomotion/runtime.yaml \
+  --logging-root ~/ros2_ws/rtc_ws/logging_data
+python3 integrated_bringup/tools/standing_eval/walk_gate.py /tmp/walk \
+  --gait-yaml integrated_bringup/config/g1_loco/controllers/locomotion/gait.yaml
+```

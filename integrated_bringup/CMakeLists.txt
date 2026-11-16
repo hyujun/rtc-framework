@@ -2512,6 +2512,9 @@ if(BUILD_TESTING)
   # tools/standing_eval/run_arms.py (same: read from the source tree): each
   # arm's launch arguments, with and without a pooled MPC solve.
   ament_add_pytest_test(test_standing_eval_run_arms test/test_standing_eval_run_arms.py)
+  # tools/standing_eval/walk_gate.py (read from the source tree): the counter line,
+  # the CM's refusals, the gait order and the E-STOP edge it judges.
+  ament_add_pytest_test(test_standing_eval_walk_gate test/test_standing_eval_walk_gate.py)
   ament_add_pytest_test(test_locomotion_diag_names test/test_locomotion_diag_names.py)
   ament_add_pytest_test(test_docking_ident_config test/test_docking_ident_config.py)
   ament_add_pytest_test(test_docking_ident_rig test/test_docking_ident_rig.py)

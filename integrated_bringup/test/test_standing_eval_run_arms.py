@@ -38,6 +38,11 @@ POOL = ["layout_profile:=mpc_par_sim", "mpc_threads:=2"]
         ("estop", False, []),
         ("reentry", True, ["enable_mpc:=true", "sim_overlay:=mpc_off"]),
         ("estop", True, ["enable_mpc:=true", "sim_overlay:=mpc_off"]),
+        # the walk arms walk on the MPC's plan, with or without the layout flag
+        ("walk", False, ["enable_mpc:=true"]),
+        ("walk", True, ["enable_mpc:=true"]),
+        ("walk_estop", False, ["enable_mpc:=true"]),
+        ("walk_estop", True, ["enable_mpc:=true"]),
     ],
 )
 def test_without_threads_the_arguments_are_unchanged(arm, mpc_layout, expected):
@@ -55,6 +60,8 @@ def test_without_threads_the_arguments_are_unchanged(arm, mpc_layout, expected):
         # one CPU layout for every arm of an --mpc-layout evaluation
         ("servo", True, ["enable_mpc:=true", *POOL]),
         ("loco", True, ["enable_mpc:=true", *POOL, "sim_overlay:=mpc_off"]),
+        ("walk", False, ["enable_mpc:=true", *POOL]),
+        ("walk_estop", True, ["enable_mpc:=true", *POOL]),
     ],
 )
 def test_threads_add_the_worker_profile_under_the_mpc_layout(arm, mpc_layout, expected):
@@ -177,6 +184,11 @@ def _args(**over):
         "upright_wait": 4.0,
         "body_group": "g1",
         "runtime_yaml": RUNTIME_YAML,
+        "cmd_topic": "/locomotion_controller/g1/cmd_vel",
+        "stop_window": 3.0,
+        "estop_at": 8.0,
+        "run_out": None,
+        "twist_proc": None,
     }
     base.update(over)
     return type("Args", (), base)()
@@ -441,3 +453,96 @@ def test_the_windows_are_cut_from_the_recording_between_their_marks(tmp_path):
     assert w["window_b"]["fallen"] is True
     assert "error" in w["window_c"]
     assert run_arms.window_metrics(tmp_path / "missing.csv", events, 0.76) == {}
+
+
+# ── The walk arms ──────────────────────────────────────────────────────────
+
+# A stand-in for twist_script.py: its start line at once, then it rests until
+# its own end (`--rtf` read as the seconds it lasts) or SIGINT, exit 0.
+FAKE_TWIST = """
+import json, signal, sys, time
+signal.signal(signal.SIGINT, lambda *_: (print(json.dumps({"event": "end"}), flush=True), sys.exit(0)))
+print(json.dumps({"event": "start", "wall": 1.5, "argv": sys.argv[1:]}), flush=True)
+time.sleep(float(sys.argv[sys.argv.index("--rtf") + 1]))
+print(json.dumps({"event": "end"}), flush=True)
+"""
+
+
+def _fake_twist(tmp_path, monkeypatch) -> None:
+    script = tmp_path / "fake_twist.py"
+    script.write_text(FAKE_TWIST)
+    monkeypatch.setattr(run_arms, "TWIST_SCRIPT", script)
+
+
+def test_the_walk_script_starts_the_command_marks_the_stop_window_and_waits_for_its_end(
+    monkeypatch, tmp_path
+):
+    _fake_twist(tmp_path, monkeypatch)
+    args = _args(run_out=tmp_path, rtf=0.1)  # the fake lasts 0.1 s
+    note: dict = {}
+    clock = FakeClock()
+    assert run_arms.run_events("walk", args, note, clock, t0=100.0)
+    assert [e["name"] for e in note["events"]] == [
+        "twist_start",
+        "stop_start",
+        "stop_end",
+        "twist_end",
+    ]
+    by = {e["name"]: e for e in note["events"]}
+    assert by["twist_start"]["script_wall"] == 1.5
+    assert by["twist_end"]["rc"] == 0
+    # 26 s of script: the stop window is its last 3, all scaled by 1 / rtf
+    assert clock.sleeps == pytest.approx([230.0, 30.0])
+    assert run_arms.script_duration("walk", args) == pytest.approx(26.0)
+    assert args.twist_proc is None
+    started = run_arms.read_events(tmp_path / "twist.log")[0]
+    assert started["argv"][:2] == ["--topic", "/locomotion_controller/g1/cmd_vel"]
+
+
+def test_the_walk_estop_script_stops_the_command_after_the_hold(monkeypatch, tmp_path):
+    _fake_twist(tmp_path, monkeypatch)
+    shell = FakeShell({"/rtc_cm/trigger_estop": TRIGGER_OK}, active=[])
+    monkeypatch.setattr(run_arms, "sh", shell)
+    args = _args(run_out=tmp_path, rtf=100.0)  # the fake would rest 100 s: stopped instead
+    note: dict = {}
+    clock = FakeClock()
+    assert run_arms.run_events("walk_estop", args, note, clock, t0=100.0)
+    assert [e["name"] for e in note["events"]] == [
+        "twist_start",
+        "trigger_estop",
+        "hold_start",
+        "hold_end",
+        "twist_stop",
+    ]
+    assert _services(shell) == ["/rtc_cm/trigger_estop"]
+    assert clock.sleeps == pytest.approx([8.0 / 100.0, 10.0 / 100.0])
+    assert run_arms.script_duration("walk_estop", args) == pytest.approx(18.0)
+    assert args.twist_proc is None
+
+
+def test_a_command_script_that_never_starts_ends_the_walk(monkeypatch, tmp_path):
+    script = tmp_path / "no_start.py"
+    script.write_text("import sys; sys.exit(3)\n")
+    monkeypatch.setattr(run_arms, "TWIST_SCRIPT", script)
+    note: dict = {}
+    assert not run_arms.run_events("walk", _args(run_out=tmp_path), note, FakeClock(), t0=100.0)
+    assert note["error"] == "the command script did not start"
+    assert note["events"][0]["rc"] == 3
+
+
+def test_a_process_deaf_to_sigint_is_killed():
+    proc = run_arms.subprocess.Popen(
+        [
+            run_arms.sys.executable,
+            "-c",
+            "import signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
+            "print('ready', flush=True); time.sleep(30)",
+        ],
+        stdout=run_arms.subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    assert proc.stdout.readline().strip() == "ready"  # its handler is in place
+    assert run_arms.stop_group(proc, timeout=0.5) == -9
+    proc.stdout.close()
+    assert run_arms.stop_group(None) is None
