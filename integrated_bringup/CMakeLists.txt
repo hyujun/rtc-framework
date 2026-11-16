@@ -2259,6 +2259,39 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # Its fault and E-STOP behaviour: the tick under the E-STOP, the two edges and
+  # the packed word, the pose guard (pure function and every entry, with its
+  # settle time), the damping oracle, the hands' hold, the lever rule's bounds,
+  # a plan lost mid-step, fault.pose_guard refusals, the gain tripwire behind
+  # the CM's hold. Stub MPC thread for the plan cases.
+  ament_add_gtest(test_locomotion_fault test/test_locomotion_fault.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_locomotion_fault PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_locomotion_fault PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_fault
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_fault
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    diagnostic_msgs
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_mpc
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # Its RT tick on every path under the global operator-new gate. Own binary:
   # alloc_gate.hpp replaces operator new (one TU per binary).
   ament_add_gtest(test_locomotion_controller_alloc test/test_locomotion_controller_alloc.cpp
@@ -2479,6 +2512,7 @@ if(BUILD_TESTING)
   # tools/standing_eval/run_arms.py (same: read from the source tree): each
   # arm's launch arguments, with and without a pooled MPC solve.
   ament_add_pytest_test(test_standing_eval_run_arms test/test_standing_eval_run_arms.py)
+  ament_add_pytest_test(test_locomotion_diag_names test/test_locomotion_diag_names.py)
   ament_add_pytest_test(test_docking_ident_config test/test_docking_ident_config.py)
   ament_add_pytest_test(test_docking_ident_rig test/test_docking_ident_rig.py)
 
@@ -2533,6 +2567,7 @@ if(BUILD_TESTING)
     test_locomotion_controller
     test_locomotion_controller_alloc
     test_locomotion_mpc
+    test_locomotion_fault
     test_loco_estop_on_clear
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)

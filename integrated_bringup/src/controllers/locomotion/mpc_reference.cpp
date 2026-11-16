@@ -1,6 +1,7 @@
 // locomotion_controller: the MPC — its build (Pass 1), its thread (activation
 // to cleanup), and the tick's use of its plan (the reference sources, the
 // plausibility check, the contact mask). See locomotion_controller.hpp.
+#include "integrated_bringup/controllers/locomotion/pose_guard.hpp"
 #include "integrated_bringup/controllers/locomotion_controller.hpp"
 #include "integrated_bringup/support/mpc_pool_wait.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
@@ -36,10 +37,6 @@ namespace {
 
 constexpr const char* kContext = "locomotion_controller";
 
-// The re-latch guard of a lost plan: every contact frame this close to the
-// lowest one, the base slower than this.
-constexpr double kRelatchFootSpreadM = 0.015;
-constexpr double kRelatchBaseSpeed = 0.1;  // [m/s]
 // A contact's normal force may dip this far below zero (× the robot's weight).
 // The plan's soft cone barrier keeps a stance foot's force positive; an
 // unconverged plan may dip slightly below.
@@ -382,9 +379,9 @@ void LocomotionController::FollowPlan(const ControllerState& state) noexcept {
   }
   const bool all_support = wbc_ref_.contact_mask == all_contacts_mask_;
   if (ref_source_ == ReferenceSource::kIdle) {
-    // An unconverged standing solve is not a plan to stand on.
-    if (!(usable && all_support && !estop_active_ &&
-          (!wbc_ref_.initial_solve || wbc_ref_.converged))) {
+    // An unconverged standing solve is not a plan to stand on. (Under the
+    // E-STOP this is not reached: nothing is latched, so nothing is followed.)
+    if (!(usable && all_support && (!wbc_ref_.initial_solve || wbc_ref_.converged))) {
       return;
     }
   } else if (!usable) {
@@ -428,7 +425,13 @@ std::uint8_t LocomotionController::Plausible(const mpc::WbcReference& r) const n
     }
   }
   const auto& cmd = command_filter_.config();
-  const double height = r.q_ref[2] - ContactHeights().first;
+  std::array<double, LocomotionDiagLogPod::kMaxContacts> z{};
+  const std::size_t nc = ContactHeights(z);
+  double z_lo = std::numeric_limits<double>::infinity();
+  for (std::size_t c = 0; c < nc; ++c) {
+    z_lo = std::min(z_lo, z[c]);
+  }
+  const double height = r.q_ref[2] - z_lo;
   if (!(height >= cmd.h_min && height <= cmd.h_max)) {
     return 7;
   }
@@ -488,20 +491,20 @@ void LocomotionController::ApplyContactMask(std::uint32_t mask) noexcept {
   contact_mask_ = mask;
 }
 
-std::pair<double, double> LocomotionController::ContactHeights() const noexcept {
-  double lo = std::numeric_limits<double>::infinity();
-  double hi = -std::numeric_limits<double>::infinity();
-  for (const auto f : contact_frames_full_) {
-    const double z = full_data_->oMf[f].translation().z();
-    lo = std::min(lo, z);
-    hi = std::max(hi, z);
+std::size_t LocomotionController::ContactHeights(
+    std::array<double, LocomotionDiagLogPod::kMaxContacts>& z) const noexcept {
+  const std::size_t nc = std::min(contact_frames_full_.size(), z.size());
+  for (std::size_t c = 0; c < nc; ++c) {
+    z[c] = full_data_->oMf[contact_frames_full_[c]].translation().z();
   }
-  return {lo, hi};
+  return nc;
 }
 
 void LocomotionController::LosePlan(const ControllerState& state) noexcept {
-  const auto [z_lo, z_hi] = ContactHeights();
-  if (z_hi - z_lo <= kRelatchFootSpreadM && Norm3(measured_.v.data()) < kRelatchBaseSpeed) {
+  // The pose guard with the stance checks (header): a still double support
+  // the guard passes is re-latched at once; anything else is the fault — a
+  // swing foot cannot wait for the robot to settle.
+  if (GuardPose(/*stance=*/true) == 0) {
     ref_source_ = ReferenceSource::kIdle;
     ApplyContactMask(all_contacts_mask_);
     reference_latched_ = false;

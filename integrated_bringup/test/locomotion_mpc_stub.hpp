@@ -41,6 +41,20 @@ struct LocomotionControllerTestAccess {
   static const rtc::tsid::ContactState& Contacts(const LocomotionController& c) {
     return c.contacts_;
   }
+
+  /// The controller's model epoch moves on; the source keeps reporting the old
+  /// one — the next tick's state is "of another model" (kModelEpoch).
+  static void BumpModelEpoch(LocomotionController& c) { ++c.model_epoch_; }
+
+  /// The packed E-STOP word (bit 0 active, the rest the edge count).
+  static std::uint32_t EstopWord(const LocomotionController& c) {
+    return c.estop_state_.load(std::memory_order_acquire);
+  }
+
+  /// Guard refusals before kPoseGuard latches (round(0.5 s · control rate)).
+  static std::uint32_t GuardSettleTicks(const LocomotionController& c) {
+    return c.guard_settle_ticks_;
+  }
 };
 
 }  // namespace integrated_bringup

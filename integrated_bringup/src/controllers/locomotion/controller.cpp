@@ -31,6 +31,10 @@ namespace loco = locomotion;
 namespace {
 
 constexpr const char* kContext = "locomotion_controller";
+// The pose guard may refuse the measured pose this long before the fault
+// latches (header): long enough for the robot to come to rest after a switch
+// or a clear, short enough that a robot that is down is held, not stood up.
+constexpr double kPoseGuardSettleS = 0.5;
 
 [[noreturn]] void Fail(const std::string& what) {
   throw std::invalid_argument(std::string(kContext) + ": " + what);
@@ -98,6 +102,11 @@ void LocomotionController::LoadConfig(const YAML::Node& cfg) {
 
   InitModels();
   BuildMpc(cfg);
+  // The pose guard's constants, once: the tilt limit as a cosine and the
+  // settle time in ticks of the control rate (header).
+  cos_tilt_ = std::cos(cfg_.pose_guard_base_tilt_rad);
+  guard_settle_ticks_ =
+      static_cast<uint32_t>(std::max<long>(1, std::lround(kPoseGuardSettleS / GetDefaultDt())));
   cfg_loaded_ = true;
   config_error_ = GetDeviceNameConfig(cfg_.model.body_group) != nullptr
                       ? WireDevices()
@@ -281,19 +290,35 @@ std::optional<pinocchio::SE3> LocomotionController::FullFramePlacement(
 }
 
 // ── Cross-thread hooks (wait-free; consumed by the next tick) ────────────────
+//
+// The E-STOP word: bit 0 is the flag, the rest counts the edges. An edge is
+// one CAS that flips the bit and adds 2, so the tick's single load sees the
+// flag and the count of the same instant; a repeated trigger (or clear) is a
+// no-op and counts no edge. The count wraps harmlessly: the tick compares the
+// word for inequality, never for order.
 
 void LocomotionController::TriggerEstop() noexcept {
-  estop_requested_.store(true, std::memory_order_release);
-  estop_epoch_.fetch_add(1, std::memory_order_acq_rel);
+  uint32_t v = estop_state_.load(std::memory_order_acquire);
+  do {
+    if ((v & 1U) != 0) {
+      return;
+    }
+  } while (!estop_state_.compare_exchange_weak(v, (v | 1U) + 2U, std::memory_order_acq_rel,
+                                               std::memory_order_acquire));
 }
 
 void LocomotionController::ClearEstop() noexcept {
-  estop_requested_.store(false, std::memory_order_release);
-  estop_epoch_.fetch_add(1, std::memory_order_acq_rel);
+  uint32_t v = estop_state_.load(std::memory_order_acquire);
+  do {
+    if ((v & 1U) == 0) {
+      return;
+    }
+  } while (!estop_state_.compare_exchange_weak(v, (v & ~1U) + 2U, std::memory_order_acq_rel,
+                                               std::memory_order_acquire));
 }
 
 bool LocomotionController::IsEstopped() const noexcept {
-  return estop_requested_.load(std::memory_order_acquire);
+  return (estop_state_.load(std::memory_order_acquire) & 1U) != 0;
 }
 
 void LocomotionController::ResetFault() noexcept {

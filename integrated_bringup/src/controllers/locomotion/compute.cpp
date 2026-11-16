@@ -1,4 +1,5 @@
 // locomotion_controller: the RT tick. See locomotion_controller.hpp.
+#include "integrated_bringup/controllers/locomotion/pose_guard.hpp"
 #include "integrated_bringup/controllers/locomotion_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
@@ -25,6 +26,16 @@ namespace loco = locomotion;
 using rtc::ControllerOutput;
 using rtc::ControllerState;
 
+namespace {
+
+// The lever rule's bounds (LatchReference): two contacts closer than this
+// share the weight half and half; a centre of pressure is placed at most this
+// far from its contact's origin per axis.
+constexpr double kLeverMinSeparationM = 0.05;
+constexpr double kCopOffsetMaxM = 0.1;
+
+}  // namespace
+
 ControllerOutput LocomotionController::Compute(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("LocomotionController::Compute");
   const auto t0 = std::chrono::steady_clock::now();
@@ -37,23 +48,25 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
   ReadState(state, now_ns);
   if (mpc_enabled_) {
     wbc_ref_.valid = false;  // a tick that does not sample the plan logs none
-    // Nothing samples the plan under the latch: the MPC gets no new state
-    // (the reset restarts its stream).
-    if (source_ok_ && !fault_latched_tick_) {
-      // The MPC's clock: the tick count, so it runs with the control loop.
-      mpc_t_ns_ =
-          static_cast<std::uint64_t>(state.iteration) * static_cast<std::uint64_t>(tick_dt_ns_);
-      WriteMpcState();
-    }
   }
 
   if (fault_latched_tick_) {
     mode_ = Mode::kFault;
   } else {
-    if (source_ok_ && !reference_latched_) {
-      LatchReference(state);
+    // The E-STOP (header): either edge restarted the reference, and nothing
+    // latches one while the stop holds — so the tick below waits, solves
+    // nothing and sends the MPC nothing, while the state, the models and the
+    // logs still run.
+    if (source_ok_ && !reference_latched_ && !estop_active_) {
+      TryLatchReference(state);
     }
     if (mpc_enabled_ && source_ok_ && reference_latched_) {
+      // The MPC's clock: the tick count, so it runs with the control loop. The
+      // MPC gets a state only while a reference is latched (the reset, the
+      // E-STOP edges and the activation restart its stream).
+      mpc_t_ns_ =
+          static_cast<std::uint64_t>(state.iteration) * static_cast<std::uint64_t>(tick_dt_ns_);
+      WriteMpcState();
       FollowPlan(state);  // may latch the fault (a plan lost off a still double support)
     }
     if (fault_latched_tick_) {
@@ -94,7 +107,7 @@ void LocomotionController::ServiceRequests() noexcept {
     }
     ClearLatch();
     serviced_reset_epoch_ = fault_reset_epoch_.load(std::memory_order_acquire);
-    serviced_estop_epoch_ = estop_epoch_.load(std::memory_order_acquire);
+    serviced_estop_state_ = estop_state_.load(std::memory_order_acquire);
   }
 
   const uint32_t reset_epoch = fault_reset_epoch_.load(std::memory_order_acquire);
@@ -106,12 +119,13 @@ void LocomotionController::ServiceRequests() noexcept {
     }
   }
 
-  estop_active_ = estop_requested_.load(std::memory_order_acquire);
-  const uint32_t estop_epoch = estop_epoch_.load(std::memory_order_acquire);
-  if (estop_epoch != serviced_estop_epoch_) {
+  // One load: the flag and the edge count of the same instant (header).
+  const uint32_t estop_state = estop_state_.load(std::memory_order_acquire);
+  estop_active_ = (estop_state & 1U) != 0;
+  if (estop_state != serviced_estop_state_) {
     // Either edge: the robot was not following this controller in between, so
     // the reference starts again from where the robot is.
-    serviced_estop_epoch_ = estop_epoch;
+    serviced_estop_state_ = estop_state;
     RestartReference();
   }
 }
@@ -120,6 +134,8 @@ void LocomotionController::RestartReference() noexcept {
   reference_latched_ = false;
   hand_hold_mask_ = 0;
   source_bad_ticks_ = 0;
+  guard_fail_ticks_ = 0;
+  pose_guard_mask_ = 0;
   tau_prev_.fill(0.0);
   tau_.fill(0.0);
   qp_.Reset();
@@ -170,6 +186,38 @@ void LocomotionController::UpdateModels() noexcept {
   cache_.Update(qp_state_.q, qp_state_.v);
 }
 
+std::uint32_t LocomotionController::GuardPose(bool stance) noexcept {
+  // Only called with a valid state: measured_ is this tick's sample and the
+  // full model's frames are at it.
+  std::array<double, LocomotionDiagLogPod::kMaxContacts> z{};
+  const std::size_t nc = ContactHeights(z);
+  loco::PoseGuardInput in;
+  in.base_valid = (measured_.valid_mask & loco::kBaseBit) != 0;
+  in.q_xyzw = {measured_.q[3], measured_.q[4], measured_.q[5], measured_.q[6]};
+  in.v_base = {measured_.v[0], measured_.v[1], measured_.v[2]};
+  in.contact_z = z.data();
+  in.num_contacts = static_cast<int>(nc);
+  loco::PoseGuardLimits lim;
+  lim.cos_tilt = cos_tilt_;
+  lim.check_stance = stance;
+  lim.max_spread_m = kRelatchFootSpreadM;
+  lim.max_speed = kRelatchBaseSpeed;
+  pose_guard_mask_ = loco::EvaluatePoseGuard(in, lim);
+  return pose_guard_mask_;
+}
+
+void LocomotionController::TryLatchReference(const ControllerState& state) noexcept {
+  if (GuardPose(/*stance=*/false) == 0) {
+    LatchReference(state);
+    return;
+  }
+  // Refused: wait in damping and ask again next tick; a robot that is still
+  // down after the settle time is held by the fault latch (header).
+  if (++guard_fail_ticks_ >= guard_settle_ticks_) {
+    Latch(FaultCause::kPoseGuard);
+  }
+}
+
 void LocomotionController::LatchReference(const ControllerState& state) noexcept {
   static_cast<void>(state);
   ref_.q_des = qp_state_.q;
@@ -184,6 +232,12 @@ void LocomotionController::LatchReference(const ControllerState& state) noexcept
   // at the CoM and the QP has nothing to trade against its acceleration. Any
   // other count: an equal share of the weight, no moment. (z slot = the normal
   // force of a point or a surface contact; moments in world axes at the frame.)
+  // Bounded: contacts closer than kLeverMinSeparationM split the weight half
+  // and half (the projection onto a near-zero line is noise), and the CoP sits
+  // at most kCopOffsetMaxM off its origin per axis — a sunk or shifted pose
+  // gets a finite, foot-sized moment the QP can trade, never one outside the
+  // sole. Every value here is finite by the state source's contract (a state
+  // with a non-finite q is not ok) and the guard's (base and contact heights).
   const double weight = weight_;
   const std::size_t nc = cfg_.model.contacts.size();
   std::array<double, LocomotionDiagLogPod::kMaxContacts> share{};
@@ -194,10 +248,12 @@ void LocomotionController::LatchReference(const ControllerState& state) noexcept
     const Eigen::Vector2d p1 = full_data_->oMf[contact_frames_full_[1]].translation().head<2>();
     const Eigen::Vector2d d = p1 - p0;
     const double len2 = d.squaredNorm();
-    const double t = len2 > 1e-12 ? std::clamp((c - p0).dot(d) / len2, 0.0, 1.0) : 0.5;
+    const double t = len2 >= kLeverMinSeparationM * kLeverMinSeparationM
+                         ? std::clamp((c - p0).dot(d) / len2, 0.0, 1.0)
+                         : 0.5;
     share[0] = (1.0 - t) * weight;
     share[1] = t * weight;
-    cop_offset = c - (p0 + t * d);
+    cop_offset = (c - (p0 + t * d)).cwiseMax(-kCopOffsetMaxM).cwiseMin(kCopOffsetMaxM);
   } else {
     for (std::size_t i = 0; i < nc; ++i) {
       share[i] = weight / static_cast<double>(std::max<std::size_t>(1, nc));
@@ -213,21 +269,8 @@ void LocomotionController::LatchReference(const ControllerState& state) noexcept
     }
     offset += cfg_.model.contacts[i].dim;
   }
-  // A hand is held where it is — only a hand the source has a real sample of;
-  // one it has not seen yet is latched by FillHands on its first readable tick.
-  // Under the MPC, whose model locks the hands, at its q_default instead.
-  for (int h = 0; h < indices_.num_hands; ++h) {
-    const auto hu = static_cast<std::size_t>(h);
-    if ((measured_.valid_mask & loco::HandBit(hu)) == 0) {
-      continue;
-    }
-    const auto& map = indices_.hands[hu];
-    for (int c = 0; c < map.num_channels; ++c) {
-      const auto a = static_cast<std::size_t>(map.joint[static_cast<std::size_t>(c)]);
-      hand_hold_[a] = mpc_enabled_ ? q_default_full_[a] : measured_.q[7 + a];
-    }
-    hand_hold_mask_ |= 1U << hu;
-  }
+  // The hands are not touched: FillHands holds each from its own first
+  // readable tick (header), so the body's latch never moves a hand.
   tau_prev_.fill(0.0);
   qp_.Reset();
   reference_latched_ = true;
@@ -276,7 +319,7 @@ void LocomotionController::FillOutput(const ControllerState& state,
     body.pd_kd[i] = kd_[i];
   }
 
-  const bool commanding = (mode_ == Mode::kNominal || mode_ == Mode::kDegraded) && !estop_active_;
+  const bool commanding = mode_ == Mode::kNominal || mode_ == Mode::kDegraded;
   if (commanding) {
     body.num_channels = static_cast<int>(nb_);
     bool finite = true;
@@ -341,21 +384,20 @@ void LocomotionController::FillHands(const ControllerState& state, ControllerOut
         hand.num_channels = 0;  // nothing honest to hold yet
         continue;
       }
-      if (reference_latched_) {  // the first readable tick after the latch: hold here
-        for (int c = 0; c < map.num_channels; ++c) {
-          const auto uc = static_cast<std::size_t>(c);
-          const auto a = static_cast<std::size_t>(map.joint[uc]);
-          hand_hold_[a] = mpc_enabled_ ? q_default_full_[a] : dev.positions[uc];
-        }
-        hand_hold_mask_ |= bit;
+      // The first readable tick after a restart: hold here — whether or not
+      // the body's reference is latched yet (header).
+      for (int c = 0; c < map.num_channels; ++c) {
+        const auto uc = static_cast<std::size_t>(c);
+        const auto a = static_cast<std::size_t>(map.joint[uc]);
+        hand_hold_[a] = mpc_enabled_ ? q_default_full_[a] : dev.positions[uc];
       }
+      hand_hold_mask_ |= bit;
     }
-    const bool held = (hand_hold_mask_ & bit) != 0;
     hand.num_channels = map.num_channels;
     for (int c = 0; c < map.num_channels; ++c) {
       const auto uc = static_cast<std::size_t>(c);
       const auto a = static_cast<std::size_t>(map.joint[uc]);
-      const double target = held ? hand_hold_[a] : dev.positions[uc];
+      const double target = hand_hold_[a];
       hand.commands[uc] = target;
       hand.goal_positions[uc] = target;
       hand.target_positions[uc] = target;
@@ -382,6 +424,7 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   d.fault_cause = static_cast<std::uint8_t>(fault_cause_.load(std::memory_order_relaxed));
   d.fault_latched = fault_latched_tick_;
   d.fault_count = fault_count_;
+  d.pose_guard_mask = pose_guard_mask_;
   d.source_status = static_cast<std::uint8_t>(measured_.status);
   d.source_fresh_mask = measured_.fresh_mask;
   d.source_valid_mask = measured_.valid_mask;

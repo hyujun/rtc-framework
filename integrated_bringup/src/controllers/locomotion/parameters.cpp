@@ -5,6 +5,7 @@
 #include <cmath>
 #include <initializer_list>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,6 +15,7 @@ namespace integrated_bringup {
 namespace {
 
 constexpr const char* kContext = "locomotion_controller";
+constexpr double kHalfPi = std::numbers::pi / 2.0;
 
 using rtc::params::FindMissingKey;
 using rtc::params::FindUnknownKey;
@@ -158,7 +160,7 @@ LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg
   out.pd_kd = ReadGains(cfg["pd_feedforward"], "kd", pd);
 
   const std::string fault = root + ".fault";
-  CheckKeys(cfg["fault"], fault, {"max_source_bad_ticks", "damping_kd"});
+  CheckKeys(cfg["fault"], fault, {"max_source_bad_ticks", "damping_kd", "pose_guard"});
   const YAML::Node n = cfg["fault"]["max_source_bad_ticks"];
   int ticks = 0;
   try {
@@ -171,6 +173,16 @@ LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg
   }
   out.max_source_bad_ticks = ticks;
   out.damping_kd = ReadGains(cfg["fault"], "damping_kd", fault);
+  // `fault.pose_guard` — the one tuned quantity of the guard (header): the
+  // tilt from vertical a pose may have and still be latched, (0, π/2].
+  const std::string guard = fault + ".pose_guard";
+  CheckKeys(cfg["fault"]["pose_guard"], guard, {"base_tilt_rad"});
+  const double tilt = ReadPositive(cfg["fault"]["pose_guard"], "base_tilt_rad", guard, false);
+  if (!(tilt <= kHalfPi)) {
+    Refuse(guard + ".base_tilt_rad", "must be at most pi/2 (a horizontal body), got " +
+                                         Spelling(cfg["fault"]["pose_guard"]["base_tilt_rad"]));
+  }
+  out.pose_guard_base_tilt_rad = tilt;
 
   if (!cfg["whole_body_qp"] || !cfg["whole_body_qp"].IsMap()) {
     Refuse(root + ".whole_body_qp", "expected a map, got " + Spelling(cfg["whole_body_qp"]));

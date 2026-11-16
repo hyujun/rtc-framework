@@ -6,6 +6,7 @@
 #define INTEGRATED_BRINGUP_TEST_LOCOMOTION_CONTROLLER_RIG_HPP_
 
 #include "integrated_bringup/controllers/locomotion_controller.hpp"
+#include "rtc_controller_interface/device_readability.hpp"
 #include "shipped_catching_bringup_fixture.hpp"
 #include "shipped_config_test_fixture.hpp"
 
@@ -26,12 +27,15 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -85,6 +89,15 @@ inline std::vector<double> StandPose() {
       .as<std::vector<double>>();
 }
 
+// `base` spoiled by `spoil` is refused by the config parser (`what` names the case).
+inline void ExpectRefused(const YAML::Node& base, const std::function<void(YAML::Node&)>& spoil,
+                          const char* what) {
+  YAML::Node cfg = YAML::Clone(base);
+  spoil(cfg);
+  EXPECT_THROW(static_cast<void>(ParseLocomotionControllerConfig(cfg)), std::invalid_argument)
+      << what;
+}
+
 class LocomotionControllerTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -118,12 +131,21 @@ class LocomotionControllerTest : public ::testing::Test {
 
   void Configure(YAML::Node cfg, rclcpp::NodeOptions opts = rclcpp::NodeOptions{},
                  const char* node_name = "test_locomotion_controller") {
+    ConfigureWithDevices(cfg, ShippedDevices(cfg), opts, node_name);
+  }
+
+  // The same with device configs of the test's own (a roster changed from the shipped one).
+  void ConfigureWithDevices(YAML::Node cfg,
+                            const std::map<std::string, rtc::DeviceNameConfig>& devices,
+                            rclcpp::NodeOptions opts = rclcpp::NodeOptions{},
+                            const char* node_name = "test_locomotion_controller") {
     cfg_ = cfg;
+    devices_ = devices;
     opts.use_global_arguments(false);
     node_ = std::make_shared<rclcpp_lifecycle::LifecycleNode>(node_name, "", opts);
     ctrl_ = MakeController();
     ASSERT_EQ(ctrl_->PreConfigure(node_, cfg_), CallbackReturn::SUCCESS);
-    ctrl_->SetDeviceNameConfigs(ShippedDevices(cfg_));
+    ctrl_->SetDeviceNameConfigs(devices_);
     ASSERT_EQ(ctrl_->on_configure(rclcpp_lifecycle::State{}, node_, cfg_), CallbackReturn::SUCCESS)
         << ctrl_->ConfigError();
   }
@@ -212,16 +234,27 @@ class LocomotionControllerTest : public ::testing::Test {
 
   Mode LastMode() const { return static_cast<Mode>(ctrl_->LastDiag().mode); }
 
-  // The damping law on the raw body lane, bit for bit.
+  // The damping law on the raw body lane, bit for bit: target = the measured
+  // q, feedforward = −damping_kd·v clamped to the roster's max_torque (±inf
+  // without one), a velocity read as 0 when its lane is unreadable or the
+  // value is not finite (so −0.0), the shipped gains on the wire.
   void ExpectDamping(const rtc::ControllerOutput& out) const {
     const auto& body = out.devices[kBody];
     const auto& dev = state_.devices[kBody];
     const auto rt = cfg_["fault"]["damping_kd"].as<std::vector<double>>();
-    const auto lim = ShippedDevices(cfg_).at("g1").joint_limits->max_torque;
-    ASSERT_EQ(body.num_channels, static_cast<int>(rt.size()));
+    const auto& limits = devices_.at("g1").joint_limits;
+    const int n = static_cast<int>(rt.size());
+    const bool v_ok = rtc::IsLaneReadable(dev, rtc::StateLane::kVelocity, n);
+    ASSERT_EQ(body.num_channels, n);
     for (std::size_t i = 0; i < rt.size(); ++i) {
+      const double lim = limits && !limits->max_torque.empty()
+                             ? limits->max_torque[i]
+                             : std::numeric_limits<double>::infinity();
+      const double v = v_ok && std::isfinite(dev.velocities[i]) ? dev.velocities[i] : 0.0;
+      const double ff = std::clamp(-rt[i] * v, -lim, lim);
       EXPECT_EQ(body.commands[i], dev.positions[i]) << i;
-      EXPECT_EQ(body.feedforward[i], std::clamp(-rt[i] * dev.velocities[i], -lim[i], lim[i])) << i;
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(body.feedforward[i]), std::bit_cast<std::uint64_t>(ff))
+          << i << ": " << body.feedforward[i] << " vs " << ff;
     }
     ExpectShippedGains(out);
   }
@@ -238,6 +271,7 @@ class LocomotionControllerTest : public ::testing::Test {
   }
 
   YAML::Node cfg_;
+  std::map<std::string, rtc::DeviceNameConfig> devices_;  ///< what Configure gave the controller
   rclcpp_lifecycle::LifecycleNode::SharedPtr node_;
   std::unique_ptr<LocomotionController> ctrl_;
   rtc::ControllerState state_{};

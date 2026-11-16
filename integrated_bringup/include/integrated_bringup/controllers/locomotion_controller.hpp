@@ -7,15 +7,23 @@
 // (rtc_tsid LocomotionFormulationBuilder) → pd_feedforward on the body group:
 // a position target plus the QP's torque as feedforward, with the controller's
 // own non-dominant PD gains on the wire. Hand groups get a kPosition hold at the
-// pose they had when the reference latched.
+// pose they had on their first readable tick after the last restart (an
+// activation, a reset, either E-STOP edge) — before the body's reference is
+// latched, so a hand never follows a push while the body waits. Under the MPC,
+// whose model locks the hands at reference.q_default, that hold is q_default
+// from the same first tick (the hands go there while the body may still be
+// waiting: the dynamics model has them nowhere else).
 //
 // The reference (LocomotionDiagLogPod::ReferenceSource):
-//   idle   the latched pose: the measured pose at the first valid tick, zero
-//          velocity and acceleration, and the static contact wrench of that
-//          pose (two contacts: the weight split and the centres of pressure
-//          placed so that they balance gravity at the CoM; otherwise an equal
-//          share of the weight). Without an MPC (`mpc:` absent or
-//          mpc.enabled false) this is the only reference.
+//   idle   the latched pose: the measured pose at the first valid tick the
+//          pose guard passes (below), zero velocity and acceleration, and the
+//          static contact wrench of that pose (two contacts: the weight split
+//          by the lever rule along the line between them — half each when
+//          they are closer than 5 cm — and the centres of pressure placed,
+//          within ±0.1 m of each contact's origin, so that they balance
+//          gravity at the CoM; otherwise an equal share of the weight).
+//          Without an MPC (`mpc:` absent or mpc.enabled false) this is the
+//          only reference.
 //   stand  the MPC plan, sampled each tick: q / v / a and the contact wrench
 //          copied block for block into the QP's reference (base twist and
 //          acceleration in the base LOCAL frame, wrenches on world axes, the
@@ -28,13 +36,32 @@
 // published unconverged by the online budget keeps stand: the producer's
 // publish rule bounds its residual. stand / walk → idle only when the plan is
 // lost (evicted, refused, implausible); the pose re-latches from the
-// measurement if every contact frame is within a few millimetres of the
-// lowest and the base is nearly still — otherwise the fault latches
-// (kPlanLoss): re-latching a swing foot would load it.
+// measurement if the pose guard passes it WITH the stance checks — every
+// contact frame within 15 mm of the lowest, the base slower than 0.1 m/s, the
+// tilt below the limit — otherwise the fault latches at once (kPlanLoss):
+// re-latching a swing foot would load it, and there is no time to wait.
 // A plan the plausibility check refuses stays refused for every later sample.
 //
+// The pose guard (locomotion/pose_guard.hpp): every latch of the reference —
+// at an activation, after a fault reset, after an E-STOP clear, on a lost plan
+// — first asks whether the measured pose is one to stand on: the base lane
+// holds a real sample, the base quaternion, velocity and contact heights are
+// finite, the quaternion is unit, and the body's tilt from vertical is at most
+// fault.pose_guard.base_tilt_rad (R(2,2) ≥ cos of it). Pass → the reference
+// latches on that tick. Fail → the controller stays in `waiting` (damping),
+// asks again on every valid tick, and after 0.5 s of refusals (a code
+// constant, in ticks of the control rate; the count restarts at every entry,
+// so time spent under the E-STOP is not counted) latches the fault
+// (kPoseGuard) — a robot that is down is held, not stood up. The verdict is
+// logged as `pose_guard_mask` (0 = pass). A tick without a valid state is not
+// a verdict: `waiting` stays, without the clock (ActivationWithTheCauseStill-
+// ThereWaitsOnDamping). The guard does not know the CM's post-clear policy:
+// after a clear it runs whether or not the CM then switches away.
+//
 // Modes (LocomotionDiagLogPod::Mode):
-//   waiting   no valid state since activation — damping on the raw body lane
+//   waiting   no latched reference — before the first valid state, under the
+//             E-STOP, or while the pose guard refuses the pose: damping on the
+//             raw body lane, nothing solved, no state to the MPC
 //   nominal   the QP's torque
 //   degraded  the QP missed this tick — the last valid torque is held (zero
 //             until the first solve); the solve health classifies the run
@@ -43,28 +70,45 @@
 //             gains on the wire unchanged. The robot settles slowly under
 //             gravity; that is the intent (no large torque from a bad state).
 // Fault causes: the QP's health reached Fault; the source was not ok for more
-// than fault.max_source_bad_ticks ticks in a row; the output was not finite;
+// than fault.max_source_bad_ticks ticks in a row while a reference was
+// latched (an unlatched controller only waits); the output was not finite;
 // the state's model epoch is not the controller's; the plan was lost off a
-// still double support (above).
+// still double support; the pose guard refused the pose for the settle time.
+//
+// The E-STOP (TriggerEstop / ClearEstop, the CM's hooks on another thread):
+// while it holds, the tick still reads the state, updates the models and
+// writes its logs and status row, but latches no reference, solves nothing,
+// samples no plan and writes no state to the MPC — the mode is `waiting` and
+// the output damping (the CM substitutes its own hold anyway). Either edge
+// restarts the reference (the robot was not following this controller in
+// between), so the first valid tick after a clear goes through the pose guard
+// like an activation. A fault latched before the E-STOP stays latched through
+// it; a reset under the E-STOP releases it and the guard runs after the clear.
+// The flag and the edge counter travel in ONE atomic word (bit 0 = active,
+// the rest an edge count), so a tick reads both from the same load.
 //
 // Clearing the fault: ResetFault() (the CM's reset service) — the next tick
-// resets the QP, re-latches the reference from the measurement and returns to
-// nominal; if the cause is still there it latches again on that tick, which
-// HasLatchedFault() reports. A reset, an activation and either E-STOP edge
-// also restart the MPC's state stream (a new state epoch: no plan of the old
-// one is sampled again) and its gait schedule. Unlike the controllers whose fault outlives a
-// deactivate / activate cycle, ACTIVATING this controller also clears it: it is
-// activated by an operator's switch from another controller that has been
-// holding the robot, and a latch from an earlier session describes a robot
-// state that switch has already replaced. The first tick re-latches as above
-// and logs once that a latched fault was dropped.
+// resets the QP, re-latches the reference from the measurement (through the
+// pose guard) and returns to nominal; if the cause is still there it latches
+// again, which HasLatchedFault() reports. A reset, an activation and either
+// E-STOP edge also restart the MPC's state stream (a new state epoch: no plan
+// of the old one is sampled again) and its gait schedule. Unlike the
+// controllers whose fault outlives a deactivate / activate cycle, ACTIVATING
+// this controller also clears it: it is activated by an operator's switch from
+// another controller that has been holding the robot, and a latch from an
+// earlier session describes a robot state that switch has already replaced.
+// The first tick re-latches as above and logs once that a latched fault was
+// dropped.
 //
 // YAML (`locomotion_controller:`): model.* (humanoid_model_config.hpp),
 // whole_body_qp.* (rtc_tsid; `health:` sets the degraded / fault rule),
 // estimator.* (measured_state_source.hpp), and
 //   command_type: pd_feedforward      # the only accepted value
 //   pd_feedforward: {kp: [...], kd: [...]}   # body roster order, ≥ 0 [N·m/rad, N·m·s/rad]
-//   fault: {max_source_bad_ticks: N (≥ 1), damping_kd: [...] (body roster order, ≥ 0)}
+//   fault:
+//     max_source_bad_ticks: N (≥ 1)
+//     damping_kd: [...]                # body roster order, ≥ 0
+//     pose_guard: {base_tilt_rad: θ}   # (0, π/2]; every key required, no other key
 //   topics: {<body group>: {...}, <hand group>: {...}}   # body first, then model.hand_groups
 //   logs: [...]   # DeviceStateLog per group, JointFeedforwardLog (body), LocomotionDiagLog
 //   mpc:          # optional; absent = no MPC (the idle reference only)
@@ -173,6 +217,11 @@ namespace integrated_bringup {
 /// Body joints the controller drives (the joint log's capacity).
 inline constexpr std::size_t kLocomotionMaxBodyJoints = LocomotionDiagLogPod::kMaxJoints;
 
+/// The stance checks of a lost plan (header): every contact frame this close
+/// to the lowest one, the base slower than this.
+inline constexpr double kRelatchFootSpreadM = 0.015;
+inline constexpr double kRelatchBaseSpeed = 0.1;  ///< [m/s]
+
 /// @brief `mpc:` (header comment). `present` false = the section is absent.
 struct LocomotionMpcConfig {
   bool present{false};
@@ -195,6 +244,7 @@ struct LocomotionControllerConfig {
   std::vector<double> pd_kd;
   int max_source_bad_ticks{1};
   std::vector<double> damping_kd;
+  double pose_guard_base_tilt_rad{0.0};  ///< `fault.pose_guard.base_tilt_rad`, (0, π/2]
   YAML::Node whole_body_qp;
   LocomotionMpcConfig mpc;
   std::string velocity_command_topic;  ///< `velocity_command.topic`; empty = no command path
@@ -214,9 +264,10 @@ static_assert(std::is_trivially_copyable_v<RawVelocityCommandSample>,
               "RawVelocityCommandSample travels through a SeqLock");
 
 /// @throws std::invalid_argument naming the key on a missing / unknown key of
-///         `pd_feedforward`, `fault`, `mpc` or `velocity_command`, a gain that is negative
-///         or not finite, a `command_type` other than pd_feedforward, an empty command
-///         topic, or a model / estimator section its own parser refuses.
+///         `pd_feedforward`, `fault`, `fault.pose_guard`, `mpc` or `velocity_command`, a
+///         gain that is negative or not finite, a `base_tilt_rad` outside (0, π/2] or not
+///         finite, a `command_type` other than pd_feedforward, an empty command topic, or
+///         a model / estimator section its own parser refuses.
 [[nodiscard]] LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg);
 
 class LocomotionController final : public rtc::RTControllerInterface {
@@ -349,13 +400,20 @@ class LocomotionController final : public rtc::RTControllerInterface {
   void CopyPlan() noexcept;
   void ApplyContactMask(std::uint32_t mask) noexcept;
   void LosePlan(const rtc::ControllerState& state) noexcept;
-  /// The lowest and the highest contact frame z, from the tick's kinematics.
-  [[nodiscard]] std::pair<double, double> ContactHeights() const noexcept;
+  /// The contact frames' world z from the tick's kinematics, in contact order;
+  /// returns how many were written (the pose guard and the plausibility check).
+  [[nodiscard]] std::size_t ContactHeights(
+      std::array<double, LocomotionDiagLogPod::kMaxContacts>& z) const noexcept;
   void RestartMpcStream() noexcept;
 
   // Compute() pieces, in tick order.
   void ServiceRequests() noexcept;
   void ReadState(const rtc::ControllerState& state, int64_t now_ns) noexcept;
+  /// The pose guard on this tick's measured state (header); `stance` adds the
+  /// contact-spread and base-speed checks of a lost plan. Logs the verdict.
+  [[nodiscard]] std::uint32_t GuardPose(bool stance) noexcept;
+  /// The stance entries: guard → latch, or wait and after the settle time latch kPoseGuard.
+  void TryLatchReference(const rtc::ControllerState& state) noexcept;
   void LatchReference(const rtc::ControllerState& state) noexcept;
   void UpdateModels() noexcept;
   void Solve() noexcept;
@@ -392,6 +450,8 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::array<double, kLocomotionMaxBodyJoints> kd_{};
   std::array<double, kLocomotionMaxBodyJoints> damping_kd_{};
   std::array<double, kLocomotionMaxBodyJoints> tau_max_{};  ///< +inf when the roster has none
+  double cos_tilt_{1.0};  ///< cos(fault.pose_guard.base_tilt_rad), once at LoadConfig
+  std::uint32_t guard_settle_ticks_{1};  ///< refusals before kPoseGuard: round(0.5 s · rate)
   double total_mass_{0.0};
   double weight_{0.0};  ///< total_mass_ · |g| [N]
   uint32_t model_epoch_{1};
@@ -422,7 +482,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   uint32_t serviced_generation_{0};
   bool activation_seen_{false};
   uint32_t serviced_reset_epoch_{0};
-  uint32_t serviced_estop_epoch_{0};
+  uint32_t serviced_estop_state_{0};  ///< the estop_state_ word the last tick saw
+  uint32_t guard_fail_ticks_{0};      ///< guard refusals since the last restart
+  uint32_t pose_guard_mask_{0};       ///< the guard's last verdict of this episode
   std::array<double, kLocomotionMaxBodyJoints> tau_{};       ///< this tick's feedforward
   std::array<double, kLocomotionMaxBodyJoints> tau_prev_{};  ///< the last valid QP torque
   /// The hand joints' hold targets, by full-model joint index; bit h = hand h is held.
@@ -432,8 +494,10 @@ class LocomotionController final : public rtc::RTControllerInterface {
   JointFeedforwardLogPod joint_log_{};
 
   // ── Cross-thread ───────────────────────────────────────────────────────────
-  std::atomic<bool> estop_requested_{false};
-  std::atomic<uint32_t> estop_epoch_{0};
+  /// Bit 0 = E-STOP active; the rest counts the edges, so one load gives the
+  /// tick both and a trigger-and-clear between two ticks is still seen (header).
+  std::atomic<uint32_t> estop_state_{0};
+  static_assert(std::atomic<uint32_t>::is_always_lock_free, "the E-STOP word must be lock-free");
   std::atomic<uint32_t> fault_reset_epoch_{0};
   std::atomic<bool> fault_latched_{false};
 
