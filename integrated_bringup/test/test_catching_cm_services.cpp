@@ -155,7 +155,7 @@ class ControllerLifecycleTestAccess {
   // The CM's own trigger path: latch, reason, and propagation to every
   // controller's TriggerEstop / SetHandEstop.
   static void TriggerGlobalEstop(RtControllerNode& node, std::string_view reason) {
-    node.TriggerGlobalEstop(reason);
+    static_cast<void>(node.TriggerGlobalEstop(reason));
   }
 
   static bool IsEstopped(const RtControllerNode& node) { return node.IsGlobalEstopped(); }
