@@ -15,8 +15,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -82,7 +84,8 @@ TEST_F(LocomotionAlloc, EveryTickPathAllocatesNothing) {
 }
 
 // The MPC path: the state write, the sample, the plausibility check, the plan
-// copy and the contact mask, then the plan lost and the pose re-latched. The
+// copy and the contact mask, refused plans answered by the plan before them,
+// then the plan lost and the pose re-latched. The
 // plans come from a stub on the MPC thread (the gate counts the ticking thread
 // only).
 TEST_F(LocomotionAlloc, TheMpcPathAllocatesNothing) {
@@ -100,6 +103,20 @@ TEST_F(LocomotionAlloc, TheMpcPathAllocatesNothing) {
     worst = std::max(worst, GatedTick(false));
   }
   EXPECT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kStand);
+  s->joint_offset = 1e3;  // every new plan refused: held, then aged out (still: re-latched)
+  const auto held_then_lost = [this] {
+    return ctrl_->LastDiag().plan_holds > 0 &&
+           ctrl_->Source() == LocomotionController::ReferenceSource::kIdle;
+  };
+  for (int k = 0; k < 1000 && !held_then_lost(); ++k) {
+    worst = std::max(worst, GatedTick(false));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));  // plans arrive at wall rate
+  }
+  EXPECT_GT(ctrl_->LastDiag().plan_holds, 0U);
+  EXPECT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kIdle);
+  s->joint_offset = 0.0;
+  ASSERT_TRUE(TickUntil(
+      [this] { return ctrl_->Source() == LocomotionController::ReferenceSource::kStand; }));
   s->fail = true;  // the plan ages out: the fall back and the re-latch
   for (int k = 0; k < 120; ++k) {
     worst = std::max(worst, GatedTick(false));

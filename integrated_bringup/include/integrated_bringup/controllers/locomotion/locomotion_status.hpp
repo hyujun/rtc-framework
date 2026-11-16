@@ -57,6 +57,7 @@ enum class LocomotionStatusKey : std::uint8_t {
   kScheduleEpoch,
   kStateEpoch,
   kPlausibilityRejects,
+  kPlanHolds,  ///< refused plans answered by the plan followed before them
   kSolves,
   kFailedSolves,
   kDeadlineMiss,

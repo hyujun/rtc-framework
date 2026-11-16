@@ -324,7 +324,7 @@ void LocomotionController::LogMpcTick() noexcept {
     RCLCPP_INFO(logger_,
                 "[locomotion] mpc: solves %lu (failed %lu, deadline miss %lu, withheld %lu, "
                 "overrun %lu), solve p50 %.1f ms p99 %.1f ms; refused: epoch %lu state %lu age %lu "
-                "dim %lu implausible %lu (last check %u)",
+                "dim %lu implausible %lu (last check %u, held %lu)",
                 static_cast<unsigned long>(mpc_thread_->TotalSolves()),
                 static_cast<unsigned long>(failed),
                 static_cast<unsigned long>(mpc_thread_->DeadlineMissCount()),
@@ -336,7 +336,8 @@ void LocomotionController::LogMpcTick() noexcept {
                 static_cast<unsigned long>(mpc_manager_.PolicyAgeRejections()),
                 static_cast<unsigned long>(mpc_manager_.DimensionRejections()),
                 static_cast<unsigned long>(plausibility_rejects_.load(std::memory_order_relaxed)),
-                static_cast<unsigned>(last_reject_check_.load(std::memory_order_relaxed)));
+                static_cast<unsigned>(last_reject_check_.load(std::memory_order_relaxed)),
+                static_cast<unsigned long>(plan_holds_.load(std::memory_order_relaxed)));
   }
 }
 
@@ -357,6 +358,7 @@ void LocomotionController::RestartMpcStream() noexcept {
   wbc_ref_ = mpc::WbcReference{};
   u_fb_norm_ = 0.0;
   rejected_plan_id_ = 0;
+  ForgetFollowedPlans();
   ref_source_ = ReferenceSource::kIdle;
   ApplyContactMask(all_contacts_mask_);
 }
@@ -364,14 +366,14 @@ void LocomotionController::RestartMpcStream() noexcept {
 void LocomotionController::FollowPlan(const ControllerState& state) noexcept {
   u_fb_norm_ = 0.0;
   // A plan refused once stays refused for every later sample of it.
-  bool usable = mpc_manager_.SampleReference(qp_state_.q, qp_state_.v, mpc_t_ns_, wbc_ref_) &&
-                wbc_ref_.plan_id != rejected_plan_id_;
+  const bool sampled = mpc_manager_.SampleReference(qp_state_.q, qp_state_.v, mpc_t_ns_, wbc_ref_);
+  RecordSample(sampled);
+  bool usable = sampled && wbc_ref_.plan_id != rejected_plan_id_;
   if (usable) {
     if (const std::uint8_t check = Plausible(wbc_ref_); check != 0) {
-      last_reject_check_.store(check, std::memory_order_relaxed);
-      rejected_plan_id_ = wbc_ref_.plan_id;
-      plausibility_rejects_.fetch_add(1, std::memory_order_relaxed);
-      usable = false;
+      sample_diag_.check = check;
+      NoteRefusal(check);
+      usable = HoldEarlierPlan();
     }
   }
   if (!usable) {
@@ -389,8 +391,65 @@ void LocomotionController::FollowPlan(const ControllerState& state) noexcept {
     return;
   }
   ref_source_ = all_support ? ReferenceSource::kStand : ReferenceSource::kWalk;
+  if (wbc_ref_.plan_id != followed_id_) {
+    followed_before_id_ = followed_id_;
+    followed_id_ = wbc_ref_.plan_id;
+  }
   CopyPlan();
   ApplyContactMask(wbc_ref_.contact_mask);
+}
+
+void LocomotionController::ForgetFollowedPlans() noexcept {
+  followed_id_ = 0;
+  followed_before_id_ = 0;
+}
+
+void LocomotionController::NoteRefusal(std::uint8_t check) noexcept {
+  last_reject_check_.store(check, std::memory_order_relaxed);
+  rejected_plan_id_ = wbc_ref_.plan_id;
+  plausibility_rejects_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void LocomotionController::RecordSample(bool sampled) noexcept {
+  auto& s = sample_diag_;  // cleared at the top of the tick
+  if (!sampled) {
+    return;
+  }
+  const auto& r = wbc_ref_;
+  s.plan_id = r.plan_id;
+  s.converged = r.converged;
+  s.iterations = r.iterations;
+  s.prim_inf = r.prim_inf;
+  s.prim_head = r.prim_inf_head;
+  s.prim_node = r.prim_inf_node;
+  s.dual_inf = r.dual_inf;
+  s.mask = r.contact_mask;
+  s.progress = r.progress;
+  for (std::size_t j = 0; j < nb_; ++j) {  // a sample is finite (the manager's rule)
+    const double a = std::abs(r.a_ref[6 + j]);
+    if (a > s.a_joint_max) {
+      s.a_joint_max = a;
+      s.a_joint_idx = static_cast<std::int32_t>(j);
+    }
+  }
+}
+
+bool LocomotionController::HoldEarlierPlan() noexcept {
+  // Only the plan followed before the refused one (none in idle): the
+  // manager's earlier plan may be one this controller never followed.
+  const std::uint64_t before =
+      rejected_plan_id_ == followed_id_ ? followed_before_id_ : followed_id_;
+  if (mpc_manager_.EarlierPlanId() != before ||
+      !mpc_manager_.RejectActivePlan(qp_state_.q, qp_state_.v, mpc_t_ns_, wbc_ref_)) {
+    return false;
+  }
+  // Followed before, but it is checked again on this tick (a refusal like any other).
+  if (const std::uint8_t check = Plausible(wbc_ref_); check != 0) {
+    NoteRefusal(check);
+    return false;
+  }
+  plan_holds_.fetch_add(1, std::memory_order_relaxed);
+  return true;
 }
 
 std::uint8_t LocomotionController::Plausible(const mpc::WbcReference& r) const noexcept {
@@ -501,6 +560,7 @@ std::size_t LocomotionController::ContactHeights(
 }
 
 void LocomotionController::LosePlan(const ControllerState& state) noexcept {
+  ForgetFollowedPlans();
   // The pose guard with the stance checks (header): a still double support
   // the guard passes is re-latched at once; anything else is the fault — a
   // swing foot cannot wait for the robot to settle.

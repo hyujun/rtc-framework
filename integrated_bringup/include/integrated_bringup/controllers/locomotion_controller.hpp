@@ -41,6 +41,13 @@
 // tilt below the limit — otherwise the fault latches at once (kPlanLoss):
 // re-latching a swing foot would load it, and there is no time to wait.
 // A plan the plausibility check refuses stays refused for every later sample.
+// In stand / walk, a refused plan gives way to the plan followed before it,
+// if that one is still held (its epochs, younger than mpc.max_policy_age_s)
+// and passes the check on this tick; it is then followed as before, until a
+// plausible plan replaces it or it is lost — the rule for a plan that
+// arrives late. Idle → stand does not take it (idle follows nothing), and a
+// held plan is not held again past a second refusal. Each hold is counted
+// (plan_holds).
 //
 // The pose guard (locomotion/pose_guard.hpp): every latch of the reference —
 // at an activation, after a fault reset, after an E-STOP clear, on a lost plan
@@ -420,6 +427,15 @@ class LocomotionController final : public rtc::RTControllerInterface {
   void WriteMpcState() noexcept;
   void FollowPlan(const rtc::ControllerState& state) noexcept;
   [[nodiscard]] std::uint8_t Plausible(const rtc::mpc::WbcReference& r) const noexcept;
+  /// Record the sampled plan for the diag log, before the check.
+  void RecordSample(bool sampled) noexcept;
+  /// Count the plausibility refusal of wbc_ref_'s plan (refused for good).
+  void NoteRefusal(std::uint8_t check) noexcept;
+  /// The sampled plan was refused: follow the one followed before it
+  /// (header). True when it is held and plausible, in wbc_ref_.
+  [[nodiscard]] bool HoldEarlierPlan() noexcept;
+  /// Idle follows nothing: no plan to go back to.
+  void ForgetFollowedPlans() noexcept;
   void CopyPlan() noexcept;
   void ApplyContactMask(std::uint32_t mask) noexcept;
   void LosePlan(const rtc::ControllerState& state) noexcept;
@@ -562,9 +578,13 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::uint32_t mpc_state_epoch_{0};
   std::uint32_t contact_mask_{0};
   std::uint64_t rejected_plan_id_{0};
+  std::uint64_t followed_id_{0};         ///< the plan followed last (0 = none since idle)
+  std::uint64_t followed_before_id_{0};  ///< the one followed before it
   std::atomic<std::uint64_t> plausibility_rejects_{0};  ///< written by the RT tick only
+  std::atomic<std::uint64_t> plan_holds_{0};            ///< written by the RT tick only
   std::atomic<std::uint8_t> last_reject_check_{0};      ///< the check the last refusal failed
   double u_fb_norm_{0.0};
+  LocomotionPlanSampleDiag sample_diag_{};  ///< this tick's sample, for the diag log
   // The velocity command: the subscription stores, the timer steps the filter.
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocity_sub_;
   rtc::SeqLock<RawVelocityCommandSample> raw_command_;  ///< callback → timer

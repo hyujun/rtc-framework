@@ -51,6 +51,18 @@ struct LocomotionControllerTestAccess {
     return c.estop_state_.load(std::memory_order_acquire);
   }
 
+  /// The body channel whose joint is the reduced model's first (the stub's
+  /// joint_offset moves that joint of the plan).
+  static int ChannelOfFirstReducedJoint(const LocomotionController& c) {
+    const auto& body = c.Indices().body;
+    for (int k = 0; k < body.num_channels; ++k) {
+      if (body.joint[static_cast<std::size_t>(k)] == c.reduced_to_full_.front()) {
+        return k;
+      }
+    }
+    return -1;
+  }
+
   /// Guard refusals before kPoseGuard latches (round(0.5 s · control rate)).
   static std::uint32_t GuardSettleTicks(const LocomotionController& c) {
     return c.guard_settle_ticks_;
@@ -88,6 +100,15 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
                                 const rtc::mpc::MPCStateSnapshot& state,
                                 rtc::mpc::MPCSolution& out) noexcept override {
     std::this_thread::sleep_for(std::chrono::microseconds(sleep_us.load()));
+    if (gate.load() >= 0) {  // wait for the test to allow this solve (bounded)
+      const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (gate.load() == 0 && std::chrono::steady_clock::now() < end) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      if (gate.load() > 0) {
+        gate.fetch_sub(1);
+      }
+    }
     if (ctx.horizon != nullptr) {  // what the phase manager built from the command
       horizon_command_sequence.store(ctx.horizon->command_sequence);
       horizon_base_vx.store(ctx.horizon->stages[0].v[0]);
@@ -191,6 +212,11 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
   std::atomic<double> base_vx{0.0};     ///< [m/s] the plan's base velocity
   std::atomic<double> pull{0.0};        ///< [N] normal force moved between the soles
   std::atomic<double> joint_rate{0.0};  ///< the first joint's rate, flipping sign each node [rad/s]
+  /// −1: solve freely; n ≥ 0: n more solves, then each waits (3 s at most)
+  /// until the test allows another — one plan at a time, at a known tick.
+  /// The MPC thread is its only decrementer; a waiting solve counts as a
+  /// deadline miss / overrun, so no test asserts those counters while closed.
+  std::atomic<int> gate{-1};
   // Read back from the last Solve's horizon: the command the planner integrated.
   std::atomic<std::uint64_t> horizon_command_sequence{0};
   std::atomic<double> horizon_base_vx{0.0};  ///< node 0 base v_x [m/s]

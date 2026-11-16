@@ -177,6 +177,184 @@ TEST_F(LocomotionMpcTest, AnImplausiblePlanFallsBackToIdleWithoutAFault) {
   }
 }
 
+// ── A fresh plan refused in stand / walk ────────────────────────────────────
+
+class LocomotionMpcHoldTest : public LocomotionMpcTest {
+ protected:
+  // Standing on a plan with the stub closed: the held plan is the last one
+  // taken and no other is in flight. The age bound is lifted so that the
+  // test, not the clock, decides when the next plan comes.
+  void StandOnAClosedStub() {
+    YAML::Node cfg = MpcConfig();
+    cfg["mpc"]["max_policy_age_s"] = 0.0;  // the horizon bound still applies
+    BringUpWithStub(cfg);
+    ReachStand();
+    stub_->gate = 0;
+    TickFor(60);  // a solve in flight lands and is taken
+    const auto published = ctrl_->MpcManager().GetSolveStats().count;
+    TickFor(30);
+    ASSERT_EQ(ctrl_->MpcManager().GetSolveStats().count, published) << "the stub is closed";
+    ASSERT_EQ(ctrl_->Source(), Source::kStand) << SourceName();
+    held_ = ctrl_->LastDiag().plan_id;
+    ASSERT_NE(held_, 0U);
+  }
+
+  // Let one solve through and wait until its plan is published (the
+  // manager counts a publish after the buffer write); the next tick takes it.
+  void ReleaseOnePlan() {
+    const auto published = ctrl_->MpcManager().GetSolveStats().count;
+    stub_->gate = 1;
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while ((stub_->gate.load() != 0 || ctrl_->MpcManager().GetSolveStats().count == published) &&
+           std::chrono::steady_clock::now() < end) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(stub_->gate.load(), 0);
+    ASSERT_EQ(ctrl_->MpcManager().GetSolveStats().count, published + 1);
+  }
+
+  void TearDown() override {
+    if (stub_ != nullptr) {
+      stub_->gate = -1;
+    }
+    LocomotionMpcTest::TearDown();
+  }
+
+  std::uint64_t held_{0};
+};
+
+TEST_F(LocomotionMpcHoldTest, ARefusedFreshPlanKeepsThePlanBeforeItAndTheNextPlanReplacesIt) {
+  StandOnAClosedStub();
+  state_.devices[kBody].base_twist[0] = 0.3;  // [m/s] moving: losing the plan would be the fault
+  const auto d0 = ctrl_->LastDiag();
+  stub_->joint_offset = 1e3;
+  ReleaseOnePlan();
+  last_out_ = Tick();
+  const auto& d = ctrl_->LastDiag();
+  EXPECT_EQ(d.plausibility_rejects, d0.plausibility_rejects + 1);
+  EXPECT_EQ(d.plan_holds, d0.plan_holds + 1);
+  EXPECT_GT(d.sample.plan_id, held_) << "the refused plan is logged";
+  EXPECT_EQ(d.sample.check, 5U);
+  EXPECT_EQ(d.plan_id, held_) << "the plan before it is followed";
+  EXPECT_EQ(ctrl_->Source(), Source::kStand);
+  EXPECT_FALSE(ctrl_->HasLatchedFault());
+  const std::uint64_t refused = d.sample.plan_id;
+  TickFor(20);
+  EXPECT_EQ(ctrl_->LastDiag().plan_id, held_) << "the refused plan stays refused";
+  EXPECT_FALSE(ctrl_->HasLatchedFault());
+
+  stub_->joint_offset = 0.0;
+  ReleaseOnePlan();
+  last_out_ = Tick();
+  EXPECT_GT(ctrl_->LastDiag().plan_id, refused);
+  EXPECT_EQ(ctrl_->Source(), Source::kStand);
+  EXPECT_EQ(ctrl_->LastDiag().plan_holds, d0.plan_holds + 1);
+}
+
+// A plan followed for a while and refused later gives way the same way: the
+// plan offset within the bound is followed, then the measurement moves so
+// that it is past the bound and the plan before it is not.
+TEST_F(LocomotionMpcHoldTest, APlanRefusedAfterItWasFollowedGivesWayToThePlanBeforeIt) {
+  StandOnAClosedStub();
+  state_.devices[kBody].base_twist[0] = 0.3;
+  const int c = LocomotionControllerTestAccess::ChannelOfFirstReducedJoint(*ctrl_);
+  ASSERT_GE(c, 0);
+  stub_->joint_offset = 0.4;  // [rad] within joint_delta_rad (0.5)
+  ReleaseOnePlan();
+  TickFor(5);
+  const auto d0 = ctrl_->LastDiag();
+  ASSERT_GT(d0.plan_id, held_) << "the offset plan is followed";
+  state_.devices[kBody].positions[static_cast<std::size_t>(c)] -=
+      0.2;  // 0.6 from it, 0.2 from the one before
+  last_out_ = Tick();
+  const auto& d = ctrl_->LastDiag();
+  EXPECT_EQ(d.sample.check, 5U);
+  EXPECT_EQ(d.plan_holds, d0.plan_holds + 1);
+  EXPECT_EQ(d.plan_id, held_);
+  EXPECT_EQ(ctrl_->Source(), Source::kStand);
+  EXPECT_FALSE(ctrl_->HasLatchedFault()) << SourceName();
+}
+
+// Only a plan this controller followed is held: a stand entered from idle on
+// plan B has no plan before it, although the manager still holds the plan idle
+// sampled before B (single support here, so idle did not stand on it).
+TEST_F(LocomotionMpcHoldTest, APlanIdleOnlySampledIsNotHeld) {
+  YAML::Node cfg = MpcConfig();
+  cfg["mpc"]["max_policy_age_s"] = 0.0;
+  Configure(cfg, rclcpp::NodeOptions{}, "test_locomotion_mpc");
+  stub_ = SpawnStandingStub(*ctrl_);
+  ASSERT_NE(stub_, nullptr);
+  stub_->gate = 0;
+  Activate();
+  MakeStanding();
+  TickFor(30);
+  stub_->mask = 0b01U;
+  ReleaseOnePlan();
+  TickFor(5);
+  ASSERT_EQ(ctrl_->Source(), Source::kIdle);
+  ASSERT_NE(ctrl_->MpcManager().ActivePlanId(), 0U);
+  stub_->mask = 0b11U;
+  stub_->joint_offset = 0.4;
+  ReleaseOnePlan();
+  TickFor(5);
+  ASSERT_EQ(ctrl_->Source(), Source::kStand) << SourceName();
+  state_.devices[kBody].base_twist[0] = 0.3;
+  const int c = LocomotionControllerTestAccess::ChannelOfFirstReducedJoint(*ctrl_);
+  ASSERT_GE(c, 0);
+  state_.devices[kBody].positions[static_cast<std::size_t>(c)] -= 0.2;
+  last_out_ = Tick();
+  EXPECT_TRUE(ctrl_->HasLatchedFault()) << SourceName();
+  EXPECT_EQ(static_cast<Cause>(ctrl_->LastDiag().fault_cause), Cause::kPlanLoss);
+  EXPECT_EQ(ctrl_->LastDiag().plan_holds, 0U);
+}
+
+// The plan before it is checked again on that tick: if the measurement moved
+// away from it too, the plan is lost then, not a tick later.
+TEST_F(LocomotionMpcHoldTest, ThePlanBeforeARefusedOneIsCheckedAgainBeforeItIsHeld) {
+  StandOnAClosedStub();
+  state_.devices[kBody].base_twist[0] = 0.3;
+  const auto holds = ctrl_->LastDiag().plan_holds;
+  ReleaseOnePlan();
+  state_.devices[kBody].positions[0] += 0.6;  // [rad] past joint_delta_rad from both plans
+  last_out_ = Tick();
+  EXPECT_TRUE(ctrl_->HasLatchedFault()) << SourceName();
+  EXPECT_EQ(static_cast<Cause>(ctrl_->LastDiag().fault_cause), Cause::kPlanLoss);
+  EXPECT_EQ(ctrl_->LastDiag().plan_holds, holds);
+}
+
+// Refusals in a row: the plan before them is held until it ages out, then the
+// lost-plan path runs as before (here: moving, so the fault).
+TEST_F(LocomotionMpcTest, RefusalsInARowHoldThePlanOnlyUntilItAgesOut) {
+  BringUpWithStub();
+  ReachStand();
+  state_.devices[kBody].base_twist[0] = 0.3;
+  const auto age_rejects = ctrl_->MpcManager().PolicyAgeRejections();
+  stub_->joint_offset = 1e3;
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->HasLatchedFault(); })) << SourceName();
+  EXPECT_EQ(static_cast<Cause>(ctrl_->LastDiag().fault_cause), Cause::kPlanLoss);
+  EXPECT_GT(ctrl_->LastDiag().plan_holds, 0U);
+  EXPECT_GT(ctrl_->MpcManager().PolicyAgeRejections(), age_rejects);
+}
+
+// Idle → stand is unchanged: a refused plan in idle holds nothing.
+TEST_F(LocomotionMpcTest, InIdleARefusedPlanHoldsNothing) {
+  Configure(MpcConfig(), rclcpp::NodeOptions{}, "test_locomotion_mpc");
+  stub_ = SpawnStandingStub(*ctrl_);
+  ASSERT_NE(stub_, nullptr);
+  stub_->mask = 0b01U;  // plausible plans idle does not stand on
+  Activate();
+  MakeStanding();
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->MpcManager().HasEverReceivedSolution(); }));
+  TickFor(30);
+  ASSERT_EQ(ctrl_->Source(), Source::kIdle);
+  stub_->joint_offset = 1e3;
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->LastDiag().plausibility_rejects >= 3; }))
+      << SourceName();
+  EXPECT_EQ(ctrl_->LastDiag().plan_holds, 0U);
+  EXPECT_EQ(ctrl_->Source(), Source::kIdle);
+  EXPECT_FALSE(ctrl_->HasLatchedFault());
+}
+
 TEST_F(LocomotionMpcTest, ALostPlanReLatchesTheMeasuredPoseOnAStillDoubleSupport) {
   BringUpWithStub();
   ReachStand();
