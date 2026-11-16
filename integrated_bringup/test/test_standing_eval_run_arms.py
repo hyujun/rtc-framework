@@ -134,7 +134,16 @@ CLEAR_OK = (
     "'DemoJointController': ok; E-STOP cleared (operator_request)\")\n"
 )
 CLEAR_NO_SWITCH = "response:\nrtc_msgs.srv.ClearEstop_Response(ok=True, message='cleared')\n"
-STAMP = "sec: 12\nnanosec: 500000000\n---\n"
+RESET_OK = "response:\nstd_srvs.srv.Trigger_Response(success=True, message='reset')\n"
+RESET_NO = "response:\nstd_srvs.srv.Trigger_Response(success=False, message='?')\n"
+RUNTIME_YAML = (
+    Path(__file__).resolve().parents[1]
+    / "config"
+    / "g1_loco"
+    / "controllers"
+    / "locomotion"
+    / "runtime.yaml"
+)
 
 
 class FakeClock:
@@ -165,6 +174,9 @@ def _args(**over):
         "joint_controller": "demo_joint_controller",
         "joint_controller_class": "DemoJointController",
         "z_ref": 0.76,
+        "upright_wait": 4.0,
+        "body_group": "g1",
+        "runtime_yaml": RUNTIME_YAML,
     }
     base.update(over)
     return type("Args", (), base)()
@@ -173,22 +185,24 @@ def _args(**over):
 class FakeShell:
     """`sh` as the scripts see it: canned replies per service, the calls kept."""
 
-    def __init__(self, replies: dict[str, str], active: list[str]):
+    def __init__(self, replies: dict[str, str], active: list[str], pub_rc: int = 0):
         self.replies = replies
         self.active = active  # what active_controller_name answers, call after call
+        self.pub_rc = pub_rc  # what `ros2 topic pub` exits with
         self.calls: list[list[str]] = []
 
     def __call__(self, cmd, timeout=30.0):
         self.calls.append(cmd)
+        rc = 0
         if cmd[:3] == ["ros2", "service", "call"]:
             out = self.replies.get(cmd[3], "")
         elif cmd[:3] == ["ros2", "topic", "echo"] and "/rtc_cm/active_controller_name" in cmd:
             out = self.active.pop(0) if self.active else ""
-        elif cmd[:3] == ["ros2", "topic", "echo"]:
-            out = STAMP
+        elif cmd[:3] == ["ros2", "topic", "pub"]:
+            out, rc = "", self.pub_rc
         else:
             out = ""
-        return type("Done", (), {"stdout": out, "stderr": "", "returncode": 0})()
+        return type("Done", (), {"stdout": out, "stderr": "", "returncode": rc})()
 
 
 def _services(shell: FakeShell) -> list[str]:
@@ -283,45 +297,98 @@ def test_the_estop_script_stops_at_the_first_unexpected_reply(replies, active, e
     assert not any(e["name"].startswith("window") for e in note["events"])
 
 
-def test_the_reentry_script_switches_away_and_back_between_two_windows(monkeypatch):
-    shell = FakeShell(
-        {"/rtc_cm/switch_controller": SWITCH_OK},
-        active=["demo_joint_controller", "locomotion_controller"],
-    )
+REENTRY_REPLIES = {
+    "/rtc_cm/trigger_estop": TRIGGER_OK,
+    "/rtc_cm/clear_estop": CLEAR_OK,
+    "/sim/reset": RESET_OK,
+    "/rtc_cm/switch_controller": SWITCH_OK,
+}
+
+
+def test_the_reentry_script_stops_stands_the_robot_up_and_switches_back(monkeypatch):
+    shell = FakeShell(REENTRY_REPLIES, active=["demo_joint_controller", "locomotion_controller"])
     monkeypatch.setattr(run_arms, "sh", shell)
     monkeypatch.setattr(run_arms.time, "sleep", lambda s: None)
     note: dict = {}
     clock = FakeClock()
     assert run_arms.run_events("reentry", _args(), note, clock, t0=100.0)
-    assert _services(shell) == ["/rtc_cm/switch_controller"] * 2
-    requests = [c[5] for c in shell.calls if c[:3] == ["ros2", "service", "call"]]
-    assert "demo_joint_controller" in requests[0]
-    assert "locomotion_controller" in requests[1]
-    names = [e["name"] for e in note["events"]]
-    assert names == [
+    assert _services(shell) == [
+        "/rtc_cm/trigger_estop",
+        "/rtc_cm/clear_estop",
+        "/sim/reset",
+        "/rtc_cm/switch_controller",
+    ]
+    pub = next(c for c in shell.calls if c[:3] == ["ros2", "topic", "pub"])
+    assert pub[-3:-1] == ["/demo_joint_controller/g1/joint_goal", "rtc_msgs/msg/RobotTarget"]
+    assert "-w" in pub and "--once" in pub
+    assert "goal_type: joint" in pub[-1]
+    assert "left_hip_pitch_joint" in pub[-1] and "-0.3" in pub[-1]
+    assert [e["name"] for e in note["events"]] == [
         "window_a_start",
         "window_a_end",
-        "switch_joint",
+        "trigger_estop",
+        "clear_estop",
+        "stand_goal",
+        "sim_reset",
         "switch_loco",
         "window_b_start",
         "window_b_end",
     ]
-    assert clock.sleeps == [10.0, 2.0, 1.0, 10.0]
-    assert run_arms.script_duration("reentry", _args()) == 23.0
+    assert clock.sleeps == [10.0, 10.0, 4.0, 2.0, 1.0, 10.0]
+    assert run_arms.script_duration("reentry", _args()) == 37.0
 
 
-def test_the_reentry_script_stops_when_the_switch_back_is_refused(monkeypatch):
-    shell = FakeShell({"/rtc_cm/switch_controller": SWITCH_REFUSED}, active=[])
+@pytest.mark.parametrize(
+    ("replies", "pub_rc", "error", "last"),
+    [
+        (REENTRY_REPLIES, 1, "stand goal was not published", "stand_goal"),
+        (
+            {**REENTRY_REPLIES, "/sim/reset": RESET_NO},
+            0,
+            "/sim/reset did not report success",
+            "sim_reset",
+        ),
+        (
+            {**REENTRY_REPLIES, "/rtc_cm/clear_estop": CLEAR_NO_SWITCH},
+            0,
+            "post-clear switch",
+            "clear_estop",
+        ),
+    ],
+)
+def test_the_reentry_script_stops_at_the_step_that_failed(
+    replies, pub_rc, error, last, monkeypatch
+):
+    shell = FakeShell(replies, active=["demo_joint_controller"], pub_rc=pub_rc)
     monkeypatch.setattr(run_arms, "sh", shell)
     monkeypatch.setattr(run_arms.time, "sleep", lambda s: None)
     note: dict = {}
     assert not run_arms.run_events("reentry", _args(), note, FakeClock(), t0=100.0)
-    assert "switch to the joint controller" in note["error"]
-    assert [e["name"] for e in note["events"]] == [
-        "window_a_start",
-        "window_a_end",
-        "switch_joint",
-    ]
+    assert error in note["error"]
+    assert note["events"][-1]["name"] == last
+    assert "/rtc_cm/switch_controller" not in _services(shell)
+
+
+def test_the_stand_goal_is_the_shipped_stand_pose_on_the_body_roster():
+    names, pose = run_arms.stand_goal(RUNTIME_YAML, "demo_joint_controller", "g1")
+    assert len(names) == len(pose) == 23
+    assert names[0] == "left_hip_pitch_joint"
+    assert pose[:5] == [-0.3, 0.0, 0.0, 0.6, -0.3]
+
+
+def test_the_stand_goal_refuses_a_roster_it_cannot_match(tmp_path):
+    profile = tmp_path / "p"
+    (profile / "controllers" / "locomotion").mkdir(parents=True)
+    runtime = profile / "controllers" / "locomotion" / "runtime.yaml"
+    runtime.write_text("{}\n")
+    (profile / "controllers" / "j.yaml").write_text(
+        "j: {estop: {arm_safe_position: [0.1, 0.2]}}\n"
+    )
+    (profile / "_base.yaml").write_text("x: {devices: {g1: {joint_state_names: [a, b, c]}}}\n")
+    with pytest.raises(ValueError, match="2 stand-pose values for 3 joints"):
+        run_arms.stand_goal(runtime, "j", "g1")
+    with pytest.raises(ValueError, match="no devices.arm"):
+        run_arms.stand_goal(runtime, "j", "arm")
 
 
 @pytest.mark.parametrize(
