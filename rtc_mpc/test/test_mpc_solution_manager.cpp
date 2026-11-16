@@ -17,7 +17,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -734,6 +736,158 @@ TEST_F(MpcSolutionManagerTest, EnablingBeforeTheFirstPlanTakesIt) {
 // lives on MPCThread::TimingProducer() (see test_mpc_timing_logger.cpp +
 // test_mpc_thread_skeleton.cpp). The aggregate windowed ring driven by
 // PublishSolution is covered by the GetSolveStats tests above.
+
+// ── Refusing the active plan ────────────────────────────────────────────
+
+/// A plan observed at @p obs whose positions are offset by @p dq.
+MPCSolution MakeOffsetSolution(uint64_t obs, double dq) {
+  MPCSolution sol = MakeSolution(obs);
+  for (auto& q : sol.q_traj) {
+    for (double& x : q) {
+      x += dq;
+    }
+  }
+  return sol;
+}
+
+void ExpectSameSample(const WbcReference& a, const WbcReference& b) {
+  EXPECT_EQ(a.plan_id, b.plan_id);
+  EXPECT_EQ(a.receive_stamp_ns, b.receive_stamp_ns);
+  EXPECT_EQ(a.observation_stamp_ns, b.observation_stamp_ns);
+  EXPECT_EQ(a.progress, b.progress);
+  for (std::size_t i = 0; i < a.q_ref.size(); ++i) {
+    EXPECT_EQ(a.q_ref[i], b.q_ref[i]) << i;
+  }
+  for (std::size_t i = 0; i < a.v_ref.size(); ++i) {
+    EXPECT_EQ(a.v_ref[i], b.v_ref[i]) << i;
+    EXPECT_EQ(a.a_ref[i], b.a_ref[i]) << i;
+    EXPECT_EQ(a.u_fb_acc[i], b.u_fb_acc[i]) << i;
+  }
+}
+
+constexpr uint64_t kMs = 1'000'000ULL;
+
+TEST_F(MpcSolutionManagerTest, ARefusedPlanGivesWayToTheEarlierOneBitForBit) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  q_curr_.setConstant(0.3);  // a non-zero Riccati feedback
+  const uint64_t t0 = 5'000 * kMs;
+  mgr_.PublishSolution(MakeOffsetSolution(t0, 0.0));
+  WbcReference a{};
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + 2 * kMs, a));
+  WbcReference expect{};  // the earlier plan, sampled where the refusal will sample it
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + 7 * kMs, expect));
+
+  mgr_.PublishSolution(MakeOffsetSolution(t0 + 4 * kMs, 10.0));
+  WbcReference b{};
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + 7 * kMs, b));
+  ASSERT_NE(b.plan_id, a.plan_id);
+  ASSERT_NE(b.q_ref[0], expect.q_ref[0]);
+
+  WbcReference back{};
+  ASSERT_TRUE(mgr_.RejectActivePlan(q_curr_, v_curr_, t0 + 7 * kMs, back));
+  EXPECT_TRUE(back.valid);
+  ExpectSameSample(back, expect);
+  EXPECT_EQ(mgr_.ActivePlanId(), a.plan_id);
+  EXPECT_EQ(mgr_.ActiveReceiveStampNs(), t0 + 2 * kMs);
+
+  // The refused plan is not sampled again, and the next plan replaces it.
+  WbcReference later{};
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + 8 * kMs, later));
+  EXPECT_EQ(later.plan_id, a.plan_id);
+  mgr_.PublishSolution(MakeOffsetSolution(t0 + 8 * kMs, 20.0));
+  WbcReference c{};
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + 9 * kMs, c));
+  EXPECT_GT(c.plan_id, b.plan_id);
+}
+
+// A plan followed for a while can be refused too; the refused plan is
+// forgotten, so a second refusal finds no earlier plan.
+TEST_F(MpcSolutionManagerTest, ARefusedPlanIsForgottenSoASecondRefusalFindsNothing) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  const uint64_t t0 = 5'000 * kMs;
+  WbcReference out{};
+  EXPECT_EQ(mgr_.EarlierPlanId(), 0u);
+  mgr_.PublishSolution(MakeOffsetSolution(t0, 0.0));
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + kMs, out));
+  const uint64_t a = out.plan_id;
+  EXPECT_EQ(mgr_.EarlierPlanId(), 0u);
+  mgr_.PublishSolution(MakeOffsetSolution(t0 + kMs, 1.0));
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + 2 * kMs, out));
+  const uint64_t b = out.plan_id;
+  EXPECT_EQ(mgr_.EarlierPlanId(), a);
+
+  // Ticks later, without a new plan: the active one is refused.
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + 3 * kMs, out));
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + 4 * kMs, out));
+  ASSERT_TRUE(mgr_.RejectActivePlan(q_curr_, v_curr_, t0 + 4 * kMs, out));
+  EXPECT_EQ(out.plan_id, a);
+  EXPECT_EQ(mgr_.EarlierPlanId(), 0u) << "the refused plan is forgotten";
+  EXPECT_FALSE(mgr_.RejectActivePlan(q_curr_, v_curr_, t0 + 4 * kMs, out));
+  EXPECT_FALSE(out.valid);
+  EXPECT_EQ(mgr_.ActivePlanId(), a);
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + 5 * kMs, out));
+  EXPECT_EQ(out.plan_id, a);
+  EXPECT_NE(a, b);
+}
+
+TEST_F(MpcSolutionManagerTest, WithoutAnEarlierPlanTheRefusedOneStaysActive) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  const uint64_t t0 = 5'000 * kMs;
+  WbcReference out{};
+  mgr_.PublishSolution(MakeOffsetSolution(t0, 0.0));
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + kMs, out));
+  const uint64_t a = out.plan_id;
+  EXPECT_FALSE(mgr_.RejectActivePlan(q_curr_, v_curr_, t0 + kMs, out));
+  EXPECT_FALSE(out.valid);
+  EXPECT_EQ(mgr_.ActivePlanId(), a);
+}
+
+// The earlier plan goes back under the eviction rules: past its age it is
+// dropped, not sampled.
+TEST_F(MpcSolutionManagerTest, AnEarlierPlanPastItsAgeIsDroppedNotSampled) {
+  YAML::Node cfg = MakeConfig(true, 1000);
+  cfg["max_policy_age_s"] = 0.05;
+  mgr_.Init(cfg, kNq, kNv, kNc);
+  const uint64_t t0 = 5'000 * kMs;
+  WbcReference out{};
+  mgr_.PublishSolution(MakeOffsetSolution(t0, 0.0));
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, t0 + kMs, out));
+  mgr_.PublishSolution(MakeOffsetSolution(t0 + 40 * kMs, 1.0));
+  ASSERT_TRUE(
+      mgr_.SampleReference(q_curr_, v_curr_, t0 + 60 * kMs, out));  // the first is 60 ms old
+  const auto age_rejections = mgr_.PolicyAgeRejections();
+  EXPECT_FALSE(mgr_.RejectActivePlan(q_curr_, v_curr_, t0 + 60 * kMs, out));
+  EXPECT_FALSE(out.valid);
+  EXPECT_EQ(mgr_.PolicyAgeRejections(), age_rejections + 1);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+}
+
+TEST_F(MpcSolutionManagerTest, TheSampleCarriesTheSolvesProvenance) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  MPCSolution sol = MakeSolution(5'000 * kMs);
+  sol.iterations = 7;
+  sol.residuals.prim_inf = 0.25;
+  sol.residuals.dual_inf = 0.5;
+  sol.node_prim_inf[1] = 1e-4;
+  sol.node_prim_inf[kWbcReferenceHeadNodes] = 3e-4;  // past the head
+  sol.node_prim_inf[kHorizon - 1] = 0.25;
+  mgr_.PublishSolution(sol);
+  WbcReference out{};
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 5'001 * kMs, out));
+  EXPECT_EQ(out.iterations, 7);
+  EXPECT_EQ(out.prim_inf, 0.25);
+  EXPECT_EQ(out.dual_inf, 0.5);
+  EXPECT_EQ(out.prim_inf_head, 1e-4);
+  EXPECT_EQ(out.prim_inf_node, kHorizon - 1);
+  // A NaN residual is named, not skipped.
+  MPCSolution bad = MakeSolution(5'002 * kMs);
+  bad.node_prim_inf[1] = std::numeric_limits<double>::quiet_NaN();
+  bad.node_prim_inf[kHorizon - 1] = 0.25;
+  mgr_.PublishSolution(bad);
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 5'003 * kMs, out));
+  EXPECT_TRUE(std::isnan(out.prim_inf_head));
+  EXPECT_EQ(out.prim_inf_node, 1);
+}
 
 }  // namespace
 }  // namespace rtc::mpc

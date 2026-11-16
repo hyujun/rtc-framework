@@ -26,6 +26,33 @@ bool GainsFinite(const MPCSolution& s) noexcept {
   return true;
 }
 
+/// The leading-node residual max and the node of the largest residual; a
+/// NaN residual is reported, not skipped (the head is NaN, the node the
+/// first NaN one).
+void NodeResidualSummary(const MPCSolution& s, double& head, int& node) noexcept {
+  head = 0.0;
+  node = -1;
+  double worst = -1.0;
+  bool nan_seen = false;
+  const int last = std::min(s.horizon_length, kMaxHorizon);
+  for (int k = 0; k <= last; ++k) {
+    const double r = s.node_prim_inf[static_cast<std::size_t>(k)];
+    if (k < kWbcReferenceHeadNodes) {
+      head = std::isnan(r) || std::isnan(head) ? r + head : std::max(head, r);
+    }
+    if (nan_seen) {
+      continue;
+    }
+    if (std::isnan(r)) {
+      nan_seen = true;
+      node = k;
+    } else if (r > worst) {
+      worst = r;
+      node = k;
+    }
+  }
+}
+
 }  // namespace
 
 void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout,
@@ -48,7 +75,12 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout,
     }
   }
 
-  interpolator_.Init(nq, nv, n_contact_vars);
+  for (HeldPlan& h : held_) {
+    h.plan.Init(nq, nv, n_contact_vars);
+    h.receive_stamp_ns = 0;
+    h.gain_installed = false;
+  }
+  active_ = 0;
 
   // Riccati block
   const YAML::Node r = cfg["riccati"];
@@ -120,8 +152,6 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout,
   has_ever_received_solution_ = false;
   state_sequence_ = 0;
   plan_counter_ = 0;
-  active_receive_stamp_ns_ = 0;
-  gain_installed_ = false;
   epoch_rejections_.store(0, std::memory_order_relaxed);
   state_epoch_rejections_.store(0, std::memory_order_relaxed);
   policy_age_rejections_.store(0, std::memory_order_relaxed);
@@ -256,7 +286,8 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
   // plan must be consumable (IsValid), computed against the model and from
   // the state stream the RT side runs now, and laid out like this manager's
   // layout; only an accepted plan touches the interpolator, the gain, the
-  // stale counter and the provenance.
+  // stale counter and the provenance. The plan it replaces is kept as the
+  // earlier one (RejectActivePlan).
   const uint32_t model_epoch = model_epoch_.load(std::memory_order_acquire);
   const uint32_t state_epoch = state_epoch_.load(std::memory_order_acquire);
   const MPCSolution* fresh = solution_buffer_.TryAcquireLatest();
@@ -275,14 +306,20 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
       // Node 0 sits at the observation, moved back onto the node grid.
       const int64_t origin = static_cast<int64_t>(fresh->observation_stamp_ns) -
                              static_cast<int64_t>(fresh->horizon_offset_ns);
-      accepted = interpolator_.SetSolutionWithOrigin(*fresh, origin);
+      const std::size_t next = 1 - active_;
+      accepted = held_[next].plan.SetSolutionWithOrigin(*fresh, origin);
+      if (accepted) {
+        active_ = next;
+      }
     }
   }
   if (accepted) {
-    active_receive_stamp_ns_ = now_ns;
+    HeldPlan& h = held_[active_];
+    h.receive_stamp_ns = now_ns;
     // The gains are read in place from the held copy; checked once here.
-    const MPCSolution& held = *interpolator_.Solution();
-    gain_installed_ = riccati_enabled_ && held.gain_nodes > 0 && GainsFinite(held);
+    const MPCSolution& held = *h.plan.Solution();
+    h.gain_installed = riccati_enabled_ && held.gain_nodes > 0 && GainsFinite(held);
+    NodeResidualSummary(held, h.prim_inf_head, h.prim_inf_node);
     stale_count_ = 0;
     has_ever_received_solution_ = true;
   } else if (has_ever_received_solution_ && stale_count_ < max_stale_solutions_) {
@@ -290,16 +327,22 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
   }
 
   EvictIfExpired(now_ns, model_epoch, state_epoch);
-  if (!interpolator_.HasSolution()) {
-    return false;
-  }
   if (count_stale && stale_count_ >= max_stale_solutions_) {
     return false;
   }
+  return SampleActive(q_curr, v_curr, now_ns, out);
+}
 
-  const SampleSpot spot = interpolator_.Sample(static_cast<int64_t>(now_ns), layout_,
-                                               out.q_ref.data(), out.v_ref.data(), out.a_ref.data(),
-                                               out.wrench_ref.data(), out.contact_mask);
+bool MPCSolutionManager::SampleActive(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+                                      const Eigen::Ref<const Eigen::VectorXd>& v_curr,
+                                      uint64_t now_ns, WbcReference& out) noexcept {
+  const HeldPlan& h = ActiveSlot();
+  if (!h.plan.HasSolution()) {
+    return false;
+  }
+  const SampleSpot spot =
+      h.plan.Sample(static_cast<int64_t>(now_ns), layout_, out.q_ref.data(), out.v_ref.data(),
+                    out.a_ref.data(), out.wrench_ref.data(), out.contact_mask);
   // The producer ships finite plans; a non-finite sample still never leaves.
   using ConstMap = Eigen::Map<const Eigen::VectorXd>;
   if (!spot.valid || !ConstMap(out.q_ref.data(), layout_.nq).allFinite() ||
@@ -309,14 +352,14 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
     out = WbcReference{};
     return false;
   }
-  const MPCSolution& s = *interpolator_.Solution();
+  const MPCSolution& s = *h.plan.Solution();
   out.nq = layout_.nq;
   out.nv = layout_.nv;
   out.n_contact_vars = std::min(layout_.n_contact_vars, s.n_contact_vars);
   out.observation_stamp_ns = s.observation_stamp_ns;
   out.observation_sequence = s.observation_sequence;
   out.observation_source_sequence = s.observation_source_sequence;
-  out.receive_stamp_ns = active_receive_stamp_ns_;
+  out.receive_stamp_ns = h.receive_stamp_ns;
   out.plan_id = s.plan_id;
   out.model_epoch = s.model_epoch;
   out.state_epoch = s.state_epoch;
@@ -325,12 +368,17 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
   out.solve_duration_ns = s.solve_duration_ns;
   out.converged = s.converged;
   out.initial_solve = s.initial_solve;
+  out.iterations = s.iterations;
+  out.prim_inf = s.residuals.prim_inf;
+  out.dual_inf = s.residuals.dual_inf;
+  out.prim_inf_head = h.prim_inf_head;
+  out.prim_inf_node = h.prim_inf_node;
   out.progress = spot.progress;
   out.beyond_horizon = spot.beyond_horizon;
 
   // Riccati feedback: the gain node nearest the sample time, read in place.
   u_fb_.setZero();
-  if (gain_installed_) {
+  if (h.gain_installed) {
     // gain_nodes ≤ kMaxGainNodes was checked at acceptance.
     const int64_t nearest = (spot.tau_ns + spot.dt_ns / 2) / spot.dt_ns;
     const int64_t last = s.gain_nodes - 1;
@@ -363,12 +411,40 @@ bool MPCSolutionManager::SampleReference(const Eigen::Ref<const Eigen::VectorXd>
   if (!Tick(q_curr, v_curr, now_ns, false, out)) {
     return false;
   }
+  FillFeedbackRows(out);
+  return true;
+}
+
+void MPCSolutionManager::FillFeedbackRows(WbcReference& out) const noexcept {
   // The joint-acceleration rows of the feedback, at their tangent entries.
   const int row0 = riccati_.AccelOnly() ? 0 : layout_.acc_u_offset;
   const int n = std::min(layout_.n_acc, layout_.nv - layout_.n_base_v);
   for (int i = 0; i < n; ++i) {
     out.u_fb_acc[static_cast<std::size_t>(layout_.n_base_v + i)] = u_fb_[row0 + i];
   }
+}
+
+bool MPCSolutionManager::RejectActivePlan(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+                                          const Eigen::Ref<const Eigen::VectorXd>& v_curr,
+                                          uint64_t now_ns, WbcReference& out) noexcept {
+  out = WbcReference{};
+  if (!enabled_.load(std::memory_order_acquire)) {
+    return false;
+  }
+  const std::size_t earlier = 1 - active_;
+  if (!held_[earlier].plan.HasSolution()) {
+    return false;
+  }
+  // The refused plan is forgotten: a second refusal finds no earlier plan.
+  held_[active_].plan.Clear();
+  held_[active_].receive_stamp_ns = 0;
+  active_ = earlier;
+  EvictIfExpired(now_ns, model_epoch_.load(std::memory_order_acquire),
+                 state_epoch_.load(std::memory_order_acquire));
+  if (!SampleActive(q_curr, v_curr, now_ns, out)) {
+    return false;
+  }
+  FillFeedbackRows(out);
   return true;
 }
 
@@ -408,13 +484,15 @@ bool MPCSolutionManager::ComputeReference(const Eigen::Ref<const Eigen::VectorXd
 }
 
 void MPCSolutionManager::DropActivePlan() noexcept {
-  interpolator_.Clear();
-  active_receive_stamp_ns_ = 0;
+  for (HeldPlan& h : held_) {
+    h.plan.Clear();
+    h.receive_stamp_ns = 0;
+  }
 }
 
 void MPCSolutionManager::EvictIfExpired(uint64_t now_ns, uint32_t model_epoch,
                                         uint32_t state_epoch) noexcept {
-  const MPCSolution* s = interpolator_.Solution();
+  const MPCSolution* s = ActiveSolution();
   if (s == nullptr) {
     return;
   }

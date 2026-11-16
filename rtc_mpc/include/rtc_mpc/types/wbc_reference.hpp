@@ -41,6 +41,12 @@
 ///   standing solve — the first after a cold start — is exempt from the
 ///   deadline; a consumer that must not act on an unconverged standing plan
 ///   checks both.
+/// - The solve's provenance (`iterations`, the residuals, `prim_inf_head`
+///   over the first @ref kWbcReferenceHeadNodes nodes — the ones a consumer
+///   samples first; the producer's publish window at a one-node period — and
+///   `prim_inf_node`, the node of the largest `node_prim_inf`; a NaN residual
+///   makes the head NaN and is the node named) is diagnostic: a consumer logs
+///   it, it does not gate on it.
 /// - No feedforward torque: a kinodynamic plan has none; the consumer's QP
 ///   produces torques.
 
@@ -51,6 +57,9 @@
 #include <type_traits>
 
 namespace rtc::mpc {
+
+/// The leading nodes `WbcReference::prim_inf_head` covers.
+inline constexpr int kWbcReferenceHeadNodes = 3;
 
 struct WbcReference {
   // ── References for this tick ────────────────────────────────────────
@@ -79,6 +88,11 @@ struct WbcReference {
   uint64_t solve_duration_ns{0};            ///< how long the plan's solve took
   bool converged{false};                    ///< the solve converged (`MPCSolution::converged`)
   bool initial_solve{false};  ///< it ran on the standing budget (`MPCSolution::initial_solve`)
+  int iterations{0};          ///< the solve's iterations (`MPCSolution::iterations`)
+  double prim_inf{0.0};       ///< its primal residual (`MPCSolution::residuals`)
+  double dual_inf{0.0};       ///< its dual residual
+  double prim_inf_head{0.0};  ///< max `node_prim_inf` over the leading nodes
+  int prim_inf_node{-1};      ///< the node of the largest `node_prim_inf`; −1 = none
 
   // ── Sampling status ─────────────────────────────────────────────────
   double progress{0.0};        ///< normalized position in the horizon, `[0, 1]`

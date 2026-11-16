@@ -43,6 +43,13 @@
 /// after it is refused (counted with the state-epoch rejections: another
 /// state stream) — whether it was published before or after the re-enable.
 ///
+/// Refusing the active plan: the consumer may refuse the plan it samples
+/// (@ref RejectActivePlan) and go back to the one accepted before it, under
+/// the same eviction rules (its epochs, its age). The manager holds that one
+/// plan besides the active one (@ref EarlierPlanId) — not a history: a
+/// refused plan is forgotten, so a second refusal finds no earlier plan
+/// until the next plan is accepted.
+///
 /// Threads: @ref Init runs before the producer and consumer start.
 
 #include "rtc_base/threading/seqlock.hpp"
@@ -240,6 +247,24 @@ class MPCSolutionManager {
                                      const Eigen::Ref<const Eigen::VectorXd>& v_curr,
                                      uint64_t now_ns, WbcReference& out) noexcept;
 
+  /// @brief Refuse the active plan and sample, into @p out, the plan
+  ///        accepted before it.
+  ///
+  /// The refused plan is forgotten; the earlier plan becomes the active one
+  /// again with its own receive stamp and gain, subject to every eviction
+  /// rule of the file comment at @p now_ns (an expired one is dropped and
+  /// counted as such). The stale-tick count is left as it is:
+  /// @ref ComputeReference consumers do not refuse plans this way.
+  /// @return true with a valid @p out sampled from the earlier plan; false
+  ///         (`out.valid` false) when there is no earlier plan (nothing
+  ///         changes — the refused plan stays active), or the earlier plan is
+  ///         evicted or its sample is not finite.
+  /// @note Consumer thread, after @ref SampleReference on the same tick
+  ///       with the same @p now_ns. Allocation-free.
+  [[nodiscard]] bool RejectActivePlan(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+                                      const Eigen::Ref<const Eigen::VectorXd>& v_curr,
+                                      uint64_t now_ns, WbcReference& out) noexcept;
+
   /// @brief Try to compute the MPC-derived reference for the current tick.
   ///
   /// On success writes q_ref / v_ref / a_ff / lambda_ref / u_fb and returns
@@ -284,19 +309,28 @@ class MPCSolutionManager {
   /// zero until the first acceptance, reset by @ref Init. The receive stamp
   /// is in the clock the consumer hands to @ref WriteState /
   /// @ref ComputeReference — the same clock as the plan's observation stamp,
-  /// so their difference is the policy age. Consumer thread only.
+  /// so their difference is the policy age. Consumer thread only — this and
+  /// every `Active*` accessor below read the slot the tick switches.
   [[nodiscard]] uint64_t ActivePlanId() const noexcept {
-    const MPCSolution* s = interpolator_.Solution();
+    const MPCSolution* s = ActiveSolution();
     return s != nullptr ? s->plan_id : 0;
   }
 
-  [[nodiscard]] uint64_t ActiveReceiveStampNs() const noexcept { return active_receive_stamp_ns_; }
+  /// @return the plan id @ref RejectActivePlan would go back to (0 = none).
+  [[nodiscard]] uint64_t EarlierPlanId() const noexcept {
+    const MPCSolution* s = held_[1 - active_].plan.Solution();
+    return s != nullptr ? s->plan_id : 0;
+  }
+
+  [[nodiscard]] uint64_t ActiveReceiveStampNs() const noexcept {
+    return ActiveSlot().receive_stamp_ns;
+  }
 
   /// @return the held plan's policy age, receive − observation stamp [ns]
   ///         (0 without one).
   [[nodiscard]] int64_t ActivePolicyAgeNs() const noexcept {
-    const MPCSolution* s = interpolator_.Solution();
-    return s != nullptr ? static_cast<int64_t>(active_receive_stamp_ns_) -
+    const MPCSolution* s = ActiveSolution();
+    return s != nullptr ? static_cast<int64_t>(ActiveSlot().receive_stamp_ns) -
                               static_cast<int64_t>(s->observation_stamp_ns)
                         : 0;
   }
@@ -316,17 +350,17 @@ class MPCSolutionManager {
   }
 
   [[nodiscard]] uint64_t ActiveObservationStampNs() const noexcept {
-    const MPCSolution* s = interpolator_.Solution();
+    const MPCSolution* s = ActiveSolution();
     return s != nullptr ? s->observation_stamp_ns : 0;
   }
 
   [[nodiscard]] uint32_t ActiveModelEpoch() const noexcept {
-    const MPCSolution* s = interpolator_.Solution();
+    const MPCSolution* s = ActiveSolution();
     return s != nullptr ? s->model_epoch : 0;
   }
 
   [[nodiscard]] uint32_t ActiveStateEpoch() const noexcept {
-    const MPCSolution* s = interpolator_.Solution();
+    const MPCSolution* s = ActiveSolution();
     return s != nullptr ? s->state_epoch : 0;
   }
 
@@ -385,7 +419,6 @@ class MPCSolutionManager {
   uint64_t written_enable_generation_{0};       // consumer thread only (WriteState)
   uint64_t first_sequence_after_enable_{0};     // plans observed before it are refused
   bool riccati_enabled_{true};
-  bool gain_installed_{false};  // the active plan's gain is in riccati_ (consumer thread)
   int max_stale_solutions_{5};
   int stale_count_{0};
   bool has_ever_received_solution_{false};
@@ -398,8 +431,6 @@ class MPCSolutionManager {
   std::atomic<uint32_t> state_epoch_{0};
   uint64_t plan_counter_{0};  // MPC thread only (PublishSolution)
 
-  // Consumer-side provenance not carried by the plan itself (consumer thread only).
-  uint64_t active_receive_stamp_ns_{0};
   // Written by the consumer thread only (load + 1, store); read from any.
   std::atomic<uint64_t> epoch_rejections_{0};
   std::atomic<uint64_t> state_epoch_rejections_{0};
@@ -422,16 +453,45 @@ class MPCSolutionManager {
             const Eigen::Ref<const Eigen::VectorXd>& v_curr, uint64_t now_ns, bool count_stale,
             WbcReference& out) noexcept;
 
+  /// Sample the active plan into @p out and compute the feedback into
+  /// `u_fb_` (no acceptance, no eviction). Consumer thread.
+  bool SampleActive(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
+                    const Eigen::Ref<const Eigen::VectorXd>& v_curr, uint64_t now_ns,
+                    WbcReference& out) noexcept;
+
+  /// Copy the joint-acceleration rows of `u_fb_` into `out.u_fb_acc`.
+  void FillFeedbackRows(WbcReference& out) const noexcept;
+
   /// Drop the active plan when it is no longer the current epochs' or has
   /// outlived its horizon (see the file comment). Consumer thread.
   void EvictIfExpired(uint64_t now_ns, uint32_t model_epoch, uint32_t state_epoch) noexcept;
 
-  /// Forget the active plan and its receive stamp (the next accepted plan
-  /// sets `gain_installed_`). Consumer thread.
+  /// Forget the active plan and the earlier one, with their receive stamps
+  /// (the next accepted plan sets its own gain flag). Consumer thread.
   void DropActivePlan() noexcept;
 
+  /// A plan the consumer can sample, with the consumer-side provenance the
+  /// plan does not carry. Consumer thread only.
+  struct HeldPlan {
+    TrajectoryInterpolator plan;
+    uint64_t receive_stamp_ns{0};
+    bool gain_installed{false};  // its gain is finite and riccati is on
+    // The solve's provenance (WbcReference), read once at acceptance.
+    double prim_inf_head{0.0};
+    int prim_inf_node{-1};
+  };
+
   TripleBuffer<MPCSolution> solution_buffer_;
-  TrajectoryInterpolator interpolator_;
+  // The active plan and the one accepted before it (@ref RejectActivePlan).
+  std::array<HeldPlan, 2> held_{};
+  std::size_t active_{0};
+
+  [[nodiscard]] const HeldPlan& ActiveSlot() const noexcept { return held_[active_]; }
+
+  [[nodiscard]] const MPCSolution* ActiveSolution() const noexcept {
+    return ActiveSlot().plan.Solution();
+  }  // the last Tick took a plan not refused since
+
   RiccatiFeedback riccati_;
   rtc::SeqLock<MPCStateSnapshot> state_lock_;
 
