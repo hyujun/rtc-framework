@@ -46,10 +46,10 @@
           # LEFT then RIGHT, fx/fy/fz in slots 1..3 (stride 7). Sign:
           # foot-on-floor, i.e. a standing foot reads a negative fz.
           #
-          # No shipped controller reads this lane yet — demo_joint_controller
-          # reads fingertip data from the hand group only. It is wired here so
-          # the plant exposes foot contact the way its consumer (the standing /
-          # walking controllers) will read it; today's measurement tool
+          # The locomotion controller logs it (locomotion_diag.csv meas_fz_*:
+          # contact c reads slot c, so this list is in model.contacts order);
+          # nothing controls on it. demo_joint_controller reads fingertip data
+          # from the hand group only, and the stance recorder
           # (run_stance_metrics) reads the raw sensor topic below instead.
           fingertip_wrench_topics:
             - "/g1/left_sole_contact/contact_wrench"

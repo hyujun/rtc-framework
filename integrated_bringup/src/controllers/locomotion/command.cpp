@@ -29,13 +29,21 @@ void LocomotionController::OnVelocityCommand(const geometry_msgs::msg::Twist& ms
 }
 
 // The one writer of the phase manager's command slot (and of the publish
-// thread's copy): the timer, and StartCommandTimer on the same executor thread
-// before the timer exists.
+// thread's copy, and of the diagnostic log's): the timer, and
+// StartCommandTimer on the same executor thread before the timer exists.
 void LocomotionController::PushCommand(const mpc::FilteredCommand& cmd) noexcept {
   if (phase_ != nullptr) {
     phase_->SetCommand(cmd);
   }
   command_out_.Store(cmd);
+  LocomotionCommandLogSample& log = command_log_.StartWrite();
+  log.v_x = cmd.v_x;
+  log.v_y = cmd.v_y;
+  log.omega_z = cmd.omega_z;
+  log.base_height = cmd.base_height;
+  log.fresh = cmd.valid && cmd.fresh;
+  log.gait = phase_ != nullptr ? static_cast<std::int32_t>(phase_->CurrentPhaseId()) : -1;
+  command_log_.FinishWrite();
 }
 
 // The timer (a mutually exclusive group): one filter step per period, with

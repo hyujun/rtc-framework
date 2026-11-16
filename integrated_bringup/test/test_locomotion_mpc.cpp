@@ -599,6 +599,32 @@ TEST_F(LocomotionCommandTest, ANonFiniteAxisKeepsTheLastAcceptedValue) {
       << "the operator's NaN shows on the status topic";
 }
 
+// The diagnostic log carries what the timer last handed over, the phase
+// manager's gait with it, and the sampled plan's base velocity.
+TEST_F(LocomotionCommandTest, TheDiagLogCarriesTheCommandTheGaitAndThePlanVelocity) {
+  BringUpSpinning();
+  ReachStand();
+  const auto twist = Twist(0.3, 0.1, 0.2);
+  SpinFor(800ms, &twist);
+  const auto cmd = ctrl_->LastCommand();
+  const auto& d = ctrl_->LastDiag();
+  // The timer may step between the tick's read and LastCommand: one 10 ms
+  // filter step apart at most, on a Bessel output that has settled.
+  EXPECT_NEAR(d.cmd_vx, cmd.v_x, 0.01);
+  EXPECT_NEAR(d.cmd_vy, cmd.v_y, 0.01);
+  EXPECT_NEAR(d.cmd_wz, cmd.omega_z, 0.01);
+  EXPECT_EQ(d.cmd_h, cmd.base_height);
+  EXPECT_TRUE(d.cmd_valid);
+  EXPECT_GE(d.gait_latest, 0) << "the phase manager's gait index";
+  const auto& plan = ctrl_->LastPlanSample();
+  ASSERT_TRUE(plan.valid);
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(d.ref_base_v[i], plan.v_ref[i]) << i;
+  }
+  SpinFor(1200ms);  // stale after command.t_stale
+  EXPECT_FALSE(ctrl_->LastDiag().cmd_valid) << "a decaying command is not a fresh one";
+}
+
 TEST_F(LocomotionCommandTest, WithoutATopicKeyNothingIsSubscribed) {
   YAML::Node cfg = MpcConfig();
   cfg.remove("velocity_command");
@@ -618,6 +644,11 @@ TEST_F(LocomotionCommandTest, WithoutAnMpcTheTopicKeyIsInert) {
   EXPECT_FALSE(ctrl_->MpcEnabled());
   EXPECT_FALSE(ctrl_->VelocityCommandSubscribed());
   EXPECT_EQ(helper_->count_subscribers(kTwistTopic), 0U);
+  TickFor(3);
+  const auto& d = ctrl_->LastDiag();
+  EXPECT_FALSE(d.cmd_valid);
+  EXPECT_EQ(d.gait_latest, -1) << "no phase manager";
+  EXPECT_TRUE(std::isnan(d.ref_base_v[0])) << "no plan";
 }
 
 TEST_F(LocomotionCommandTest, AnActivationResetsTheCommand) {
@@ -774,6 +805,75 @@ TEST(LocomotionDiagLog, TheHeaderAndARowHaveTheSameColumns) {
   const auto count = [](const std::string& s) { return std::count(s.begin(), s.end(), ','); };
   EXPECT_EQ(count(header.str()), count(row.str()));
   EXPECT_NE(header.str().find(",ref_source,plan_id,policy_age_us,"), std::string::npos);
+  EXPECT_NE(header.str().find(",cmd_vx,cmd_vy,cmd_wz,cmd_h,cmd_valid,gait_latest,ref_base_vx,"
+                              "ref_base_vy,ref_base_vz,meas_contact_valid,meas_fz_a,meas_fz_b"),
+            std::string::npos);
+}
+
+// The measured contact force: group c of the body's inference lane, fz at
+// value 3, logged only while that group is fresh and the lane has the model's
+// contact count.
+class LocomotionContactForceLogTest : public LocomotionControllerTest {
+ protected:
+  void BringUpWithLane(int values_per_group) {
+    YAML::Node cfg = ShippedConfig();
+    auto devices = ShippedDevices(cfg);
+    rtc::DeviceSensorLayout layout;
+    layout.inference_values_per_group = values_per_group;
+    devices.at("g1").sensor_layout = layout;
+    ConfigureWithDevices(cfg, devices);
+    Activate();
+    MakeStanding();
+  }
+
+  void SetLane(int groups, int stride) {
+    auto& body = state_.devices[kBody];
+    body.num_inference_groups = groups;
+    for (int g = 0; g < groups; ++g) {
+      const auto at = static_cast<std::size_t>(g * stride);
+      body.inference_data[at + 3] = -150.0F - static_cast<float>(g);
+      body.inference_enable[static_cast<std::size_t>(g)] = true;
+    }
+  }
+};
+
+TEST_F(LocomotionContactForceLogTest, AFreshGroupIsLoggedAndAStaleOneIsNaN) {
+  BringUpWithLane(7);
+  SetLane(2, 7);
+  TickFor(1);
+  const auto& d = ctrl_->LastDiag();
+  EXPECT_EQ(d.meas_contact_valid, 0b11U);
+  EXPECT_EQ(d.meas_fz[0], -150.0);
+  EXPECT_EQ(d.meas_fz[1], -151.0);
+  state_.devices[kBody].inference_enable[1] = false;  // the value is held, the flag drops
+  TickFor(1);
+  EXPECT_EQ(ctrl_->LastDiag().meas_contact_valid, 0b01U);
+  EXPECT_EQ(ctrl_->LastDiag().meas_fz[0], -150.0);
+  EXPECT_TRUE(std::isnan(ctrl_->LastDiag().meas_fz[1])) << "a held value is not a sample";
+}
+
+TEST_F(LocomotionContactForceLogTest, ALaneThatDoesNotFitTheContactsIsNaN) {
+  BringUpWithLane(7);
+  SetLane(3, 7);  // a group count other than the model's two contacts
+  TickFor(1);
+  EXPECT_EQ(ctrl_->LastDiag().meas_contact_valid, 0U);
+  EXPECT_TRUE(std::isnan(ctrl_->LastDiag().meas_fz[0]));
+}
+
+TEST_F(LocomotionContactForceLogTest, ALaneTooNarrowForAForceIsNaN) {
+  BringUpWithLane(3);
+  SetLane(2, 3);
+  TickFor(1);
+  EXPECT_EQ(ctrl_->LastDiag().meas_contact_valid, 0U);
+  EXPECT_TRUE(std::isnan(ctrl_->LastDiag().meas_fz[1]));
+}
+
+TEST_F(LocomotionContactForceLogTest, NoSensorLayoutIsNoLane) {
+  BringUp();  // the rig's device configs carry no sensor_layout
+  SetLane(2, 7);
+  TickFor(1);
+  EXPECT_EQ(ctrl_->LastDiag().meas_contact_valid, 0U);
+  EXPECT_TRUE(std::isnan(ctrl_->LastDiag().meas_fz[0]));
 }
 
 }  // namespace
