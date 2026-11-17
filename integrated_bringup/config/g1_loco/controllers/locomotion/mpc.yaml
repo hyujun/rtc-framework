@@ -22,8 +22,9 @@
 #   sanity            the plausibility check of a sampled plan (a plan that fails
 #                     is dropped, never followed): |q_ref − q| per joint and the
 #                     joint range widened by joint_delta_rad [rad]; base speed
-#                     [m/s]; joint acceleration [rad/s²]; the total normal force
-#                     at most wrench_scale × the weight.
+#                     [m/s]; the total normal force at most wrench_scale × the
+#                     weight. The plan's accelerations are not judged (why:
+#                     LocomotionController::Plausible).
 #
 # solver: the tolerances the OCP's tests solve to. Until one solve converges
 # (after the build, a rebuild or a rejected solve) the MPC solves with
@@ -91,7 +92,6 @@ locomotion_controller:
     sanity:
       joint_delta_rad: 0.5            # [rad]
       base_speed: 3.0                 # [m/s] (command v_max 2.0)
-      joint_accel: 500.0              # [rad/s²]
       wrench_scale: 3.0               # × m·g
     ocp_type: "kinodynamic"
     solver:

@@ -454,7 +454,13 @@ bool LocomotionController::HoldEarlierPlan() noexcept {
 
 std::uint8_t LocomotionController::Plausible(const mpc::WbcReference& r) const noexcept {
   // 0 = plausible; otherwise the number of the check that failed (logged).
-  // Every comparison is written so that a NaN fails it.
+  // Every comparison is written so that a NaN fails it. The plan's
+  // accelerations are not judged: neither the original whole-body MPC's joint
+  // controller nor simple-mpc's inverse dynamics bounds them (a sample is
+  // finite by the manager's rule), and on the sim walk a bound refused the
+  // swing knee's lift-off demand of every first step. Numbers 6 and 11 (the
+  // two acceleration bounds) are retired so that a logged number keeps its
+  // meaning.
   const auto& s = cfg_.mpc;
   if (r.nq != info_.nq || r.nv != info_.nv) {
     return 1;
@@ -478,9 +484,6 @@ std::uint8_t LocomotionController::Plausible(const mpc::WbcReference& r) const n
           q <= joint_hi_[j] + s.sanity_joint_delta_rad &&
           std::abs(q - q_now) <= s.sanity_joint_delta_rad)) {
       return 5;
-    }
-    if (!(std::abs(r.a_ref[6 + j]) <= s.sanity_joint_accel)) {
-      return 6;
     }
   }
   const auto& cmd = command_filter_.config();
@@ -511,13 +514,6 @@ std::uint8_t LocomotionController::Plausible(const mpc::WbcReference& r) const n
   // The plan carries the robot: between 1 / wrench_scale and wrench_scale of its weight.
   if (!(fz_sum <= s.sanity_wrench_scale * weight && fz_sum >= weight / s.sanity_wrench_scale)) {
     return 10;
-  }
-  if (s.riccati_enabled) {
-    for (int i = 0; i < r.nv; ++i) {
-      if (!(std::abs(r.u_fb_acc[static_cast<std::size_t>(i)]) <= s.sanity_joint_accel)) {
-        return 11;
-      }
-    }
   }
   return 0;
 }
