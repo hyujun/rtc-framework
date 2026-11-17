@@ -381,14 +381,18 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
   /// window instead): a standing solve on the window, then one tick per entry
   /// of @p shifts (the grid index moving by it), each tick 0.4·dt into its
   /// node interval, the state the previous solution's node at the shift.
-  std::vector<GridTickReport> GridRun(const MPCSolverConfig& solver, const std::vector<int>& shifts,
-                                      bool stance = false) {
+  /// Each tick's solve is appended to @p captures when given; @p kinematics
+  /// is the OCP's build option.
+  std::vector<GridTickReport> GridRun(
+      const MPCSolverConfig& solver, const std::vector<int>& shifts, bool stance = false,
+      std::vector<Capture>* captures = nullptr,
+      KinodynamicOCP::StageKinematics kinematics = KinodynamicOCP::StageKinematics::kShared) {
     rtc::mpc::LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
     std::int64_t index = stance ? StanceManager(m) : WalkManager(m);
     const double dt = tu::kKinoDt;
     MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
     PhaseContext ctx = GridTick(m, snap, m.grid().Time(index) + 0.4 * dt);
-    KinodynamicOCP ocp(cfg_);
+    KinodynamicOCP ocp(cfg_, kinematics);
     Core core;
     EXPECT_EQ(core.Init(solver, handler_, {}, ctx, ocp), rtc::mpc::MPCInitError::kNoError);
     auto out = std::make_unique<MPCSolution>();
@@ -433,6 +437,9 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
       r.cleared = core.ClearedMultipliers();
       r.leaks = ModeLeaks(core, ocp, h, handler_.n_contacts());
       ticks.push_back(r);
+      if (captures != nullptr) {
+        captures->push_back(Capture{core.solver()->results_, out->node_prim_inf});
+      }
       std::memcpy(static_cast<void*>(prev_h.get()), &h, sizeof(HorizonReference));
     }
     return ticks;
@@ -1002,6 +1009,50 @@ TEST_P(KinodynamicReceding, StageParallelSolvesReproduceTheSerialSolveBitForBit)
     for (std::size_t k = 0; k < got.size(); ++k) {
       ExpectSameSolve(got[k], ser[k], std::to_string(n) + " threads, tick " + std::to_string(k));
       EXPECT_EQ(ticks[k].inactive_nonzero, 0) << n << " threads, tick " << k;
+    }
+  }
+}
+
+// The OCP built with the shared stage kinematics (one ODE and one frame
+// kinematics evaluation per stage) against the per-residual build, through
+// the handler core on the grid: the stance window and the walk window, 40
+// ticks each on the registered budgets (the standing solve, then the online
+// ticks), the shared build serial and on two solver threads. Every tick's
+// solve — iterates, multipliers, gains, residuals, iterations — is the same
+// bits as the serial per-residual solve (which the stage-parallel test above
+// holds equal to its own two-thread solve). The shipped integrator only, to
+// keep the run short: one stage's bits on both integrators are
+// test_kinodynamic_ocp's SharedStageKinematicsGiveThePerResidualBits.
+TEST_P(KinodynamicReceding, SharedStageKinematicsReproduceThePerResidualSolveBitForBit) {
+  if (std::string(GetParam()) != "semi_implicit_euler") {
+    GTEST_SKIP() << "run on the shipped integrator only";
+  }
+  const SolverThreadIcvs icvs;
+  for (const bool stance : {true, false}) {
+    const std::string window = stance ? "stance" : "walk";
+    std::vector<Capture> own;
+    const std::vector<GridTickReport> own_ticks =
+        GridRun(RegisteredSolver(), std::vector<int>(kTicks, 1), stance, &own,
+                KinodynamicOCP::StageKinematics::kPerResidual);
+    ASSERT_EQ(own.size(), static_cast<std::size_t>(kTicks + 1)) << window;
+    for (const int n : {1, 2}) {
+      MPCSolverConfig solver = RegisteredSolver();
+      solver.num_threads = n;
+      solver.worker_capacity = n - 1;
+      std::vector<Capture> shared;
+      const std::vector<GridTickReport> ticks =
+          GridRun(solver, std::vector<int>(kTicks, 1), stance, &shared,
+                  KinodynamicOCP::StageKinematics::kShared);
+      const std::string what = window + ", " + std::to_string(n) + " thread(s)";
+      ASSERT_EQ(shared.size(), own.size()) << what;
+      int iterations = 0;
+      for (std::size_t k = 0; k < own.size(); ++k) {
+        ExpectSameSolve(shared[k], own[k], what + ", tick " + std::to_string(k));
+        EXPECT_EQ(ticks[k].iterations, own_ticks[k].iterations) << what << ", tick " << k;
+        iterations += ticks[k].iterations;
+      }
+      std::printf("[report] %s shared stage kinematics, %s: %zu ticks, %d iterations\n", GetParam(),
+                  what.c_str(), own.size(), iterations);
     }
   }
 }

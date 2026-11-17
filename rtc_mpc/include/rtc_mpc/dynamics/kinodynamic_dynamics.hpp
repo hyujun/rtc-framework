@@ -160,6 +160,8 @@ class KinodynamicDynamics {
   ///         pointer stays valid as long as the stage does, so resolve it
   ///         once after the problem is built rather than per tick.
   [[nodiscard]] static Ode* OdeOf(aligator::StageModelTpl<double>& stage) noexcept;
+  /// @brief `OdeOf` on a const stage.
+  [[nodiscard]] static const Ode* OdeOf(const aligator::StageModelTpl<double>& stage) noexcept;
 
   /// @brief Switch @p ode to @p mode in place. Does not allocate.
   /// @return false, leaving @p ode untouched, when @p mode names a contact

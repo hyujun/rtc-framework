@@ -173,7 +173,10 @@ void ContactTrackingResidual::evaluate(const ConstVectorRef& x, const ConstVecto
   }
 
   const pinocchio::Model& model = ode_->pin_model_;
-  d.kin.Forward(*ode_, x, u);
+  if (d.shared_kin == nullptr) {
+    d.kin.Forward(*ode_, x, u);
+  }
+  ContactKinematics& kin = d.Kinematics();
   d.evaluated = true;
 
   FrameMotion f;
@@ -183,7 +186,7 @@ void ContactTrackingResidual::evaluate(const ConstVectorRef& x, const ConstVecto
       continue;
     }
     const ContactTrackingTarget& t = targets_[k];
-    d.kin.FrameMotionOf(model, contact_ids_[k], f);
+    kin.FrameMotionOf(model, contact_ids_[k], f);
     Eigen::Vector3d tilt;
     FrameTilt(f.rotation.col(2), normal_, kMinArcNorm, tilt, nullptr);
 
@@ -213,7 +216,10 @@ void ContactTrackingResidual::computeJacobians(const ConstVectorRef& x, const Co
 
   const pinocchio::Model& model = ode_->pin_model_;
   const int nv = model.nv;
-  d.kin.Derivatives(*ode_, x, u);
+  if (d.shared_kin == nullptr) {
+    d.kin.Derivatives(*ode_, x, u);
+  }
+  ContactKinematics& kin = d.Kinematics();
 
   for (std::size_t k = 0; k < contact_ids_.size(); ++k) {
     const double s = d.scale_used[k];
@@ -222,17 +228,17 @@ void ContactTrackingResidual::computeJacobians(const ConstVectorRef& x, const Co
     }
     const pinocchio::FrameIndex fid = contact_ids_[k];
     const Eigen::Index o = static_cast<Eigen::Index>(k) * kRowsPerContact;
-    d.kin.FrameJacobian(model, fid, d.Jx_.middleRows<kRowsPerContact>(o),
-                        d.Ju_.middleRows<kRowsPerContact>(o));
+    kin.FrameJacobian(model, fid, d.Jx_.middleRows<kRowsPerContact>(o),
+                      d.Ju_.middleRows<kRowsPerContact>(o));
 
     // Tilt: the frame z axis a = R·e_z turns with δθ, δa = δθ × a.
-    const Eigen::Vector3d axis = d.kin.pin_data.oMf[fid].rotation().col(2);
+    const Eigen::Vector3d axis = kin.pin_data.oMf[fid].rotation().col(2);
     Eigen::Vector3d tilt;
     Eigen::Matrix3d de_da;
     FrameTilt(axis, normal_, kMinArcNorm, tilt, &de_da);
     const Eigen::Matrix3d de_dtheta = -de_da * pinocchio::skew(axis);
-    d.kin.lin = d.Jx_.block(o + 3, 0, 3, nv);  // J_ω
-    d.Jx_.block(o + 3, 0, 3, nv).noalias() = de_dtheta.lazyProduct(d.kin.lin);
+    kin.lin = d.Jx_.block(o + 3, 0, 3, nv);  // J_ω
+    d.Jx_.block(o + 3, 0, 3, nv).noalias() = de_dtheta.lazyProduct(kin.lin);
 
     if (s != 1.0) {
       d.Jx_.middleRows<kRowsPerContact>(o) *= s;

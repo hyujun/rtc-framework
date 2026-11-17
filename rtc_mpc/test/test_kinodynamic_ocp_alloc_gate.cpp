@@ -5,7 +5,8 @@
 ///        both directions and a refused horizon; nor does a tick whose
 ///        horizon has another shape, through the handler core. The reference
 ///        control and the constraint residuals of a trajectory allocate
-///        nothing beyond the ODE evaluations they make.
+///        nothing beyond the ODE evaluations they make, nor does a running
+///        stage (evaluate, first-order derivatives) beyond its dynamics step.
 ///
 /// Both counters are armed: the operator-new counter (C++ allocations) and
 /// the C-level malloc gate (any library). malloc_gate.hpp may be included in
@@ -22,11 +23,24 @@
 #include "test_utils/g1_fixture.hpp"
 #include "test_utils/kinodynamic_ocp_fixture.hpp"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#include <aligator/core/explicit-dynamics.hpp>
+#include <aligator/core/stage-data.hpp>
+#include <aligator/core/stage-model.hpp>
+#include <aligator/core/traj-opt-problem.hpp>
+#pragma GCC diagnostic pop
+
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -190,6 +204,53 @@ TEST_F(KinodynamicOCPAllocGate, ResidualsAndTheReferenceControlAllocateOnlyWhatT
   EXPECT_EQ(news2, 0);
   EXPECT_EQ(mallocs1, ode_mallocs);
   EXPECT_EQ(mallocs2, mallocs1);
+}
+
+// A running stage with the shared stage kinematics (the default build), on a
+// stance node and on a node with a swing contact tracked: its evaluate and
+// first-order derivatives allocate nothing beyond what its own dynamics step
+// (the integrator's forward / dForward, alone, on data of its own) does; the
+// per-residual build is reported beside it.
+TEST_F(KinodynamicOCPAllocGate, ASharedKinematicsStageAllocatesOnlyWhatItsDynamicsDoes) {
+  auto h = tu::StanceHorizon(handler_, stand_);
+  tu::SwingContact(handler_, *h, 1, 8, 19, 0.05, 0.5);
+  KinodynamicOCP shared(cfg_);
+  KinodynamicOCP own(cfg_, KinodynamicOCP::StageKinematics::kPerResidual);
+  ASSERT_EQ(shared.Build(Context(h.get()), handler_, {}), OCPBuildError::kNoError);
+  ASSERT_EQ(own.Build(Context(h.get()), handler_, {}), OCPBuildError::kNoError);
+  for (const std::size_t k : {std::size_t{0}, std::size_t{12}}) {
+    Eigen::VectorXd x(model_.nq + model_.nv);
+    x << stand_, Eigen::VectorXd::Constant(model_.nv, 0.1);
+    Eigen::VectorXd u(handler_.nu());
+    ASSERT_TRUE(shared.ReferenceControl(static_cast<int>(k), u));
+    auto& stage = *shared.problem().stages_[k];
+    auto& stage_own = *own.problem().stages_[k];
+    const auto data = stage.createData();
+    const auto data_own = stage_own.createData();
+    const auto dyn_data = stage.dynamics_->createData();
+    // Warm-up.
+    stage.evaluate(x, u, *data);
+    stage.computeFirstOrderDerivatives(x, u, *data);
+    stage_own.evaluate(x, u, *data_own);
+    stage_own.computeFirstOrderDerivatives(x, u, *data_own);
+    stage.dynamics_->forward(x, u, *dyn_data);
+    stage.dynamics_->dForward(x, u, *dyn_data);
+
+    const auto fwd = Count([&] { stage.dynamics_->forward(x, u, *dyn_data); });
+    const auto dfwd = Count([&] { stage.dynamics_->dForward(x, u, *dyn_data); });
+    const auto eval = Count([&] { stage.evaluate(x, u, *data); });
+    const auto der = Count([&] { stage.computeFirstOrderDerivatives(x, u, *data); });
+    const auto eval_own = Count([&] { stage_own.evaluate(x, u, *data_own); });
+    const auto der_own = Count([&] { stage_own.computeFirstOrderDerivatives(x, u, *data_own); });
+    std::printf(
+        "[report] stage %zu C allocations: evaluate %zu (dynamics %zu, per residual %zu), "
+        "derivatives %zu (dynamics %zu, per residual %zu)\n",
+        k, eval.second, fwd.second, eval_own.second, der.second, dfwd.second, der_own.second);
+    EXPECT_EQ(eval.first, 0) << "stage " << k;
+    EXPECT_EQ(der.first, 0) << "stage " << k;
+    EXPECT_EQ(eval.second, fwd.second) << "stage " << k;
+    EXPECT_EQ(der.second, dfwd.second) << "stage " << k;
+  }
 }
 
 // The multipliers of the rows a mode makes inactive are cleared in place.

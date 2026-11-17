@@ -32,7 +32,9 @@
 /// and the base part `v̇_b` comes out of the kinodynamic law — so the
 /// residual evaluates the stage's **own** ODE (`Bind`) on data of its own:
 /// the acceleration the cost sees is the one the dynamics integrates, and a
-/// mode switched on the stage's ODE reaches the residual too. The analytic
+/// mode switched on the stage's ODE reaches the residual too (or reads the
+/// kinematics its stage evaluated through that ODE,
+/// `ContactTrackingData::shared_kin`). The analytic
 /// Jacobian chains the frame kinematics derivatives with the ODE's
 /// `∂v̇/∂(x, u)`:
 ///
@@ -94,7 +96,17 @@ struct ContactTrackingData : aligator::StageFunctionDataTpl<double> {
 
   ContactTrackingData(int ndx, int nu, int nr, const KinodynamicDynamics::Ode& ode);
 
-  ContactKinematics kin;  ///< the frame kinematics through the stage ODE
+  /// @return the kinematics `evaluate` and `computeJacobians` read:
+  ///         `*shared_kin` when set, else `kin`.
+  [[nodiscard]] ContactKinematics& Kinematics() noexcept {
+    return shared_kin != nullptr ? *shared_kin : kin;
+  }
+
+  ContactKinematics kin;  ///< the frame kinematics through the stage ODE (own)
+  /// Non-owning; null by default. As `ContactConstraintData::shared_kin`:
+  /// kinematics the stage that owns this data has evaluated at the same
+  /// `(x, u)` before each call, read instead of `kin`.
+  ContactKinematics* shared_kin{nullptr};
   /// The scale each contact was evaluated with (0 = block skipped): the
   /// Jacobian uses the same, so value and Jacobian always belong together.
   std::vector<double> scale_used;

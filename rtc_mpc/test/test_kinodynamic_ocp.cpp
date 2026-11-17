@@ -33,10 +33,13 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#include <aligator/core/stage-data.hpp>
 #include <aligator/core/stage-model.hpp>
 #include <aligator/core/traj-opt-problem.hpp>
+#include <aligator/modelling/costs/composite-costs.hpp>
 #include <aligator/modelling/costs/quad-residual-cost.hpp>
 #include <aligator/modelling/costs/sum-of-costs.hpp>
+#include <aligator/modelling/dynamics/integrator-explicit.hpp>
 #include <aligator/solvers/proxddp/solver-proxddp.hpp>
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
@@ -49,6 +52,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -58,6 +62,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -1324,6 +1329,137 @@ TEST_F(KinodynamicOCPTest, StageAndTerminalCostsAreTheIndependentSums) {
               worst_term);
   EXPECT_LE(worst, 1e-10);
   EXPECT_LE(worst_term, 1e-10);
+}
+
+// ── One stage, one evaluation of the ODE and the kinematics ────────────────
+
+/// Bitwise equality of two matrices (sizes included).
+bool BitEqualM(const Eigen::MatrixXd& a, const Eigen::MatrixXd& b) {
+  return a.rows() == b.rows() && a.cols() == b.cols() &&
+         std::memcmp(a.data(), b.data(), sizeof(double) * static_cast<std::size_t>(a.size())) == 0;
+}
+
+bool BitEqualS(double a, double b) {
+  return std::memcmp(&a, &b, sizeof(double)) == 0;
+}
+
+/// The tracking cost's residual data inside a stage's data.
+aligator::StageFunctionDataTpl<double>* TrackingData(aligator::StageDataTpl<double>& d) {
+  auto* stack = dynamic_cast<aligator::CostStackDataTpl<double>*>(d.cost_data.get());
+  if (stack == nullptr) {
+    return nullptr;
+  }
+  const auto it = stack->sub_cost_data.find(
+      CostStack::CostKey(std::string(KinodynamicOCP::kContactTrackingCostKey)));
+  if (it == stack->sub_cost_data.end()) {
+    return nullptr;
+  }
+  auto* cd = dynamic_cast<aligator::CompositeCostDataTpl<double>*>(it->second.get());
+  return cd != nullptr ? cd->residual_data.get() : nullptr;
+}
+
+/// Every value, Jacobian and gradient of one stage's data that the shared
+/// kinematics could change, compared bit for bit; @p where names the case.
+void ExpectSameStageData(aligator::StageDataTpl<double>& a, aligator::StageDataTpl<double>& b,
+                         const std::string& where) {
+  using IntegratorData = aligator::dynamics::ExplicitIntegratorDataTpl<double>;
+  auto& da = dynamic_cast<IntegratorData&>(*a.dynamics_data);
+  auto& db = dynamic_cast<IntegratorData&>(*b.dynamics_data);
+  EXPECT_TRUE(da.xnext_.allFinite() && da.jac_buffer_.allFinite()) << where << ": dynamics";
+  EXPECT_TRUE(BitEqual(da.xnext_, db.xnext_)) << where << ": xnext";
+  EXPECT_TRUE(BitEqualM(da.jac_buffer_, db.jac_buffer_)) << where << ": dynamics Jacobians";
+  EXPECT_TRUE(BitEqual(da.continuous_data->xdot_, db.continuous_data->xdot_))
+      << where << ": ODE xdot";
+  EXPECT_TRUE(BitEqualM(da.continuous_data->Jx_, db.continuous_data->Jx_)) << where << ": ODE Jx";
+  EXPECT_TRUE(BitEqualM(da.continuous_data->Ju_, db.continuous_data->Ju_)) << where << ": ODE Ju";
+
+  const auto& ea = *a.constraint_data[KinodynamicOCP::kEqualityConstraint];
+  const auto& eb = *b.constraint_data[KinodynamicOCP::kEqualityConstraint];
+  EXPECT_TRUE(ea.value_.allFinite() && ea.jac_buffer_.allFinite()) << where << ": equality";
+  EXPECT_TRUE(BitEqual(ea.value_, eb.value_)) << where << ": equality value";
+  EXPECT_TRUE(BitEqualM(ea.jac_buffer_, eb.jac_buffer_)) << where << ": equality Jacobian";
+
+  const auto* ta = TrackingData(a);
+  const auto* tb = TrackingData(b);
+  ASSERT_TRUE(ta != nullptr && tb != nullptr) << where;
+  EXPECT_TRUE(ta->value_.allFinite() && ta->jac_buffer_.allFinite()) << where << ": tracking";
+  EXPECT_TRUE(BitEqual(ta->value_, tb->value_)) << where << ": tracking value";
+  EXPECT_TRUE(BitEqualM(ta->jac_buffer_, tb->jac_buffer_)) << where << ": tracking Jacobian";
+
+  EXPECT_TRUE(std::isfinite(a.cost_data->value_) && a.cost_data->grad_.allFinite() &&
+              a.cost_data->hess_.allFinite())
+      << where << ": cost";
+  EXPECT_TRUE(BitEqualS(a.cost_data->value_, b.cost_data->value_)) << where << ": cost value";
+  EXPECT_TRUE(BitEqual(a.cost_data->grad_, b.cost_data->grad_)) << where << ": cost gradient";
+  EXPECT_TRUE(BitEqualM(a.cost_data->hess_, b.cost_data->hess_)) << where << ": cost Hessian";
+}
+
+// One running stage, built with the shared stage kinematics (the stage
+// evaluates the ODE once in its integrator and the frame kinematics once)
+// and per residual (each residual evaluates both on its own data): on stance,
+// one-foot and both-feet-swinging stages, 200 random states and inputs each
+// (seed 20261117), the dynamics, the ODE, both residuals' values and
+// Jacobians and the cost's value, gradient and Hessian are the same bits.
+// Each stage's data is reused across the draws, as a solver reuses it.
+TEST_F(KinodynamicOCPTest, SharedStageKinematicsGiveThePerResidualBits) {
+  auto h = tu::StanceHorizon(handler_, stand_);
+  // Stage 0 full stance (mode 3), 1 the right sole swinging (mode 1), 2 the
+  // left (mode 2), 3 both (mode 0); swing contacts tracked at 0.6.
+  tu::SwingContact(handler_, *h, 1, 1, 1, 0.08, 0.6);
+  tu::SwingContact(handler_, *h, 0, 2, 2, 0.08, 0.6);
+  tu::SwingContact(handler_, *h, 0, 3, 3, 0.08, 0.6);
+  tu::SwingContact(handler_, *h, 1, 3, 3, 0.08, 0.6);
+  const std::array<std::uint32_t, 4> modes = {3U, 1U, 2U, 0U};
+  for (std::size_t k = 0; k < modes.size(); ++k) {
+    ASSERT_EQ(h->stages[k].mode, modes[k]);
+  }
+  const tu::KinoOracle oracle(model_, tu::G1SoleFrames(model_), 6);
+  for (const char* integrator : {"semi_implicit_euler", "rk2"}) {
+    KinodynamicOCPConfig cfg;
+    ASSERT_EQ(LoadKinodynamicOCPConfig(tu::G1KinodynamicNode(integrator), handler_, cfg),
+              Err::kNoError);
+    KinodynamicOCP shared(cfg);
+    KinodynamicOCP own(cfg, KinodynamicOCP::StageKinematics::kPerResidual);
+    ASSERT_EQ(shared.stage_kinematics(), KinodynamicOCP::StageKinematics::kShared);
+    ASSERT_EQ(shared.Build(Context(h.get()), handler_, {}), OCPBuildError::kNoError);
+    ASSERT_EQ(own.Build(Context(h.get()), handler_, {}), OCPBuildError::kNoError);
+    std::mt19937 rng(20261117U);
+    for (std::size_t k = 0; k < modes.size(); ++k) {
+      auto& ss = *shared.problem().stages_[k];
+      auto& so = *own.problem().stages_[k];
+      ASSERT_EQ(shared.StageMode(static_cast<int>(k)), modes[k]);
+      ASSERT_EQ(own.StageMode(static_cast<int>(k)), modes[k]);
+      const auto ds = ss.createData();
+      const auto dq = so.createData();
+      // The control is the per-residual path, the subject the shared one.
+      const auto* es = dynamic_cast<const rtc::mpc::ContactConstraintData*>(
+          ds->constraint_data[KinodynamicOCP::kEqualityConstraint].get());
+      const auto* eo = dynamic_cast<const rtc::mpc::ContactConstraintData*>(
+          dq->constraint_data[KinodynamicOCP::kEqualityConstraint].get());
+      const auto* ts = dynamic_cast<const rtc::mpc::ContactTrackingData*>(TrackingData(*ds));
+      const auto* to = dynamic_cast<const rtc::mpc::ContactTrackingData*>(TrackingData(*dq));
+      ASSERT_TRUE(es != nullptr && eo != nullptr && ts != nullptr && to != nullptr);
+      ASSERT_NE(es->shared_kin, nullptr);
+      ASSERT_EQ(es->shared_kin, ts->shared_kin);
+      ASSERT_EQ(eo->shared_kin, nullptr);
+      ASSERT_EQ(to->shared_kin, nullptr);
+      for (int i = 0; i < 200; ++i) {
+        const tu::KinoSample smp = oracle.Draw(rng, modes[k]);
+        ss.evaluate(smp.x, smp.u, *ds);
+        so.evaluate(smp.x, smp.u, *dq);
+        ss.computeFirstOrderDerivatives(smp.x, smp.u, *ds);
+        so.computeFirstOrderDerivatives(smp.x, smp.u, *dq);
+        ss.computeSecondOrderDerivatives(smp.x, smp.u, *ds);
+        so.computeSecondOrderDerivatives(smp.x, smp.u, *dq);
+        const std::string where = std::string(integrator) + " mode " + std::to_string(modes[k]) +
+                                  " draw " + std::to_string(i);
+        ExpectSameStageData(*ds, *dq, where);
+        if (::testing::Test::HasFailure()) {
+          return;  // one case is enough to read
+        }
+      }
+    }
+  }
 }
 
 // ── Reports (no gate) ───────────────────────────────────────────────────────

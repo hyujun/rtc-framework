@@ -76,6 +76,20 @@
 /// stance contact outside its friction cone (margin `−√ε`) and all four CoP
 /// margins at zero, deep in the barrier's quadratic branch.
 ///
+/// ## One stage, one evaluation of the ODE and the frame kinematics
+///
+/// The contact equality and the tracking residual both need the stage's ODE
+/// (for `v̇`) and the contact-frame kinematics of `(q, v, v̇)`. Built with
+/// `StageKinematics::kShared` (the default), the residuals read the ODE at
+/// `(x, u)` that the stage's integrator has just evaluated (RK2 evaluates it
+/// a second time at its midpoint, which the residuals do not use) and frame
+/// kinematics evaluated once per stage; with `kPerResidual` each residual
+/// evaluates both on its own data. Either way the contact cone barrier keeps
+/// its own frame placements. A residual must be bound before the stage's
+/// data is created: the sharing is wired at `createData`. The two give the same bits (the same
+/// operations on the same values); `kPerResidual` is the reference the shared stage is tested
+/// against. `ConstraintResiduals` evaluates on data of its own either way.
+///
 /// ## Threads and real time
 ///
 /// `Build` is configure time (allocates). `UpdateReferences`,
@@ -149,8 +163,17 @@ class KinodynamicOCP final : public OCPHandlerBase {
   using QuadStateCost = aligator::QuadraticStateCostTpl<double>;
   using QuadControlCost = aligator::QuadraticControlCostTpl<double>;
 
-  /// @param cfg  loaded for the model `Build` will be given
-  explicit KinodynamicOCP(KinodynamicOCPConfig cfg);
+  /// @brief Who evaluates a running stage's ODE and contact-frame kinematics
+  ///        for its contact residuals (a build option, not a config key).
+  enum class StageKinematics : std::uint8_t {
+    kShared,       ///< the stage, once; both residuals read the result
+    kPerResidual,  ///< each residual, on its own data
+  };
+
+  /// @param cfg         loaded for the model `Build` will be given
+  /// @param kinematics  see `StageKinematics` (same results either way)
+  explicit KinodynamicOCP(KinodynamicOCPConfig cfg,
+                          StageKinematics kinematics = StageKinematics::kShared);
 
   [[nodiscard]] OCPBuildError Build(const PhaseContext& ctx, const RobotModelHandler& model,
                                     const OCPLimits& limits) noexcept override;
@@ -199,6 +222,8 @@ class KinodynamicOCP final : public OCPHandlerBase {
 
   [[nodiscard]] const KinodynamicOCPConfig& config() const noexcept { return cfg_; }
 
+  [[nodiscard]] StageKinematics stage_kinematics() const noexcept { return kinematics_; }
+
  private:
   /// What `UpdateReferences` writes in stage k, resolved once after the
   /// problem is built (the problem owns the objects).
@@ -220,6 +245,7 @@ class KinodynamicOCP final : public OCPHandlerBase {
   void WriteStateTarget(const StageReference& s, QuadStateCost& cost) noexcept;
 
   KinodynamicOCPConfig cfg_;
+  StageKinematics kinematics_{StageKinematics::kShared};
   const RobotModelHandler* model_{nullptr};  // non-owning; set by Build
   KinodynamicDynamics dyn_{};
   std::optional<aligator::TrajOptProblemTpl<double>> problem_{};

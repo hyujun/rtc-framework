@@ -37,7 +37,17 @@
 /// `Forward` of the same `(x, u)` on the same buffers — the ODE's data
 /// contract), then `FrameJacobian` for any frame. None of them allocates
 /// itself; the ODE's `dForward` allocates inside the library. The buffers
-/// are built at configure time (`ContactKinematics(ode)` allocates).
+/// are built at configure time (both constructors allocate).
+///
+/// ## The ODE evaluated elsewhere
+///
+/// `Forward` and `Derivatives` are each the ODE step (`ode.forward` /
+/// `ode.dForward` into `ode_data`) followed by the kinematics step
+/// (`ForwardKinematics` / `KinematicsDerivatives`). A caller whose ODE data
+/// is already evaluated at `(x, u)` — the continuous data of a stage's own
+/// integrator, after the stage's dynamics step — builds the buffers on that
+/// data (`ContactKinematics(ode, ode_data)`) and calls the kinematics steps
+/// alone: the same operations on the same values, so the same bits.
 
 #include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
 
@@ -76,21 +86,38 @@ struct ContactKinematics {
   using Matrix3x = Eigen::Matrix<double, 3, Eigen::Dynamic>;
   using MatrixRef = Eigen::Ref<Eigen::MatrixXd>;
   using ConstVectorRef = Eigen::Ref<const Eigen::VectorXd>;
+  using OdeData = aligator::dynamics::ContinuousDynamicsDataTpl<double>;
 
-  /// @brief Buffers for @p ode's model. Allocates (configure time).
+  /// @brief Buffers for @p ode's model, with ODE data of their own.
+  ///        Allocates (configure time).
   explicit ContactKinematics(const Ode& ode);
 
-  /// @brief `ode.forward(x, u)` on these buffers, then the forward kinematics
-  ///        of `(q, v, v̇)`.
+  /// @brief Buffers for @p ode's model that read the ODE from @p ode_data
+  ///        (data of @p ode, evaluated by its owner). Allocates (configure
+  ///        time).
+  /// @throws std::invalid_argument for a null @p ode_data.
+  ContactKinematics(const Ode& ode, std::shared_ptr<OdeData> ode_data);
+
+  /// @brief `ode.forward(x, u)` on these buffers, then `ForwardKinematics`.
   void Forward(const Ode& ode, const ConstVectorRef& x, const ConstVectorRef& u);
+
+  /// @brief The forward kinematics of `(q, v, v̇)`, `v̇` read from
+  ///        `ode_data->xdot_` (the ODE at the same `x`, evaluated already).
+  void ForwardKinematics(const pinocchio::Model& model, const ConstVectorRef& x);
 
   /// @brief Frame @p fid's world-axis value. After `Forward`.
   void FrameMotionOf(const pinocchio::Model& model, pinocchio::FrameIndex fid,
                      FrameMotion& out) noexcept;
 
-  /// @brief `ode.dForward(x, u)` and the forward-kinematics derivatives of
-  ///        `(q, v, v̇)`. After the `Forward` of the same `(x, u)`.
+  /// @brief `ode.dForward(x, u)`, then `KinematicsDerivatives`. After the
+  ///        `Forward` of the same `(x, u)`.
   void Derivatives(const Ode& ode, const ConstVectorRef& x, const ConstVectorRef& u);
+
+  /// @brief The forward-kinematics derivatives of `(q, v, v̇)` with the `v̇`
+  ///        of the last `ForwardKinematics` (same `x`). `FrameJacobian` then
+  ///        also needs the ODE derivatives in `ode_data` (`dForward` at the
+  ///        same `(x, u)`).
+  void KinematicsDerivatives(const pinocchio::Model& model, const ConstVectorRef& x);
 
   /// @brief The Jacobian of frame @p fid's `[p; θ; v; ω; a; α]` with respect
   ///        to the state tangent (@p jx, `18 × 2·nv`) and the input (@p ju,
@@ -99,15 +126,15 @@ struct ContactKinematics {
                      MatrixRef ju) noexcept;
 
   pinocchio::Data pin_data;
-  std::shared_ptr<aligator::dynamics::ContinuousDynamicsDataTpl<double>> ode_data;
-  Eigen::VectorXd vdot;  ///< `[v̇_b; q̈_j]` of the last `Forward`
-  Matrix6x v_dq;         ///< frame velocity derivatives (LOCAL)
-  Matrix6x v_dv;         ///< also the frame Jacobian (LOCAL)
-  Matrix6x a_dq;         ///< frame spatial acceleration derivatives (LOCAL)
+  std::shared_ptr<OdeData> ode_data;  ///< own, or the owner's (second constructor)
+  Eigen::VectorXd vdot;               ///< `[v̇_b; q̈_j]` of the last `ForwardKinematics`
+  Matrix6x v_dq;                      ///< frame velocity derivatives (LOCAL)
+  Matrix6x v_dv;                      ///< also the frame Jacobian (LOCAL)
+  Matrix6x a_dq;                      ///< frame spatial acceleration derivatives (LOCAL)
   Matrix6x a_dv;
   Matrix6x a_da;
   Matrix3x jw;       ///< world angular Jacobian `J_ω` (rotation of the frame)
-  Matrix3x lin;      ///< scratch: a LOCAL classical-acceleration derivative
+  Matrix3x lin;      ///< scratch (`FrameJacobian` and its callers; written before read)
   Matrix6x acc_jac;  ///< `∂(a, α)/∂v̇` on world axes
 };
 
