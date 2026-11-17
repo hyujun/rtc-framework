@@ -65,10 +65,11 @@
 /// reader on a FIFO core would spin against a writer preempted on the same
 /// core, so the two are refused on one core), `RTC_MPC_SOAK_MAX_ITERS` / `RTC_MPC_SOAK_AL_ITERS`
 /// (the online budget, default 10 / 1), `RTC_MPC_SOAK_DEADLINE_MS` / `RTC_MPC_SOAK_PRIM_TOL` (the
-/// publish rules, default the shipped g1_loco values; the deadline is one period, so it scales
-/// with `RTC_MPC_SOAK_PERIOD_NODES`). The summary records the scheduling the MPC
-/// thread actually runs with (read back on it), not the requested one. An armed run exceeds the
-/// verification hook's test bound: run it by hand through
+/// publish rules, default a deadline of one period — 35 ms per node interval, so it scales with
+/// `RTC_MPC_SOAK_PERIOD_NODES` — and the g1_loco profile's residual tolerance). The defaults are
+/// the soak's own, not the profile's online budget: give the shipped one through the variables. The
+/// summary records the scheduling the MPC thread actually runs with (read back on it), not the
+/// requested one. An armed run exceeds the verification hook's test bound: run it by hand through
 /// `repo_scripts/scripts/with_verify_hold.sh` — the command and the control-PC recipe are in
 /// docs/testing.md.
 ///
@@ -139,10 +140,9 @@ using rtc::mpc::MPCStateSnapshot;
 using rtc::mpc::PhaseContext;
 using Clock = std::chrono::steady_clock;
 
-/// The publish rules of the g1_loco profile (its mpc.yaml `solver:`), the
-/// soak's defaults: provisional values the control-PC soak decides.
-constexpr double kShippedDeadlineMs = 35.0;
-constexpr double kShippedPrimTol = 0.05;
+/// The soak's default publish deadline per node interval of its period: one
+/// period, as the g1_loco profile's deadline is.
+constexpr double kDeadlinePerNodeMs = 35.0;
 
 constexpr double kWriterPeriodS = 0.002;  ///< the RT side's state writes
 constexpr double kStandingTimeoutS = 180.0;
@@ -171,8 +171,8 @@ struct Settings {
   int writer_cpu{-1};  ///< −1: chosen under FIFO, else not pinned
   int max_iters{10};
   int al_iters{1};
-  double deadline_ms{kShippedDeadlineMs};
-  double prim_tol{kShippedPrimTol};
+  double deadline_ms{kDeadlinePerNodeMs};
+  double prim_tol{tu::kShippedPublishPrimTol};
   int period_nodes{1};  ///< the 1/dt combinations' period, in node intervals
   bool period_nodes_malformed{false};
 };
@@ -211,9 +211,9 @@ Settings ReadSettings() {
     s.period_nodes_malformed = end == v || *end != '\0' || n < 1 || n >= tu::kKinoNodes;
     s.period_nodes = s.period_nodes_malformed ? 1 : static_cast<int>(n);
   }
-  // One period, as the shipped deadline is at one node.
-  s.deadline_ms = EnvDouble("RTC_MPC_SOAK_DEADLINE_MS", kShippedDeadlineMs * s.period_nodes);
-  s.prim_tol = EnvDouble("RTC_MPC_SOAK_PRIM_TOL", kShippedPrimTol);
+  // One period.
+  s.deadline_ms = EnvDouble("RTC_MPC_SOAK_DEADLINE_MS", kDeadlinePerNodeMs * s.period_nodes);
+  s.prim_tol = EnvDouble("RTC_MPC_SOAK_PRIM_TOL", tu::kShippedPublishPrimTol);
   return s;
 }
 

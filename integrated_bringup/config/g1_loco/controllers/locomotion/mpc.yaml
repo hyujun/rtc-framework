@@ -12,10 +12,9 @@
 # every one required when `mpc:` is present):
 #   enabled           the controller follows the MPC's plan; false = the latched
 #                     pose only. The launches set it from enable_mpc (default false).
-#   period_nodes      the MPC thread's period in node intervals (1 → 1 / 0.035 s).
+#   period_nodes      the MPC thread's period in node intervals (2 → 1 / 0.070 s).
 #   max_policy_age_s  a plan whose observation is older than this is dropped:
-#                     3 node intervals + one period, until the control-PC soak
-#                     sets it.
+#                     3 node intervals + one period.
 #   riccati.enabled   the plan's feedback gain added to the acceleration
 #                     reference — off (the manager reads an absent key as on);
 #                     the other riccati keys are the manager's (rtc_mpc
@@ -29,17 +28,17 @@
 # solver: the tolerances the OCP's tests solve to. Until one solve converges
 # (after the build, a rebuild or a rejected solve) the MPC solves with
 # max_initial_iters and max_al_iters — the standing solve; after that with
-# max_iters and max_online_al_iters. The online pair and the two publish rules
-# are provisional, decided by the soak on the control PCs: a solve whose tick
-# ran past publish_deadline_ms (one node interval) is not published, nor is a
-# budget-exhausted one whose first nodes — those read before the next plan —
-# have a primal residual above publish_prim_tol. Until the soak, max_iters is
-# set for the sim: one more than the iterations an online solve of the
-# standing window converges in. The solver tests convergence at the head of
-# the next iteration, so a solve that converges in N iterations reports it
-# only with max_iters >= N + 1; rtc_mpc's receding test holds the standing
-# window to this cap. A walking solve still unconverged there stops and falls
-# to the residual rule.
+# max_iters and max_online_al_iters. The online budget is fixed so a solve
+# fits the period: six iterations and one AL iteration, whose solve time is
+# bounded, where the AL loop's is not. Such a solve never reports
+# convergence, so the publish rules are what hold it: a solve whose tick ran
+# past publish_deadline_ms (one period) is not published, nor is one whose
+# first nodes — those read before the next plan — have a primal residual above
+# publish_prim_tol. rtc_mpc's receding test checks the standing window against
+# the residual rule at this budget, a guard against gross failures only. The
+# budget was chosen in real-time sim on a development PC with two solver
+# threads (launch mpc_threads 2); one thread (num_threads below) was not
+# checked. The control PCs' soak checks it on their hardware.
 #
 # The weights are the reference whole-body task's, unchanged:
 #   - state / terminal: its Q and Q_final diagonals. The base orientation is
@@ -76,8 +75,8 @@
 locomotion_controller:
   mpc:
     enabled: true                     # the launches override it from enable_mpc
-    period_nodes: 1
-    max_policy_age_s: 0.14            # [s] 3 × 0.035 + 0.035
+    period_nodes: 2
+    max_policy_age_s: 0.175           # [s] 3 × 0.035 + one period (0.070)
     riccati:
       enabled: false
       gain_scale: 1.0
@@ -99,12 +98,12 @@ locomotion_controller:
       prim_tol: 1.0e-4
       dual_tol: 1.0e-4
       mu_init: 1.0e-2
-      max_iters: 18
+      max_iters: 6
       max_al_iters: 20
       max_initial_iters: 300
-      max_online_al_iters: 20
-      publish_deadline_ms: 35.0       # [ms] provisional — the control-PC soak decides
-      publish_prim_tol: 0.05          # provisional — the control-PC soak decides
+      max_online_al_iters: 1
+      publish_deadline_ms: 70.0       # [ms] one period
+      publish_prim_tol: 0.05
       require_fresh_state: true       # one solve per state snapshot
       num_threads: 1                  # > 1 needs a worker layout profile (launch mpc_threads)
     kinodynamic:

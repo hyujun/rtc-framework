@@ -370,7 +370,7 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
     int iterations{0};
     bool converged{false};
     double prim{0.0};
-    double consumed{0.0};  ///< over the nodes a consumer at 1/dt reads
+    double consumed{0.0};  ///< over the nodes a consumer at GridRun's period reads
     double node_max{0.0};  ///< max of node_prim_inf
     std::int64_t offset_ns{0};
     double expected_offset_ns{0.0};
@@ -384,11 +384,13 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
   /// of @p shifts (the grid index moving by it), each tick 0.4·dt into its
   /// node interval, the state the previous solution's node at the shift.
   /// Each tick's solve is appended to @p captures when given; @p kinematics
-  /// is the OCP's build option.
+  /// is the OCP's build option; the consumed segment is that of a consumer
+  /// with a period of @p period_nodes node intervals.
   std::vector<GridTickReport> GridRun(
       const MPCSolverConfig& solver, const std::vector<int>& shifts, bool stance = false,
       std::vector<Capture>* captures = nullptr,
-      KinodynamicOCP::StageKinematics kinematics = KinodynamicOCP::StageKinematics::kShared) {
+      KinodynamicOCP::StageKinematics kinematics = KinodynamicOCP::StageKinematics::kShared,
+      int period_nodes = 1) {
     rtc::mpc::LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
     std::int64_t index = stance ? StanceManager(m) : WalkManager(m);
     const double dt = tu::kKinoDt;
@@ -400,7 +402,7 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
     auto out = std::make_unique<MPCSolution>();
     auto prev_h = std::make_unique<HorizonReference>();
     std::vector<GridTickReport> ticks;
-    const auto period_ns = static_cast<std::uint64_t>(std::llround(dt * 1e9));
+    const auto period_ns = static_cast<std::uint64_t>(std::llround(period_nodes * dt * 1e9));
     for (std::size_t n = 0; n <= shifts.size(); ++n) {
       int shift = 0;
       if (n > 0) {
@@ -542,33 +544,41 @@ TEST_P(KinodynamicReceding, TheStandingSolveConvergesThenTheOnlineBudgetRuns) {
   }
 }
 
-// The shipped online cap on the standing window, through the phase manager
-// (zero command, the stance gait, the state the previous plan's node 1): the
-// standing solve converges, then every online tick converges within the cap —
-// in at most cap − 1 iterations, since a solve that needs exactly the cap is
-// reported unconverged. The probe of this window converged every tick in 17
-// iterations. Semi-implicit Euler (the shipped integrator) only.
-TEST_P(KinodynamicReceding, TheShippedOnlineCapConvergesTheStandingWindow) {
+// The shipped online budget and period on the standing window, through the
+// phase manager (zero command, the stance gait, the state the previous plan's
+// node at the shift): the standing solve converges, then every online tick's
+// consumed segment passes the shipped publish rule (one AL iteration never
+// reports convergence). A guard against gross failures only: the window sits
+// orders below the rule on any budget, so the real-time sim judges the budget.
+// Semi-implicit Euler (the shipped integrator) only.
+TEST_P(KinodynamicReceding, TheShippedOnlineBudgetKeepsTheStandingWindowPublishable) {
   if (std::string_view(GetParam()) != "semi_implicit_euler") {
     GTEST_SKIP() << "the shipped integrator only";
   }
   MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = tu::kShippedOnlineMaxIters;
+  solver.max_online_al_iters = tu::kShippedOnlineAlIters;
   const std::vector<GridTickReport> ticks =
-      GridRun(solver, std::vector<int>(kTicks, 1), /*stance=*/true);
+      GridRun(solver, std::vector<int>(kTicks, tu::kShippedPeriodNodes), /*stance=*/true, nullptr,
+              KinodynamicOCP::StageKinematics::kShared, tu::kShippedPeriodNodes);
   ASSERT_EQ(ticks.size(), static_cast<std::size_t>(kTicks + 1));
-  ReportGrid(GetParam(), "stance window, shipped online cap", ticks);
+  ReportGrid(GetParam(), "stance window, shipped online budget", ticks);
   EXPECT_TRUE(ticks[0].converged) << "the standing solve";
-  int converged = 0;
+  double worst = 0.0;
+  double horizon_worst = 0.0;
   int most = 0;
   for (std::size_t n = 1; n < ticks.size(); ++n) {
-    converged += ticks[n].converged ? 1 : 0;
+    worst = std::max(worst, ticks[n].consumed);
+    horizon_worst = std::max(horizon_worst, ticks[n].prim);
     most = std::max(most, ticks[n].iterations);
-    EXPECT_TRUE(ticks[n].converged) << "tick " << n << ": " << ticks[n].iterations << " iterations";
+    EXPECT_LE(ticks[n].consumed, tu::kShippedPublishPrimTol)
+        << "tick " << n << ": " << ticks[n].iterations << " iterations";
   }
-  std::printf("[report] %s stance window, cap %d: converged %d / %d, most %d iterations\n",
-              GetParam(), solver.max_iters, converged, kTicks, most);
-  EXPECT_LT(most, solver.max_iters);
+  std::printf(
+      "[report] %s stance window, budget %d / %d every %d nodes: consumed max %.3g (rule %.3g), "
+      "whole horizon max %.3g, last %.3g, most %d iterations\n",
+      GetParam(), solver.max_iters, solver.max_online_al_iters, tu::kShippedPeriodNodes, worst,
+      tu::kShippedPublishPrimTol, horizon_worst, ticks.back().prim, most);
 }
 
 // ── Receding walk window ────────────────────────────────────────────────────

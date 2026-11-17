@@ -385,7 +385,7 @@ TEST_F(LocomotionMpcConfig, TheWalkRtcMpcMeasuresOnIsTheInstalledOne) {
 }
 
 // The installed solver section: the tolerances the OCP's tests solve to, the
-// standing budget and the (provisional) online one, the rest at its default.
+// standing budget and the online one, the rest at its default.
 TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsTheRegisteredOne) {
   ASSERT_TRUE(root_["mpc"]["solver"].IsMap());
   rtc::mpc::MPCSolverConfig s;
@@ -393,12 +393,14 @@ TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsTheRegisteredOne) {
   EXPECT_EQ(s.prim_tol, 1e-4);
   EXPECT_EQ(s.dual_tol, 1e-4);
   EXPECT_EQ(s.mu_init, 1e-2);
-  EXPECT_EQ(s.max_iters, 18);
+  EXPECT_EQ(s.max_iters, 6);
   EXPECT_EQ(s.max_iters, rtc::mpc::test_utils::kShippedOnlineMaxIters)
       << "the copy rtc_mpc tests on";
   EXPECT_EQ(s.max_al_iters, 20);
   EXPECT_EQ(s.max_initial_iters, 300);
-  EXPECT_EQ(s.max_online_al_iters, 20);
+  EXPECT_EQ(s.max_online_al_iters, 1);
+  EXPECT_EQ(s.max_online_al_iters, rtc::mpc::test_utils::kShippedOnlineAlIters)
+      << "the copy rtc_mpc tests on";
   EXPECT_EQ(s.rollout_type, rtc::mpc::MPCRolloutType::kLinear);
   EXPECT_EQ(s.linear_solver, rtc::mpc::MPCLinearSolver::kSerial);
   EXPECT_EQ(s.num_threads, 1);
@@ -406,13 +408,20 @@ TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsTheRegisteredOne) {
   EXPECT_FALSE(s.verbose);
 }
 
-// The installed publish rules: the provisional values the control-PC soak
-// decides (a deadline of one node interval, the consumed-segment tolerance).
-TEST_F(LocomotionMpcConfig, TheInstalledPublishRulesAreTheProvisionalOnes) {
+// The installed publish rules and period: a deadline of one period (two node
+// intervals), the consumed-segment tolerance.
+TEST_F(LocomotionMpcConfig, TheInstalledPublishRulesFollowThePeriod) {
   rtc::mpc::MPCSolverConfig s;
   ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(root_["mpc"]["solver"], s));
-  EXPECT_EQ(s.publish_deadline_ms, 35.0);
+  EXPECT_EQ(s.publish_deadline_ms, 70.0);
   EXPECT_EQ(s.publish_prim_tol, 0.05);
+  EXPECT_EQ(s.publish_prim_tol, rtc::mpc::test_utils::kShippedPublishPrimTol)
+      << "the copy rtc_mpc tests on";
+  const int period_nodes = root_["mpc"]["period_nodes"].as<int>();
+  EXPECT_EQ(period_nodes, rtc::mpc::test_utils::kShippedPeriodNodes) << "the copy rtc_mpc tests on";
+  EXPECT_NEAR(s.publish_deadline_ms,
+              period_nodes * root_["mpc"]["kinodynamic"]["dt"].as<double>() * 1e3, 1e-9)
+      << "the deadline is one period";
 }
 
 // The installed loop solves each state snapshot once: a stalled state
