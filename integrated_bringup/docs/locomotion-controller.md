@@ -102,25 +102,13 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
 
 - `gain_step.py` — 매달린 로봇 (base 고정) 에서 관절마다 0.2 rad step: 2 s 도달률 · overshoot 로 PD 게인 후보를 거른다 (venv python, mujoco).
 - `run_arms.py` — sim 을 run 마다 새로 띄워 같은 시간축 (기동 → settle → 전환 단계 → lead → recorder) 으로 `servo` (MJCF servo) · `loco` (전환) · `lowpd` (demo_joint 에 같은 PD 게인, feedforward 없음) · `mpc` (`enable_mpc:=true` 로 전환) · `mpc_fb` (+ `mpc_riccati` overlay) · `reentry` (실기의 복귀 절차: loco 정지 창 → `/rtc_cm/trigger_estop` → hold → `/rtc_cm/clear_estop` (demo_joint 복귀 확인) → demo_joint 에 서는 자세 goal (`estop.arm_safe_position`) → `/sim/reset` 으로 로봇을 세움 → loco 재진입 창, 녹음 하나에 창 둘) · `estop` (loco 중 `/rtc_cm/trigger_estop` → hold → `/rtc_cm/clear_estop` → demo_joint 복귀 확인 → loco 전환, 이벤트 시각 · 창 지표는 `run.json`; 두 arm 모두 rtf 1 로 — clear 의 검증 기한이 wall 이라 느린 rtf 에서는 unverified 로 끝난다) · `walk` (MPC 를 켠 채 전환 → 명령 스크립트 `twist_script.py` (ramp 0 → 0.5 m/s 2 s · hold 8 s · yaw 0.3 rad/s 4 s · hold 2 s · 정지 10 s, sim 초; `--cmd-topic` 에 20 Hz wall, 컨트롤러의 구독이 붙은 뒤 시작) → 마지막 `--stop-window` s 가 정지 창) · `walk_estop` (같은 스크립트의 `--estop-at` s 에 `/rtc_cm/trigger_estop` → hold 창, clear 없음) 를 반복하고 (`--mpc-layout` 이면 모든 arm 이 같은 MPC layout, `loco` · `reentry` · `estop` 은 `mpc_off` overlay, `walk` · `walk_estop` 은 언제나 MPC; `--mpc-threads N` 이면 MPC layout 으로 뜨는 arm 이 `layout_profile:=mpc_par_sim mpc_threads:=N` 으로 N thread solve; `--overlay ARM=…` · `--launch-arg` 로 바꾼다) recorder CSV/JSON · 로그 세션을 모은다. `repo_scripts/scripts/with_verify_hold.sh` 아래에서 돌린다.
-- `walk_gate.py` — `run_arms.py` 의 `--out` 디렉토리에서 `walk_<k>` · `walk_estop_<k>` 를 판정한다 (`walk_gate.json`): 보행 지표는 `rtc_tools.analysis.walk_metrics` (스케줄러와 같은 yaw 정렬 속도 · 구간은 로그의 `cmd_vx` 열로 · 접촉 에지 1:1 짝짓기 · 체중은 그 run 의 stand 구간), 정지 창은 `mpc_<k>` (대조군) 의 같은 길이 꼬리와 비교, `walk_estop` 은 edge (E-STOP 열 유지 · waiting · fault 불변 · CM 거부 줄 0) 를 판정하고 hold 아래 낙하를 보고한다. 문턱은 파일 머리의 상수고, rtf · `z_ref` · 정지 창 길이는 각 run 의 `run.json` 에서 읽는다 (run 끼리 다르면 거부). `--probe` 는 dev PC rtf 를 고르는 기준 (나이 거부 0 · stand 뒤 plan 없는 row 0 · policy age p99 ≤ 100 ms) 만 본다. 성능 (solve 시간 · overrun · `wbc_tick_us`) 은 보고만 한다 — 판정은 제어 PC 다.
+- `walk_gate.py` — `run_arms.py` 의 `--out` 디렉토리에서 `walk_<k>` · `walk_estop_<k>` 를 판정한다 (`walk_gate.json`): 보행 지표는 `rtc_tools.analysis.walk_metrics` (스케줄러와 같은 yaw 정렬 속도 · 구간은 로그의 `cmd_vx` 열로 · 접촉 에지 1:1 짝짓기 · 체중은 그 run 의 stand 구간), 정지 창은 `mpc_<k>` (대조군) 의 같은 길이 꼬리와 비교, `walk_estop` 은 edge (E-STOP 열 유지 · waiting · fault 불변 · CM 거부 줄 0) 를 판정하고 hold 아래 낙하를 보고한다. 문턱은 파일 머리의 상수고, rtf · `z_ref` · 정지 창 길이는 각 run 의 `run.json` 에서 읽는다 (run 끼리 다르면 거부). `--probe` 는 dev PC rtf 를 고르는 기준 (나이 거부 0 · stand 뒤 plan 없는 row 0 · policy age p99 ≤ 135 ms — 출하 `max_policy_age_s` 0.175 s 에서 40 ms 뺀 값) 만 본다. 성능 (solve 시간 · overrun · `wbc_tick_us`) 은 보고만 한다 — 판정은 제어 PC 다.
 
-dev PC (rtf < 1) 에서는 MPC 의 `publish_deadline_ms` (wall) 를 끄는 overlay 를 repo 밖에 두고 세 arm 에 준다 — 없으면 모든 solve 가 기한을 넘겨 plan 이 하나도 발행되지 않는다:
-
-```yaml
-# /tmp/no_publish_deadline.yaml
-integrated_rt_controller:
-  ros__parameters:
-    locomotion_controller:
-      mpc:
-        solver:
-          publish_deadline_ms: 0.0
-```
+dev PC 의 보행 평가는 출하 MPC 값 그대로 (overlay 없이) 2 thread · rtf 0.7 로 돈다. 출하 online 예산 (6 / AL 1, 70 ms 주기) 은 dev PC 2 thread 에서 solve p99 가 주기 안에 들고, 0.7 은 `walk_gate.py --probe` 로 고른 값이다 (그 R 과 그보다 작은 R 이 모두 나이 기준을 통과). 서 있기 평가는 rtf 1 로도 돈다. plan 나이는 sim 시간으로 재므로 rtf < 1 에서는 같은 wall 지연이 R 배로 작게 보인다 — 실시간 여유는 rtf 1 run 으로 본다. 이 PC 보다 느린 PC 나 1 thread 에서 solve 가 70 ms (wall) 를 넘으면 그 solve 는 withheld 되어 plan 이 끊긴다. 그때는 `solver.publish_deadline_ms: 0.0` overlay (repo 밖) 를 주고 rtf 를 다시 고른다:
 
 ```bash
-O=/tmp/no_publish_deadline.yaml
 repo_scripts/scripts/with_verify_hold.sh python3 integrated_bringup/tools/standing_eval/run_arms.py \
-  --out /tmp/walk --arms mpc walk walk_estop -k 3 --mpc-layout --mpc-threads 2 --rtf 0.1 \
-  --overlay mpc=$O --overlay walk=$O --overlay walk_estop=$O \
+  --out /tmp/walk --arms mpc walk walk_estop -k 3 --mpc-layout --mpc-threads 2 --rtf 0.7 \
   --lead 6 --duration 26 --runtime-yaml integrated_bringup/config/g1_loco/controllers/locomotion/runtime.yaml \
   --logging-root ~/ros2_ws/rtc_ws/logging_data --launch-arg max_log_sessions:=200
 python3 integrated_bringup/tools/standing_eval/walk_gate.py /tmp/walk \

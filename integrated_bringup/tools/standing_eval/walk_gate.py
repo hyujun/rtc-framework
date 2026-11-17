@@ -62,7 +62,9 @@ MARGIN_MIN = -1e-5
 DEGRADED_FRACTION = 0.01
 ROWS_FRACTION = 0.95  # validity
 SCRIPT_LENGTH_TOL = 0.05  # validity: the logged script within 5 % of its sim-second length
-PROBE_AGE_P99_MS = 100.0
+# The probe's plan-age p99 bound: the shipped max_policy_age_s (0.175 s: 3 node
+# intervals + a 2-node period) less 40 ms, the margin it first had at 0.14 s.
+PROBE_AGE_P99_MS = 135.0
 
 MPC_LINE = re.compile(
     r"mpc: solves (?P<solves>\d+) \(failed (?P<failed>\d+), deadline miss (?P<deadline_miss>\d+), "
