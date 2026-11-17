@@ -1,6 +1,7 @@
 #include "rtc_mpc/ocp/kinodynamic_ocp.hpp"
 
 #include "ocp/internal/kinodynamic_stage_model.hpp"
+#include "ocp/internal/structured_quadratic_costs.hpp"
 #include "rtc_mpc/reference/stage_reference.hpp"
 
 #pragma GCC diagnostic push
@@ -34,6 +35,7 @@ using QuadResidualCost = aligator::QuadraticResidualCostTpl<double>;
 using StageModel = aligator::StageModelTpl<double>;
 using StageFunction = aligator::StageFunctionTpl<double>;
 using EqualitySet = aligator::EqualityConstraintTpl<double>;
+using PolyCost = xyz::polymorphic<aligator::CostAbstractTpl<double>>;
 
 [[nodiscard]] bool AllFinite(const double* p, int n) noexcept {
   for (int i = 0; i < n; ++i) {
@@ -44,10 +46,31 @@ using EqualitySet = aligator::EqualityConstraintTpl<double>;
   return true;
 }
 
+/// `½‖x ⊖ target‖²_w`: the structured cost or Aligator's own.
+[[nodiscard]] PolyCost MakeStateCost(KinodynamicOCP::QuadraticCostDerivatives derivatives,
+                                     const KinodynamicDynamics::Space& space, int nu,
+                                     const Eigen::VectorXd& target, const Eigen::MatrixXd& w) {
+  if (derivatives == KinodynamicOCP::QuadraticCostDerivatives::kStructured) {
+    return PolyCost(internal::StructuredQuadStateCost(space, nu, target, w));
+  }
+  return PolyCost(KinodynamicOCP::QuadStateCost(space, nu, target, w));
+}
+
+/// `½‖u − target‖²_w`: the structured cost or Aligator's own.
+[[nodiscard]] PolyCost MakeInputCost(KinodynamicOCP::QuadraticCostDerivatives derivatives,
+                                     const KinodynamicDynamics::Space& space,
+                                     const Eigen::VectorXd& target, const Eigen::MatrixXd& w) {
+  if (derivatives == KinodynamicOCP::QuadraticCostDerivatives::kStructured) {
+    return PolyCost(internal::StructuredQuadControlCost(space, target, w));
+  }
+  return PolyCost(KinodynamicOCP::QuadControlCost(space, target, w));
+}
+
 }  // namespace
 
-KinodynamicOCP::KinodynamicOCP(KinodynamicOCPConfig cfg, StageKinematics kinematics)
-    : cfg_(std::move(cfg)), kinematics_(kinematics) {}
+KinodynamicOCP::KinodynamicOCP(KinodynamicOCPConfig cfg, StageKinematics kinematics,
+                               QuadraticCostDerivatives derivatives)
+    : cfg_(std::move(cfg)), kinematics_(kinematics), derivatives_(derivatives) {}
 
 OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHandler& model,
                                     const OCPLimits& limits) noexcept {
@@ -117,9 +140,10 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
 
     // The running cost is integrated over the node interval (× dt).
     CostStack cost(space, nu);
-    cost.addCost(std::string(kStateCostKey), QuadStateCost(space, nu, x0, q_w), cfg_.dt);
-    cost.addCost(std::string(kInputCostKey), QuadControlCost(space, Eigen::VectorXd::Zero(nu), r_w),
+    cost.addCost(std::string(kStateCostKey), MakeStateCost(derivatives_, space, nu, x0, q_w),
                  cfg_.dt);
+    cost.addCost(std::string(kInputCostKey),
+                 MakeInputCost(derivatives_, space, Eigen::VectorXd::Zero(nu), r_w), cfg_.dt);
     cost.addCost(std::string(kContactTrackingCostKey),
                  QuadResidualCost(space, xyz::polymorphic<StageFunction>(tracking), track_w),
                  cfg_.dt);
@@ -152,7 +176,7 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
         stages.emplace_back(std::move(stage));
       }
     }
-    problem_.emplace(x0, stages, QuadStateCost(space, nu, x0, qf_w));
+    problem_.emplace(x0, stages, MakeStateCost(derivatives_, space, nu, x0, qf_w));
 
     // Resolve, in the problem's own copies, what the ticks write.
     stages_.resize(static_cast<std::size_t>(cfg_.horizon_nodes));

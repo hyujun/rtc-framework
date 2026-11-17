@@ -60,6 +60,7 @@ add_library(rtc_mpc STATIC
   src/ocp/kinodynamic_ocp_config.cpp
   src/ocp/kinodynamic_ocp.cpp
   src/ocp/kinodynamic_stage_model.cpp
+  src/ocp/structured_quadratic_costs.cpp
   src/phase/phase_cost_config.cpp
   src/phase/locomotion_phase_manager.cpp
   src/ocp/cost_factory.cpp
@@ -268,6 +269,18 @@ if(BUILD_TESTING)
     set_tests_properties(test_kinodynamic_ocp PROPERTIES TIMEOUT 300)
   endif()
   add_mpc_gtest(test_kinodynamic_ocp_alloc_gate)
+  if(TARGET test_kinodynamic_ocp_alloc_gate)
+    # Checks the default build's costs are the package-private structured ones.
+    target_include_directories(test_kinodynamic_ocp_alloc_gate PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  endif()
+  # Compares the package-private structured quadratic costs (src/ headers)
+  # with Aligator's.
+  add_mpc_gtest(test_structured_quadratic_costs)
+  if(TARGET test_structured_quadratic_costs)
+    target_include_directories(test_structured_quadratic_costs PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  endif()
   # The receding walk window through the handler core (package-private src/
   # headers): four 40-tick runs, past the 60 s default.
   add_mpc_gtest(test_kinodynamic_receding)
