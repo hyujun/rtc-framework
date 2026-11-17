@@ -123,7 +123,7 @@
 //     period_nodes: N (≥ 1)     # the MPC thread's period, in OCP node intervals
 //     max_policy_age_s: s (≥ 0) # a plan older than this is dropped (0 = the horizon only)
 //     riccati: {enabled: bool, ...}   # rtc_mpc MPCSolutionManager
-//     sanity: {joint_delta_rad, base_speed, joint_accel, wrench_scale}   # all > 0, below
+//     sanity: {joint_delta_rad, base_speed, wrench_scale}   # all > 0, below
 //     ocp_type / solver / kinodynamic / max_stale_solutions   # rtc_mpc MPCFactory · manager
 // With mpc.enabled the planner's sections are read too: command.* (the
 // command filter: its base_height is the stance height), gait.*, swing.*,
@@ -135,10 +135,11 @@
 // of the measured orientation; every joint inside its model range widened by
 // joint_delta_rad and within joint_delta_rad of its measured value; the base
 // height above the lowest contact frame inside [command.h_min, command.h_max];
-// the base speed at most sanity.base_speed [m/s]; every joint acceleration (and
-// the feedback, when on) at most sanity.joint_accel [rad/s²]; no contact
-// pulling by more than 2 % of the weight, and the total normal force between
-// 1 / sanity.wrench_scale and sanity.wrench_scale × the robot's weight.
+// the base speed at most sanity.base_speed [m/s]; no contact pulling by more
+// than 2 % of the weight, and the total normal force between
+// 1 / sanity.wrench_scale and sanity.wrench_scale × the robot's weight. The
+// plan's accelerations are not judged; the logged check numbers 6 and 11 are
+// retired (Plausible).
 // The MPC thread runs on the `mpc` layout role: activation is refused under a
 // launch profile that dropped it (enable_mpc:=false) while mpc.enabled is true.
 //
@@ -248,7 +249,6 @@ struct LocomotionMpcConfig {
   bool riccati_enabled{false};
   double sanity_joint_delta_rad{0.0};  ///< [rad]
   double sanity_base_speed{0.0};       ///< [m/s]
-  double sanity_joint_accel{0.0};      ///< [rad/s²]
   double sanity_wrench_scale{0.0};     ///< × the robot's weight
   YAML::Node node;                     ///< the whole section (factory and manager keys)
 };

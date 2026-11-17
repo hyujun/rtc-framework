@@ -121,10 +121,9 @@ LocomotionMpcConfig ParseMpc(const YAML::Node& n, const std::string& where) {
             {"enabled"});
   out.riccati_enabled = ReadBool(r, "enabled", ric);
   const std::string san = where + ".sanity";
-  CheckKeys(n["sanity"], san, {"joint_delta_rad", "base_speed", "joint_accel", "wrench_scale"});
+  CheckKeys(n["sanity"], san, {"joint_delta_rad", "base_speed", "wrench_scale"});
   out.sanity_joint_delta_rad = ReadPositive(n["sanity"], "joint_delta_rad", san, false);
   out.sanity_base_speed = ReadPositive(n["sanity"], "base_speed", san, false);
-  out.sanity_joint_accel = ReadPositive(n["sanity"], "joint_accel", san, false);
   out.sanity_wrench_scale = ReadPositive(n["sanity"], "wrench_scale", san, false);
   out.node = YAML::Clone(n);
   return out;
