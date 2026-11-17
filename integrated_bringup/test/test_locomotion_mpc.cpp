@@ -590,8 +590,8 @@ TEST(LocomotionMpcConfig, TheConsumerKeysAreRequiredAndChecked) {
   EXPECT_TRUE(parsed.mpc.present);
   EXPECT_TRUE(parsed.mpc.enabled);
   EXPECT_FALSE(parsed.mpc.riccati_enabled);
-  EXPECT_EQ(parsed.mpc.period_nodes, 1);
-  EXPECT_EQ(parsed.mpc.max_policy_age_s, 0.14);
+  EXPECT_EQ(parsed.mpc.period_nodes, 2);
+  EXPECT_EQ(parsed.mpc.max_policy_age_s, 0.175);
   // The other loco profile ships no `mpc:`: no MPC.
   const auto b7 = ParseLocomotionControllerConfig(fx::ShippedControllerNode("b7_loco", kKey));
   EXPECT_FALSE(b7.mpc.present);

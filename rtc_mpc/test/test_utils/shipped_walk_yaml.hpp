@@ -93,8 +93,13 @@ inline constexpr const char* kShippedTerrainYaml = R"(
 height: 0.0
 )";
 
-/// The g1_loco profile's online iteration cap (`mpc.solver.max_iters`), as
-/// shipped — a copy, held to the installed profile like the sections above.
-inline constexpr int kShippedOnlineMaxIters = 18;
+/// The g1_loco profile's online budget and period, as shipped — copies, held
+/// to the installed profile like the sections above: `mpc.solver.max_iters`,
+/// `mpc.solver.max_online_al_iters`, `mpc.period_nodes` and
+/// `mpc.solver.publish_prim_tol`.
+inline constexpr int kShippedOnlineMaxIters = 6;
+inline constexpr int kShippedOnlineAlIters = 1;
+inline constexpr int kShippedPeriodNodes = 2;
+inline constexpr double kShippedPublishPrimTol = 0.05;
 
 }  // namespace rtc::mpc::test_utils
