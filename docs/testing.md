@@ -163,7 +163,7 @@ grep -rE "rc=22|setaffinity failed|Thread config failed" ~/.ros/log/<run>/   # �
 
 ### Kinodynamic MPC soak
 
-`test_kinodynamic_mpc_soak` 는 평소 12 조합 (stance 정지 · walk rollout · walk 교란 + overrun × 60 Hz · 1/dt × SIE · RK2) 을 3 s 씩 smoke 로 돈다. 무장 (`RTC_RUN_MPC_SOAK=1`) 하면 조합마다 `RTC_MPC_SOAK_SECONDS` (기본 600) 를 돌아 verify hook 의 test 상한을 넘으므로 `--run` 밖에서 `with_verify_hold.sh` 로 띄운다. PASS 는 failed solve 0 · warm-up (기본 60 s) 뒤 heap 증가 0 (누수 게이트) · 할당 수가 후반에 늘지 않음 — 무장 run 의 30 tick 이상 묶음에서 뒤 1/3 중앙값 ≤ 앞 1/3 최대; smoke 는 보고 (같은 (shift, iteration) 묶음도 값 자체는 line search trial 수로 흔들려 분포는 보고) 뿐이고, solve p50 / p99 / max · overrun · deadline miss · withheld 는 보고다. 요약은 `build/rtc_mpc/test_results/rtc_mpc/test_kinodynamic_mpc_soak.summary.{csv,json}` 에 남는다 (각 knob 과 지표는 테스트 파일 머리 주석).
+`test_kinodynamic_mpc_soak` 는 평소 12 조합 (stance 정지 · walk rollout · walk 교란 + overrun × 60 Hz · 1/dt × SIE · RK2) 을 3 s 씩 smoke 로 돈다. 무장 (`RTC_RUN_MPC_SOAK=1`) 하면 조합마다 `RTC_MPC_SOAK_SECONDS` (기본 600) 를 돌아 verify hook 의 test 상한을 넘으므로 `--run` 밖에서 `with_verify_hold.sh` 로 띄운다. PASS 는 failed solve 0 · 창 전체 online tick 의 평균 node shift (grid index 의 폭 ÷ tick 수) ≥ 0.9 × 주기의 node 수 (thread 가 주기보다 빨리 돌지 않음 — 느린 호스트는 평균이 커질 뿐이다) · warm-up (기본 60 s) 뒤 heap 증가 0 (누수 게이트) · 할당 수가 후반에 늘지 않음 — 무장 run 의 30 tick 이상 묶음에서 뒤 1/3 중앙값 ≤ 앞 1/3 최대; smoke 는 보고 (같은 (shift, iteration) 묶음도 값 자체는 line search trial 수로 흔들려 분포는 보고) 뿐이고, solve p50 / p99 / max · overrun · deadline miss · withheld 는 보고다. 요약은 `build/rtc_mpc/test_results/rtc_mpc/test_kinodynamic_mpc_soak.summary.{csv,json}` 에 남는다 (각 knob 과 지표는 테스트 파일 머리 주석).
 
 **연산 시간 (주기 · online 예산 · 적분기) 은 제어 PC 두 대 (PC#1 NUC14 · PC#3 Thor) 의 무장 soak 로 판정한다** — 같은 커밋을 설치하고, MPC thread 를 격리 코어에 SCHED_FIFO 로 고정하며, 개발 PC 의 수치는 참고로만 나란히 둔다.
 
@@ -183,7 +183,7 @@ grep -rE "rc=22|setaffinity failed|Thread config failed" ~/.ros/log/<run>/   # �
   --event-handlers console_direct+ --return-code-on-test-failure )
 ```
 
-조합 일부만 돌리려면 `GTEST_FILTER='*walk_rollout_1_over_dt*'` 를 더한다. soak 는 test 프로세스라 cset shield 의 "user" cpuset 으로 adopt 되지 않는다 — shield 가 켜져 있으면 격리 코어로의 고정이 EINVAL 로 실패해 pool 이 거부된다. shield 를 끄고 돌리거나 (`cpu_shield.sh off`) `cset shield --exec` 로 shield 안에서 띄운다. slot 후보는 `get_mpc_worker_slots <ncpu> <profile>` ([repo_scripts/README.md](../repo_scripts/README.md)). online 예산 · publish 규칙은 `RTC_MPC_SOAK_MAX_ITERS` · `RTC_MPC_SOAK_AL_ITERS` · `RTC_MPC_SOAK_DEADLINE_MS` · `RTC_MPC_SOAK_PRIM_TOL` 로 바꾼다 (기본 10 · 1 · 출하 g1_loco 값). timeout · crash 는 gtest XML 에 남지 않으니 ctest 요약 (`colcon test-result`) 으로 판정한다.
+조합 일부만 돌리려면 `GTEST_FILTER='*walk_rollout_1_over_dt*'` 를 더한다. soak 는 test 프로세스라 cset shield 의 "user" cpuset 으로 adopt 되지 않는다 — shield 가 켜져 있으면 격리 코어로의 고정이 EINVAL 로 실패해 pool 이 거부된다. shield 를 끄고 돌리거나 (`cpu_shield.sh off`) `cset shield --exec` 로 shield 안에서 띄운다. slot 후보는 `get_mpc_worker_slots <ncpu> <profile>` ([repo_scripts/README.md](../repo_scripts/README.md)). online 예산 · publish 규칙은 `RTC_MPC_SOAK_MAX_ITERS` · `RTC_MPC_SOAK_AL_ITERS` · `RTC_MPC_SOAK_DEADLINE_MS` · `RTC_MPC_SOAK_PRIM_TOL` 로 바꾼다 (기본 10 · 1 · 출하 g1_loco 값, deadline 은 한 주기). 1/dt 조합의 주기는 `RTC_MPC_SOAK_PERIOD_NODES=<N>` (1 ≤ N < horizon node 수, 기본 1 — controller 의 `period_nodes`) 로 1 / (N · dt) 가 된다. 조합 이름은 그대로이고 N 은 요약 JSON 의 `period_nodes` 에 남으니 N 마다 `RTC_MPC_SOAK_OUT_DIR` 을 따로 준다. 60 Hz 조합은 N 과 무관해 N ≥ 2 에서는 skip 한다. publish deadline 기본은 한 주기 (35 ms × N) 다. 요약의 행마다 `mean_shift_nodes` · `period_in_nodes` 가 남는다. timeout · crash 는 gtest XML 에 남지 않으니 ctest 요약 (`colcon test-result`) 으로 판정한다.
 
 ### Tracing
 
