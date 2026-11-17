@@ -26,6 +26,11 @@
 /// rows the node's new mode does not bind — what the OCP's
 /// ClearInactiveMultipliers clears. The report prints the flips.
 ///
+/// The shipped online iteration cap is held to the standing window: through
+/// the phase manager with a zero command, every online tick converges within
+/// it (the solver reports a solve converged in N iterations only with a cap
+/// of at least N + 1).
+///
 /// The same window through the locomotion phase manager (its node grid: node
 /// times from the grid index, the warm start shifted by the index difference)
 /// has no flip: a node keeps its mode from tick to tick, the hook clears
@@ -95,8 +100,9 @@ using Core = rtc::mpc::internal::MPCHandlerCore;
 constexpr int kTicks = 40;
 constexpr double kT0 = 20.0;
 
-/// The shipped solver section's tolerances and budgets.
-MPCSolverConfig ShippedSolver() {
+/// The tolerances and budgets these gates were registered with (the online
+/// pair then shipped; the walk window's bounds below are measured on it).
+MPCSolverConfig RegisteredSolver() {
   MPCSolverConfig s;
   s.prim_tol = 1e-4;
   s.dual_tol = 1e-4;
@@ -287,6 +293,26 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
     return index;
   }
 
+  /// The shipped stance gait with a zero command, 30 grid ticks on from the
+  /// first; returns the grid index.
+  std::int64_t StanceManager(rtc::mpc::LocomotionPhaseManager& m) const {
+    EXPECT_EQ(m.Load(tu::ShippedLocomotionYaml()), rtc::mpc::LocomotionPhaseError::kNoError);
+    rtc::mpc::FilteredCommand cmd = tu::RegisteredCommand();
+    cmd.v_x = 0.0;
+    cmd.v_y = 0.0;
+    cmd.omega_z = 0.0;
+    cmd.base_height = 0.7925;
+    m.SetCommand(cmd);
+    m.SetPolicyEnabled(false);
+    const MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
+    EXPECT_NE(GridTick(m, snap, 16.0).horizon, nullptr);
+    std::int64_t index = 0;
+    for (int i = 0; i < 30; ++i) {
+      EXPECT_NE(GridTick(m, snap, m.grid().Time(++index)).horizon, nullptr);
+    }
+    return index;
+  }
+
   [[nodiscard]] PhaseContext GridTick(rtc::mpc::LocomotionPhaseManager& m,
                                       const MPCStateSnapshot& snap, double t) const {
     const Eigen::VectorXd q = Eigen::Map<const Eigen::VectorXd>(snap.q.data(), model_.nq);
@@ -351,14 +377,14 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
     int flips{0};
   };
 
-  /// The shipped walk through the phase manager: a standing solve on the
-  /// walk window, then one tick per entry of @p shifts (the grid index moving
-  /// by it), each tick 0.4·dt into its node interval, the state the previous
-  /// solution's node at the shift.
-  std::vector<GridTickReport> GridRun(const MPCSolverConfig& solver,
-                                      const std::vector<int>& shifts) {
+  /// The shipped walk through the phase manager (@p stance: the stance
+  /// window instead): a standing solve on the window, then one tick per entry
+  /// of @p shifts (the grid index moving by it), each tick 0.4·dt into its
+  /// node interval, the state the previous solution's node at the shift.
+  std::vector<GridTickReport> GridRun(const MPCSolverConfig& solver, const std::vector<int>& shifts,
+                                      bool stance = false) {
     rtc::mpc::LocomotionPhaseManager m(handler_, tu::ShippedContactNames());
-    std::int64_t index = WalkManager(m);
+    std::int64_t index = stance ? StanceManager(m) : WalkManager(m);
     const double dt = tu::kKinoDt;
     MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
     PhaseContext ctx = GridTick(m, snap, m.grid().Time(index) + 0.4 * dt);
@@ -481,7 +507,8 @@ TEST_P(KinodynamicReceding, TheStandingSolveConvergesThenTheOnlineBudgetRuns) {
     KinodynamicOCP ocp(cfg_);
     Core core;
     const PhaseContext ctx = Context(h.get());
-    ASSERT_EQ(core.Init(ShippedSolver(), handler_, {}, ctx, ocp), rtc::mpc::MPCInitError::kNoError);
+    ASSERT_EQ(core.Init(RegisteredSolver(), handler_, {}, ctx, ocp),
+              rtc::mpc::MPCInitError::kNoError);
     ASSERT_TRUE(core.InitialSolvePending());
     auto out = std::make_unique<MPCSolution>();
     const auto t0 = std::chrono::steady_clock::now();
@@ -506,13 +533,42 @@ TEST_P(KinodynamicReceding, TheStandingSolveConvergesThenTheOnlineBudgetRuns) {
   }
 }
 
+// The shipped online cap on the standing window, through the phase manager
+// (zero command, the stance gait, the state the previous plan's node 1): the
+// standing solve converges, then every online tick converges within the cap —
+// in at most cap − 1 iterations, since a solve that needs exactly the cap is
+// reported unconverged. The probe of this window converged every tick in 17
+// iterations. Semi-implicit Euler (the shipped integrator) only.
+TEST_P(KinodynamicReceding, TheShippedOnlineCapConvergesTheStandingWindow) {
+  if (std::string_view(GetParam()) != "semi_implicit_euler") {
+    GTEST_SKIP() << "the shipped integrator only";
+  }
+  MPCSolverConfig solver = RegisteredSolver();
+  solver.max_iters = tu::kShippedOnlineMaxIters;
+  const std::vector<GridTickReport> ticks =
+      GridRun(solver, std::vector<int>(kTicks, 1), /*stance=*/true);
+  ASSERT_EQ(ticks.size(), static_cast<std::size_t>(kTicks + 1));
+  ReportGrid(GetParam(), "stance window, shipped online cap", ticks);
+  EXPECT_TRUE(ticks[0].converged) << "the standing solve";
+  int converged = 0;
+  int most = 0;
+  for (std::size_t n = 1; n < ticks.size(); ++n) {
+    converged += ticks[n].converged ? 1 : 0;
+    most = std::max(most, ticks[n].iterations);
+    EXPECT_TRUE(ticks[n].converged) << "tick " << n << ": " << ticks[n].iterations << " iterations";
+  }
+  std::printf("[report] %s stance window, cap %d: converged %d / %d, most %d iterations\n",
+              GetParam(), solver.max_iters, converged, kTicks, most);
+  EXPECT_LT(most, solver.max_iters);
+}
+
 // ── Receding walk window ────────────────────────────────────────────────────
 
 // 50 iterations and 20 AL iterations a tick (the standing budget the same, so
 // every tick runs as the probe's did); every tick's inactive-row multipliers
 // are +0.0 after the solve.
 TEST_P(KinodynamicReceding, TheWalkWindowRecedesWithinThePreregisteredBounds) {
-  MPCSolverConfig solver = ShippedSolver();
+  MPCSolverConfig solver = RegisteredSolver();
   solver.max_initial_iters = 50;
   const std::vector<Tick> ticks = Run(solver);
   ASSERT_EQ(ticks.size(), static_cast<std::size_t>(kTicks + 1));
@@ -561,7 +617,7 @@ TEST_P(KinodynamicReceding, TheWalkWindowRecedesWithinThePreregisteredBounds) {
 // Euler run peaks at 3.0 on a tick where the next phase enters the horizon's
 // end — the publish rule's question, not this gate's.
 TEST_P(KinodynamicReceding, TheOnlineBudgetKeepsThePrimalResidualBounded) {
-  MPCSolverConfig solver = ShippedSolver();
+  MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 10;
   solver.max_online_al_iters = 1;
   const std::vector<Tick> ticks = Run(solver);
@@ -605,7 +661,7 @@ TEST_P(KinodynamicReceding, TheWarmStartShiftsByTheGridIndexBitForBit) {
   PhaseContext ctx = GridTick(m, snap, m.grid().Time(index));
   KinodynamicOCP ocp(cfg_);
   Core core;
-  MPCSolverConfig solver = ShippedSolver();
+  MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 10;
   solver.max_online_al_iters = 1;
   ASSERT_EQ(core.Init(solver, handler_, {}, ctx, ocp), rtc::mpc::MPCInitError::kNoError);
@@ -686,7 +742,7 @@ TEST_P(KinodynamicReceding, TheWarmStartShiftsByTheGridIndexBitForBit) {
 // the horizon offset and the per-node residuals as packed. Reports the tick
 // primal residual of the whole horizon and of the consumed segment.
 TEST_P(KinodynamicReceding, OnTheGridTheWalkRecedesWithoutAModeFlip) {
-  MPCSolverConfig solver = ShippedSolver();
+  MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 10;
   solver.max_online_al_iters = 1;
   const std::vector<GridTickReport> ticks = GridRun(solver, std::vector<int>(kTicks, 1));
@@ -725,7 +781,7 @@ TEST_P(KinodynamicReceding, OnTheGridTheWalkRecedesWithoutAModeFlip) {
 // an overrun): the warm start moves by each, and through the touch-downs and
 // lift-offs of a stride no stage carries another mode than its node's.
 TEST_P(KinodynamicReceding, OnTheGridAnOverrunShiftsTwoNodesWithoutAModeLeak) {
-  MPCSolverConfig solver = ShippedSolver();
+  MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 10;
   solver.max_online_al_iters = 1;
   constexpr std::array<int, 5> kPattern = {1, 1, 0, 2, 1};
@@ -767,7 +823,7 @@ TEST_P(KinodynamicReceding, AGridIndexThatGoesBackOrJumpsColdSeeds) {
   PhaseContext ctx = GridTick(m, snap, m.grid().Time(index));
   KinodynamicOCP ocp(cfg_);
   Core core;
-  MPCSolverConfig solver = ShippedSolver();
+  MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 3;
   solver.max_initial_iters = 3;
   solver.max_online_al_iters = 1;
@@ -897,7 +953,7 @@ class SolverThreadIcvs {
 
 /// The online budget the serial reference was measured with on the dev PC.
 MPCSolverConfig MeasuredOnlineBudget() {
-  MPCSolverConfig s = ShippedSolver();
+  MPCSolverConfig s = RegisteredSolver();
   s.max_iters = 3;
   s.max_online_al_iters = 1;
   return s;

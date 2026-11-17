@@ -1,8 +1,9 @@
 #pragma once
 
 /// @file shipped_walk_yaml.hpp
-/// @brief The g1_loco profile's gait, reference, swing and terrain sections as
-///        shipped — copies, since this package reads no profile file. Text
+/// @brief The g1_loco profile's gait, reference, swing and terrain sections
+///        and its online iteration cap as shipped — copies, since this
+///        package reads no profile file. Text
 ///        only, with no dependency, so a suite that does read the installed
 ///        profile (integrated_bringup's test_locomotion_mpc_config) can hold
 ///        these copies to it; shipped_walk_fixture.hpp builds the walk from
@@ -91,5 +92,9 @@ impact_proximity:
 inline constexpr const char* kShippedTerrainYaml = R"(
 height: 0.0
 )";
+
+/// The g1_loco profile's online iteration cap (`mpc.solver.max_iters`), as
+/// shipped — a copy, held to the installed profile like the sections above.
+inline constexpr int kShippedOnlineMaxIters = 18;
 
 }  // namespace rtc::mpc::test_utils
