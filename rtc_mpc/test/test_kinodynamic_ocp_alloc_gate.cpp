@@ -7,11 +7,15 @@
 ///        control and the constraint residuals of a trajectory allocate
 ///        nothing beyond the ODE evaluations they make, nor does a running
 ///        stage (evaluate, first-order derivatives) beyond its dynamics step.
+///        The quadratic state, input and terminal costs of the default build
+///        (structured derivatives) allocate nothing through evaluate,
+///        gradients and Hessians.
 ///
 /// Both counters are armed: the operator-new counter (C++ allocations) and
 /// the C-level malloc gate (any library). malloc_gate.hpp may be included in
 /// exactly one translation unit per binary.
 
+#include "ocp/internal/structured_quadratic_costs.hpp"
 #include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_mpc/handler/kinodynamic_mpc.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
@@ -33,6 +37,7 @@
 #include <aligator/core/stage-data.hpp>
 #include <aligator/core/stage-model.hpp>
 #include <aligator/core/traj-opt-problem.hpp>
+#include <aligator/modelling/costs/sum-of-costs.hpp>
 #pragma GCC diagnostic pop
 
 #include <gtest/gtest.h>
@@ -44,6 +49,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <typeinfo>
 #include <utility>
 #include <vector>
 
@@ -250,6 +256,79 @@ TEST_F(KinodynamicOCPAllocGate, ASharedKinematicsStageAllocatesOnlyWhatItsDynami
     EXPECT_EQ(der.first, 0) << "stage " << k;
     EXPECT_EQ(eval.second, fwd.second) << "stage " << k;
     EXPECT_EQ(der.second, dfwd.second) << "stage " << k;
+  }
+}
+
+// The quadratic state and input costs of a running stage (stance and swing)
+// and the terminal cost: evaluate, gradients and Hessians allocate nothing
+// with the structured derivatives (the default build, checked to be the
+// structured classes and to have found the structure). Aligator's dense path
+// is reported beside it.
+TEST_F(KinodynamicOCPAllocGate, TheQuadraticCostsAllocateNothing) {
+  using Derivatives = KinodynamicOCP::QuadraticCostDerivatives;
+  using CostAbstract = aligator::CostAbstractTpl<double>;
+  using CostStack = aligator::CostStackTpl<double>;
+  auto h = tu::StanceHorizon(handler_, stand_);
+  tu::SwingContact(handler_, *h, 1, 8, 19, 0.05, 0.5);
+  for (const Derivatives derivatives : {Derivatives::kStructured, Derivatives::kDense}) {
+    const bool structured = derivatives == Derivatives::kStructured;
+    KinodynamicOCP ocp(cfg_, KinodynamicOCP::StageKinematics::kShared, derivatives);
+    ASSERT_EQ(ocp.Build(Context(h.get()), handler_, {}), OCPBuildError::kNoError);
+    // State and input of stages 0 and 12, then the terminal cost.
+    std::vector<const CostAbstract*> costs;
+    for (const std::size_t k : {std::size_t{0}, std::size_t{12}}) {
+      CostStack* stack = ocp.problem().stages_[k]->getCost<CostStack>();
+      ASSERT_NE(stack, nullptr);
+      costs.push_back(
+          stack->getComponent<CostAbstract>(std::string(KinodynamicOCP::kStateCostKey)));
+      costs.push_back(
+          stack->getComponent<CostAbstract>(std::string(KinodynamicOCP::kInputCostKey)));
+    }
+    costs.push_back(&*ocp.problem().term_cost_);
+    for (std::size_t i = 0; i < costs.size(); ++i) {
+      ASSERT_NE(costs[i], nullptr);
+      const bool input = i < 4 && i % 2 == 1;
+      const bool is_aligator = input ? typeid(*costs[i]) == typeid(KinodynamicOCP::QuadControlCost)
+                                     : typeid(*costs[i]) == typeid(KinodynamicOCP::QuadStateCost);
+      EXPECT_EQ(is_aligator, !structured) << "cost " << i;
+      if (structured) {
+        // A structured class that fell back to Aligator's path would pass the
+        // count below without covering the structured one.
+        const auto* sx = dynamic_cast<const rtc::mpc::internal::StructuredQuadStateCost*>(costs[i]);
+        const auto* su =
+            dynamic_cast<const rtc::mpc::internal::StructuredQuadControlCost*>(costs[i]);
+        ASSERT_TRUE(input ? su != nullptr : sx != nullptr) << "cost " << i;
+        ASSERT_TRUE(input ? su->structured() : sx->structured()) << "cost " << i;
+      }
+    }
+    Eigen::VectorXd x(model_.nq + model_.nv);
+    x << stand_, Eigen::VectorXd::Constant(model_.nv, 0.1);
+    x[0] += 0.03;
+    Eigen::VectorXd u(handler_.nu());
+    ASSERT_TRUE(ocp.ReferenceControl(12, u));
+    u.array() += 0.5;
+    std::vector<std::shared_ptr<aligator::CostDataAbstractTpl<double>>> data;
+    for (const CostAbstract* c : costs) {
+      data.push_back(c->createData());
+    }
+    for (std::size_t i = 0; i < costs.size(); ++i) {  // warm-up
+      costs[i]->evaluate(x, u, *data[i]);
+      costs[i]->computeGradients(x, u, *data[i]);
+      costs[i]->computeHessians(x, u, *data[i]);
+    }
+    const auto [news, mallocs] = Count([&] {
+      for (std::size_t i = 0; i < costs.size(); ++i) {
+        costs[i]->evaluate(x, u, *data[i]);
+        costs[i]->computeGradients(x, u, *data[i]);
+        costs[i]->computeHessians(x, u, *data[i]);
+      }
+    });
+    std::printf("[report] quadratic costs (%s): %lld C++ / %zu C allocations\n",
+                structured ? "structured" : "dense", static_cast<long long>(news), mallocs);
+    if (structured) {
+      EXPECT_EQ(news, 0);
+      EXPECT_EQ(mallocs, 0U);
+    }
   }
 }
 

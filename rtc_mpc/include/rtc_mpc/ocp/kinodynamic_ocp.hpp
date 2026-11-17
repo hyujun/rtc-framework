@@ -90,6 +90,21 @@
 /// operations on the same values); `kPerResidual` is the reference the shared stage is tested
 /// against. `ConstraintResiduals` evaluates on data of its own either way.
 ///
+/// ## Derivatives of the quadratic state and input costs
+///
+/// The running state and input costs and the terminal cost are Aligator's
+/// `QuadraticStateCostTpl` / `QuadraticControlCostTpl` (the handles
+/// `QuadStateCost` / `QuadControlCost` reach them either way), with diagonal
+/// weights. Built with `QuadraticCostDerivatives::kStructured` (the default),
+/// their gradient and Gauss–Newton Hessian are assembled from the residual's
+/// known sparsity: the state error's Jacobian is the identity but for the
+/// free-flyer root's 6 × 6 block, the input error's is `[0, I]` — so `H_xx =
+/// blkdiag(J_bᵀ W_b J_b, W_rest)`, `H_uu = W`, and no dense `Jᵀ W J`. With
+/// `kDense` they are Aligator's own (the dense product), the reference the
+/// structured path is tested against. Both are the same problem; the values
+/// agree to rounding. A model without a free-flyer root over revolute /
+/// prismatic joints, or non-diagonal weights, gets Aligator's path either way.
+///
 /// ## Threads and real time
 ///
 /// `Build` is configure time (allocates). `UpdateReferences`,
@@ -170,10 +185,19 @@ class KinodynamicOCP final : public OCPHandlerBase {
     kPerResidual,  ///< each residual, on its own data
   };
 
-  /// @param cfg         loaded for the model `Build` will be given
-  /// @param kinematics  see `StageKinematics` (same results either way)
-  explicit KinodynamicOCP(KinodynamicOCPConfig cfg,
-                          StageKinematics kinematics = StageKinematics::kShared);
+  /// @brief How the quadratic state, input and terminal costs compute their
+  ///        gradient and Hessian (a build option, not a config key).
+  enum class QuadraticCostDerivatives : std::uint8_t {
+    kStructured,  ///< from the residual Jacobian's block structure (when it has one)
+    kDense,       ///< Aligator's dense `Jᵀ W r` and `Jᵀ W J`
+  };
+
+  /// @param cfg          loaded for the model `Build` will be given
+  /// @param kinematics   see `StageKinematics` (same results either way)
+  /// @param derivatives  see `QuadraticCostDerivatives` (same results to rounding)
+  explicit KinodynamicOCP(
+      KinodynamicOCPConfig cfg, StageKinematics kinematics = StageKinematics::kShared,
+      QuadraticCostDerivatives derivatives = QuadraticCostDerivatives::kStructured);
 
   [[nodiscard]] OCPBuildError Build(const PhaseContext& ctx, const RobotModelHandler& model,
                                     const OCPLimits& limits) noexcept override;
@@ -224,6 +248,10 @@ class KinodynamicOCP final : public OCPHandlerBase {
 
   [[nodiscard]] StageKinematics stage_kinematics() const noexcept { return kinematics_; }
 
+  [[nodiscard]] QuadraticCostDerivatives quadratic_cost_derivatives() const noexcept {
+    return derivatives_;
+  }
+
  private:
   /// What `UpdateReferences` writes in stage k, resolved once after the
   /// problem is built (the problem owns the objects).
@@ -246,6 +274,7 @@ class KinodynamicOCP final : public OCPHandlerBase {
 
   KinodynamicOCPConfig cfg_;
   StageKinematics kinematics_{StageKinematics::kShared};
+  QuadraticCostDerivatives derivatives_{QuadraticCostDerivatives::kStructured};
   const RobotModelHandler* model_{nullptr};  // non-owning; set by Build
   KinodynamicDynamics dyn_{};
   std::optional<aligator::TrajOptProblemTpl<double>> problem_{};
