@@ -18,12 +18,16 @@
 #pragma GCC diagnostic pop
 
 #include <cmath>
+#include <stdexcept>
+#include <utility>
 
 namespace rtc::mpc {
 
-ContactKinematics::ContactKinematics(const Ode& ode)
+ContactKinematics::ContactKinematics(const Ode& ode) : ContactKinematics(ode, ode.createData()) {}
+
+ContactKinematics::ContactKinematics(const Ode& ode, std::shared_ptr<OdeData> ode_data_in)
     : pin_data(ode.pin_model_),
-      ode_data(ode.createData()),
+      ode_data(std::move(ode_data_in)),
       vdot(Eigen::VectorXd::Zero(ode.pin_model_.nv)),
       v_dq(Matrix6x::Zero(6, ode.pin_model_.nv)),
       v_dv(Matrix6x::Zero(6, ode.pin_model_.nv)),
@@ -32,11 +36,18 @@ ContactKinematics::ContactKinematics(const Ode& ode)
       a_da(Matrix6x::Zero(6, ode.pin_model_.nv)),
       jw(Matrix3x::Zero(3, ode.pin_model_.nv)),
       lin(Matrix3x::Zero(3, ode.pin_model_.nv)),
-      acc_jac(Matrix6x::Zero(6, ode.pin_model_.nv)) {}
+      acc_jac(Matrix6x::Zero(6, ode.pin_model_.nv)) {
+  if (ode_data == nullptr) {
+    throw std::invalid_argument("ContactKinematics: null ODE data");
+  }
+}
 
 void ContactKinematics::Forward(const Ode& ode, const ConstVectorRef& x, const ConstVectorRef& u) {
-  const pinocchio::Model& model = ode.pin_model_;
   ode.forward(x, u, *ode_data);
+  ForwardKinematics(ode.pin_model_, x);
+}
+
+void ContactKinematics::ForwardKinematics(const pinocchio::Model& model, const ConstVectorRef& x) {
   vdot = ode_data->xdot_.segment(model.nv, model.nv);
   pinocchio::forwardKinematics(model, pin_data, x.head(model.nq), x.segment(model.nq, model.nv),
                                vdot);
@@ -59,8 +70,12 @@ void ContactKinematics::FrameMotionOf(const pinocchio::Model& model, pinocchio::
 
 void ContactKinematics::Derivatives(const Ode& ode, const ConstVectorRef& x,
                                     const ConstVectorRef& u) {
-  const pinocchio::Model& model = ode.pin_model_;
   ode.dForward(x, u, *ode_data);
+  KinematicsDerivatives(ode.pin_model_, x);
+}
+
+void ContactKinematics::KinematicsDerivatives(const pinocchio::Model& model,
+                                              const ConstVectorRef& x) {
   pinocchio::computeForwardKinematicsDerivatives(model, pin_data, x.head(model.nq),
                                                  x.segment(model.nq, model.nv), vdot);
 }

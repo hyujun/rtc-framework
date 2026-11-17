@@ -1,5 +1,6 @@
 #include "rtc_mpc/ocp/kinodynamic_ocp.hpp"
 
+#include "ocp/internal/kinodynamic_stage_model.hpp"
 #include "rtc_mpc/reference/stage_reference.hpp"
 
 #pragma GCC diagnostic push
@@ -45,7 +46,8 @@ using EqualitySet = aligator::EqualityConstraintTpl<double>;
 
 }  // namespace
 
-KinodynamicOCP::KinodynamicOCP(KinodynamicOCPConfig cfg) : cfg_(std::move(cfg)) {}
+KinodynamicOCP::KinodynamicOCP(KinodynamicOCPConfig cfg, StageKinematics kinematics)
+    : cfg_(std::move(cfg)), kinematics_(kinematics) {}
 
 OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHandler& model,
                                     const OCPLimits& limits) noexcept {
@@ -138,9 +140,17 @@ OCPBuildError KinodynamicOCP::Build(const PhaseContext& ctx, const RobotModelHan
           KinodynamicError::kNoError) {
         return OCPBuildError::kInvalidCostConfig;
       }
-      StageModel stage(cost, *dyn);
-      stage.addConstraint(xyz::polymorphic<StageFunction>(equality), EqualitySet());
-      stages.emplace_back(std::move(stage));
+      if (kinematics_ == StageKinematics::kShared) {
+        // The equality is the stage's only constraint (kEqualityConstraint).
+        internal::KinodynamicStageModel stage(cost, *dyn, kEqualityConstraint,
+                                              std::string(kContactTrackingCostKey));
+        stage.addConstraint(xyz::polymorphic<StageFunction>(equality), EqualitySet());
+        stages.emplace_back(std::move(stage));
+      } else {
+        StageModel stage(cost, *dyn);
+        stage.addConstraint(xyz::polymorphic<StageFunction>(equality), EqualitySet());
+        stages.emplace_back(std::move(stage));
+      }
     }
     problem_.emplace(x0, stages, QuadStateCost(space, nu, x0, qf_w));
 

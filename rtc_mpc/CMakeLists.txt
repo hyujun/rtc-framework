@@ -59,6 +59,7 @@ add_library(rtc_mpc STATIC
   src/ocp/contact_tracking_residual.cpp
   src/ocp/kinodynamic_ocp_config.cpp
   src/ocp/kinodynamic_ocp.cpp
+  src/ocp/kinodynamic_stage_model.cpp
   src/phase/phase_cost_config.cpp
   src/phase/locomotion_phase_manager.cpp
   src/ocp/cost_factory.cpp

@@ -143,7 +143,10 @@ void ContactConstraintResidual::evaluate(const ConstVectorRef& x, const ConstVec
   }
   static_cast<void>(ReadMode(*ode_, d.stance));
   const pinocchio::Model& model = ode_->pin_model_;
-  d.kin.Forward(*ode_, x, u);
+  if (d.shared_kin == nullptr) {
+    d.kin.Forward(*ode_, x, u);
+  }
+  ContactKinematics& kin = d.Kinematics();
   d.evaluated = true;
   d.value_.setZero();
 
@@ -151,7 +154,7 @@ void ContactConstraintResidual::evaluate(const ConstVectorRef& x, const ConstVec
   const int rows = rows_per_contact();
   FrameMotion f;
   for (std::size_t k = 0; k < contact_ids_.size(); ++k) {
-    d.kin.FrameMotionOf(model, contact_ids_[k], f);
+    kin.FrameMotionOf(model, contact_ids_[k], f);
     const ContactHeightTarget& t = targets_[k];
     VectorRef r = d.value_.segment(static_cast<Eigen::Index>(k) * rows, rows);
     const double dz = f.position.z() - t.z;
@@ -199,13 +202,16 @@ void ContactConstraintResidual::computeJacobians(const ConstVectorRef& x, const 
   }
   const pinocchio::Model& model = ode_->pin_model_;
   const int nv = model.nv;
-  d.kin.Derivatives(*ode_, x, u);
+  if (d.shared_kin == nullptr) {
+    d.kin.Derivatives(*ode_, x, u);
+  }
+  ContactKinematics& kin = d.Kinematics();
 
   const FootConstraintGains& g = gains_;
   const int rows = rows_per_contact();
   for (std::size_t k = 0; k < contact_ids_.size(); ++k) {
     const pinocchio::FrameIndex fid = contact_ids_[k];
-    d.kin.FrameJacobian(model, fid, d.jx, d.ju);
+    kin.FrameJacobian(model, fid, d.jx, d.ju);
     const Eigen::Index o = static_cast<Eigen::Index>(k) * rows;
     MatrixRef jx = d.Jx_.middleRows(o, rows);
     MatrixRef ju = d.Ju_.middleRows(o, rows);
@@ -224,7 +230,7 @@ void ContactConstraintResidual::computeJacobians(const ConstVectorRef& x, const 
                   g.linear_acceleration_z * ku.row(kA + 2);
       if (force_size_ == 6) {
         // Tilt: the frame z axis a = R·e_z turns with δθ, δa = δθ × a.
-        const Eigen::Vector3d axis = d.kin.pin_data.oMf[fid].rotation().col(2);
+        const Eigen::Vector3d axis = kin.pin_data.oMf[fid].rotation().col(2);
         Eigen::Vector3d tilt;
         Eigen::Matrix3d de_da;
         FrameTilt(axis, normal_, kMinArcNorm, tilt, &de_da);

@@ -60,10 +60,11 @@
 /// As `ContactTrackingResidual`: bind each stage's copy to that stage's ODE
 /// after the problem is built and before its data is created (`createData`
 /// throws `std::logic_error` while unbound); the bound ODE must outlive the
-/// use. `Bind`, `SetFromStage`, `AcceptsStage` and the accessors are
-/// noexcept and do not allocate. `evaluate` and `computeJacobians` allocate
-/// nothing of their own; the equality's ODE evaluation (`dForward`) allocates
-/// inside the library. Unbound, every value and Jacobian entry is NaN.
+/// use. The equality's data may read kinematics its stage evaluated
+/// (`ContactConstraintData::shared_kin`). `Bind`, `SetFromStage`,
+/// `AcceptsStage` and the accessors are noexcept and do not allocate. `evaluate` and
+/// `computeJacobians` allocate nothing of their own; the equality's ODE evaluation (`dForward`)
+/// allocates inside the library. Unbound, every value and Jacobian entry is NaN.
 
 #include "rtc_mpc/dynamics/kinodynamic_dynamics.hpp"
 #include "rtc_mpc/ocp/contact_kinematics.hpp"
@@ -129,7 +130,20 @@ struct ContactConstraintData : aligator::StageFunctionDataTpl<double> {
 
   ContactConstraintData(int ndx, int nu, int nr, const KinodynamicDynamics::Ode& ode);
 
-  ContactKinematics kin;
+  /// @return the kinematics `evaluate` and `computeJacobians` read:
+  ///         `*shared_kin` when set, else `kin`.
+  [[nodiscard]] ContactKinematics& Kinematics() noexcept {
+    return shared_kin != nullptr ? *shared_kin : kin;
+  }
+
+  ContactKinematics kin;  ///< this data's own, evaluated by the residual
+  /// Non-owning; null by default. When set (by the stage that owns this
+  /// data — see `ContactKinematics`), its owner has run `ForwardKinematics`
+  /// before each `evaluate` and `KinematicsDerivatives` with the ODE
+  /// derivatives before each `computeJacobians`, at the same `(x, u)` and
+  /// through the bound ODE: the residual reads it and evaluates neither the
+  /// ODE nor the kinematics itself.
+  ContactKinematics* shared_kin{nullptr};
   std::vector<char> stance;  ///< each contact's mode at the last `evaluate`
   bool evaluated{false};     ///< `evaluate` ran on this data while bound
   Eigen::MatrixXd jx;        ///< `18 × 2·nv` — one frame's kinematic Jacobian

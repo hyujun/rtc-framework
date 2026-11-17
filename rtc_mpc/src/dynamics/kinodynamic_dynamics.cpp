@@ -165,17 +165,23 @@ KinodynamicError KinodynamicDynamics::MakeStageDynamics(
   return KinodynamicError::kNoError;
 }
 
-KinodynamicDynamics::Ode* KinodynamicDynamics::OdeOf(
-    aligator::StageModelTpl<double>& stage) noexcept {
+const KinodynamicDynamics::Ode* KinodynamicDynamics::OdeOf(
+    const aligator::StageModelTpl<double>& stage) noexcept {
   using Integrator = aligator::dynamics::ExplicitIntegratorAbstractTpl<double>;
   if (stage.dynamics_.valueless_after_move()) {
     return nullptr;
   }
-  auto* integrator = stage.getDynamics<Integrator>();
+  const auto* integrator = stage.getDynamics<Integrator>();
   if (integrator == nullptr || integrator->ode_.valueless_after_move()) {
     return nullptr;
   }
   return integrator->getDynamics<Ode>();
+}
+
+KinodynamicDynamics::Ode* KinodynamicDynamics::OdeOf(
+    aligator::StageModelTpl<double>& stage) noexcept {
+  // The same lookup; the stage is the caller's to mutate.
+  return const_cast<Ode*>(OdeOf(std::as_const(stage)));
 }
 
 bool KinodynamicDynamics::SetMode(Ode& ode, std::uint32_t mode) const noexcept {
