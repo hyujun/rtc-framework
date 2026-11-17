@@ -149,7 +149,6 @@ TEST_F(LocomotionMpcTest, AnImplausiblePlanFallsBackToIdleWithoutAFault) {
       {"a contact the model does not have", [](StandingStub& s) { s.mask = 0b111U; }},
       {"no support at all", [](StandingStub& s) { s.mask = 0U; }},
       {"a third of the weight", [](StandingStub& s) { s.fz_scale = 0.3; }},
-      {"a joint acceleration out of bounds", [](StandingStub& s) { s.joint_rate = 30.0; }},
       {"the base rolled past the bound", [](StandingStub& s) { s.base_tilt = 0.6; }},
       {"the base above the height range", [](StandingStub& s) { s.base_dz = 0.5; }},
       {"the base faster than the bound", [](StandingStub& s) { s.base_vx = 4.0; }},
@@ -175,6 +174,24 @@ TEST_F(LocomotionMpcTest, AnImplausiblePlanFallsBackToIdleWithoutAFault) {
     }
     ctrl_.reset();
   }
+}
+
+// A plan's joint accelerations are not judged (Plausible): a plan whose joint
+// rate flips sign each node — far past any joint's acceleration rating — is
+// followed, not refused.
+TEST_F(LocomotionMpcTest, APlanWithLargeJointAccelerationsIsFollowed) {
+  BringUpWithStub();
+  ReachStand();
+  const auto rejects = ctrl_->LastDiag().plausibility_rejects;
+  stub_->joint_rate = 30.0;
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->LastDiag().sample.a_joint_max > 1e3; }))
+      << "the stub's plan carries the large acceleration";
+  const auto followed = ctrl_->LastDiag().plan_id;
+  // Later plans, each with the same acceleration, are taken in turn.
+  ASSERT_TRUE(TickUntil([&] { return ctrl_->LastDiag().plan_id > followed; })) << SourceName();
+  EXPECT_EQ(ctrl_->Source(), Source::kStand) << SourceName();
+  EXPECT_EQ(ctrl_->LastDiag().plausibility_rejects, rejects);
+  EXPECT_FALSE(ctrl_->HasLatchedFault());
 }
 
 // ── A fresh plan refused in stand / walk ────────────────────────────────────
@@ -586,6 +603,7 @@ TEST(LocomotionMpcConfig, TheConsumerKeysAreRequiredAndChecked) {
   refused([](YAML::Node& c) { c["mpc"]["enabled"] = "maybe"; }, "not a bool");
   refused([](YAML::Node& c) { c["mpc"]["enable"] = true; }, "misspelt key");
   refused([](YAML::Node& c) { c["mpc"]["riccati"]["gain"] = 1.0; }, "unknown riccati key");
+  refused([](YAML::Node& c) { c["mpc"]["sanity"]["joint_accel"] = 500.0; }, "retired sanity key");
   const auto parsed = ParseLocomotionControllerConfig(MpcConfig());
   EXPECT_TRUE(parsed.mpc.present);
   EXPECT_TRUE(parsed.mpc.enabled);
