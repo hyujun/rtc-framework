@@ -394,6 +394,8 @@ TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsTheRegisteredOne) {
   EXPECT_EQ(s.dual_tol, 1e-4);
   EXPECT_EQ(s.mu_init, 1e-2);
   EXPECT_EQ(s.max_iters, 18);
+  EXPECT_EQ(s.max_iters, rtc::mpc::test_utils::kShippedOnlineMaxIters)
+      << "the copy rtc_mpc tests on";
   EXPECT_EQ(s.max_al_iters, 20);
   EXPECT_EQ(s.max_initial_iters, 300);
   EXPECT_EQ(s.max_online_al_iters, 20);

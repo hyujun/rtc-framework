@@ -29,17 +29,17 @@
 # solver: the tolerances the OCP's tests solve to. Until one solve converges
 # (after the build, a rebuild or a rejected solve) the MPC solves with
 # max_initial_iters and max_al_iters — the standing solve; after that with
-# max_iters and max_online_al_iters. The online pair here is provisional: it is
-# decided by the soak on the control PCs, not on this value. So are the two
-# publish rules: a solve whose tick ran past publish_deadline_ms (one node
-# interval) is not published, nor is a budget-exhausted one whose first nodes
-# — those read before the next plan — have a primal residual above
-# publish_prim_tol; both are decided by the control-PC soak.
-# max_iters is the iterations an online solve of the standing window converges
-# in (17) plus one: the solver tests convergence at the head of the next
-# iteration, so a solve that converges in N iterations reports converged only
-# with max_iters >= N + 1. A walking solve still unconverged there stops and
-# falls to the residual publish rule.
+# max_iters and max_online_al_iters. The online pair and the two publish rules
+# are provisional, decided by the soak on the control PCs: a solve whose tick
+# ran past publish_deadline_ms (one node interval) is not published, nor is a
+# budget-exhausted one whose first nodes — those read before the next plan —
+# have a primal residual above publish_prim_tol. Until the soak, max_iters is
+# set for the sim: one more than the iterations an online solve of the
+# standing window converges in. The solver tests convergence at the head of
+# the next iteration, so a solve that converges in N iterations reports it
+# only with max_iters >= N + 1; rtc_mpc's receding test holds the standing
+# window to this cap. A walking solve still unconverged there stops and falls
+# to the residual rule.
 #
 # The weights are the reference whole-body task's, unchanged:
 #   - state / terminal: its Q and Q_final diagonals. The base orientation is
