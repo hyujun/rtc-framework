@@ -9,7 +9,9 @@
 /// sections) and the OCP fixture (test_utils/kinodynamic_ocp_fixture.hpp).
 /// Twelve combinations: three scenarios × MPC period {60 Hz, 1/dt} ×
 /// integrator {semi-implicit Euler, RK2}, OMP_NUM_THREADS taken from the
-/// environment (ctest leaves it unset: set it to 1 for a measurement).
+/// environment (ctest leaves it unset: set it to 1 for a measurement). The
+/// "1/dt" combinations run at 1 / (N · dt) with N = `RTC_MPC_SOAK_PERIOD_NODES`
+/// (default 1; the controller's `period_nodes`); the 60 Hz ones skip when N ≠ 1.
 ///
 ///  - stance_static: the stance gait, the state the stand pose at rest;
 ///  - walk_rollout: stance until the first online tick, then the walk at
@@ -33,7 +35,10 @@
 /// the friction / CoP margins (every 10th online tick) of the window's first
 /// and second half.
 ///
-/// PASS conditions: no failed solve (exception, divergence, refusal); the
+/// PASS conditions: no failed solve (exception, divergence, refusal); over the
+/// whole window, the online ticks move at least 0.9 × the period's node count
+/// on average — the grid index's span over the ticks (the thread did not tick
+/// faster than its period; a slow host only raises it); the
 /// heap did not grow from the end of the warm-up to the end (the leak gate;
 /// judged only when the window after the warm-up is at least 30 s — the
 /// smoke reports it); the allocation counts do not grow late in the run —
@@ -60,7 +65,8 @@
 /// reader on a FIFO core would spin against a writer preempted on the same
 /// core, so the two are refused on one core), `RTC_MPC_SOAK_MAX_ITERS` / `RTC_MPC_SOAK_AL_ITERS`
 /// (the online budget, default 10 / 1), `RTC_MPC_SOAK_DEADLINE_MS` / `RTC_MPC_SOAK_PRIM_TOL` (the
-/// publish rules, default the shipped g1_loco values). The summary records the scheduling the MPC
+/// publish rules, default the shipped g1_loco values; the deadline is one period, so it scales
+/// with `RTC_MPC_SOAK_PERIOD_NODES`). The summary records the scheduling the MPC
 /// thread actually runs with (read back on it), not the requested one. An armed run exceeds the
 /// verification hook's test bound: run it by hand through
 /// `repo_scripts/scripts/with_verify_hold.sh` — the command and the control-PC recipe are in
@@ -167,6 +173,8 @@ struct Settings {
   int al_iters{1};
   double deadline_ms{kShippedDeadlineMs};
   double prim_tol{kShippedPrimTol};
+  int period_nodes{1};  ///< the 1/dt combinations' period, in node intervals
+  bool period_nodes_malformed{false};
 };
 
 Settings ReadSettings() {
@@ -197,7 +205,14 @@ Settings ReadSettings() {
   s.writer_cpu = static_cast<int>(EnvDouble("RTC_MPC_SOAK_WRITER_CPU", -1.0));
   s.max_iters = static_cast<int>(EnvDouble("RTC_MPC_SOAK_MAX_ITERS", 10.0));
   s.al_iters = static_cast<int>(EnvDouble("RTC_MPC_SOAK_AL_ITERS", 1.0));
-  s.deadline_ms = EnvDouble("RTC_MPC_SOAK_DEADLINE_MS", kShippedDeadlineMs);
+  if (const char* v = std::getenv("RTC_MPC_SOAK_PERIOD_NODES"); v != nullptr && *v != '\0') {
+    char* end = nullptr;
+    const long n = std::strtol(v, &end, 10);
+    s.period_nodes_malformed = end == v || *end != '\0' || n < 1 || n >= tu::kKinoNodes;
+    s.period_nodes = s.period_nodes_malformed ? 1 : static_cast<int>(n);
+  }
+  // One period, as the shipped deadline is at one node.
+  s.deadline_ms = EnvDouble("RTC_MPC_SOAK_DEADLINE_MS", kShippedDeadlineMs * s.period_nodes);
   s.prim_tol = EnvDouble("RTC_MPC_SOAK_PRIM_TOL", kShippedPrimTol);
   return s;
 }
@@ -228,8 +243,9 @@ double HeapBytes() {
 // ── Per tick, on the MPC thread ─────────────────────────────────────────────
 
 struct TickRecord {
-  double t{0.0};  ///< [s] since the run's start, at the handler's Solve entry
-  int shift{-1};  ///< grid index moved since the last good tick; −1 a cold seed
+  double t{0.0};               ///< [s] since the run's start, at the handler's Solve entry
+  int shift{-1};               ///< grid index moved since the last good tick; −1 a cold seed
+  std::int64_t node_index{0};  ///< the tick's grid index (the phase manager's clock)
   int iterations{0};
   bool ok{false};
   bool converged{false};
@@ -293,6 +309,7 @@ class SoakHandler final : public rtc::mpc::MPCHandlerBase {
       r.mallocs = gate.count();
     }
     r.solve_ms = std::chrono::duration<double, std::milli>(Clock::now() - entry).count();
+    r.node_index = ctx.node_index;
     const std::int64_t d = ctx.node_index - last_index_;
     r.shift = have_last_ && d >= 0 && d < tu::kKinoNodes ? static_cast<int>(d) : -1;
     r.ok = e == MPCSolveError::kNoError;
@@ -469,6 +486,8 @@ struct Summary {
   std::size_t shift3plus{0};
   std::size_t cold{0};
   std::size_t injected{0};
+  double mean_shift{0.0};       ///< grid nodes per online tick over the window
+  double period_in_nodes{0.0};  ///< the period, in node intervals
   std::size_t malloc_groups{0};
   std::size_t malloc_mismatched_groups{0};
   std::size_t malloc_drifting_groups{0};
@@ -652,7 +671,8 @@ std::string CsvHeader() {
   return "combination,window_s,online_ticks,solve_p50_ms,solve_p99_ms,solve_max_ms,over_period,"
          "online_overruns,standing_overruns,deadline_misses,withheld,cold_withheld,initial_ticks,"
          "failed,"
-         "published,shift0,shift1,shift2,shift3plus,cold,injected,malloc_groups,"
+         "published,shift0,shift1,shift2,shift3plus,cold,injected,mean_shift_nodes,period_in_nodes,"
+         "malloc_groups,"
          "malloc_mismatched_groups,malloc_judged_groups,malloc_drifting_groups,"
          "malloc_unjudged_late_growth,mallocs_per_iteration,heap_warm_B,heap_"
          "end_B,heap_growth_B,"
@@ -670,16 +690,16 @@ std::string CsvRow(const Summary& s) {
     << s.standing_overruns << ',' << s.deadline_misses << ',' << s.withheld << ','
     << s.cold_withheld << ',' << s.initial_ticks << ',' << s.failed << ',' << s.published << ','
     << s.shift0 << ',' << s.shift1 << ',' << s.shift2 << ',' << s.shift3plus << ',' << s.cold << ','
-    << s.injected << ',' << s.malloc_groups << ',' << s.malloc_mismatched_groups << ','
-    << s.malloc_judged_groups << ',' << s.malloc_drifting_groups << ','
-    << s.malloc_unjudged_late_growth << ',' << s.mallocs_per_iteration << ',' << s.heap_warm << ','
-    << s.heap_end << ',' << s.heap_growth << ',' << s.heap_excursion << ','
-    << (s.heap_judged ? 1 : 0) << ',' << s.prim_med_first << ',' << s.prim_med_second << ','
-    << s.consumed_med << ',' << s.consumed_max << ',' << s.friction_first << ','
-    << s.friction_second << ',' << s.cop_first << ',' << s.cop_second << ',' << s.applied_policy
-    << ',' << s.applied_priority << ',' << s.applied_cpus << ',' << s.writer_cpu << ','
-    << s.omp_threads << ',' << s.solver_threads << ',' << s.worker_slots << ',' << s.worker_cpus
-    << ',' << s.worker_policies << ',' << s.pool_state << ',' << s.host;
+    << s.injected << ',' << s.mean_shift << ',' << s.period_in_nodes << ',' << s.malloc_groups
+    << ',' << s.malloc_mismatched_groups << ',' << s.malloc_judged_groups << ','
+    << s.malloc_drifting_groups << ',' << s.malloc_unjudged_late_growth << ','
+    << s.mallocs_per_iteration << ',' << s.heap_warm << ',' << s.heap_end << ',' << s.heap_growth
+    << ',' << s.heap_excursion << ',' << (s.heap_judged ? 1 : 0) << ',' << s.prim_med_first << ','
+    << s.prim_med_second << ',' << s.consumed_med << ',' << s.consumed_max << ','
+    << s.friction_first << ',' << s.friction_second << ',' << s.cop_first << ',' << s.cop_second
+    << ',' << s.applied_policy << ',' << s.applied_priority << ',' << s.applied_cpus << ','
+    << s.writer_cpu << ',' << s.omp_threads << ',' << s.solver_threads << ',' << s.worker_slots
+    << ',' << s.worker_cpus << ',' << s.worker_policies << ',' << s.pool_state << ',' << s.host;
   return o.str();
 }
 
@@ -704,8 +724,8 @@ class SummaryWriter : public ::testing::Environment {
          << ", \"warmup\": " << set.warmup << ", \"cpu\": " << set.cpu
          << ", \"fifo_priority\": " << set.fifo_priority << ", \"max_iters\": " << set.max_iters
          << ", \"al_iters\": " << set.al_iters << ", \"deadline_ms\": " << set.deadline_ms
-         << ", \"prim_tol\": " << set.prim_tol << ", \"threads\": " << set.threads
-         << ", \"slots\": \"" <<
+         << ", \"prim_tol\": " << set.prim_tol << ", \"period_nodes\": " << set.period_nodes
+         << ", \"threads\": " << set.threads << ", \"slots\": \"" <<
         [&set] {
           std::string l;
           for (const int v : set.slots) {
@@ -787,8 +807,14 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   const Settings set = ReadSettings();
   const auto [scenario, sixty_hz, integrator] = GetParam();
   const std::string name = ComboName(GetParam());
+  ASSERT_FALSE(set.period_nodes_malformed)
+      << "RTC_MPC_SOAK_PERIOD_NODES must be an integer from 1 to " << tu::kKinoNodes - 1;
+  if (sixty_hz && set.period_nodes != 1) {
+    GTEST_SKIP() << "the 60 Hz period does not depend on RTC_MPC_SOAK_PERIOD_NODES";
+  }
   const double dt = tu::kKinoDt;
-  const double hz = sixty_hz ? 60.0 : 1.0 / dt;
+  // As the controller's: a whole number of node intervals.
+  const double hz = sixty_hz ? 60.0 : 1.0 / (set.period_nodes * dt);
   const bool walk = scenario != Scenario::kStanceStatic;
 
   // Under SCHED_FIFO the MPC thread is pinned and this thread (the state and
@@ -1047,6 +1073,10 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   // (solve error, phase manager error) → failed ticks, over the whole run
   std::map<std::pair<int, int>, std::size_t> failures;
   const double half = w0 + 0.5 * set.seconds;
+  // The grid index only grows: its span counts the nodes, however the online
+  // ticks between are classed.
+  std::int64_t first_index = 0;
+  std::int64_t last_index = 0;
   const double period_ms = 1e3 / hz;
   double heap_warm = -1.0;
   double heap_max = -1.0;
@@ -1065,7 +1095,10 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
     if (r.t < w0 || !r.ok || r.initial) {
       continue;
     }
-    ++s.online_ticks;
+    if (++s.online_ticks == 1) {
+      first_index = r.node_index;
+    }
+    last_index = r.node_index;
     solve_ms.push_back(r.solve_ms);
     s.over_period += r.solve_ms > period_ms;
     s.injected += r.injected;
@@ -1152,6 +1185,11 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   s.friction_second = Min(fr_second);
   s.cop_first = Min(cop_first);
   s.cop_second = Min(cop_second);
+  s.mean_shift = s.online_ticks > 1 ? static_cast<double>(last_index - first_index) /
+                                          static_cast<double>(s.online_ticks - 1)
+                                    : 0.0;
+  // Written apart from `hz`: the check must not inherit a wrong period.
+  s.period_in_nodes = sixty_hz ? 1.0 / (60.0 * dt) : set.period_nodes;
   Summaries().push_back(s);
 
   std::printf(
@@ -1164,7 +1202,8 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
       "[report]   overruns online %llu standing %llu; deadline misses %llu, withheld %llu (cold "
       "%llu), "
       "standing ticks %llu, failed %llu%s, published %llu\n"
-      "[report]   shifts 0:%zu 1:%zu 2:%zu 3+:%zu cold:%zu (injected holds %zu)\n"
+      "[report]   shifts 0:%zu 1:%zu 2:%zu 3+:%zu cold:%zu (injected holds %zu), mean %.2f nodes "
+      "(period %.2f)\n"
       "[report]   mallocs: %zu (shift, iterations) groups, %zu not constant%s; late growth judged "
       "on %zu, "
       "%zu growing, %zu reported only%s; "
@@ -1183,15 +1222,21 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
       static_cast<unsigned long long>(s.withheld), static_cast<unsigned long long>(s.cold_withheld),
       static_cast<unsigned long long>(s.initial_ticks), static_cast<unsigned long long>(s.failed),
       failure_kinds.c_str(), static_cast<unsigned long long>(s.published), s.shift0, s.shift1,
-      s.shift2, s.shift3plus, s.cold, s.injected, s.malloc_groups, s.malloc_mismatched_groups,
-      mismatches.c_str(), s.malloc_judged_groups, s.malloc_drifting_groups,
-      s.malloc_unjudged_late_growth, drifts.c_str(), s.mallocs_per_iteration, s.heap_warm,
-      s.heap_end, s.heap_growth, s.heap_excursion,
+      s.shift2, s.shift3plus, s.cold, s.injected, s.mean_shift, s.period_in_nodes, s.malloc_groups,
+      s.malloc_mismatched_groups, mismatches.c_str(), s.malloc_judged_groups,
+      s.malloc_drifting_groups, s.malloc_unjudged_late_growth, drifts.c_str(),
+      s.mallocs_per_iteration, s.heap_warm, s.heap_end, s.heap_growth, s.heap_excursion,
       s.heap_judged ? "judged" : "reported only: window after warm-up < 30 s", s.prim_med_first,
       s.prim_med_second, s.consumed_med, s.consumed_max, s.friction_first, s.friction_second,
       s.cop_first, s.cop_second);
 
   EXPECT_GT(s.online_ticks, 0U) << name;
+  // The node index follows the phase manager's clock, not the thread's period:
+  // ticking too often lowers the mean, overruns raise it.
+  EXPECT_GT(s.online_ticks, 1U) << name << ": no node span to measure";
+  EXPECT_GE(s.mean_shift, 0.9 * s.period_in_nodes)
+      << name << ": " << s.mean_shift << " nodes per tick for a " << s.period_in_nodes
+      << "-node period — the MPC thread ran faster than its period";
   EXPECT_EQ(s.failed, 0U) << name << ":" << failure_kinds;
   EXPECT_EQ(s.malloc_drifting_groups, 0U)
       << name << ": allocations grew late in the run:" << drifts;
