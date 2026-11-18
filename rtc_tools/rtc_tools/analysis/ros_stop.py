@@ -34,9 +34,6 @@ class StopFlag:
     def __call__(self, *_: object) -> None:
         self.requested = True
 
-    def __bool__(self) -> bool:
-        return self.requested
-
 
 @contextmanager
 def stop_handlers(flag: StopFlag) -> Iterator[StopFlag]:

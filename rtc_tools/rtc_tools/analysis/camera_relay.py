@@ -28,7 +28,6 @@ from __future__ import annotations
 import argparse
 import collections
 import random
-import signal
 import sys
 import time
 
@@ -36,6 +35,9 @@ import rclpy
 from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.signals import SignalHandlerOptions
+
+from rtc_tools.analysis.ros_stop import StopFlag, spin_until_stopped, stop_handlers
 
 DEFAULT_IN_TOPIC = "/sim/ball/camera_position"
 DEFAULT_OUT_TOPIC = "/sim/ball/camera_position_relay"
@@ -109,27 +111,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.in_topic == args.out_topic:
         parser.error("--in-topic and --out-topic must differ (a relay feeding itself)")
 
-    rclpy.init()
-    relay = CameraRelay(args)
-    stop = {"flag": False}
-
-    def _sig(*_):
-        stop["flag"] = True
-
-    signal.signal(signal.SIGINT, _sig)
-    signal.signal(signal.SIGTERM, _sig)
-    try:
-        while rclpy.ok() and not stop["flag"]:
-            rclpy.spin_once(relay, timeout_sec=0.05)
-    finally:
-        print(
-            f"camera_relay: received {relay.received}, forwarded {relay.forwarded}, "
-            f"dropped by prob {relay.dropped_prob}, dropped after flight start "
-            f"{relay.dropped_after}, still held {len(relay._held)}",
-            file=sys.stderr,
-        )
-        relay.destroy_node()
-        rclpy.shutdown()
+    stop = StopFlag()  # SIGINT / SIGTERM end the relay through it (ros_stop)
+    with stop_handlers(stop):
+        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+        relay = CameraRelay(args)
+        try:
+            spin_until_stopped(
+                lambda: rclpy.spin_once(relay, timeout_sec=0.05), rclpy.ok, lambda: False, stop
+            )
+        finally:
+            print(
+                f"camera_relay: received {relay.received}, forwarded {relay.forwarded}, "
+                f"dropped by prob {relay.dropped_prob}, dropped after flight start "
+                f"{relay.dropped_after}, still held {len(relay._held)}",
+                file=sys.stderr,
+            )
+            relay.destroy_node()
+            rclpy.try_shutdown()
     return 0
 
 

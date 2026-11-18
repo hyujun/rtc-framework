@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import signal
 import sys
 import time
 from pathlib import Path
@@ -46,9 +45,11 @@ from geometry_msgs.msg import PointStamped, Vector3Stamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Float64
 
+from rtc_tools.analysis.ros_stop import StopFlag, spin_until_stopped, stop_handlers
 from rtc_tools.analysis.vision_lane import (
     CAMERA_COLUMNS,
     DIAG_COLUMNS,
@@ -278,35 +279,36 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--nis-topic", default=DEFAULT_NIS_TOPIC)
     args = parser.parse_args(argv)
 
-    rclpy.init()
-    probe = VisionLaneProbe(Path(args.prefix), args)
-    stop = {"flag": False}
-
-    def _sigint(*_):
-        stop["flag"] = True
-
-    signal.signal(signal.SIGINT, _sigint)
-    signal.signal(signal.SIGTERM, _sigint)
+    stop = StopFlag()  # SIGINT / SIGTERM end the probe through it (ros_stop)
     deadline = time.monotonic() + args.duration_s if args.duration_s > 0 else None
-    try:
-        while rclpy.ok() and not stop["flag"]:
-            rclpy.spin_once(probe, timeout_sec=0.05)
-            if deadline is not None and time.monotonic() >= deadline:
-                break
-    finally:
-        probe.close()
-        counts = probe.counts
-        summary = (
-            f"vision_lane_probe: prediction best_effort {counts['best_effort']} / reliable "
-            f"{counts['reliable']}, camera {counts['camera']}, truth {counts['truth']}, "
-            f"diagnostics {counts['diag']}, layout mismatches {probe.layout_mismatches}"
-            + (f" (first: {probe.first_mismatch_reason})" if probe.first_mismatch_reason else "")
-        )
-        if probe.dump:
-            summary += f", innovation {counts['innovation']}, nis {counts['nis']} (dump mode)"
-        print(summary, file=sys.stderr)
-        probe.destroy_node()
-        rclpy.shutdown()
+    with stop_handlers(stop):
+        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+        probe = VisionLaneProbe(Path(args.prefix), args)
+        try:
+            spin_until_stopped(
+                lambda: rclpy.spin_once(probe, timeout_sec=0.05),
+                rclpy.ok,
+                lambda: deadline is not None and time.monotonic() >= deadline,
+                stop,
+            )
+        finally:
+            probe.close()
+            counts = probe.counts
+            summary = (
+                f"vision_lane_probe: prediction best_effort {counts['best_effort']} / reliable "
+                f"{counts['reliable']}, camera {counts['camera']}, truth {counts['truth']}, "
+                f"diagnostics {counts['diag']}, layout mismatches {probe.layout_mismatches}"
+                + (
+                    f" (first: {probe.first_mismatch_reason})"
+                    if probe.first_mismatch_reason
+                    else ""
+                )
+            )
+            if probe.dump:
+                summary += f", innovation {counts['innovation']}, nis {counts['nis']} (dump mode)"
+            print(summary, file=sys.stderr)
+            probe.destroy_node()
+            rclpy.try_shutdown()
     return 0
 
 

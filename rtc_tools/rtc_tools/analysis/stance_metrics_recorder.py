@@ -195,9 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(args.foot_pos) != len(args.contact):
         print("error: --foot-pos and --contact must list the same feet", file=sys.stderr)
         return 2
-    # SIGINT / SIGTERM end the recording through a flag (ros_stop): rclpy's
-    # own handlers would shut the context down mid-spin and lose it.
-    stop = StopFlag()
+    stop = StopFlag()  # SIGINT / SIGTERM end the recording through it (ros_stop)
     with stop_handlers(stop):
         rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
         node = StanceRecorder(args)
