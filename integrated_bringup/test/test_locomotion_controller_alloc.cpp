@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <thread>
 #include <vector>
 
@@ -37,6 +38,16 @@ class LocomotionAlloc : public LocomotionControllerTest {
     rtc::testing::ScopedAllocGate gate;
     static_cast<void>(ctrl_->Compute(state_));
     return gate.count();
+  }
+
+  // Gated ticks at about the control rate (the MPC's plans and their age are
+  // wall time) until `done` or 1000 ticks; the most any tick allocated goes
+  // into `worst`.
+  void GatedTickUntil(const std::function<bool()>& done, std::size_t& worst) {
+    for (int k = 0; k < 1000 && !done(); ++k) {
+      worst = std::max(worst, GatedTick(false));
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
   }
 };
 
@@ -104,21 +115,21 @@ TEST_F(LocomotionAlloc, TheMpcPathAllocatesNothing) {
   }
   EXPECT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kStand);
   s->joint_offset = 1e3;  // every new plan refused: held, then aged out (still: re-latched)
-  const auto held_then_lost = [this] {
-    return ctrl_->LastDiag().plan_holds > 0 &&
-           ctrl_->Source() == LocomotionController::ReferenceSource::kIdle;
-  };
-  for (int k = 0; k < 1000 && !held_then_lost(); ++k) {
-    worst = std::max(worst, GatedTick(false));
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));  // plans arrive at wall rate
-  }
+  GatedTickUntil(
+      [this] {
+        return ctrl_->LastDiag().plan_holds > 0 &&
+               ctrl_->Source() == LocomotionController::ReferenceSource::kIdle;
+      },
+      worst);
   EXPECT_GT(ctrl_->LastDiag().plan_holds, 0U);
   EXPECT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kIdle);
   s->joint_offset = 0.0;
   ASSERT_TRUE(TickUntil(
       [this] { return ctrl_->Source() == LocomotionController::ReferenceSource::kStand; }));
-  s->fail = true;  // the plan ages out: the fall back and the re-latch
-  for (int k = 0; k < 120; ++k) {
+  s->fail = true;  // the plan ages out (max_policy_age_s): the fall back and the re-latch
+  GatedTickUntil([this] { return ctrl_->Source() == LocomotionController::ReferenceSource::kIdle; },
+                 worst);
+  for (int k = 0; k < 20; ++k) {  // the re-latched pose, still under the gate
     worst = std::max(worst, GatedTick(false));
   }
   EXPECT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kIdle);

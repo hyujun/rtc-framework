@@ -27,14 +27,16 @@
 namespace rtc::mpc::test_utils {
 
 /// A window of the shipped walk at @p t0, straight at @p v_x [m/s], the
-/// shipped nominal pelvis height (0.7925 m): stance from `t0 − 4`, walk
-/// requested at once, taken over before `t0` (policy off).
+/// shipped nominal pelvis height (0.7925 m): stance from `t0 − 4 − lead`, walk
+/// requested at once, taken over before `t0` (policy off). @p lead [s] moves
+/// the warm-up, and with it every gait event, earlier against `t0` and its
+/// node grid; 0 is the window the gates without a lead were registered on.
 struct ShippedWalkWindow {
   rtc::mpc::GaitScheduler scheduler;
   rtc::mpc::StageReferenceBuilder builder;
 
   ShippedWalkWindow(const pinocchio::Model& model, const rtc::mpc::RobotModelHandler& handler,
-                    const Eigen::VectorXd& stand, double t0, double v_x) {
+                    const Eigen::VectorXd& stand, double t0, double v_x, double lead = 0.0) {
     rtc::mpc::GaitTable table;
     const std::vector<std::string> contacts = {"left_foot", "right_foot"};
     EXPECT_EQ(rtc::mpc::LoadGaitTable(YAML::Load(kShippedGaitYaml), contacts, table),
@@ -51,10 +53,11 @@ struct ShippedWalkWindow {
     rtc::mpc::FilteredCommand walk;
     walk.v_x = 0.5;
     walk.valid = true;
-    EXPECT_EQ(scheduler.Advance(t0 - 4.0, walk, rtc::mpc::PlanarVelocity{}),
+    EXPECT_EQ(scheduler.Advance(t0 - 4.0 - lead, walk, rtc::mpc::PlanarVelocity{}),
               rtc::mpc::GaitSchedulerError::kNoError);
     scheduler.RequestGait(2);
-    for (const double t : {t0 - 3.9, t0 - 3.0, t0 - 2.0, t0 - 1.0, t0}) {
+    for (const double t :
+         {t0 - 3.9 - lead, t0 - 3.0 - lead, t0 - 2.0 - lead, t0 - 1.0 - lead, t0}) {
       EXPECT_EQ(scheduler.Advance(t, walk, rtc::mpc::PlanarVelocity{}),
                 rtc::mpc::GaitSchedulerError::kNoError);
     }

@@ -15,6 +15,7 @@
 #include "rtc_mpc/reference/gait_scheduler.hpp"
 #include "rtc_mpc/reference/gait_table.hpp"
 #include "test_utils/panda_fixture.hpp"
+#include "test_utils/shipped_walk_yaml.hpp"
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -975,39 +976,16 @@ TEST(ContactSchedule, ToContactPlanMapsBitsToTheModelContactFrames) {
 // phase at t_s, and the next phase starts a phase length later — no interval
 // of a few ulp around t_s, whose start the anchor arithmetic rounds to either
 // side of it (a swing that short is refused by the swing planner). The
-// shipped table (stance → walk, the walk entering at double support), 1000
-// request times in [0.5, 1) s (seed 20261114; at that magnitude the anchor
-// arithmetic rounds above t_s for about one request in five), every window
-// until the switch completes.
+// shipped table (test_utils' copy; stance → walk, the walk entering at double
+// support), 1000 request times in [0.5, 1) s (seed 20261114; at that
+// magnitude the anchor arithmetic rounds above t_s for about one request in
+// five), every window until the switch completes.
 TEST(GaitSchedulerSwitch, TheEntryPhaseStartsExactlyAtTheSwitch) {
   rtc::mpc::GaitTable table;
   const std::vector<std::string> contacts = {"left_foot", "right_foot"};
-  ASSERT_EQ(rtc::mpc::LoadGaitTable(YAML::Load(R"(
-sequence: [stance, slow_walk, walk]
-min_dwell: 0.2
-switch_lead: 1.0
-gaits:
-  stance:
-    modes: [[left_foot, right_foot]]
-    switching_times: [0.0, 0.5]
-    faster_above: [0.1, 0.1]
-    slower_below: [0.0, 0.0]
-    measured_tolerance: [10.0, 10.0]
-  slow_walk:
-    modes: [[left_foot], [left_foot, right_foot], [right_foot], [left_foot, right_foot]]
-    switching_times: [0.0, 0.65, 0.85, 1.5, 1.7]
-    faster_above: [0.3, 0.2]
-    slower_below: [0.05, 0.05]
-    measured_tolerance: [0.05, 0.05]
-  walk:
-    modes: [[left_foot], [left_foot, right_foot], [right_foot], [left_foot, right_foot]]
-    switching_times: [0.0, 0.6, 0.7, 1.3, 1.4]
-    faster_above: [0.5, 0.35]
-    slower_below: [0.25, 0.15]
-    measured_tolerance: [0.05, 0.05]
-)"),
-                                    contacts, table),
-            rtc::mpc::GaitTableError::kNoError);
+  ASSERT_EQ(
+      rtc::mpc::LoadGaitTable(YAML::Load(rtc::mpc::test_utils::kShippedGaitYaml), contacts, table),
+      rtc::mpc::GaitTableError::kNoError);
   std::mt19937_64 rng(20261114);
   std::uniform_real_distribution<double> uniform(0.5, 1.0);
   int short_intervals = 0;

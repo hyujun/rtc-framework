@@ -62,8 +62,9 @@ MARGIN_MIN = -1e-5
 DEGRADED_FRACTION = 0.01
 ROWS_FRACTION = 0.95  # validity
 SCRIPT_LENGTH_TOL = 0.05  # validity: the logged script within 5 % of its sim-second length
-# The probe's plan-age p99 bound: the shipped max_policy_age_s (0.175 s: 3 node
-# intervals + a 2-node period) less 40 ms, the margin it first had at 0.14 s.
+# The probe's plan-age p99 bound: a timing budget, 3 node intervals + a 2-node
+# period (0.175 s) less 40 ms, the margin it first had at 0.14 s — not the
+# shipped max_policy_age_s, the hold tolerance for withheld solves.
 PROBE_AGE_P99_MS = 135.0
 
 MPC_LINE = re.compile(

@@ -12,7 +12,7 @@
 namespace rtc::mpc::test_utils {
 
 /// The g1_loco profile's walk gait and reference, as shipped (copies — this
-/// package reads no profile file): single support 0.6 s, double support
+/// package reads no profile file): walk single support 0.45 s, double support
 /// 0.1 s; q_default knees 0.1, hips and ankles −0.05, arm swing off.
 inline constexpr const char* kShippedGaitYaml = R"(
 sequence: [stance, slow_walk, walk]
@@ -27,13 +27,13 @@ gaits:
     measured_tolerance: [10.0, 10.0]
   slow_walk:
     modes: [[left_foot], [left_foot, right_foot], [right_foot], [left_foot, right_foot]]
-    switching_times: [0.0, 0.65, 0.85, 1.5, 1.7]
+    switching_times: [0.0, 0.45, 0.65, 1.1, 1.3]
     faster_above: [0.3, 0.2]
     slower_below: [0.05, 0.05]
     measured_tolerance: [0.05, 0.05]
   walk:
     modes: [[left_foot], [left_foot, right_foot], [right_foot], [left_foot, right_foot]]
-    switching_times: [0.0, 0.6, 0.7, 1.3, 1.4]
+    switching_times: [0.0, 0.45, 0.55, 1.0, 1.1]
     faster_above: [0.5, 0.35]
     slower_below: [0.25, 0.15]
     measured_tolerance: [0.05, 0.05]

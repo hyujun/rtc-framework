@@ -6,25 +6,26 @@
 ///        probe's measurements, and the multipliers of the rows a node's mode
 ///        makes inactive (every tick, +0.0 bit for bit).
 ///
-/// The receding gates were registered on the probe of the same window
-/// (shipped gait · reference · soft wrench cone, v_x 0.5, x0 = the previous
-/// solution's node 1, semi-implicit Euler, 40 ticks of 0.035 s from t = 20):
-/// with 50 iterations and 20 AL iterations a tick, 16 of 40 ticks converged
-/// in 1449 iterations (median 50 a tick); with 10 and 1, the tick primal
-/// residual had median 0.0852 and maximum 1.25. Gates: converged ticks
-/// ≥ 0.9 × 16, Σ iterations ≤ 2 × 1449, median ≤ 2 × 50, converged ticks'
-/// prim ≤ the tolerance; online prim median ≤ 2 × 0.0852 (the maximum is
-/// reported — see that test).
-/// RK2 is reported (no control).
+/// The receding gates are registered on this window as the suite itself
+/// measured it once on the shipped walk (single support 0.45 s; shipped
+/// reference · soft wrench cone, v_x 0.5, x0 = the previous solution's node 1,
+/// semi-implicit Euler, 40 ticks of 0.035 s from t = 20), by the rule the
+/// first registration used (twice the probe's iterations and residuals, 0.9 ×
+/// its converged ticks): with 50 iterations and 20 AL iterations a tick, on
+/// the window led by kWalkLead, 15 of 40 ticks converged in 1675 iterations
+/// (median 50 a tick); with 10 and 1, on the window without the lead, the
+/// tick primal residual had median 0.540 and maximum 3.24. Gates: converged
+/// ticks ≥ 0.9 × 15, Σ iterations ≤ 2 × 1675, median ≤ 2 × 50, converged
+/// ticks' prim ≤ the tolerance; online prim median ≤ 2 × 0.540 (the maximum
+/// is reported — see that test). RK2 is reported (no control).
 ///
-/// On that window the double-support → single-support switches fall on the
-/// node grid (t = 20 + n·dt, events every 0.7 s from an anchor 3.5 s before
-/// it): the same instant is `t0 + k·dt` one tick and `t0' + (k − 1)·dt` the
-/// next, rounded to either side of the event, so the half-open mode lookup
-/// gives a node already in the horizon another mode (the double-support
-/// block is 2 or 3 nodes wide). The shift then carries multipliers into
-/// rows the node's new mode does not bind — what the OCP's
-/// ClearInactiveMultipliers clears. The report prints the flips.
+/// On the led window the double-support → single-support switches fall on
+/// the node grid: the same instant is `t0 + k·dt` one tick and
+/// `t0' + (k − 1)·dt` the next, rounded to either side of the event, so the
+/// half-open mode lookup gives a node already in the horizon another mode.
+/// The shift then carries multipliers into rows the node's new mode does not
+/// bind — what the OCP's ClearInactiveMultipliers clears. The report prints
+/// the flips; TheRecedingWalkWindowsScheduleFlips holds the premise.
 ///
 /// The shipped online iteration cap is held to the standing window: through
 /// the phase manager with a zero command, every online tick converges within
@@ -99,6 +100,11 @@ using Core = rtc::mpc::internal::MPCHandlerCore;
 
 constexpr int kTicks = 40;
 constexpr double kT0 = 20.0;
+// The walk window's warm-up lead [s] (ShippedWalkWindow): the smallest of
+// 0, 0.005, … whose 40 ticks' mode grid flips, chosen from the schedule alone
+// before any gate below was measured on it. Without it the shipped walk's
+// switches (every 0.55 s) miss the node grid in this window and nothing flips.
+constexpr double kWalkLead = 0.010;
 
 /// The tolerances and budgets these gates were registered with (the online
 /// pair then shipped; the walk window's bounds below are measured on it).
@@ -200,13 +206,59 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
     return bad;
   }
 
+  /// The mode flips of Run's window over ticks 1 … kTicks from the schedule
+  /// alone: the scheduler and the reference builder, no solve, the stand pose
+  /// as every tick's state (a node's mode is the schedule's, not the state's).
+  [[nodiscard]] int ScheduleFlips(double lead) const {
+    tu::ShippedWalkWindow walk(model_, handler_, stand_, kT0, 0.5, lead);
+    const MPCStateSnapshot snap = tu::SnapshotAt(model_, stand_);
+    std::vector<std::uint32_t> prev(static_cast<std::size_t>(tu::kKinoNodes + 1), 0U);
+    int flips = 0;
+    for (int n = 0; n <= kTicks; ++n) {
+      if (n > 0) {
+        const double t = kT0 + n * tu::kKinoDt;
+        EXPECT_EQ(walk.scheduler.Advance(t, walk.cmd, rtc::mpc::PlanarVelocity{}),
+                  rtc::mpc::GaitSchedulerError::kNoError);
+        EXPECT_EQ(walk.builder.Build(walk.scheduler, snap, walk.cmd),
+                  rtc::mpc::ReferenceError::kNoError);
+      }
+      const HorizonReference& h = walk.horizon();
+      if (n > 0) {
+        flips += ModeFlips(prev, h);
+      }
+      KeepModes(h, prev);
+    }
+    return flips;
+  }
+
+  /// The nodes of @p h whose mode differs from the next node's mode in
+  /// @p prev, the previous tick's modes (the window moves one node a tick).
+  [[nodiscard]] static int ModeFlips(const std::vector<std::uint32_t>& prev,
+                                     const HorizonReference& h) {
+    int flips = 0;
+    for (int k = 0; k < tu::kKinoNodes; ++k) {
+      flips += prev[static_cast<std::size_t>(k + 1)] != h.stages[static_cast<std::size_t>(k)].mode;
+    }
+    return flips;
+  }
+
+  /// @p h's node modes into @p modes (kKinoNodes + 1 of them).
+  static void KeepModes(const HorizonReference& h, std::vector<std::uint32_t>& modes) {
+    modes.assign(static_cast<std::size_t>(tu::kKinoNodes + 1), 0U);
+    for (int k = 0; k <= tu::kKinoNodes; ++k) {
+      modes[static_cast<std::size_t>(k)] = h.stages[static_cast<std::size_t>(k)].mode;
+    }
+  }
+
   /// Ticks 0 … kTicks of the shipped walk from the stand pose, each tick's
   /// state the previous solution's node 1. Tick 0 is the cold start (the
-  /// standing solve); `solver` sets both budgets.
+  /// standing solve); `solver` sets both budgets; `lead` is the window's
+  /// warm-up lead (ShippedWalkWindow).
   std::vector<Tick> Run(const MPCSolverConfig& solver, std::vector<Capture>* captures = nullptr,
                         KinodynamicOCP::QuadraticCostDerivatives derivatives =
-                            KinodynamicOCP::QuadraticCostDerivatives::kStructured) {
-    tu::ShippedWalkWindow walk(model_, handler_, stand_, kT0, 0.5);
+                            KinodynamicOCP::QuadraticCostDerivatives::kStructured,
+                        double lead = 0.0) {
+    tu::ShippedWalkWindow walk(model_, handler_, stand_, kT0, 0.5, lead);
     KinodynamicOCP ocp(cfg_, KinodynamicOCP::StageKinematics::kShared, derivatives);
     Core core;
     PhaseContext ctx = Context(&walk.horizon());
@@ -229,16 +281,11 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
       Tick tick;
       for (int k = 0; k <= tu::kKinoNodes; ++k) {
         tick.modes += static_cast<char>('0' + h.stages[static_cast<std::size_t>(k)].mode);
-        if (!prev_modes.empty() && k < tu::kKinoNodes &&
-            prev_modes[static_cast<std::size_t>(k + 1)] !=
-                h.stages[static_cast<std::size_t>(k)].mode) {
-          ++tick.mode_flips;
-        }
       }
-      prev_modes.assign(static_cast<std::size_t>(tu::kKinoNodes + 1), 0U);
-      for (int k = 0; k <= tu::kKinoNodes; ++k) {
-        prev_modes[static_cast<std::size_t>(k)] = h.stages[static_cast<std::size_t>(k)].mode;
+      if (!prev_modes.empty()) {
+        tick.mode_flips = ModeFlips(prev_modes, h);
       }
+      KeepModes(h, prev_modes);
       const auto t0 = std::chrono::steady_clock::now();
       const MPCSolveError e = core.Solve(ctx, snap, ocp, *out);
       tick.ms =
@@ -583,13 +630,21 @@ TEST_P(KinodynamicReceding, TheShippedOnlineBudgetKeepsTheStandingWindowPublisha
 
 // ── Receding walk window ────────────────────────────────────────────────────
 
+// The 50 / 20 window's premise, from the schedule alone: its mode grid flips
+// (the case the inactive-multiplier hook is for). A gait change that moves
+// every switch off the node grid fails here, not as a silent zero below.
+TEST_P(KinodynamicReceding, TheRecedingWalkWindowsScheduleFlips) {
+  EXPECT_GT(ScheduleFlips(kWalkLead), 0) << "lead " << kWalkLead;
+}
+
 // 50 iterations and 20 AL iterations a tick (the standing budget the same, so
-// every tick runs as the probe's did); every tick's inactive-row multipliers
-// are +0.0 after the solve.
+// every tick runs as the probe's did), on the window led by kWalkLead; every
+// tick's inactive-row multipliers are +0.0 after the solve.
 TEST_P(KinodynamicReceding, TheWalkWindowRecedesWithinThePreregisteredBounds) {
   MPCSolverConfig solver = RegisteredSolver();
   solver.max_initial_iters = 50;
-  const std::vector<Tick> ticks = Run(solver);
+  const std::vector<Tick> ticks =
+      Run(solver, nullptr, KinodynamicOCP::QuadraticCostDerivatives::kStructured, kWalkLead);
   ASSERT_EQ(ticks.size(), static_cast<std::size_t>(kTicks + 1));
   Report(GetParam(), ticks);
 
@@ -621,8 +676,8 @@ TEST_P(KinodynamicReceding, TheWalkWindowRecedesWithinThePreregisteredBounds) {
   EXPECT_GT(cleared, 0U) << "the hook fired on the flipped nodes";
   EXPECT_LE(worst_conv_prim, solver.prim_tol);
   if (std::string_view(GetParam()) == "semi_implicit_euler") {
-    EXPECT_GE(conv, 15) << "0.9 × 16";
-    EXPECT_LE(sum_it, 2 * 1449);
+    EXPECT_GE(conv, 14) << "0.9 × 15";
+    EXPECT_LE(sum_it, 2 * 1675);
     EXPECT_LE(Median(its), 2 * 50.0);
   }
 }
@@ -630,11 +685,13 @@ TEST_P(KinodynamicReceding, TheWalkWindowRecedesWithinThePreregisteredBounds) {
 // The online budget (10 iterations, 1 AL iteration a tick) after a standing
 // solve that converged: the tick primal residual — what a publish rule on the
 // residual would read — has a median within twice the probe's. The maximum is
-// reported, not gated: the probe's bound (2 × 1.25) was registered with a tick
-// 0 of 50 iterations and 1 AL iteration, which the standing solve replaces
-// (it runs until converged); from the converged tick 0 the semi-implicit
-// Euler run peaks at 3.0 on a tick where the next phase enters the horizon's
-// end — the publish rule's question, not this gate's.
+// reported, not gated: the first probe's bound (2 × 1.25) was registered with
+// a tick 0 of 50 iterations and 1 AL iteration, which the standing solve
+// replaces (it runs until converged); from the converged tick 0 the
+// semi-implicit Euler run peaks at 3.2 on a tick where the next phase enters
+// the horizon's end — the publish rule's question, not this gate's. This test
+// runs the window without kWalkLead: it does not need a flip, and on the led
+// window RK2's standing solve does not converge in its budget.
 TEST_P(KinodynamicReceding, TheOnlineBudgetKeepsThePrimalResidualBounded) {
   MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 10;
@@ -659,8 +716,8 @@ TEST_P(KinodynamicReceding, TheOnlineBudgetKeepsThePrimalResidualBounded) {
     EXPECT_EQ(ticks[n].inactive_nonzero, 0) << "tick " << n;
   }
   if (std::string_view(GetParam()) == "semi_implicit_euler") {
-    EXPECT_LE(med, 2 * 0.0852);
-    std::printf("[report] %s online prim max %.3g against the probe's 2 x 1.25 (not gated)\n",
+    EXPECT_LE(med, 2 * 0.540);
+    std::printf("[report] %s online prim max %.3g against the first probe's 2 x 1.25 (not gated)\n",
                 GetParam(), worst);
   }
 }
@@ -997,13 +1054,15 @@ TEST(StageParallelComparison, TwoNonFiniteSolvesAreNotTheSameSolve) {
 // Riccati recursion stays serial. Every tick of the walk window — the standing
 // solve, the online ticks, and the mode changes the window crosses — must
 // reproduce the serial solve exactly, for every thread count the layout can
-// give the solver. The threads here are unpinned: equivalence does not depend
-// on placement, and a host with fewer cores still runs every count.
+// give the solver. The window is the one led by kWalkLead, so it crosses mode
+// flips. The threads here are unpinned: equivalence does not depend on
+// placement, and a host with fewer cores still runs every count.
 TEST_P(KinodynamicReceding, StageParallelSolvesReproduceTheSerialSolveBitForBit) {
   const SolverThreadIcvs icvs;
   const MPCSolverConfig serial = MeasuredOnlineBudget();
+  constexpr auto kDerivatives = KinodynamicOCP::QuadraticCostDerivatives::kStructured;
   std::vector<Capture> ser;
-  const std::vector<Tick> ser_ticks = Run(serial, &ser);
+  const std::vector<Tick> ser_ticks = Run(serial, &ser, kDerivatives, kWalkLead);
   ASSERT_EQ(ser.size(), static_cast<std::size_t>(kTicks + 1));
   int flips = 0;
   for (const Tick& t : ser_ticks) {
@@ -1011,12 +1070,13 @@ TEST_P(KinodynamicReceding, StageParallelSolvesReproduceTheSerialSolveBitForBit)
   }
   std::printf("[report] %s: %zu ticks compared per thread count, %d mode flips crossed\n",
               GetParam(), ser.size(), flips);
+  EXPECT_GT(flips, 0) << "the window crosses mode flips";
   for (int n = 2; n <= 4; ++n) {
     MPCSolverConfig par = serial;
     par.num_threads = n;
     par.worker_capacity = n - 1;
     std::vector<Capture> got;
-    const std::vector<Tick> ticks = Run(par, &got);
+    const std::vector<Tick> ticks = Run(par, &got, kDerivatives, kWalkLead);
     ASSERT_EQ(got.size(), ser.size()) << n << " threads";
     for (std::size_t k = 0; k < got.size(); ++k) {
       ExpectSameSolve(got[k], ser[k], std::to_string(n) + " threads, tick " + std::to_string(k));
