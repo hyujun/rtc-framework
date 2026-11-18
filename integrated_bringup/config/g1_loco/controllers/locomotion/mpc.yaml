@@ -14,7 +14,10 @@
 #                     pose only. The launches set it from enable_mpc (default false).
 #   period_nodes      the MPC thread's period in node intervals (2 → 1 / 0.070 s).
 #   max_policy_age_s  a plan whose observation is older than this is dropped:
-#                     3 node intervals + one period.
+#                     five periods. At 3 node intervals + one period (0.175 s)
+#                     the plan was lost on the sim when the online solves just
+#                     after a contact switch were withheld two to four periods
+#                     in a row (their first nodes over publish_prim_tol).
 #   riccati.enabled   the plan's feedback gain added to the acceleration
 #                     reference — off (the manager reads an absent key as on);
 #                     the other riccati keys are the manager's (rtc_mpc
@@ -77,7 +80,7 @@ locomotion_controller:
   mpc:
     enabled: true                     # the launches override it from enable_mpc
     period_nodes: 2
-    max_policy_age_s: 0.175           # [s] 3 × 0.035 + one period (0.070)
+    max_policy_age_s: 0.35            # [s] 5 periods (0.070)
     riccati:
       enabled: false
       gain_scale: 1.0

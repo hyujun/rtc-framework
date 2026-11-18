@@ -8,8 +8,14 @@
 #
 # Values are those the W6-F01 gates were registered on (#1039): every foot
 # task works while its contact is released (swing), the torso task holds the
-# orientation only, the force task pulls λ toward the MPC's. Retuning belongs to
-# the sim evaluation (W8).
+# orientation only, the force task pulls λ toward the MPC's. Further retuning
+# belongs to the sim evaluation (W8).
+#
+# Except contact.patch_half_length_y and tasks.force.weight, set by the walking
+# evaluation on the sim: with the CoP bound at the sole's edge (0.03) the stance
+# CoP sat on that bound most of the single support and the ankle torque rolled
+# the foot over its edge; the bound inset to 0.02 and the force task 100× harder
+# (λ kept nearer the plan's) together brought the stance roll down by half.
 #
 # solver.warm_start / constraints.contact.inactive_lambda: each solve starts
 # from the previous result with ProxQP's proximal step reset (from the
@@ -32,7 +38,7 @@ locomotion_controller:
       friction_coeff: 0.4
       friction_faces: 4
       patch_half_length_x: 0.09        # [m] sole half length
-      patch_half_length_y: 0.03        # [m] sole half width
+      patch_half_length_y: 0.02        # [m] CoP bound, inside the sole half width (0.03)
       torsional_friction_coeff: 0.0
       t_ramp: 0.0                      # [s] force ramp on a support change
     tasks:
@@ -46,7 +52,7 @@ locomotion_controller:
         kd: [0, 0, 0, 20, 20, 20]
         mask: [0, 0, 0, 1, 1, 1]
         weight: 10.0
-      force: {weight: 1.0e-3}
+      force: {weight: 0.1}
       # The CoM over its reference in the horizontal plane (the height is the
       # posture's). Without it nothing holds the base's horizontal position
       # against the plant: on the sim the stance rocked from foot to foot at
