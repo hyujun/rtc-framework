@@ -97,23 +97,46 @@ def cm_rejected_lines(launch_log: Path) -> int:
     )
 
 
-def gait_names(gait_yaml: Path) -> list[str]:
-    """The gait sequence (the controller's gait index is a position in it)."""
+# The walking gait: walk_summary judges its entry and fraction, and its cycle
+# sets the tracking and heading windows — one name for both.
+WALK_GAIT = "walk"
+
+
+def gait_table(gait_yaml: Path) -> dict:
+    """The gait block of a gait YAML: the first mapping that holds a `sequence:` list."""
 
     def find(node):
         if isinstance(node, dict):
             if isinstance(node.get("sequence"), list):
-                return node["sequence"]
+                return node
             for v in node.values():
                 found = find(v)
                 if found is not None:
                     return found
         return None
 
-    seq = find(yaml.safe_load(gait_yaml.read_text()))
-    if seq is None:
+    table = find(yaml.safe_load(gait_yaml.read_text()))
+    if table is None:
         raise ValueError(f"{gait_yaml}: no gait `sequence:`")
-    return [str(g) for g in seq]
+    return table
+
+
+def gait_names(gait_yaml: Path) -> list[str]:
+    """The gait sequence (the controller's gait index is a position in it)."""
+    return [str(g) for g in gait_table(gait_yaml)["sequence"]]
+
+
+def walk_period(gait_yaml: Path, walk_gait: str = WALK_GAIT) -> float:
+    """The walk gait's cycle [s]: the last of its `switching_times` (the windows' unit)."""
+    gaits = gait_table(gait_yaml).get("gaits")
+    gait = gaits.get(walk_gait) if isinstance(gaits, dict) else None
+    times = gait.get("switching_times") if isinstance(gait, dict) else None
+    if not isinstance(times, list) or not times:
+        raise ValueError(f"{gait_yaml}: no `{walk_gait}` gait with switching_times")
+    period = float(times[-1])
+    if not (math.isfinite(period) and period > 0.0):
+        raise ValueError(f"{gait_yaml}: `{walk_gait}` cycle {period} is not > 0")
+    return period
 
 
 def check(name: str, value, limit, op: str) -> dict:
@@ -179,10 +202,12 @@ def timing_report(run: Path) -> dict | None:
     }
 
 
-def judge_walk(run: Path, gaits: list[str], control: dict, stop_window_s: float) -> dict:
+def judge_walk(
+    run: Path, gaits: list[str], walk_period_s: float, control: dict, stop_window_s: float
+) -> dict:
     note = json.loads((run / "run.json").read_text())
     header, diag = load_diag(run)
-    s = wm.walk_summary(header, diag, gaits)
+    s = wm.walk_summary(header, diag, gaits, WALK_GAIT, walk_period_s=walk_period_s)
     if "error" in s:
         return {
             "run": run.name,
@@ -391,7 +416,14 @@ def main(argv: list[str] | None = None) -> int:
         result = {"probe": [probe(r) for r in runs(args.out, "walk")]}
         ok = bool(result["probe"]) and all(r["pass"] for r in result["probe"])
     else:
-        gaits = gait_names(args.gait_yaml)
+        try:
+            gaits = gait_names(args.gait_yaml)
+            period = walk_period(args.gait_yaml)
+        except ValueError as e:
+            p.error(str(e))
+        misfit = wm.windows_fit(period)
+        if misfit is not None:
+            p.error(f"{args.gait_yaml}: {misfit}")
         mpc_runs = runs(args.out, "mpc")
         fallback = {"z_ref": args.z_ref, "stop_window": args.stop_window}
         settings = {
@@ -408,11 +440,15 @@ def main(argv: list[str] | None = None) -> int:
             if mpc_runs
             else {}
         )
-        walk = [judge_walk(r, gaits, control, st["stop_window"]) for r in runs(args.out, "walk")]
+        walk = [
+            judge_walk(r, gaits, period, control, st["stop_window"])
+            for r in runs(args.out, "walk")
+        ]
         estop = [judge_estop(r) for r in runs(args.out, "walk_estop")]
         result = {
             "settings": st,
             "gaits": gaits,
+            "walk_period_s": period,
             "control_stop_window": control,
             "control_runs": [r.name for r in mpc_runs],
             "walk_pass": bool(walk) and all(r["pass"] for r in walk),

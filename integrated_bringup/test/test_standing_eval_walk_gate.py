@@ -13,6 +13,8 @@ import json
 import math
 from pathlib import Path
 
+import pytest
+
 _PATH = Path(__file__).resolve().parents[1] / "tools" / "standing_eval" / "walk_gate.py"
 _SPEC = importlib.util.spec_from_file_location("standing_eval_walk_gate", _PATH)
 walk_gate = importlib.util.module_from_spec(_SPEC)
@@ -55,6 +57,41 @@ def test_the_cms_refusals_are_counted(tmp_path):
 
 def test_the_gait_order_is_the_shipped_sequence():
     assert walk_gate.gait_names(GAIT_YAML) == ["stance", "slow_walk", "walk"]
+
+
+def test_the_walk_period_is_the_walk_gaits_last_switching_time(tmp_path):
+    y = tmp_path / "gait.yaml"
+    y.write_text(
+        "locomotion_controller:\n  gait:\n    sequence: [stance, walk]\n    gaits:\n"
+        "      stance: {switching_times: [0.0, 0.5]}\n"
+        "      walk: {switching_times: [0.0, 0.4, 0.5, 0.9, 1.0]}\n"
+    )
+    assert walk_gate.walk_period(y) == 1.0
+    with pytest.raises(ValueError):
+        walk_gate.walk_period(y, walk_gait="trot")
+    y.write_text(
+        "locomotion_controller:\n  gait:\n    sequence: [walk]\n    gaits:\n      walk: {switching_times: [0.0, 0.0]}\n"
+    )
+    with pytest.raises(ValueError):
+        walk_gate.walk_period(y)
+    # The shipped table has one, and the windows it gives fit the script.
+    shipped = walk_gate.walk_period(GAIT_YAML)
+    assert shipped > 0.0
+    assert walk_gate.wm.windows_fit(shipped) is None
+
+
+def test_a_gait_table_the_windows_cannot_use_is_refused_up_front(tmp_path, capsys):
+    head = "locomotion_controller:\n  gait:\n    sequence: [stance, walk]\n    gaits:\n"
+    for body, why in (
+        ("      walk: {switching_times: [0.0, 0.5, 1.0, 1.5, 2.1]}\n", "longer than B"),
+        ("      stance: {switching_times: [0.0, 0.5]}\n", "no `walk` gait"),
+    ):
+        y = tmp_path / "gait.yaml"
+        y.write_text(head + body)
+        with pytest.raises(SystemExit) as e:
+            walk_gate.main([str(tmp_path), "--gait-yaml", str(y)])
+        assert e.value.code == 2
+        assert why in capsys.readouterr().err
 
 
 def test_a_missing_value_fails_its_check():
