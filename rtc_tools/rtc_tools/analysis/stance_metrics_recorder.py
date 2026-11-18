@@ -42,9 +42,11 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.signals import SignalHandlerOptions
 
 from rtc_msgs.msg import JointCommand, SimSensorState
 from rtc_tools.analysis import stance_metrics as sm
+from rtc_tools.analysis.ros_stop import StopFlag, spin_until_stopped, stop_handlers
 
 CONTACT_FORCE_OFFSET = 1  # <contact data="found force ..."> → force at values[1:4]
 
@@ -193,22 +195,22 @@ def main(argv: list[str] | None = None) -> int:
     if len(args.foot_pos) != len(args.contact):
         print("error: --foot-pos and --contact must list the same feet", file=sys.stderr)
         return 2
-    rclpy.init()
-    node = StanceRecorder(args)
-    try:
-        while rclpy.ok() and not node.done():
-            rclpy.spin_once(node, timeout_sec=0.1)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        samples = node.samples
-        timed_out = node.timed_out
-        started = node.started
-        node.destroy_node()
-        # SIGINT: rclpy's own handler has already shut the context down (the
-        # loop then ends on rclpy.ok()), and a second shutdown raises — which
-        # lost the recording an interrupt is meant to end early.
-        rclpy.try_shutdown()
+    # SIGINT / SIGTERM end the recording through a flag (ros_stop): rclpy's
+    # own handlers would shut the context down mid-spin and lose it.
+    stop = StopFlag()
+    with stop_handlers(stop):
+        rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+        node = StanceRecorder(args)
+        try:
+            spin_until_stopped(
+                lambda: rclpy.spin_once(node, timeout_sec=0.1), rclpy.ok, node.done, stop
+            )
+        finally:
+            samples = node.samples
+            timed_out = node.timed_out
+            started = node.started
+            node.destroy_node()
+            rclpy.try_shutdown()
     if timed_out:
         what = (
             f"no {args.start_on!r} command on {args.command_topic}"

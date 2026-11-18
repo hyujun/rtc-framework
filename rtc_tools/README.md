@@ -290,7 +290,10 @@ ros2 run rtc_tools run_stance_metrics … --start-now                     # 첫 
 ros2 run rtc_tools analyze_stance_metrics stance.csv --settle 2.0       # 같은 CSV, 다른 창
 ```
 
-slip 과 높이의 기준은 창의 **첫 샘플** (높이는 `--z-ref` 가 있으면 그것) 이라 창 앞의 transient 는 지표에 들어가지 않는다. `/sim/reset` 은 감지하지 않는다 — 리셋 뒤에 새로 돌린다. 구독은 다른 토픽처럼 KEEP_LAST 1 이라 호스트가 sensor rate 를 못 따라가면 샘플이 빠진다 — JSON 의 `sample_dt_median_s` · `sample_gap_max_s` 가 그것을 보이고, 간격이 주기의 3 배를 넘으면 경고를 찍는다. 시작 조건이나 첫 샘플이 `--wait-timeout` (기본 60 s) 안에 안 오면 에러로 끝난다. 순수 계산은 `rtc_tools.analysis.stance_metrics` (ROS 없음, pytest 가 본다), recorder 는 `stance_metrics_recorder` (rclpy).
+- slip 과 높이의 기준은 창의 **첫 샘플** (높이는 `--z-ref` 가 있으면 그것) 이라 창 앞의 transient 는 지표에 들어가지 않는다. `/sim/reset` 은 감지하지 않는다 — 리셋 뒤에 새로 돌린다.
+- 구독은 다른 토픽처럼 KEEP_LAST 1 이라 호스트가 sensor rate 를 못 따라가면 샘플이 빠진다 — JSON 의 `sample_dt_median_s` · `sample_gap_max_s` 가 그것을 보이고, 간격이 주기의 3 배를 넘으면 경고를 찍는다.
+- 시작 조건이나 첫 샘플이 `--wait-timeout` (기본 60 s) 안에 안 오면 에러로 끝난다. SIGINT · SIGTERM 은 녹음을 끝낸다 — 그때까지의 샘플로 CSV · JSON 을 쓴다.
+- 순수 계산은 `rtc_tools.analysis.stance_metrics` (ROS 없음, pytest 가 본다), recorder 는 `stance_metrics_recorder` (rclpy; 종료 경로는 `test_stance_metrics_recorder`).
 
 ### locomotion_diag
 
