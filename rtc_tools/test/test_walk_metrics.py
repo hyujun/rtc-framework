@@ -22,6 +22,7 @@ WEIGHT = 330.0
 DELAY = 0.02  # the measured contact edge after the planned one [s]
 # The ramp is found where cmd_vx first exceeds 0.01: that far into its 0.25 m/s² slope.
 A_FOUND = A + 0.01 / 0.25
+CYCLE = 1.4  # the synthetic gait's walk cycle [s]
 
 
 def test_the_planar_velocity_is_the_schedulers():
@@ -64,7 +65,7 @@ def test_a_yawed_and_pitched_base_reads_its_ground_speed():
 
 
 def _gait_mask(p: float) -> int:
-    """Both soles, left only, both, right only over a 1.4 s cycle."""
+    """Both soles, left only, both, right only over a CYCLE (1.4 s) cycle."""
     if p < 0.1:
         return 3
     if p < 0.7:
@@ -85,8 +86,8 @@ def synthetic(swap_slots: bool = False, settle_noise_s: float = 0.0):
     px = np.cumsum(vxw) * DT
     py = np.cumsum(vyw) * DT
     walking = (t >= A + 1.0) & (t < e + 2.0)
-    mask = np.where(walking, [_gait_mask((x - A - 1.0) % 1.4) for x in t], 3)
-    meas_mask = np.where(walking, [_gait_mask((x - A - 1.0 - DELAY) % 1.4) for x in t], 3)
+    mask = np.where(walking, [_gait_mask((x - A - 1.0) % CYCLE) for x in t], 3)
+    meas_mask = np.where(walking, [_gait_mask((x - A - 1.0 - DELAY) % CYCLE) for x in t], 3)
     meas_mask[t < A + 1.0 + DELAY] = 3
     fz = np.zeros((n, 2))
     for c in range(2):
@@ -165,9 +166,51 @@ def test_the_segments_are_placed_from_the_command_column():
     assert seg.bounds["E"] == pytest.approx((seg.e, seg.e + 10.0))
 
 
+def test_the_windows_are_whole_walk_cycles():
+    assert wm.window_lengths(1.1) == pytest.approx((4.4, 2.2, 1.1))
+    # The yaw window ends A_FOUND − A into D (ω 0): that share of 0.3 rad/s over
+    # two cycles of the period the caller gives, not of a fixed length.
+    header, diag = synthetic()
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=1.1)
+    assert s["tracking"]["yaw_rate_mean_err"] == pytest.approx(
+        0.3 * (A_FOUND - A) / 2.2, abs=0.3 * 2 * DT / 2.2
+    )
+    # Four cycles longer than B (8 s) would read A: refused, not averaged over.
+    assert "error" in wm.walk_summary(header, diag, GAITS, walk_period_s=2.1)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, math.nan, math.inf])
+def test_a_walk_period_that_is_not_positive_is_refused(bad):
+    with pytest.raises(ValueError):
+        wm.window_lengths(bad)
+
+
+def _with_length(name: str, length_s: float) -> tuple:
+    """WALK_SCRIPT with segment `name` `length_s` long."""
+    return tuple(
+        wm.Segment(s.name, length_s, s.vx0, s.vx1, s.wz) if s.name == name else s
+        for s in wm.WALK_SCRIPT
+    )
+
+
+@pytest.mark.parametrize(
+    "period, script, fits",
+    [
+        (2.0, wm.WALK_SCRIPT, True),  # 8 s in B, 4 s in C: exactly fits
+        (2.1, wm.WALK_SCRIPT, False),  # the v_x window outgrows B
+        (1.0, _with_length("C", 2.0), True),  # 2 cycles = 2 s = C
+        (1.1, _with_length("C", 2.0), False),  # the yaw window outgrows C
+        (1.0, _with_length("B", 4.0), True),  # 4 cycles = 4 s = B
+        (1.1, _with_length("B", 4.0), False),  # v_x outgrows B, yaw (2.2 s) fits C
+    ],
+)
+def test_a_window_longer_than_its_segment_is_refused(period, script, fits):
+    assert (wm.windows_fit(period, script) is None) == fits
+
+
 def test_an_exact_tracker_scores_zero_error_and_known_counts():
     header, diag = synthetic()
-    s = wm.walk_summary(header, diag, GAITS)
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
     assert s["tracking"]["vx_err_rms"] == pytest.approx(0.0, abs=1e-12)
     assert s["tracking"]["vx_mean_err"] == pytest.approx(0.0, abs=1e-9)
     assert s["tracking"]["yaw_rate_err_rms"] == pytest.approx(0.0, abs=1e-12)
@@ -212,13 +255,13 @@ def test_an_exact_tracker_scores_zero_error_and_known_counts():
 
 def test_swapped_force_slots_fail_the_slot_check():
     header, diag = synthetic(swap_slots=True)
-    c = wm.walk_summary(header, diag, GAITS)["contacts"]
+    c = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)["contacts"]
     assert c["slot_check_failures"] == c["single_support_phases"] > 0
 
 
 def test_the_stop_waits_for_a_continuous_second_of_stillness():
     header, diag = synthetic(settle_noise_s=2.0)
-    s = wm.walk_summary(header, diag, GAITS)
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
     assert s["stop"]["stop_settle_s"] == pytest.approx(2.0, abs=2 * DT)
 
 
@@ -228,7 +271,7 @@ def test_a_stale_force_sample_is_not_a_contact_change():
     diag["meas_contact_valid"][(diag["t_relative_s"] > 30.0)] = 2.0  # left stale
     diag["meas_fz_left"] = diag["meas_fz_left"].copy()
     diag["meas_fz_left"][diag["t_relative_s"] > 30.0] = 0.0  # a held value that is not read
-    c = wm.walk_summary(header, diag, GAITS)["contacts"]
+    c = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)["contacts"]
     assert c["extra_edges"] == 0
     assert c["invalid_force_rows"] > 0
 
@@ -256,7 +299,7 @@ def test_a_touch_down_must_hold():
 def test_no_script_is_an_error_not_a_pass():
     header, diag = synthetic()
     diag["cmd_vx"] = np.zeros_like(diag["cmd_vx"])
-    assert "error" in wm.walk_summary(header, diag, GAITS)
+    assert "error" in wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
 
 
 def test_an_infinite_residual_or_speed_is_judged_not_dropped():
@@ -265,7 +308,7 @@ def test_an_infinite_residual_or_speed_is_judged_not_dropped():
     diag["eom_residual_inf"][:] = math.inf
     diag["base_vx"] = diag["base_vx"].copy()
     diag["base_vx"][diag["t_relative_s"] > A + 6.0] = math.inf
-    s = wm.walk_summary(header, diag, GAITS)
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
     assert s["events"]["eom_residual_inf_max"] == math.inf
     assert s["tracking"]["vx_err_rms"] == math.inf
 
@@ -275,7 +318,7 @@ def test_a_nan_flag_counts_as_a_failed_row():
     for col in ("cmd_valid", "tau_valid", "fault_latched", "mode"):
         diag[col] = diag[col].copy()
         diag[col][(diag["t_relative_s"] > A + 3.0) & (diag["t_relative_s"] < A + 3.1)] = math.nan
-    s = wm.walk_summary(header, diag, GAITS)
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
     assert s["counters"]["cmd_invalid_rows_b_to_d"] > 0
     assert s["counters"]["fault_latched_rows"] > 0
     assert s["counters"]["degraded_fraction"] > 0
@@ -287,7 +330,7 @@ def test_a_mostly_nan_window_reports_its_finite_fraction():
     diag["base_vx"][(diag["t_relative_s"] > A + 4.0) & (diag["t_relative_s"] < A + 10.0)] = (
         math.nan
     )
-    s = wm.walk_summary(header, diag, GAITS)
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
     assert s["tracking"]["vx_window_finite_fraction"] < 0.1
 
 

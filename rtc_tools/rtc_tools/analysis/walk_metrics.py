@@ -329,6 +329,43 @@ def _increase(col: np.ndarray, mask: np.ndarray) -> int:
     return int(v.max() - v.min()) if v.size else 0
 
 
+# The tracking and heading windows in walk cycles: v_x over the last cycles of
+# B, the yaw rate over the last of C, the heading reference at B's start / end.
+VX_WINDOW_CYCLES = 4
+YAW_WINDOW_CYCLES = 2
+HEADING_REF_CYCLES = 1
+# The two heading references sit in B with the v_x window's length to spare, so
+# fitting the v_x window fits them (windows_fit checks only v_x and yaw).
+assert 2 * HEADING_REF_CYCLES <= VX_WINDOW_CYCLES
+
+
+def window_lengths(walk_period_s: float) -> tuple[float, float, float]:
+    """(v_x window, yaw-rate window, heading reference) [s] for a walk cycle of `walk_period_s`."""
+    if not (math.isfinite(walk_period_s) and walk_period_s > 0.0):
+        raise ValueError(f"walk_period_s must be finite and > 0, got {walk_period_s}")
+    return (
+        VX_WINDOW_CYCLES * walk_period_s,
+        YAW_WINDOW_CYCLES * walk_period_s,
+        HEADING_REF_CYCLES * walk_period_s,
+    )
+
+
+def windows_fit(walk_period_s: float, script: Sequence[Segment] = WALK_SCRIPT) -> str | None:
+    """None when every window of `walk_period_s` fits its script segment, else why not.
+
+    A window longer than its segment would read the segment before it: the v_x
+    window (and with it the two heading references) in B, the yaw-rate window in C.
+    """
+    vx, yaw, ref = window_lengths(walk_period_s)
+    length = {seg.name: seg.length_s for seg in script}
+    if vx > length["B"] or yaw > length["C"]:
+        return (
+            f"a walk cycle of {walk_period_s} s gives windows ({vx}, {yaw}, {ref}) s "
+            f"longer than B ({length['B']} s) or C ({length['C']} s)"
+        )
+    return None
+
+
 def walk_summary(
     header: Sequence[str],
     diag: Table,
@@ -337,9 +374,7 @@ def walk_summary(
     stance_gait: str | None = None,
     script: Sequence[Segment] = WALK_SCRIPT,
     *,
-    vx_window_s: float = 5.6,
-    yaw_window_s: float = 2.8,
-    heading_ref_s: float = 1.4,
+    walk_period_s: float,
     settle_hold_s: float = 1.0,
     settle_speed: float = 0.05,
     settle_yaw_rate: float = 0.05,
@@ -349,7 +384,16 @@ def walk_summary(
     event_window_s: float = 0.01,
     walk_entry_s: float = 5.0,
 ) -> dict:
-    """Every walking number of one run (module docstring); `gaits` = the gait table order."""
+    """Every walking number of one run (module docstring); `gaits` = the gait table order.
+
+    `walk_period_s` is the walk gait's cycle [s] (its last switching time): the
+    tracking and heading windows are whole cycles of it (:func:`window_lengths`),
+    so the step's own velocity and yaw-rate swing averages out of them.
+    """
+    vx_window_s, yaw_window_s, heading_ref_s = window_lengths(walk_period_s)
+    misfit = windows_fit(walk_period_s, script)
+    if misfit is not None:
+        return {"error": misfit}
     t = diag["t_relative_s"]
     seg = find_segments(t, diag["cmd_vx"], script)
     if seg is None:
