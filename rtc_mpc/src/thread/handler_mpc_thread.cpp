@@ -62,6 +62,9 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   last_attempt_returned_iterates_ = false;
   require_fresh_state_ = handler_ != nullptr && handler_->solver_config().require_fresh_state;
 
+  record_pending_ = false;  // the records restart with the counters
+  record_seq_ = 0;
+  record_counts_.fill(0);
   last_err_.store(0, std::memory_order_relaxed);
   last_phase_id_.store(-1, std::memory_order_relaxed);
   total_solves_.store(0, std::memory_order_relaxed);
@@ -139,6 +142,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   if (handler_ == nullptr || phase_manager_ == nullptr || model_ == nullptr) {
     null_handler_hit_.store(true, std::memory_order_relaxed);
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
+    StashRecord(SolveOutcome::kFailed, -1, nullptr, state, entry);
     return false;
   }
   // One solve per observation: decided before any work, recorded at the
@@ -167,6 +171,8 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
     last_err_.store(static_cast<int>(MPCSolveError::kStateDimMismatch), std::memory_order_relaxed);
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
     total_solves_.fetch_add(1, std::memory_order_relaxed);
+    StashRecord(SolveOutcome::kFailed, static_cast<int>(MPCSolveError::kStateDimMismatch), nullptr,
+                state, entry);
     return false;
   }
   q_scratch_.head(nq) = Eigen::Map<const Eigen::VectorXd>(state.q.data(), nq);
@@ -214,6 +220,8 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
       last_err_.store(static_cast<int>(MPCSolveError::kRebuildRequired), std::memory_order_relaxed);
       failed_solves_.fetch_add(1, std::memory_order_relaxed);
       total_solves_.fetch_add(1, std::memory_order_relaxed);
+      StashRecord(SolveOutcome::kFailed, static_cast<int>(MPCSolveError::kRebuildRequired), nullptr,
+                  state, entry);
       return false;
     }
   }
@@ -229,6 +237,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
 
   if (err != MPCSolveError::kNoError) {
     failed_solves_.fetch_add(1, std::memory_order_relaxed);
+    StashRecord(SolveOutcome::kFailed, static_cast<int>(err), nullptr, state, entry);
     return false;
   }
   last_attempt_returned_iterates_ = true;
@@ -241,23 +250,72 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
     const auto elapsed = std::chrono::steady_clock::now() - entry;
     if (std::chrono::duration<double, std::milli>(elapsed).count() > cfg.publish_deadline_ms) {
       deadline_misses_.fetch_add(1, std::memory_order_relaxed);
+      StashRecord(SolveOutcome::kDeadline, 0, &out, state, entry);
       return false;
     }
   }
   if (out.cold_start && !out.initial_solve && !out.converged) {
     cold_withheld_.fetch_add(1, std::memory_order_relaxed);
+    StashRecord(SolveOutcome::kColdWithheld, 0, &out, state, entry);
     return false;
   }
   if (!out.converged && cfg.publish_prim_tol > 0.0 &&
       !(ConsumedPrimInf(out, PeriodNs()) <= cfg.publish_prim_tol)) {
     withheld_.fetch_add(1, std::memory_order_relaxed);
+    StashRecord(SolveOutcome::kWithheld, 0, &out, state, entry);
     return false;
   }
 
   // Save for next tick's cross-mode seed (trivially-copyable memcpy).
   prev_out_ = out;
   has_prev_out_ = true;
+  StashRecord(SolveOutcome::kPublished, 0, &out, state, entry);
   return true;
+}
+
+void HandlerMPCThread::StashRecord(SolveOutcome outcome, int err, const MPCSolution* out,
+                                   const MPCStateSnapshot& state,
+                                   std::chrono::steady_clock::time_point entry) noexcept {
+  if (record_sink_ == nullptr) {
+    return;
+  }
+  SolveRecord& r = pending_record_;
+  r = SolveRecord{};
+  r.outcome = outcome;
+  r.err = err;
+  r.state_sequence = state.sequence;
+  r.state_epoch = state.state_epoch;
+  r.compute_us =
+      std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - entry).count();
+  if (out != nullptr) {
+    r.iterations = out->iterations;
+    r.converged = out->converged;
+    r.initial_solve = out->initial_solve;
+    r.cold_start = out->cold_start;
+    r.prim_inf = out->residuals.prim_inf;
+    r.consumed_prim = ConsumedPrimInf(*out, PeriodNs());
+  } else {
+    r.prim_inf = std::numeric_limits<double>::quiet_NaN();
+    r.consumed_prim = std::numeric_limits<double>::quiet_NaN();
+  }
+  record_pending_ = true;
+}
+
+void HandlerMPCThread::OnTickEnd(bool published, std::uint64_t plan_id) noexcept {
+  if (!record_pending_ || record_sink_ == nullptr) {
+    return;
+  }
+  record_pending_ = false;
+  const auto k = static_cast<std::size_t>(pending_record_.outcome);
+  if (k < record_counts_.size()) {
+    ++record_counts_[k];
+  }
+  SolveRecord& r = record_sink_->StartWrite();
+  r = pending_record_;
+  r.seq = ++record_seq_;
+  r.plan_id = published && pending_record_.outcome == SolveOutcome::kPublished ? plan_id : 0;
+  r.counts = record_counts_;
+  record_sink_->FinishWrite();
 }
 
 }  // namespace rtc::mpc

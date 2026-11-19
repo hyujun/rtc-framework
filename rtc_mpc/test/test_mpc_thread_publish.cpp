@@ -30,6 +30,7 @@
 #pragma GCC diagnostic pop
 
 #include "rtc_base/testing/wait_until.hpp"
+#include "rtc_mpc/comm/triple_buffer.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
@@ -43,6 +44,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -577,6 +579,127 @@ TEST_F(MpcThreadPublishTest, ThePhaseTimeReAnchorsOnANewStateEpochOrAStampThatWe
   mgr_.SetStateEpoch(2);
   expect_time(2'500'000'000ULL, before_back);
   thread.StopAndJoin();
+}
+
+// ── The solve record (solve_record.hpp) ─────────────────────────────────────
+
+using rtc::mpc::SolveOutcome;
+using rtc::mpc::SolveRecord;
+
+std::uint64_t CountOf(const SolveRecord& r, SolveOutcome o) {
+  return r.counts[static_cast<std::size_t>(o)];
+}
+
+// Every outcome in one run: once the thread stops, the last record's counts are
+// the thread's counters and the published plans; a reader polling while it runs
+// never sees `seq` go back, and each record's fields are the attempt's.
+TEST_F(MpcThreadPublishTest, TheSolveRecordCountsEveryAttemptByOutcome) {
+  MPCSolverConfig cfg;
+  cfg.publish_deadline_ms = 5.0;
+  cfg.publish_prim_tol = 0.05;
+  rtc::mpc::TripleBuffer<SolveRecord> sink;
+  sink.StartWrite() = SolveRecord{};
+  sink.FinishWrite();
+  HandlerMPCThread thread;
+  StubHandler* stub = Start(thread, cfg, 50.0);
+  thread.SetSolveRecordSink(&sink);
+  thread.Start();
+
+  std::uint64_t last_seq = 0;
+  bool went_back = false;
+  const auto poll = [&] {
+    static_cast<void>(sink.TryAcquireLatest());
+    const SolveRecord& r = sink.Current();
+    went_back = went_back || r.seq < last_seq;
+    last_seq = r.seq;
+    return r;
+  };
+  const auto wait_for = [&](SolveOutcome o) {
+    return rtc::testing::WaitUntil([&] {
+      const SolveRecord r = poll();
+      return r.outcome == o && CountOf(r, o) >= 3U;
+    });
+  };
+  ASSERT_TRUE(wait_for(SolveOutcome::kPublished));
+  {
+    const SolveRecord r = poll();
+    EXPECT_GT(r.plan_id, 0U);
+    EXPECT_EQ(r.err, 0);
+    EXPECT_FALSE(r.converged);
+    EXPECT_DOUBLE_EQ(r.consumed_prim, 0.01);
+    EXPECT_GT(r.state_sequence, 0U);
+  }
+  stub->sleep_us = 6000;  // past the deadline
+  ASSERT_TRUE(wait_for(SolveOutcome::kDeadline));
+  EXPECT_EQ(poll().plan_id, 0U);
+  stub->sleep_us = 0;
+  stub->big_from = 0;  // every node over the tolerance
+  ASSERT_TRUE(wait_for(SolveOutcome::kWithheld));
+  EXPECT_DOUBLE_EQ(poll().consumed_prim, 5.0);
+  stub->big_from = kStubHorizon + 1;
+  stub->cold = true;
+  ASSERT_TRUE(wait_for(SolveOutcome::kColdWithheld));
+  stub->cold = false;
+  stub->error = static_cast<int>(rtc::mpc::MPCSolveError::kSolverException);
+  ASSERT_TRUE(wait_for(SolveOutcome::kFailed));
+  {
+    const SolveRecord r = poll();
+    EXPECT_EQ(r.err, static_cast<int>(rtc::mpc::MPCSolveError::kSolverException));
+    EXPECT_TRUE(std::isnan(r.prim_inf) && std::isnan(r.consumed_prim));
+    EXPECT_EQ(r.iterations, 0);
+  }
+  thread.StopAndJoin();
+
+  const SolveRecord r = poll();
+  EXPECT_FALSE(went_back);
+  EXPECT_EQ(CountOf(r, SolveOutcome::kFailed), thread.FailedSolves());
+  EXPECT_EQ(CountOf(r, SolveOutcome::kDeadline), thread.DeadlineMissCount());
+  EXPECT_EQ(CountOf(r, SolveOutcome::kWithheld), thread.WithheldCount());
+  EXPECT_EQ(CountOf(r, SolveOutcome::kColdWithheld), thread.ColdWithheldCount());
+  EXPECT_EQ(CountOf(r, SolveOutcome::kPublished), Published());
+  std::uint64_t total = 0;
+  for (const auto n : r.counts) {
+    total += n;
+  }
+  EXPECT_EQ(r.seq, total) << "one record per attempt";
+  EXPECT_EQ(total, thread.TotalSolves());
+}
+
+// A repeated observation is not an attempt: no record.
+TEST_F(MpcThreadPublishTest, ARepeatedObservationWritesNoRecord) {
+  MPCSolverConfig cfg;
+  cfg.require_fresh_state = true;
+  rtc::mpc::TripleBuffer<SolveRecord> sink;
+  HandlerMPCThread thread;
+  Start(thread, cfg, 50.0);
+  thread.SetSolveRecordSink(&sink);
+  thread.Start();
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return thread.RepeatedObservationSkips() >= 3U; }));
+  thread.StopAndJoin();
+  static_cast<void>(sink.TryAcquireLatest());
+  EXPECT_EQ(sink.Current().seq, 1U) << "the one snapshot's single attempt";
+  EXPECT_EQ(CountOf(sink.Current(), SolveOutcome::kPublished), 1U);
+}
+
+// Without a handler every attempt is a failed record with err −1.
+TEST_F(MpcThreadPublishTest, AThreadWithoutAHandlerRecordsFailures) {
+  rtc::mpc::TripleBuffer<SolveRecord> sink;
+  HandlerMPCThread thread;
+  thread.Configure(model_handler_, nullptr, std::make_unique<StubPhaseManager>());
+  rtc::mpc::MpcThreadLaunchConfig launch{};
+  launch.main.cpu_core = -1;
+  launch.main.sched_policy = 0;
+  launch.target_frequency_hz = 50.0;
+  thread.Init(mgr_, launch);
+  thread.SetSolveRecordSink(&sink);
+  thread.Start();
+  ASSERT_TRUE(rtc::testing::WaitUntil([&] { return thread.FailedSolves() >= 3U; }));
+  thread.StopAndJoin();
+  static_cast<void>(sink.TryAcquireLatest());
+  const SolveRecord& r = sink.Current();
+  EXPECT_EQ(r.outcome, SolveOutcome::kFailed);
+  EXPECT_EQ(r.err, -1);
+  EXPECT_EQ(CountOf(r, SolveOutcome::kFailed), thread.FailedSolves());
 }
 
 }  // namespace

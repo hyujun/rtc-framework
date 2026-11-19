@@ -74,6 +74,8 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 MPC thread 는 RT 컨텍스트라 `HandlerMPCThread::Solve` 는 I/O 를 하지 않는다. 실패 경로는 lock-free atomic (`FailedSolves()` · `TotalSolves()` · `LastSolveErrorCode()` · `LastPhaseId()` · `NullHandlerHit()`; publish 하지 않은 해는 실패와 따로 `DeadlineMissCount()` · `WithheldCount()` · `ColdWithheldCount()` · 같은 관측이라 건너뛴 tick `RepeatedObservationSkips()` · `StandingRepeatSolves()`, overrun 은 `OnlineOverrunCount()` · `StandingOverrunCount()`) 만 올리고,
 소유 컨트롤러의 non-RT 1 Hz aux timer 가 증분을 보고한다. 같은 timer 가 `MPCThread::TimingProducer()` 의 per-tick SPSC 를 CSV 로 비운다. 버린 plan · gain 노드 clamp 는 `MPCSolutionManager::*Rejections()` · `GainNodeClamps()` 가 센다.
 
+시도마다의 판정 (결과 · 잔차 · plan id) 은 `SetSolveRecordSink` 로 받은 consumer 의 `TripleBuffer<SolveRecord>` 에 쓴다 — 어느 반환이 기록되는지는 `thread/solve_record.hpp`.
+
 CSV 는 MPC tick 마다 한 행이고 CM RT loop 와 같은 8열 스키마다: `t_wall_ns,tick_count,run_id,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us`. `Solve` 가 계속 실패해도 행은 계속 늘어난다 (publish 시간만 0). consumer 가 뒤처지면 `DropCount()` 가 올라간다. cross-mode swap 은 이 thread 에서 할당하는 기록된 알려진 위반이다 ([invariants.md](../agent_docs/invariants.md) §RT Path Invariants).
 
 ## 설정
