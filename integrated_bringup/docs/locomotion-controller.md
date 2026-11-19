@@ -128,7 +128,7 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
   - 행은 참값 lane 이 하나라도 신선한 tick 에만 쓰고 (`truth_mask` bit 0 = base, bit 1 + c = 접촉 c), 파일은 첫 행에서 열린다 (`rtc::LogOpen::kOnFirstRow`) — 참값 lane 이 없는 run (실기) 에는 파일이 없다. 0 으로 채운 열은 없고, 신선하지 않은 lane 은 NaN 이다.
   - 신선도: base 는 `IsBaseFresh`, 접촉은 `IsSensorGroupFresh` (backend 판정 + 수신 나이), 둘 다 `estimator.body_max_age_ms`. 나이 (`truth_base_age_us` · `truth_age_<c>_us`, −1 = 수신 없음) 와 sequence 는 늘 쓴다.
   - `truth_base_*` — base lane 의 **raw** 값 (quaternion 을 정규화하지 않는다; R 의 `base_q*` 는 상태 source 의 정규화 사본이고 inekf 에서는 추정값이다). twist 는 base LOCAL.
-  - `truth_grf_<c>_*` — 몸통 군 접촉 lane 의 wrench 를 **바닥→발** 로 뒤집은 값 (`truth_grf_<c>_fz` = −`meas_fz_<c>`), sole sensor site 축 · site 원점 모멘트. 모멘트는 몸통 군 `sensor_layout.has_native_moment` (sim.yaml) 가 없으면 NaN.
+  - `truth_grf_<c>_*` — 몸통 군 접촉 lane 의 wrench 를 **바닥→발** 로 뒤집은 값 (두 열이 다 쓰인 tick 에서 `truth_grf_<c>_fz` = −`meas_fz_<c>` — diag 는 backend 판정만, T 는 나이도 본다), sole sensor site 축 · site 원점 모멘트. 모멘트는 몸통 군 `sensor_layout.has_native_moment` (sim.yaml) 가 없으면 NaN.
   - `truth_cop_<c>_x/y` — site 축의 CoP (x = −τ_y / f_z, y = τ_x / f_z). f_z 가 체중의 3 % 이하면 NaN.
   - 몸통 군 접촉 lane 을 참값으로 보는 근거는 "G1 · b7 실기에는 발 F/T 가 없다" 는 규칙이다 — 실기 발 센서가 생기면 이 분류를 다시 정한다.
 

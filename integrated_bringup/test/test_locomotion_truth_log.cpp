@@ -1,6 +1,7 @@
 // FillLocomotionTruthLog — the T-tier row from the body group's lanes:
 // freshness, the raw base copy, the floor-on-foot sign flip, the moment only
 // on a declared lane, the CoP and its threshold, and the lane fit.
+#include "csv_log_fixture.hpp"
 #include "integrated_bringup/controllers/locomotion/truth_log.hpp"
 #include "locomotion_controller_rig.hpp"
 #include "locomotion_mpc_stub.hpp"
@@ -8,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -17,6 +19,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -357,7 +360,7 @@ class LocomotionTruthLogRigTest : public LocomotionControllerTest {
       body.inference_data[at + 1] = 1.5F;
       body.inference_data[at + 2] = -0.75F;
       body.inference_data[at + 3] = -170.0F - static_cast<float>(c);
-      body.inference_data[at + 4] = 0.25F;
+      body.inference_data[at + 4] = 0.25F + static_cast<float>(c);  // groups differ
       body.inference_data[at + 5] = -1.25F;
       body.inference_data[at + 6] = 0.125F;
     }
@@ -514,6 +517,89 @@ TEST_F(LocomotionTruthLogRigTest, TheTruthWrenchIsTheNegatedLaneAndMeasFz) {
           << c << ' ' << k;
     }
     EXPECT_FALSE(std::isnan(t.cop[c * 2]));
+  }
+}
+
+// The file read back BY NAME against the tick's record: every column of the
+// last row is the pod field its name says (9 significant digits in the file).
+TEST_F(LocomotionTruthLogRigTest, TheFileHoldsTheRecordUnderItsColumnNames) {
+  BringUpShipped();
+  StampContacts(NowNs());
+  for (int k = 0; k < 5; ++k) {
+    last_out_ = Tick();
+  }
+  const LocomotionTruthLogPod t = ctrl_->LastTruthLog();
+  Drain();
+  const auto csv = fx::ReadCsv(Path(integrated_bringup::kLocomotionTruthLogInstance));
+  ASSERT_EQ(csv.rows.size(), 5U);
+  const std::size_t last = csv.rows.size() - 1;
+  // The contact names, in column order, from the CoP columns.
+  std::vector<std::string> contacts;
+  for (const auto& name : csv.header) {
+    const std::string pre = "truth_cop_";
+    if (name.rfind(pre, 0) == 0 && name.size() > pre.size() + 2 &&
+        name.compare(name.size() - 2, 2, "_x") == 0) {
+      contacts.push_back(name.substr(pre.size(), name.size() - pre.size() - 2));
+    }
+  }
+  ASSERT_EQ(contacts.size(), 2U);
+  EXPECT_EQ(csv.header.size(), 18U + 10U * contacts.size());
+  const auto expect = [&](const std::string& name, double want) {
+    const double got = csv.At(last, name);
+    if (std::isnan(want)) {
+      EXPECT_TRUE(std::isnan(got)) << name;
+    } else {
+      EXPECT_NEAR(got, want, 1e-6 * std::max(1.0, std::abs(want))) << name;
+    }
+  };
+  expect("tick", static_cast<double>(t.tick));
+  expect("truth_mask", t.truth_mask);
+  expect("truth_base_seq", static_cast<double>(t.base_seq));
+  expect("truth_base_age_us", t.base_age_us);
+  const char* xyz[] = {"x", "y", "z"};
+  const char* q[] = {"qx", "qy", "qz", "qw"};
+  for (std::size_t i = 0; i < 3; ++i) {
+    expect(std::string("truth_base_p") + xyz[i], t.base_p[i]);
+    expect(std::string("truth_base_v") + xyz[i], t.base_v[i]);
+    expect(std::string("truth_base_w") + xyz[i], t.base_w[i]);
+  }
+  for (std::size_t i = 0; i < 4; ++i) {
+    expect(std::string("truth_base_") + q[i], t.base_q_xyzw[i]);
+  }
+  const char* axes[] = {"fx", "fy", "fz", "tx", "ty", "tz"};
+  for (std::size_t c = 0; c < contacts.size(); ++c) {
+    const std::string& n = contacts[c];
+    for (std::size_t k = 0; k < 6; ++k) {
+      expect("truth_grf_" + n + "_" + axes[k], t.grf[c * 6 + k]);
+    }
+    expect("truth_cop_" + n + "_x", t.cop[c * 2]);
+    expect("truth_cop_" + n + "_y", t.cop[c * 2 + 1]);
+    expect("truth_age_" + n + "_us", t.contact_age_us[c]);
+    expect("truth_seq_" + n, static_cast<double>(t.contact_seq[c]));
+  }
+  // The two groups' moments differ, so a column read from the other group shows.
+  EXPECT_NE(t.grf[3], t.grf[9]);
+}
+
+// Without the body group's moment flag the moment and the CoP are NaN, the
+// force is still there.
+TEST_F(LocomotionTruthLogRigTest, WithoutTheMomentFlagTheTruthMomentIsNaN) {
+  const YAML::Node cfg = ShippedConfig();
+  auto devices = ShippedLaneDevices(cfg);
+  devices.at("g1").sensor_layout->has_native_moment = false;
+  ConfigureWithDevices(cfg, devices);
+  Activate();
+  MakeStanding();
+  StampContacts(NowNs());
+  last_out_ = Tick();
+  const auto& t = ctrl_->LastTruthLog();
+  ASSERT_EQ(t.truth_mask, 0b111U);
+  for (std::size_t c = 0; c < 2; ++c) {
+    EXPECT_FALSE(std::isnan(t.grf[c * 6 + 2])) << c;
+    for (std::size_t k = 3; k < 6; ++k) {
+      EXPECT_TRUE(std::isnan(t.grf[c * 6 + k])) << c << ' ' << k;
+    }
+    EXPECT_TRUE(std::isnan(t.cop[c * 2]) && std::isnan(t.cop[c * 2 + 1])) << c;
   }
 }
 

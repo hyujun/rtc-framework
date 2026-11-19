@@ -26,7 +26,8 @@
 //   - The sign is FLIPPED from the lane's (which is the force the foot applies
 //     to the floor): these columns are the wrench the floor applies to the
 //     foot, the sign of the controller's contact forces — a standing foot has
-//     fz > 0. truth_grf_<c>_fz is therefore exactly −meas_fz_<c> of the diag.
+//     fz > 0. truth_grf_<c>_fz is therefore exactly −meas_fz_<c> of the diag on a tick where both
+//     are written (the diag takes the backend's verdict alone, this one its age too).
 //   - The moment columns are NaN unless the group's sensor_layout declares
 //     has_native_moment (otherwise the lane's slots 4..6 are not a moment).
 //   - CoP, in the site's x / y axes relative to its origin, from the floor-on-

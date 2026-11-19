@@ -46,6 +46,7 @@
 #include "rtc_base/logging/thread_csv_producer.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>

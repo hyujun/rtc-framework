@@ -133,7 +133,8 @@
 //     damping_kd: [...]                # body roster order, ≥ 0
 //     pose_guard: {base_tilt_rad: θ}   # (0, π/2]; every key required, no other key
 //   topics: {<body group>: {...}, <hand group>: {...}}   # body first, then model.hand_groups
-//   logs: [...]   # DeviceStateLog per group, JointFeedforwardLog (body), LocomotionDiagLog
+//   logs: [...]   # DeviceStateLog per group, JointFeedforwardLog (body), LocomotionDiagLog,
+//                 # LocomotionTruthLog (the T tier — locomotion-controller.md "Log tiers")
 //   mpc:          # optional; absent = no MPC (the idle reference only)
 //     enabled: bool             # false = as if absent
 //     period_nodes: N (≥ 1)     # the MPC thread's period, in OCP node intervals
