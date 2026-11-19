@@ -286,3 +286,94 @@ TEST(ControllerLogSet, DropCountsTrackPerChannelOverflow) {
   ASSERT_EQ(drops.size(), 1u);
   EXPECT_GT(drops[0], 0u);
 }
+
+// ── LogOpen::kOnFirstRow ─────────────────────────────────────────────────────
+//
+// The file exists <=> at least one row was drained; Path() is the resolved
+// path before that too; a failed open counts the rows it keeps off the file
+// and is reported once.
+
+TEST(ControllerLogSet, LazyChannelHasNoFileUntilItsFirstRow) {
+  ScopedSessionDir scope;
+  rtc::ControllerLogSet set{"c"};
+  auto handle = set.RegisterLog<PodA>("lazy", &HeaderA, &RowA, rtc::LogOpen::kOnFirstRow);
+  ASSERT_TRUE(static_cast<bool>(handle));
+  const auto expected = scope.Dir() / "controllers" / "c" / "lazy.csv";
+  ASSERT_EQ(set.Channels().size(), 1u);
+  EXPECT_EQ(set.Channels()[0].second, expected);
+  EXPECT_TRUE(fs::is_directory(expected.parent_path()));
+  EXPECT_FALSE(fs::exists(expected));
+
+  EXPECT_EQ(set.DrainAll(), 0u);  // a drain with nothing to write opens nothing
+  EXPECT_FALSE(fs::exists(expected));
+
+  EXPECT_TRUE(handle.Push(PodA{0.5, 7}));
+  EXPECT_EQ(set.DrainAll(), 1u);
+  const auto lines = ReadAllLines(expected);
+  ASSERT_EQ(lines.size(), 2u);
+  EXPECT_EQ(lines[0], "t_relative_s,a");
+  EXPECT_EQ(lines[1], "0.5,7");
+  EXPECT_EQ(set.TotalUnwrittenCount(), 0u);
+  EXPECT_TRUE(set.TakeOpenFailures().empty());
+}
+
+TEST(ControllerLogSet, LazyChannelRegisteredAgainAppendsWithoutASecondHeader) {
+  ScopedSessionDir scope;
+  rtc::ControllerLogSet set{"c"};
+  auto handle = set.RegisterLog<PodA>("lazy", &HeaderA, &RowA, rtc::LogOpen::kOnFirstRow);
+  ASSERT_TRUE(handle.Push(PodA{1.0, 1}));
+  set.DrainAll();
+  const auto path = set.Channels()[0].second;
+  set.Reset();
+  handle = set.RegisterLog<PodA>("lazy", &HeaderA, &RowA, rtc::LogOpen::kOnFirstRow);
+  ASSERT_TRUE(handle.Push(PodA{2.0, 2}));
+  set.DrainAll();
+  const auto lines = ReadAllLines(path);
+  ASSERT_EQ(lines.size(), 3u);
+  EXPECT_EQ(lines[0], "t_relative_s,a");
+  EXPECT_EQ(lines[1], "1,1");
+  EXPECT_EQ(lines[2], "2,2");
+}
+
+TEST(ControllerLogSet, LazyOpenFailureCountsTheRowsAndIsReportedOnce) {
+  ScopedSessionDir scope;
+  rtc::ControllerLogSet set{"c"};
+  auto handle = set.RegisterLog<PodA>("lazy", &HeaderA, &RowA, rtc::LogOpen::kOnFirstRow);
+  ASSERT_TRUE(static_cast<bool>(handle));
+  const auto path = set.Channels()[0].second;
+  fs::create_directories(path);  // a directory where the file goes: the open fails
+
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_TRUE(handle.Push(PodA{0.1 * i, i}));
+  }
+  EXPECT_EQ(set.DrainAll(), 3u);
+  EXPECT_EQ(set.TotalUnwrittenCount(), 3u);
+  EXPECT_EQ(set.TotalDropCount(), 0u);  // ring overflow is a different count
+  const auto failures = set.TakeOpenFailures();
+  ASSERT_EQ(failures.size(), 1u);
+  EXPECT_EQ(failures[0], path);
+  EXPECT_TRUE(set.TakeOpenFailures().empty());
+
+  // No retry and no second report: later rows are counted only.
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_TRUE(handle.Push(PodA{1.0, i}));
+  }
+  set.DrainAll();
+  EXPECT_EQ(set.TotalUnwrittenCount(), 5u);
+  EXPECT_TRUE(set.TakeOpenFailures().empty());
+  EXPECT_TRUE(fs::is_directory(path));
+}
+
+// An eager channel beside a lazy one keeps its behaviour: open at register.
+TEST(ControllerLogSet, EagerChannelBesideALazyOneOpensAtRegister) {
+  ScopedSessionDir scope;
+  rtc::ControllerLogSet set{"c"};
+  auto eager = set.RegisterLog<PodA>("eager", &HeaderA, &RowA);
+  auto lazy = set.RegisterLog<PodB>("lazy", &HeaderB, &RowB, rtc::LogOpen::kOnFirstRow);
+  ASSERT_TRUE(static_cast<bool>(eager));
+  ASSERT_TRUE(static_cast<bool>(lazy));
+  const auto channels = set.Channels();
+  ASSERT_EQ(channels.size(), 2u);
+  EXPECT_EQ(ReadAllLines(channels[0].second).size(), 1u);  // header only
+  EXPECT_FALSE(fs::exists(channels[1].second));
+}

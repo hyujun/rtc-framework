@@ -74,3 +74,8 @@ locomotion_controller:
       instance: joint_ff
     - msg_type: integrated_bringup/LocomotionDiagLog
       instance: locomotion_diag
+    # The T tier (sim truth: base lane, sole wrench lane) — its own file, made
+    # only when a truth lane was fresh on at least one tick, so a run without
+    # them has none (locomotion-controller.md "Log tiers").
+    - msg_type: integrated_bringup/LocomotionTruthLog
+      instance: locomotion_truth

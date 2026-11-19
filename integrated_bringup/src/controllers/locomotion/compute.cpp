@@ -1,5 +1,6 @@
 // locomotion_controller: the RT tick. See locomotion_controller.hpp.
 #include "integrated_bringup/controllers/locomotion/pose_guard.hpp"
+#include "integrated_bringup/controllers/locomotion/truth_log.hpp"
 #include "integrated_bringup/controllers/locomotion_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
@@ -605,6 +606,22 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
     diag_log_handle_.Push(diag_);
   }
   status_lock_.Store(diag_);  // the status topic's record
+
+  // The T tier: this tick's truth lanes, a row only when one of them is fresh.
+  LocomotionTruthLogPod& t = truth_log_;
+  t.t_relative_s = state.t_relative_s;
+  t.tick = state.iteration;
+  loco::TruthLogInputs in;
+  in.now_steady_ns = now_ns;
+  in.max_age_ns = static_cast<int64_t>(cfg_.estimator.body_max_age_ms * 1e6);
+  in.contacts = contact_frames_full_.size();
+  in.stride = contact_force_stride_;
+  in.moment = contact_moment_lane_;
+  in.cop_min_fz = loco::kTruthCopMinWeightFraction * weight_;
+  loco::FillLocomotionTruthLog(dev, in, t);
+  if (truth_log_handle_ && t.truth_mask != 0) {
+    truth_log_handle_.Push(t);
+  }
 }
 
 }  // namespace integrated_bringup

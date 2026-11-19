@@ -133,7 +133,8 @@
 //     damping_kd: [...]                # body roster order, ≥ 0
 //     pose_guard: {base_tilt_rad: θ}   # (0, π/2]; every key required, no other key
 //   topics: {<body group>: {...}, <hand group>: {...}}   # body first, then model.hand_groups
-//   logs: [...]   # DeviceStateLog per group, JointFeedforwardLog (body), LocomotionDiagLog
+//   logs: [...]   # DeviceStateLog per group, JointFeedforwardLog (body), LocomotionDiagLog,
+//                 # LocomotionTruthLog (the T tier — locomotion-controller.md "Log tiers")
 //   mpc:          # optional; absent = no MPC (the idle reference only)
 //     enabled: bool             # false = as if absent
 //     period_nodes: N (≥ 1)     # the MPC thread's period, in OCP node intervals
@@ -199,6 +200,7 @@
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/joint_feedforward_log_pod.hpp"
 #include "integrated_bringup/logging/locomotion_diag_log_pod.hpp"
+#include "integrated_bringup/logging/locomotion_truth_log_pod.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/threading/seqlock.hpp"
 #include "rtc_controller_interface/controller_log_set.hpp"
@@ -359,6 +361,10 @@ class LocomotionController final : public rtc::RTControllerInterface {
   [[nodiscard]] const std::string& ConfigError() const noexcept { return config_error_; }
 
   [[nodiscard]] const LocomotionDiagLogPod& LastDiag() const noexcept { return diag_; }
+
+  /// The last tick's T-tier record, filled every tick (pushed only when a
+  /// truth lane was fresh and the log is configured).
+  [[nodiscard]] const LocomotionTruthLogPod& LastTruthLog() const noexcept { return truth_log_; }
 
   [[nodiscard]] const JointFeedforwardLogPod& LastJointLog() const noexcept { return joint_log_; }
 
@@ -558,6 +564,7 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::array<double, locomotion::kMaxStateJoints> hand_hold_{};
   uint32_t hand_hold_mask_{0};
   LocomotionDiagLogPod diag_{};
+  LocomotionTruthLogPod truth_log_{};
   JointFeedforwardLogPod joint_log_{};
 
   // ── Cross-thread ───────────────────────────────────────────────────────────
@@ -575,6 +582,7 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::vector<rtc::LogHandle<DeviceStateLogPod>> state_log_handles_;
   rtc::LogHandle<JointFeedforwardLogPod> joint_log_handle_;
   rtc::LogHandle<LocomotionDiagLogPod> diag_log_handle_;
+  rtc::LogHandle<LocomotionTruthLogPod> truth_log_handle_;
   rclcpp::CallbackGroup::SharedPtr log_drain_cb_group_;
   rclcpp::TimerBase::SharedPtr log_drain_timer_;
   std::uint64_t log_drops_reported_{0};
@@ -623,6 +631,8 @@ class LocomotionController final : public rtc::RTControllerInterface {
   rtc::mpc::TripleBuffer<LocomotionCommandLogSample> command_log_;
   /// The body group's inference values per group (0 = no lane), from the device configs.
   int contact_force_stride_{0};
+  /// The body group's sensor_layout.has_native_moment (the T tier's moment columns).
+  bool contact_moment_lane_{false};
   /// The MPC thread's counters as the 1 Hz timer last read them (the publish
   /// thread reads this, never the thread).
   rtc::SeqLock<LocomotionMpcCounters> mpc_counters_;

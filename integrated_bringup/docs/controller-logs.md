@@ -29,6 +29,7 @@ non-RT 외부 통신 토픽은 **컨트롤러가 소유**한다. 아래 경로�
 
 - tick 당 한 행이다. 계산하지 않은 tick 은 gap 이 아니라 `valid=0` 행으로 남고 (값은 0 이거나 직전 값 동결 — 파일마다 다르니 아래를 본다), 행 사이의 `tick` 간극은 SPSC ring drop 만을 뜻한다.
 - 파일이 없으면 그 컨트롤러의 `logs:` 블록에 그 채널이 없거나 해당 YAML 블록이 비활성이라는 뜻이다.
+- 예외는 첫 행에서 파일을 여는 채널 (`rtc::LogOpen::kOnFirstRow`, 지금은 `locomotion_truth.csv` 하나) 이다: 쓸 값이 있는 tick 에만 행을 쓰므로 `tick` 간극은 drop 이 아니고, 행이 하나도 없으면 파일도 없다. 그 열기가 실패하면 경고 한 번과 함께 행을 버린다.
 - 행은 그 컨트롤러가 active 인 동안 (`Compute()` 가 도는 tick) 에만 쌓인다. 전환해 나간 컨트롤러의 파일은 거기서 멈춘다.
 - 세션 폴더 이름 `YYMMDD_HHMM` 은 분 단위다. 같은 분 안에 다시 띄우면 두 번째 실행이 **같은 폴더의 CSV 에 이어 쓴다** — header 를 다시 쓰지 않으므로 `tick` 이 되돌아가는 행이 경계다. sim 을 연달아 띄우는 드라이버는 그 분의 폴더가 이미 있으면 다음 분까지 기다린 뒤 띄운다.
 - 그림과 통계는 `ros2 run rtc_tools plot_rtc_log <csv>` (`--stats` 로 통계만).
@@ -46,6 +47,7 @@ non-RT 외부 통신 토픽은 **컨트롤러가 소유**한다. 아래 경로�
 | `inference_diag.csv` | inference | hold 사유와 정책 입력. [demo-inference-controller.md](demo-inference-controller.md#로그) |
 | `dualarm_diag.csv` | dualarm | 열 묶음은 [demo-dualarm-controller.md](demo-dualarm-controller.md#로그와-tf-판독) |
 | `locomotion_diag.csv` | locomotion | 모드 · QP · margin · base · plan 열과 보행 판정 열 (필터 출력 명령 `cmd_*` · `cmd_valid` · `gait_latest` · plan base 속도 `ref_base_v*` · 측정 접촉 법선력 `meas_fz_<contact>` 와 `meas_contact_valid`) · 앞 plan 유지 수 `plan_holds` · 판정 전 표본 plan `sample_*`. [locomotion-controller.md](locomotion-controller.md#로그와-판정) |
+| `locomotion_truth.csv` | locomotion | sim 참값 (base raw lane · 바닥→발 sole wrench · CoP · lane 나이). 참값 lane 이 신선한 tick 에만 행을 쓰고 첫 행에서 파일을 연다 (`LogOpen::kOnFirstRow`) — 실기 run 에는 없다. [locomotion-controller.md](locomotion-controller.md#log-tiers) |
 | `joint_ff.csv` | hand_joint | tick 당 feedforward 기록: 상태 lane (`estop` · `readable` · `seeded` · `traj_active` · `ff_enabled` · `mode` (정수: 0 tracking · 1 damping · 2 damping_feedforward) · `ff_finite` · `model_fresh` · 폐쇄 체인 `held` · `held_ticks` · `singular` · `closure_error` · `clamped_mask`) 뒤에 관절별 `q_*` · `q_ref_*` · `g_*` (모델 중력항, N·m) · `tau_ff_*` (wire 의 feedforward) · `qdd_ref_*` (reference 가속도, 정지 시 0) · `tau_inertia_*` (법칙이 더한 관성항 k_M·M·q̈_ref, clamp 전) 와 상태 lane 의 `inertia_gain` (그 tick 에 적용된 k_M) — 한 행에서 `tau_ff = clamp(k_g·g + tau_inertia)` 를 읽는다. E-STOP · unreadable tick 도 행을 남기고 (`ff_finite=0` / `readable=0`), `tau_ff_*` 는 그 tick 에 wire 로 나간 값이다. `analyze_hand_gravity_ff` 가 `ff_enabled` 로 A/B 구간을 나눠 `q_ref_* − q_*` 를 판정한다 (`mode` 0 구간만 의미 있다 — 비-tracking 은 q_ref = q); `plot_rtc_log` 는 비-tracking 구간을 음영으로 칠하고 drift 를 낸다 ([hand-joint-controller.md](hand-joint-controller.md)) |
 | `catching_diag.csv` · `planner_events.csv` | catching | [demo-catching-controller.md](demo-catching-controller.md#tick-레코드-csv) |
 

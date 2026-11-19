@@ -24,6 +24,21 @@
 // File path: <session>/controllers/<config_key>/<instance>.csv —
 // resolved at RegisterLog() time relative to the session dir.
 //
+// When the file opens (LogOpen, per channel):
+//   - kAtRegister (default): RegisterLog() opens it and writes the header, so
+//     the file exists from configure on, rows or not.
+//   - kOnFirstRow: RegisterLog() only creates the directory; the drain that
+//     takes the channel's first row opens the file and writes the header. So
+//     "the file exists" <=> "at least one row was pushed" — for a log whose
+//     source may be absent in a run (a simulator-only lane), where an empty
+//     file would read as "the lane was there and said nothing". If that open
+//     fails, the channel never retries: every row it takes is counted
+//     (UnwrittenCount) and TakeOpenFailures() names the path once. Path()
+//     is the resolved path either way, before the file exists too.
+//   The drain runs on the one drain timer (single thread), so the lazy open
+//   needs no lock; Reset() then a re-register appends to a file that exists
+//   (no second header), as for kAtRegister.
+//
 // Header-only.
 
 #include "rtc_base/logging/session_dir.hpp"
@@ -31,6 +46,7 @@
 #include "rtc_base/logging/thread_csv_producer.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -38,11 +54,18 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace rtc {
+
+/// When a channel's CSV file is opened — see the file comment.
+enum class LogOpen : std::uint8_t {
+  kAtRegister,
+  kOnFirstRow,
+};
 
 namespace detail {
 
@@ -62,6 +85,15 @@ class LogChannelBase {
 
   /// Instance string the controller registered under.
   [[nodiscard]] virtual std::string_view Instance() const noexcept = 0;
+
+  /// Rows taken off the ring that never reached the file because a
+  /// kOnFirstRow open failed (0 otherwise). Separate from DropCount(), which
+  /// is ring overflow.
+  [[nodiscard]] virtual std::uint64_t UnwrittenCount() const noexcept = 0;
+
+  /// True exactly once after a kOnFirstRow open failed — the caller's cue to
+  /// say so once rather than on every drain.
+  [[nodiscard]] virtual bool TakeOpenFailure() noexcept = 0;
 };
 
 }  // namespace detail
@@ -106,21 +138,50 @@ class LogChannel final : public LogChannelBase {
   LogChannel(std::string instance, HeaderWriter hdr, RowWriter row)
       : instance_(std::move(instance)), hdr_(std::move(hdr)), row_(std::move(row)) {}
 
-  bool Open(const std::filesystem::path& path) noexcept { return logger_.Open(path, hdr_, row_); }
+  /// Fix the path and, for kAtRegister, open the file now. For kOnFirstRow
+  /// only the directory is created; false when that fails.
+  bool Open(const std::filesystem::path& path, LogOpen when) noexcept {
+    path_ = path;
+    lazy_ = when == LogOpen::kOnFirstRow;
+    if (!lazy_) {
+      return logger_.Open(path_, hdr_, row_);
+    }
+    std::error_code ec;
+    if (path_.has_parent_path()) {
+      std::filesystem::create_directories(path_.parent_path(), ec);
+    }
+    return !ec;
+  }
 
   Producer* producer_ptr() noexcept { return &producer_; }
 
   std::size_t Drain() noexcept override {
-    return producer_.Drain([&](const PodT& p) { logger_.Log(p); });
+    return producer_.Drain([&](const PodT& p) {
+      if (lazy_ && !logger_.IsOpen() && !open_failed_) {
+        open_failed_ = !logger_.Open(path_, hdr_, row_);
+        failure_pending_ = open_failed_;
+      }
+      if (open_failed_) {
+        ++unwritten_;
+        return;
+      }
+      logger_.Log(p);
+    });
   }
 
   [[nodiscard]] std::uint64_t DropCount() const noexcept override { return producer_.DropCount(); }
 
-  [[nodiscard]] const std::filesystem::path& Path() const noexcept override {
-    return logger_.Path();
-  }
+  [[nodiscard]] const std::filesystem::path& Path() const noexcept override { return path_; }
 
   [[nodiscard]] std::string_view Instance() const noexcept override { return instance_; }
+
+  [[nodiscard]] std::uint64_t UnwrittenCount() const noexcept override { return unwritten_; }
+
+  [[nodiscard]] bool TakeOpenFailure() noexcept override {
+    const bool pending = failure_pending_;
+    failure_pending_ = false;
+    return pending;
+  }
 
  private:
   std::string instance_;
@@ -128,6 +189,11 @@ class LogChannel final : public LogChannelBase {
   RowWriter row_;
   Producer producer_{};
   Logger logger_{};
+  std::filesystem::path path_;
+  bool lazy_{false};
+  bool open_failed_{false};
+  bool failure_pending_{false};
+  std::uint64_t unwritten_{0};
 };
 
 }  // namespace detail
@@ -145,7 +211,8 @@ class ControllerLogSet {
   ControllerLogSet& operator=(const ControllerLogSet&) = delete;
 
   /// Register a new (PodT, instance) channel. Header is written on first
-  /// open; existing files are appended without duplicate header.
+  /// open; existing files are appended without duplicate header. `when`
+  /// says whether that open is now or at the first drained row (file comment).
   /// Returns an unbound LogHandle on filesystem error — `if (handle)` is
   /// the caller's check.
   ///
@@ -157,7 +224,8 @@ class ControllerLogSet {
   template <typename PodT, std::size_t Capacity = 512>
   LogHandle<PodT, Capacity> RegisterLog(
       std::string_view instance, typename detail::LogChannel<PodT, Capacity>::HeaderWriter hdr,
-      typename detail::LogChannel<PodT, Capacity>::RowWriter row) {
+      typename detail::LogChannel<PodT, Capacity>::RowWriter row,
+      LogOpen when = LogOpen::kAtRegister) {
     for (const auto& existing : channels_) {
       if (existing->Instance() == instance) {
         return LogHandle<PodT, Capacity>{};  // duplicate — unbound
@@ -167,7 +235,7 @@ class ControllerLogSet {
         std::string(instance), std::move(hdr), std::move(row));
     auto* raw = channel.get();
     const auto path = ResolvePath(instance);
-    if (!channel->Open(path)) {
+    if (!channel->Open(path, when)) {
       return LogHandle<PodT, Capacity>{};  // unbound — caller logs warning
     }
     auto* prod = raw->producer_ptr();
@@ -207,6 +275,27 @@ class ControllerLogSet {
     return total;
   }
 
+  /// Rows of every channel that a failed kOnFirstRow open kept off its file.
+  [[nodiscard]] std::uint64_t TotalUnwrittenCount() const noexcept {
+    std::uint64_t total = 0;
+    for (const auto& c : channels_) {
+      total += c->UnwrittenCount();
+    }
+    return total;
+  }
+
+  /// The paths whose kOnFirstRow open failed since the last call — each
+  /// failure is returned once. Non-RT (allocates).
+  [[nodiscard]] std::vector<std::filesystem::path> TakeOpenFailures() {
+    std::vector<std::filesystem::path> out;
+    for (auto& c : channels_) {
+      if (c->TakeOpenFailure()) {
+        out.push_back(c->Path());
+      }
+    }
+    return out;
+  }
+
   [[nodiscard]] std::size_t size() const noexcept { return channels_.size(); }
 
   [[nodiscard]] bool empty() const noexcept { return channels_.empty(); }
@@ -218,11 +307,13 @@ class ControllerLogSet {
   /// a controller's cleanup→configure cycle silently kill CSV logging (#238).
   ///
   /// Non-RT lifecycle path ONLY (controller `on_cleanup`, or `on_configure`
-  /// rollback). Precondition: no drain and no Push() in flight — by cleanup the
-  /// controller is Inactive, so the RT producer is quiescent. A final
-  /// DrainAll() flushes any residual samples first; destroying each LogChannel
-  /// then closes its ofstream. The CSV file persists on disk and a re-register
-  /// reopens it in append mode (no duplicate header, no data loss).
+  /// rollback), on the thread that runs the drain timer — no drain, lazy open
+  /// or TakeOpenFailures() may run beside it (the CM spins every controller
+  /// node and its lifecycle services on one nrt executor thread). Precondition: no drain and no
+  /// Push() in flight — by cleanup the controller is Inactive, so the RT producer is quiescent. A
+  /// final DrainAll() flushes any residual samples first; destroying each LogChannel then closes
+  /// its ofstream. The CSV file persists on disk and a re-register reopens it in append mode (no
+  /// duplicate header, no data loss).
   void Reset() noexcept {
     DrainAll();
     channels_.clear();

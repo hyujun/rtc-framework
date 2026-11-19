@@ -119,6 +119,19 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
   - 공분산 대각: `est_p_<i>` (15 + 3·접촉 수, 오차 순서 φ · v · p · d · b_g · b_a)
 - `meas_contact_valid` · `meas_fz_<contact>` — 본체 군 inference lane 의 group c (접촉 순서) 의 fz (센서 frame, 지지하는 발은 음수). bit c 는 backend 자신의 신선도 판정 (`inference_enable` — sim 은 연속 누락 tick 수) 이고, 0 이면 (그 group 이 stale, group 수 ≠ 접촉 수, `sensor_layout.inference_values_per_group` < 4) NaN — backend 가 stale 로 본 유지값은 기록하지 않는다. 수신 나이 (`inference_recv_steady_ns`) 는 보지 않는다. lane 의 소스 순서는 profile 이 접촉 순서로 적는다 (`sim.yaml` 의 `fingertip_wrench_topics`).
 
+### Log tiers
+
+실기에서도 얻는 값과 sim 에서만 얻는 참값은 **다른 파일**이다.
+
+- **R tier** — `locomotion_diag.csv` (위). 예외는 `meas_fz_*` 하나다: G1 · b7 에는 발 F/T 가 없어 실기에서는 NaN 인 sim 전용 열이지만, 이름 · 자리는 그대로 둔다.
+- **T tier** — `locomotion_truth.csv` (`LocomotionTruthLog`, 열 계약은 `logging/locomotion_truth_log_pod.hpp`, 채움은 `controllers/locomotion/truth_log.hpp`). 같은 tick 에 쓰고 `tick` 열로 잇는다.
+  - 행은 참값 lane 이 하나라도 신선한 tick 에만 쓰고 (`truth_mask` bit 0 = base, bit 1 + c = 접촉 c), 파일은 첫 행에서 열린다 (`rtc::LogOpen::kOnFirstRow`) — 참값 lane 이 없는 run (실기) 에는 파일이 없다. 0 으로 채운 열은 없고, 신선하지 않은 lane 은 NaN 이다.
+  - 신선도: base 는 `IsBaseFresh`, 접촉은 `IsSensorGroupFresh` (backend 판정 + 수신 나이), 둘 다 `estimator.body_max_age_ms`. 나이 (`truth_base_age_us` · `truth_age_<c>_us`, −1 = 수신 없음) 와 sequence 는 늘 쓴다.
+  - `truth_base_*` — base lane 의 **raw** 값 (quaternion 을 정규화하지 않는다; R 의 `base_q*` 는 상태 source 의 정규화 사본이고 inekf 에서는 추정값이다). twist 는 base LOCAL.
+  - `truth_grf_<c>_*` — 몸통 군 접촉 lane 의 wrench 를 **바닥→발** 로 뒤집은 값 (두 열이 다 쓰인 tick 에서 `truth_grf_<c>_fz` = −`meas_fz_<c>` — diag 는 backend 판정만, T 는 나이도 본다), sole sensor site 축 · site 원점 모멘트. 모멘트는 몸통 군 `sensor_layout.has_native_moment` (sim.yaml) 가 없으면 NaN.
+  - `truth_cop_<c>_x/y` — site 축의 CoP (x = −τ_y / f_z, y = τ_x / f_z). f_z 가 체중의 3 % 이하면 NaN.
+  - 몸통 군 접촉 lane 을 참값으로 보는 근거는 "G1 · b7 실기에는 발 F/T 가 없다" 는 규칙이다 — 실기 발 센서가 생기면 이 분류를 다시 정한다.
+
 ## 평가 도구 (`tools/standing_eval/`)
 
 - `gain_step.py` — 매달린 로봇 (base 고정) 에서 관절마다 0.2 rad step: 2 s 도달률 · overshoot 로 PD 게인 후보를 거른다 (venv python, mujoco).
