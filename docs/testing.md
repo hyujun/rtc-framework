@@ -29,7 +29,7 @@ colcon 의 pytest 는 시스템 python 이라 `.venv` 에만 있는 의존성 (m
 | `rtc_math/` | `rtc_math` 전체 (Pinocchio 가 있으면 `test_se3_module` 교차검증 포함) | `se3_error_compare` 실험 + `plot_se3_compare.py` (선택) |
 | `rtc_msgs/` | 위 + `./build.sh --tests full` (msg 생성 전파) | downstream pub/sub 테스트 |
 | `rtc_controller_interface/` | 패키지 전체 (registry · interface · mailbox · output-validation) | downstream controller 빌드 |
-| `rtc_controllers/` RT path | `test_*_core` + `test_dls_convergence` (할당 게이트 무장) + grasp 관련 gtest | `ps -eLo cls,rtprio` 로 RT scheduling 확인 |
+| `rtc_controllers/` RT path | `test_*_core` + `test_dls_convergence` + `test_contact_inekf_*` (할당 게이트 무장) + grasp 관련 gtest | `ps -eLo cls,rtprio` 로 RT scheduling 확인 |
 | `rtc_controllers/` gains · config | 위 + controller YAML 로드 smoke · `test_yaml_read` (`params/yaml_read.hpp`) | `ros2 topic echo /rtc_cm/active_controller_name` |
 | `rtc_controllers/` catching core | `--ctest-args -R test_catching` | ASan/UBSan 은 별도 build base (rationale 참조) |
 | `rtc_controller_manager/` | RT loop timing · `test_rt_loop_pipeline` (선언된 PD 게인이 slot 으로, hold 는 게인 없음) (`/system/estop_status`) · `test_trigger_estop_service` (운영자 E-STOP 응답 · 이미 래치 · 동시 trigger 1 회) · `test_estop_hold_latch` (창 중 trigger 의 hold 목표 불변 · `estop_on_clear` resume 문자 동일 / initial_controller 전환 · 실패 재래치 · 재래치 거부 · timeout 뒤 switch 없음) · `test_on_configure` (`estop_on_clear` 거부 · read-only) · teardown (`test_eventfd_teardown_order` · `test_state_lane_teardown`) | `cm_timing_log.csv` p99 |

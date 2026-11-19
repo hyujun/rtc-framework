@@ -46,6 +46,9 @@ add_library(rtc_controllers STATIC
   # nv-vectors (p, C^T v, g, tau_m) — no Pinocchio, no matrices, no robot facts.
   src/controllers/estimation/momentum_observer.cpp
   src/controllers/estimation/inertial_estimator.cpp
+  # Contact-aided right-invariant EKF core (IMU propagation, covariance,
+  # stationary initialisation). Eigen + rtc_math only — no model, no ROS.
+  src/controllers/estimation/contact_inekf.cpp
   src/controllers/estimation/payload_estimator.cpp
   # G2 schema layer: gains PODs + YAML parsers, lifted out of the
   # controllers/{direct,indirect} adapters so they would outlive them — which
@@ -347,6 +350,28 @@ if(BUILD_TESTING)
   target_include_directories(test_inertial_estimator_alloc PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_inertial_estimator_alloc PRIVATE -Wno-mismatched-new-delete)
+
+  # Contact-aided RI-EKF core. The oracles (long-double Van Loan, quadrature
+  # mean, matrix-series Γ) live in test/contact_inekf_oracle.hpp and never call
+  # the core; the shared seam + fixture is test/contact_inekf_testing.hpp.
+  ament_add_gtest(test_contact_inekf_propagation test/test_contact_inekf_propagation.cpp
+    TIMEOUT 600)
+  target_link_libraries(test_contact_inekf_propagation rtc_controllers)
+  ament_add_gtest(test_contact_inekf_init test/test_contact_inekf_init.cpp TIMEOUT 300)
+  target_link_libraries(test_contact_inekf_init rtc_controllers)
+  # Propagated P against a sub-stepped nonlinear truth (4000 trajectories).
+  ament_add_gtest(test_contact_inekf_propagation_mc test/test_contact_inekf_propagation_mc.cpp
+    TIMEOUT 900)
+  target_link_libraries(test_contact_inekf_propagation_mc rtc_controllers)
+  # RT allocation gate: operator-new counting (${rtc_controllers_test_include})
+  # plus the executable-wide C allocator gate (${rtc_base_test_include}), which
+  # is what sees Eigen inside the static library. Same program-wide
+  # -Wmismatched-new-delete false positive as the other operator-new gates.
+  ament_add_gtest(test_contact_inekf_alloc test/test_contact_inekf_alloc.cpp)
+  target_link_libraries(test_contact_inekf_alloc rtc_controllers)
+  target_include_directories(test_contact_inekf_alloc PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_contact_inekf_alloc PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S1 golden-vector harness: the joint-space PD core pinned bit-for-bit
   # against a literal copy of the pre-extraction inline form. That literal oracle
