@@ -115,7 +115,10 @@ namespace rtc::mpc {
 class HandlerMPCThread final : public MPCThread {
  public:
   HandlerMPCThread() = default;
-  ~HandlerMPCThread() override = default;
+
+  // Joins here, not only in ~MPCThread: the loop calls this class's Solve /
+  // OnTickEnd, which must not run once its members are gone.
+  ~HandlerMPCThread() override { StopAndJoin(); }
 
   HandlerMPCThread(const HandlerMPCThread&) = delete;
   HandlerMPCThread& operator=(const HandlerMPCThread&) = delete;

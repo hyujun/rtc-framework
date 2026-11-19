@@ -614,13 +614,15 @@ TEST_F(MpcThreadPublishTest, TheSolveRecordCountsEveryAttemptByOutcome) {
     last_seq = r.seq;
     return r;
   };
-  const auto wait_for = [&](SolveOutcome o) {
+  // A different count per outcome, so counts filed under the wrong outcome
+  // cannot agree with the counters by accident.
+  const auto wait_for = [&](SolveOutcome o, std::uint64_t n) {
     return rtc::testing::WaitUntil([&] {
       const SolveRecord r = poll();
-      return r.outcome == o && CountOf(r, o) >= 3U;
+      return r.outcome == o && CountOf(r, o) >= n;
     });
   };
-  ASSERT_TRUE(wait_for(SolveOutcome::kPublished));
+  ASSERT_TRUE(wait_for(SolveOutcome::kPublished, 3U));
   {
     const SolveRecord r = poll();
     EXPECT_GT(r.plan_id, 0U);
@@ -630,18 +632,18 @@ TEST_F(MpcThreadPublishTest, TheSolveRecordCountsEveryAttemptByOutcome) {
     EXPECT_GT(r.state_sequence, 0U);
   }
   stub->sleep_us = 6000;  // past the deadline
-  ASSERT_TRUE(wait_for(SolveOutcome::kDeadline));
+  ASSERT_TRUE(wait_for(SolveOutcome::kDeadline, 5U));
   EXPECT_EQ(poll().plan_id, 0U);
   stub->sleep_us = 0;
   stub->big_from = 0;  // every node over the tolerance
-  ASSERT_TRUE(wait_for(SolveOutcome::kWithheld));
+  ASSERT_TRUE(wait_for(SolveOutcome::kWithheld, 7U));
   EXPECT_DOUBLE_EQ(poll().consumed_prim, 5.0);
   stub->big_from = kStubHorizon + 1;
   stub->cold = true;
-  ASSERT_TRUE(wait_for(SolveOutcome::kColdWithheld));
+  ASSERT_TRUE(wait_for(SolveOutcome::kColdWithheld, 9U));
   stub->cold = false;
   stub->error = static_cast<int>(rtc::mpc::MPCSolveError::kSolverException);
-  ASSERT_TRUE(wait_for(SolveOutcome::kFailed));
+  ASSERT_TRUE(wait_for(SolveOutcome::kFailed, 11U));
   {
     const SolveRecord r = poll();
     EXPECT_EQ(r.err, static_cast<int>(rtc::mpc::MPCSolveError::kSolverException));
@@ -679,6 +681,8 @@ TEST_F(MpcThreadPublishTest, ARepeatedObservationWritesNoRecord) {
   static_cast<void>(sink.TryAcquireLatest());
   EXPECT_EQ(sink.Current().seq, 1U) << "the one snapshot's single attempt";
   EXPECT_EQ(CountOf(sink.Current(), SolveOutcome::kPublished), 1U);
+  EXPECT_EQ(sink.Current().plan_id, 1U) << "the manager's first plan";
+  EXPECT_EQ(Published(), 1U);
 }
 
 // Without a handler every attempt is a failed record with err −1.
