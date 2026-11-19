@@ -25,8 +25,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -78,6 +80,27 @@ struct LocomotionControllerTestAccess {
   /// Guard refusals before kPoseGuard latches (round(0.5 s · control rate)).
   static std::uint32_t GuardSettleTicks(const LocomotionController& c) {
     return c.guard_settle_ticks_;
+  }
+
+  // The CSV channels, for a suite with no drain timer spinning.
+  static std::size_t DrainLogs(LocomotionController& c) { return c.log_set_.DrainAll(); }
+
+  static std::uint64_t LogDrops(const LocomotionController& c) {
+    return c.log_set_.TotalDropCount();
+  }
+
+  static std::uint64_t LogUnwritten(const LocomotionController& c) {
+    return c.log_set_.TotalUnwrittenCount();
+  }
+
+  /// The registered path of `instance`, empty when it is not registered.
+  static std::filesystem::path LogPath(const LocomotionController& c, std::string_view instance) {
+    for (const auto& [name, path] : c.log_set_.Channels()) {
+      if (name == instance) {
+        return path;
+      }
+    }
+    return {};
   }
 };
 

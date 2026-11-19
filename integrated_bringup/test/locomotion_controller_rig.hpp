@@ -83,6 +83,18 @@ inline std::map<std::string, rtc::DeviceNameConfig> ShippedDevices(const YAML::N
   return configs;
 }
 
+// The same with the body group's shipped sensor_layout (ShippedDevices carries
+// none): the contact lane's stride and its moment flag, read from the profile.
+inline std::map<std::string, rtc::DeviceNameConfig> ShippedLaneDevices(const YAML::Node& cfg) {
+  auto devices = ShippedDevices(cfg);
+  const YAML::Node sl = fx::ShippedSimParams(kProfile)["devices"]["g1"]["sensor_layout"];
+  rtc::DeviceSensorLayout layout;
+  layout.inference_values_per_group = sl["inference_values_per_group"].as<int>();
+  layout.has_native_moment = sl["has_native_moment"].as<bool>();
+  devices.at("g1").sensor_layout = layout;
+  return devices;
+}
+
 // The stand keyframe: demo_joint's safe pose (body roster order).
 inline std::vector<double> StandPose() {
   return fx::ShippedControllerNode(kProfile, "demo_joint_controller")["estop"]["arm_safe_position"]

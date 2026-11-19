@@ -200,6 +200,41 @@ TEST_F(LocomotionAlloc, TheInekfSourcePathsAllocateNothing) {
   EXPECT_EQ(worst, 0U);
 }
 
+// The T-tier log on the tick: bound handle, the moment lane, both soles and
+// the base fresh, then each lane stale — the fill and the push allocate
+// nothing (the file opens on the drain timer, off the tick).
+TEST_F(LocomotionAlloc, TheTruthLogPathAllocatesNothing) {
+  const YAML::Node cfg = ShippedConfig();
+  ConfigureWithDevices(cfg, ShippedLaneDevices(cfg), rclcpp::NodeOptions{},
+                       "test_locomotion_truth_alloc");
+  ASSERT_FALSE(integrated_bringup::LocomotionControllerTestAccess::LogPath(
+                   *ctrl_, integrated_bringup::kLocomotionTruthLogInstance)
+                   .empty());
+  Activate();
+  MakeStanding();
+  auto& body = state_.devices[kBody];
+  body.num_inference_groups = 2;
+  const auto stamp_contacts = [&body](int64_t at) {
+    for (std::size_t c = 0; c < 2; ++c) {
+      body.inference_enable[c] = true;
+      body.inference_recv_steady_ns[c] = at;
+      body.inference_data[c * 7 + 3] = -170.0F;
+      body.inference_data[c * 7 + 5] = 1.0F;
+    }
+  };
+  stamp_contacts(NowNs());
+  Tick();  // warm outside the gate
+  Tick();
+  std::size_t worst = 0;
+  for (int k = 0; k < 40; ++k) {
+    // Fresh soles on even ticks, stale (a second old) on odd ones.
+    stamp_contacts(k % 2 == 0 ? NowNs() : NowNs() - 1'000'000'000);
+    worst = std::max(worst, GatedTick(false));
+    ASSERT_NE(ctrl_->LastTruthLog().truth_mask, 0U);
+  }
+  EXPECT_EQ(worst, 0U);
+}
+
 TEST(LocomotionAllocGate, PositiveControlTheGateIsArmed) {
   rtc::testing::ScopedAllocGate gate;
   std::vector<double> v;

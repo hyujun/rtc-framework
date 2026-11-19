@@ -76,7 +76,7 @@ void LocomotionController::LoadConfig(const YAML::Node& cfg) {
         e.instance = entry["instance"].as<std::string>();
       }
       if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != kJointFeedforwardLogMsgType &&
-          e.msg_type != kLocomotionDiagLogMsgType) {
+          e.msg_type != kLocomotionDiagLogMsgType && e.msg_type != kLocomotionTruthLogMsgType) {
         Fail("unknown msg_type in `logs`: " + e.msg_type);
       }
       parsed_log_entries_.push_back(std::move(e));
@@ -248,6 +248,7 @@ std::string LocomotionController::WireDevices() {
     const auto& roster = body->joint_state_names;
     contact_force_stride_ =
         body->sensor_layout ? body->sensor_layout->inference_values_per_group : 0;
+    contact_moment_lane_ = body->sensor_layout && body->sensor_layout->has_native_moment;
     if (cfg_.pd_kp.size() != nb_ || cfg_.pd_kd.size() != nb_ || cfg_.damping_kd.size() != nb_) {
       return "pd_feedforward.kp / kd and fault.damping_kd need one gain per body joint (" +
              std::to_string(nb_) + "), got " + std::to_string(cfg_.pd_kp.size()) + " / " +

@@ -88,6 +88,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/locomotion/mpc_reference.cpp
   src/controllers/locomotion/command.cpp
   src/controllers/locomotion/locomotion_status.cpp
+  src/controllers/locomotion/truth_log.cpp
   # Learned-policy binding. Its law half lives in rtc_controllers/inference
   # (tensor marshalling) — this side owns the ControllerState/engine contract.
   src/controllers/inference/controller.cpp
@@ -2254,6 +2255,35 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # The T-tier log (locomotion_truth.csv): the fill from the lanes (frames,
+  # signs, CoP, freshness) and, on the installed g1_loco profile, the file
+  # that exists only with a truth lane, its rows, and an unchanged output.
+  ament_add_gtest(test_locomotion_truth_log test/test_locomotion_truth_log.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_locomotion_truth_log PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_locomotion_truth_log PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_truth_log
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_truth_log
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # The inekf source's Update() under the operator-new and the C malloc gates
   # (own binary: both replace process-wide entry points).
   ament_add_gtest(test_inekf_state_source_alloc test/test_inekf_state_source_alloc.cpp
@@ -2665,6 +2695,7 @@ if(BUILD_TESTING)
     test_inekf_state_source
     test_inekf_state_source_alloc
     test_locomotion_estimator
+    test_locomotion_truth_log
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99

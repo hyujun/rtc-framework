@@ -33,6 +33,7 @@
 #include "integrated_bringup/logging/inference_diag_log_pod.hpp"
 #include "integrated_bringup/logging/joint_feedforward_log_pod.hpp"
 #include "integrated_bringup/logging/locomotion_diag_log_pod.hpp"
+#include "integrated_bringup/logging/locomotion_truth_log_pod.hpp"
 #include "integrated_bringup/logging/momentum_observer_log_pod.hpp"
 #include "integrated_bringup/logging/pull_estimator_log_pod.hpp"
 #include "integrated_bringup/logging/task_diag_log_pod.hpp"
@@ -64,6 +65,12 @@ namespace integrated_bringup {
 inline void DrainControllerLogs(rtc::ControllerLogSet& log_set, const rclcpp::Logger& logger,
                                 std::uint64_t& reported) {
   log_set.DrainAll();
+  // A channel that opens on its first row and could not: said once per
+  // channel, the rows it then takes counted by TotalUnwrittenCount().
+  for (const auto& path : log_set.TakeOpenFailures()) {
+    RCLCPP_WARN(logger, "Controller CSV log %s could not be opened; its rows are discarded",
+                path.string().c_str());
+  }
   const std::uint64_t total = log_set.TotalDropCount();
   if (total <= reported) {
     return;
@@ -227,6 +234,9 @@ struct LogRegistrationContext {
   bool locomotion_diag_enabled{false};
   std::vector<std::string> locomotion_diag_contact_names{};
   std::vector<std::string> locomotion_diag_joint_names{};
+  // The T tier (LocomotionTruthLog): opens its file on the first row.
+  bool locomotion_truth_enabled{false};
+  std::vector<std::string> locomotion_truth_contact_names{};
 };
 
 // ⚠ Two separate hazards, two separate fixes — keep both (#428).
@@ -325,6 +335,7 @@ struct RegisteredLogHandles {
   // Single fixed instance (kJointFeedforwardLogInstance), same reason.
   rtc::LogHandle<integrated_bringup::JointFeedforwardLogPod> joint_ff;
   rtc::LogHandle<integrated_bringup::LocomotionDiagLogPod> locomotion_diag;
+  rtc::LogHandle<integrated_bringup::LocomotionTruthLogPod> locomotion_truth;
 };
 
 // ── Outcome of a single RegisterControllerLogs call ────────────────────────
@@ -684,12 +695,34 @@ template <typename ParsedLogEntryT>
         continue;
       }
       result.handles.locomotion_diag = std::move(handle);
+    } else if (entry.msg_type == kLocomotionTruthLogMsgType) {
+      if (!ctx.locomotion_truth_enabled || entry.instance != kLocomotionTruthLogInstance) {
+        continue;
+      }
+      const auto contact_names = ctx.locomotion_truth_contact_names;
+      const auto cols = integrated_bringup::LocomotionTruthLogColumnsFor(contact_names);
+      auto handle = ctx.log_set.RegisterLog<integrated_bringup::LocomotionTruthLogPod>(
+          entry.instance,
+          [contact_names, cols](std::ostream& os) {
+            integrated_bringup::WriteLocomotionTruthLogHeader(os, contact_names, cols);
+          },
+          [cols](std::ostream& os, const integrated_bringup::LocomotionTruthLogPod& pod) {
+            integrated_bringup::WriteLocomotionTruthLogRow(os, pod, cols);
+          },
+          rtc::LogOpen::kOnFirstRow);
+      if (!handle) {
+        RCLCPP_WARN(ctx.logger, "Failed to register locomotion_truth CSV for instance=%s",
+                    entry.instance.c_str());
+        continue;
+      }
+      result.handles.locomotion_truth = std::move(handle);
     }
     // Unknown msg_type: LoadConfig() has already validated against the
     // closed set {DeviceStateLog, DeviceSensorLog, DeviceWbcLog, WbcDiagLog,
     // PullEstimatorLog, TaskDiagLog, GraspDiagLog, MomentumObserverLog,
     // ComplianceDiagLog, InferenceDiagLog, CatchingDiagLog, DualArmDiagLog,
-    // JointFeedforwardLog, LocomotionDiagLog}; reaching here is a YAML parser bug. Silently ignore.
+    // JointFeedforwardLog, LocomotionDiagLog, LocomotionTruthLog}; reaching here is a YAML parser
+    // bug. Silently ignore.
   }
 
   return result;

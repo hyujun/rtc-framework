@@ -42,6 +42,8 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
         .locomotion_diag_enabled = true,
         .locomotion_diag_contact_names = contact_names_,
         .locomotion_diag_joint_names = body_joint_names_,
+        .locomotion_truth_enabled = true,
+        .locomotion_truth_contact_names = contact_names_,
     };
     ctx.state_logs[groups[0] + "_state"] = {body_joint_names_, {}};
     for (std::size_t h = 0; h < hand_joint_names_.size(); ++h) {
@@ -61,6 +63,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
     }
     joint_log_handle_ = std::move(reg.handles.joint_ff);
     diag_log_handle_ = std::move(reg.handles.locomotion_diag);
+    truth_log_handle_ = std::move(reg.handles.locomotion_truth);
 
     layout_profile_drops_mpc_ = false;
     if (mpc_enabled_ && node) {
@@ -127,6 +130,7 @@ void LocomotionController::ResetLogState() noexcept {
   state_log_handles_.clear();
   joint_log_handle_ = {};
   diag_log_handle_ = {};
+  truth_log_handle_ = {};
 }
 
 rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
