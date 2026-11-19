@@ -91,6 +91,21 @@ TEST_F(LocomotionEstimatorTest, AnEstimateThatDoesNotStartInTimeLatchesTheSource
   ExpectDamping(last_out_);
 }
 
+TEST_F(LocomotionEstimatorTest, AnEstimateWithoutAnImuTimesOutToo) {
+  BringUp(InekfConfig(false));
+  const auto timeout =
+      static_cast<int>(std::lround(cfg_["estimator"]["inekf"]["init"]["timeout_s"].as<double>() *
+                                   fx::kShippedProfileControlRateHz));
+  state_.devices[kBody].imu_valid[0] = false;
+  for (int t = 1; t < timeout; ++t) {
+    last_out_ = Tick();
+    ASSERT_EQ(StateSourceStatus::kImuMissing, Measured().status);
+    ASSERT_FALSE(ctrl_->HasLatchedFault()) << t;
+  }
+  last_out_ = Tick();
+  EXPECT_EQ(Cause::kSource, LastCause());
+}
+
 TEST_F(LocomotionEstimatorTest, TheStartTimeoutDoesNotRunUnderTheEstopAndRestartsAtTheClear) {
   BringUp(InekfConfig(false));
   const auto timeout =

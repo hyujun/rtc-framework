@@ -80,9 +80,9 @@
 // than fault.max_source_bad_ticks ticks in a row while a reference was
 // latched (an unlatched controller only waits); the source restarted its
 // state (a new state epoch) while a reference was latched; an estimating
-// source had not started (kNotInitialized) for estimator.inekf.init.timeout_s
-// of unlatched ticks outside the E-STOP since the last restart of the
-// reference; the output was not finite;
+// source had not started (any status) for estimator.inekf.init.timeout_s of
+// unlatched ticks outside the E-STOP, counted since the last restart of the
+// reference (not necessarily in a row); the output was not finite;
 // the state's model epoch is not the controller's; the plan was lost off a
 // still double support; the pose guard refused the pose for the settle time.
 //

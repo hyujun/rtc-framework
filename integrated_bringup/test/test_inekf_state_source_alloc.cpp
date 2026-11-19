@@ -108,11 +108,16 @@ TEST_F(InekfSourceAlloc, EveryUpdatePathAllocatesNothing) {
   ASSERT_TRUE(out_.valid);
   Gated(40);  // nominal: propagate, contacts inserted, confirmed, updated
   ASSERT_EQ(0b11U, out_.estimator.estimated_mask);
-  Gated(20, 0);  // a held sample, then the stale hold
-  EXPECT_EQ(loco::StateSourceStatus::kImuStale, out_.status);
   Gated(20, 1, 3 * kT);   // skew: the update skipped
   Gated(20, 1, 12 * kT);  // skew past the invalid bound
-  Gated(1, 11);           // a gap: the reset
+  Gated(20);
+  Gated(20, 0);  // a held sample, then the stale hold
+  EXPECT_EQ(loco::StateSourceStatus::kImuStale, out_.status);
+  Gated(1);  // the sample after the stall: a reset
+  EXPECT_FALSE(out_.estimator.initialized);
+  Gated(20);
+  ASSERT_TRUE(out_.valid);
+  Gated(1, 11);  // a gap: the reset
   EXPECT_FALSE(out_.estimator.initialized);
   Gated(20);  // the restart and its steps
   ASSERT_TRUE(out_.valid);

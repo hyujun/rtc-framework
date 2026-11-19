@@ -15,6 +15,7 @@
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/jacobian.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
+#include <pinocchio/multibody/joint/joints.hpp>
 #pragma GCC diagnostic pop
 
 #include <Eigen/Geometry>
@@ -319,8 +320,39 @@ TEST_F(InekfSourceTest, ARepeatedSampleHoldsTheBaseBitForBitThenGoesStale) {
   EXPECT_FALSE(Step(*src, out, 0));
   EXPECT_EQ(StateSourceStatus::kImuStale, out.status);
   EXPECT_EQ(0U, out.valid_mask & loco::kBaseBit);
-  EXPECT_TRUE(Step(*src, out, 1));  // a new sample steps again
+  // The samples stopped for longer than the state was held: the next one does
+  // not follow the last in time — a reset, then a start on the next still sample.
+  const uint32_t epoch = out.state_epoch;
+  EXPECT_FALSE(Step(*src, out, 1));
+  EXPECT_EQ(epoch + 1, out.state_epoch);
+  EXPECT_EQ(static_cast<uint8_t>(EstimatorResetReason::kGap), out.estimator.reset_reason);
+}
+
+TEST_F(InekfSourceTest, AHoldWithinTheBudgetThenANewSampleStepsOnWithoutAReport) {
+  auto src = MakeSource(shipped_);
+  MeasuredRobotState out{};
+  ASSERT_TRUE(Step(*src, out));
+  for (int t = 0; t < 15; ++t) {
+    ASSERT_TRUE(Step(*src, out));
+  }
+  ASSERT_TRUE(out.estimator.report_valid);
+  const uint32_t epoch = out.state_epoch;
+  for (int t = 1; t <= shipped_.policy.max_hold_ticks; ++t) {
+    ASSERT_TRUE(Step(*src, out, 0));
+    EXPECT_FALSE(out.estimator.report_valid) << "no update ran on a held tick " << t;
+  }
+  ASSERT_TRUE(Step(*src, out, 1));
   EXPECT_EQ(1, out.estimator.periods);
+  EXPECT_EQ(epoch, out.state_epoch);
+  EXPECT_TRUE(out.estimator.report_valid);
+  // A missing IMU counts as quiet ticks too: past the budget, a reset on return.
+  state_.devices[loco_rig::kBody].imu_valid[0] = false;
+  for (int t = 0; t <= shipped_.policy.max_hold_ticks; ++t) {
+    EXPECT_FALSE(Step(*src, out, 1));
+  }
+  state_.devices[loco_rig::kBody].imu_valid[0] = true;
+  EXPECT_FALSE(Step(*src, out, 1));
+  EXPECT_EQ(epoch + 1, out.state_epoch);
 }
 
 TEST_F(InekfSourceTest, MissedSamplesStepOnTheNominalPeriodAndAGapResets) {
@@ -387,6 +419,29 @@ TEST_F(InekfSourceTest, ASequenceThatGoesBackIsAMissingSampleAndAReset) {
   EXPECT_EQ(epoch + 1, out.state_epoch);
   EXPECT_EQ(static_cast<uint8_t>(EstimatorResetReason::kGap), out.estimator.reset_reason);
   EXPECT_TRUE(Step(*src, out));
+}
+
+TEST_F(InekfSourceTest, BeforeTheStartASequenceThatGoesBackOnlyRestartsTheWindow) {
+  InekfSourceConfig cfg = shipped_;
+  cfg.init.window_ticks = 3;
+  auto src = MakeSource(cfg);
+  MeasuredRobotState out{};
+  EXPECT_FALSE(Step(*src, out, 5));
+  EXPECT_FALSE(Step(*src, out, 1));
+  const uint32_t epoch = out.state_epoch;
+  state_.devices[loco_rig::kBody].imu_sequence[0] -= 3;
+  EXPECT_FALSE(Step(*src, out, 0));
+  EXPECT_EQ(StateSourceStatus::kImuMissing, out.status);
+  EXPECT_EQ(epoch, out.state_epoch) << "no filter ran: nothing to reset";
+  EXPECT_FALSE(Step(*src, out, 1));
+  EXPECT_FALSE(Step(*src, out, 1));
+  EXPECT_TRUE(Step(*src, out, 1));  // three still samples after the regression
+  // A missed sample breaks the window as well.
+  auto missed = MakeSource(cfg);
+  EXPECT_FALSE(Step(*missed, out, 1));
+  EXPECT_FALSE(Step(*missed, out, 2));
+  EXPECT_FALSE(Step(*missed, out, 1));
+  EXPECT_TRUE(Step(*missed, out, 1));
 }
 
 TEST_F(InekfSourceTest, AMissingOrNonFiniteImuIsMissing) {
@@ -520,6 +575,7 @@ TEST_F(InekfSourceTest, RefusedStepsInARowResetAndHoldTheBaseUntilThen) {
     EXPECT_EQ(static_cast<uint8_t>(est::ContactFsmStatus::kPropagateRefused),
               out.estimator.step_status);
     EXPECT_EQ(t, out.estimator.refused_ticks);
+    EXPECT_EQ(t, out.estimator.periods) << "a refused sample is not consumed";
     EXPECT_EQ(0U, out.fresh_mask & loco::kBaseBit);
     for (std::size_t i = 0; i < 7; ++i) {
       EXPECT_TRUE(SameBits(before.q[i], out.q[i])) << t << " q" << i;
@@ -561,6 +617,46 @@ TEST_F(InekfSourceTest, ResetIsRequestedBumpsTheEpochAndForgetsTheSequence) {
   ASSERT_TRUE(Step(*src, out, 1000));
   EXPECT_EQ(epoch + 1, out.state_epoch);
   EXPECT_EQ(static_cast<uint8_t>(EstimatorResetReason::kRequested), out.estimator.reset_reason);
+}
+
+TEST_F(InekfSourceTest, StaleJointsKeepTheirKinematicsOutOfTheUpdate) {
+  auto src = MakeSource(shipped_);
+  MeasuredRobotState out{};
+  ASSERT_TRUE(Step(*src, out));
+  for (int t = 0; t < 15; ++t) {
+    ASSERT_TRUE(Step(*src, out));
+  }
+  ASSERT_TRUE(out.estimator.report_valid);
+  // Joints and IMU received together (no skew), both older than the body age limit.
+  now_ += kT;
+  auto& body = state_.devices[loco_rig::kBody];
+  body.imu_sequence[0] += 1;
+  body.imu_recv_steady_ns[0] = now_;
+  body.joint_recv_steady_ns = now_;
+  EXPECT_FALSE(src->Update(state_, ctrl_->Indices(), {kBoth}, now_ + 11'000'000, out));
+  EXPECT_EQ(StateSourceStatus::kBodyStale, out.status);
+  for (int c = 0; c < 2; ++c) {
+    EXPECT_FALSE(src->Sequencer().action(c).use) << c;
+  }
+}
+
+TEST_F(InekfSourceTest, TheQuaternionKeepsTheHemisphereOfTheLastOutput) {
+  auto src = MakeSource(shipped_);
+  MeasuredRobotState out{};
+  ASSERT_TRUE(Step(*src, out));
+  auto& core = est::ContactFsmTestAccess::Core(Access::Seq(*src));
+  const auto yaw = [](double a) { return Eigen::AngleAxisd(a, Eigen::Vector3d::UnitZ()).matrix(); };
+  const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
+  // −100° → −130° crosses the trace sign: Eigen's conversion flips q to −q there.
+  rtc::estimation::ContactInekfTestAccess::SetMean(core, yaw(-100.0 * M_PI / 180.0), zero, zero,
+                                                   zero);
+  ASSERT_TRUE(Step(*src, out, 0));
+  const Eigen::Vector4d q1(out.q[3], out.q[4], out.q[5], out.q[6]);
+  rtc::estimation::ContactInekfTestAccess::SetMean(core, yaw(-130.0 * M_PI / 180.0), zero, zero,
+                                                   zero);
+  ASSERT_TRUE(Step(*src, out, 0));
+  const Eigen::Vector4d q2(out.q[3], out.q[4], out.q[5], out.q[6]);
+  EXPECT_GT(q1.dot(q2), 0.0) << q1.transpose() << " | " << q2.transpose();
 }
 
 // ── kinematics and output map oracles ───────────────────────────────────────
@@ -655,6 +751,12 @@ TEST_F(InekfSourceTest, ImuFrameKinematicsMatchTheFullModelAndItsFiniteDifferenc
       const auto jac = k;
       std::array<est::ContactKinematics, 2> kp{};
       std::array<est::ContactKinematics, 2> km{};
+      for (auto& x : kp) {
+        x.jacobian.resize(3, nj);
+      }
+      for (auto& x : km) {
+        x.jacobian.resize(3, nj);
+      }
       for (int j = 0; j < nj; ++j) {
         auto qp = qb;
         auto qm = qb;
@@ -874,6 +976,8 @@ TEST_F(InekfSourceTest, TheSectionRefusesEveryMalformedValueAndPassesItsNeighbou
       {"init.window_ticks not an integer", set("init", "window_ticks", YAML::Node(1.5)), none},
       {"init.yaw nan", set("init", "yaw", YAML::Load(".nan")),
        set("init", "yaw", YAML::Node(-3.0))},
+      {"init.yaw past 2 pi", set("init", "yaw", YAML::Node(6.3)),
+       set("init", "yaw", YAML::Node(6.28))},
       {"init.joint_speed_tolerance 0", set("init", "joint_speed_tolerance", YAML::Node(0.0)), none},
       {"policy.max_hold_ticks negative", set("policy", "max_hold_ticks", YAML::Node(-1)),
        set("policy", "max_hold_ticks", YAML::Node(0))},
@@ -910,6 +1014,26 @@ TEST_F(InekfSourceTest, TheSectionRefusesEveryMalformedValueAndPassesItsNeighbou
                std::invalid_argument);
   est["source"] = "truth";
   EXPECT_FALSE(loco::ParseEstimatorConfig(est, "estimator").inekf.has_value());
+}
+
+TEST_F(InekfSourceTest, TheKinematicsRefuseAJointOfMoreThanOneDof) {
+  pinocchio::Model m;
+  const auto root =
+      m.addJoint(0, pinocchio::JointModelFreeFlyer(), pinocchio::SE3::Identity(), "root_joint");
+  const auto ball =
+      m.addJoint(root, pinocchio::JointModelSpherical(), pinocchio::SE3::Identity(), "ball");
+  m.addFrame(pinocchio::Frame("imu", root, 0, pinocchio::SE3::Identity(), pinocchio::OP_FRAME));
+  m.addFrame(pinocchio::Frame("sole", ball, 0, pinocchio::SE3::Identity(), pinocchio::OP_FRAME));
+  auto model = std::make_shared<const pinocchio::Model>(m);
+  EXPECT_THROW(ImuFrameKinematics(model, {"sole"}, "imu"), std::invalid_argument);
+  pinocchio::Model r;
+  const auto root2 =
+      r.addJoint(0, pinocchio::JointModelFreeFlyer(), pinocchio::SE3::Identity(), "root_joint");
+  const auto hinge =
+      r.addJoint(root2, pinocchio::JointModelRX(), pinocchio::SE3::Identity(), "hinge");
+  r.addFrame(pinocchio::Frame("imu", root2, 0, pinocchio::SE3::Identity(), pinocchio::OP_FRAME));
+  r.addFrame(pinocchio::Frame("sole", hinge, 0, pinocchio::SE3::Identity(), pinocchio::OP_FRAME));
+  EXPECT_NO_THROW(ImuFrameKinematics(std::make_shared<const pinocchio::Model>(r), {"sole"}, "imu"));
 }
 
 TEST_F(InekfSourceTest, TheKinematicsRefuseAFrameOffTheRootOrUnknown) {

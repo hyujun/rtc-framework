@@ -19,6 +19,7 @@
 #include <cmath>
 #include <initializer_list>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -191,6 +192,9 @@ InekfSourceConfig ParseInekfSourceConfig(const YAML::Node& inekf, const std::str
   cfg.init.window_ticks = ReadInt(init, "window_ticks", 1, init_at);
   cfg.init.timeout_s = ReadPositive(init, "timeout_s", init_at);
   cfg.init.yaw = ReadNumber(init, "yaw", init_at);
+  if (!(std::abs(cfg.init.yaw) <= 2.0 * std::numbers::pi)) {
+    Refuse(init_at + ".yaw", "must be within [-2 pi, 2 pi] rad");
+  }
   cfg.init.joint_speed_tolerance = ReadPositive(init, "joint_speed_tolerance", init_at);
 
   const std::string policy_at = context + ".policy";
@@ -230,6 +234,11 @@ ImuFrameKinematics::ImuFrameKinematics(std::shared_ptr<const pinocchio::Model> m
                   : throw std::invalid_argument(
                         "ImuFrameKinematics: the model has no free-flyer root")) {
   const pinocchio::Model& m = handle_.GetModel();
+  if (m.nq != m.nv + 1) {
+    throw std::invalid_argument(
+        "ImuFrameKinematics: only one-DoF joints after the root (nq = nv + 1), got nq " +
+        std::to_string(m.nq) + ", nv " + std::to_string(m.nv));
+  }
   nj_ = m.nv - 6;
   if (nj_ > est::kInekfMaxJacobianCols) {
     throw std::invalid_argument("ImuFrameKinematics: " + std::to_string(nj_) +
@@ -282,7 +291,6 @@ void ImuFrameKinematics::Compute(std::span<const double> q, std::span<const doub
     handle_.GetFrameJacobian(frames_[c], pinocchio::LOCAL_WORLD_ALIGNED, J_);
     const Eigen::Vector3d p_Bc = handle_.GetFramePosition(frames_[c]);
     kin[c].position.noalias() = R_IB_ * (p_Bc - p_BI_);
-    kin[c].jacobian.resize(3, nj_);
     kin[c].jacobian.noalias() = R_IB_.lazyProduct(J_.block(0, 6, 3, nj_));
     rdot[c].noalias() = kin[c].jacobian.lazyProduct(qd_map);
   }
@@ -338,6 +346,7 @@ void InekfStateSource::RestartFilter(EstimatorResetReason reason) noexcept {
   started_ = false;
   hold_ticks_ = 0;
   refused_ticks_ = 0;
+  have_quat_ = false;
   ++state_epoch_;
   telemetry_.reset_reason = static_cast<uint8_t>(reason);
   ++telemetry_.reset_count;
@@ -467,7 +476,7 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
 
   // ── kinematics and the joint / IMU coherence ──────────────────────────────
   bool skew_invalid = false;
-  bool kinematics_ok = joints_ok;
+  bool kinematics_ok = joints_ok && !joints.body_stale;
   if (!imu_missing && joints.body_present) {
     tel.skew_ns = out.stamp_steady_ns - imu_recv;
     const int64_t skew = tel.skew_ns < 0 ? -tel.skew_ns : tel.skew_ns;
@@ -496,12 +505,24 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
   // ── cadence, start, step, resets ──────────────────────────────────────────
   bool reset_now = false;
   bool advanced = false;
+  bool stepped = false;  // a step ran and propagated: this tick has a contact update
+  const auto hold_budget = static_cast<uint32_t>(params_.config.policy.max_hold_ticks);
   if (regressed) {
-    RestartFilter(EstimatorResetReason::kGap);
-    reset_now = true;
+    // A gap of unknown length: a running filter restarts, a window starts over.
+    if (started_) {
+      RestartFilter(EstimatorResetReason::kGap);
+      reset_now = true;
+    } else {
+      window_.Reset();
+    }
     last_sequence_ = sequence;
-  } else if (!imu_missing) {
+  } else if (imu_missing) {
+    if (started_ && hold_ticks_ < kMaxQuietTicks) {
+      ++hold_ticks_;  // time passes without a sample, as on a repeated one
+    }
+  } else {
     const uint64_t delta = have_sequence_ ? sequence - last_sequence_ : 1U;
+    const uint64_t previous = last_sequence_;
     have_sequence_ = true;
     last_sequence_ = sequence;
     // The core's own bound on the nominal step, in its own expression.
@@ -509,17 +530,20 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
         delta > 1'000'000U || static_cast<double>(delta) * period_s_ > est::kMaxPropagationStep;
     if (delta == 0) {
       tel.periods = 0;
-      if (started_) {
+      if (started_ && hold_ticks_ < kMaxQuietTicks) {
         ++hold_ticks_;
       }
     } else if (!started_) {
-      if (gap) {
-        window_.Reset();
-      } else {
+      if (delta != 1) {
+        window_.Reset();  // a missed sample breaks the still window
+      }
+      if (!gap) {
         TryStart(kinematics_ok, gyro, accel, planned, out);
         advanced = started_;
       }
-    } else if (gap) {
+    } else if (gap || hold_ticks_ > hold_budget) {
+      // Past the hold budget the samples stopped for longer than the state
+      // was held: the new one does not follow the last one in time.
       RestartFilter(EstimatorResetReason::kGap);
       reset_now = true;
     } else {
@@ -539,6 +563,10 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
         tel.core_status = static_cast<uint8_t>(seq_.core_status());
       }
       advanced = st != est::ContactFsmStatus::kPropagateRefused;
+      stepped = st == est::ContactFsmStatus::kOk;
+      if (!advanced) {
+        last_sequence_ = previous;  // not consumed: the next step spans this one too
+      }
       const EstimatorResetReason why = StepPolicy(st);
       if (why != EstimatorResetReason::kNone) {
         RestartFilter(why);
@@ -552,7 +580,7 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
   bool imu_stale = false;
   bool non_finite = joints.non_finite;
   if (started_ && !imu_missing && !reset_now) {
-    imu_stale = hold_ticks_ > static_cast<uint32_t>(params_.config.policy.max_hold_ticks);
+    imu_stale = hold_ticks_ > hold_budget;
     if (!imu_stale) {
       const est::ContactInekf& f = seq_.core();
       const est::BaseState b = est::ContactInekf::BaseFromImu(
@@ -560,6 +588,11 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
           kin_model_->p_BI());
       Eigen::Quaterniond quat(b.R_WB);
       quat.normalize();
+      // q and −q are the same rotation: keep the hemisphere of the last output,
+      // so the quaternion is continuous for a consumer that differences it.
+      if (have_quat_ && quat.coeffs().dot(last_quat_) < 0.0) {
+        quat.coeffs() = -quat.coeffs();
+      }
       const Eigen::Vector3d v_local = b.R_WB.transpose() * b.v_WB;
       const Eigen::Vector3d w_local = kin_model_->R_BI() * f.angular_velocity();
       const std::array<double, 7> qb = {b.p_WB.x(), b.p_WB.y(), b.p_WB.z(), quat.x(),
@@ -576,6 +609,8 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
       if (!finite) {
         non_finite = true;
       } else {
+        last_quat_ = quat.coeffs();
+        have_quat_ = true;
         std::copy(qb.begin(), qb.end(), out.q.begin());
         std::copy(vb.begin(), vb.end(), out.v.begin());
         out.valid_mask |= kBaseBit;
@@ -589,7 +624,7 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
     out.stamp_steady_ns = joints.body_present ? std::min(out.stamp_steady_ns, imu_recv) : imu_recv;
   }
   out.state_epoch = state_epoch_;
-  FillTelemetry(out);
+  FillTelemetry(out, stepped);
   out.contact_mask = tel.estimated_mask;
 
   StateSourceStatus status = StateSourceStatus::kOk;
@@ -613,12 +648,12 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
   return out.valid;
 }
 
-void InekfStateSource::FillTelemetry(MeasuredRobotState& out) noexcept {
+void InekfStateSource::FillTelemetry(MeasuredRobotState& out, bool stepped) noexcept {
   EstimatorTelemetry& tel = telemetry_;
   tel.initialized = started_;
   tel.hold_ticks = hold_ticks_;
   tel.refused_ticks = refused_ticks_;
-  tel.report_valid = started_ && seq_.report_valid();
+  tel.report_valid = stepped && seq_.report_valid();
   tel.no_anchor_ticks = seq_.ticks_without_confirmed_anchor();
   tel.gated_ticks = seq_.consecutive_gated_ticks();
   tel.estimated_mask = 0;

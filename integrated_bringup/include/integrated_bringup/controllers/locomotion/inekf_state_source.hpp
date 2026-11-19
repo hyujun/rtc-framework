@@ -33,14 +33,21 @@
 //   k = imu_sequence − the last one read
 //   k = 0                 the sample repeated: no step, the base is the last
 //                         output's (bit for bit), its fresh bit clear, for up to
-//                         max_hold_ticks ticks; one more → kImuStale (invalid)
+//                         max_hold_ticks ticks; one more → kImuStale (invalid).
+//                         A tick with the IMU missing counts the same way.
+//   the next sample after more than max_hold_ticks quiet ticks → reset (kGap):
+//                         the samples stopped longer than the state was held
 //   1 ≤ k, k·T ≤ 20 ms    Step(periods = k): the nominal step k·T (never a clock
 //                         difference); the expression is the core's own bound
 //   k·T > 20 ms           reset (kGap) — longer than one step may span
 //   sequence went back    reset (kGap): a gap of unknown length; status kImuMissing
 // The first sample after Reset() counts as k = 1. Missing (site absent, flagged
 // invalid, never received, non-finite): no step, kImuMissing, the sequence is not
-// consumed.
+// consumed. A refused step does not consume its sample either: the next step
+// spans both. Before the start, a missed sample or a sequence that goes back
+// restarts the window (nothing to reset). The IMU is sampled once per control
+// tick (sample_period_s = the control period): k counts its samples, and k·T is
+// the time they span.
 //
 // ### Joint / IMU coherence (receipt clocks, never interpolated)
 //
@@ -49,7 +56,7 @@
 //                                    the FSM's invalid rule (no update, modes
 //                                    kept), the IMU still propagates
 //   s > max_skew_invalid_ticks·T     the same, and the state is invalid (kImuSkew)
-// Unreadable or non-finite body joints make the kinematics NaN in the same way.
+// Unreadable, stale or non-finite body joints make the kinematics NaN in the same way.
 //
 // ### Start (stationary window)
 //
@@ -63,7 +70,8 @@
 // first still sample starts the filter and that tick's state is valid. Before
 // the start the state is kNotInitialized (the joints are filled, the base is
 // neutral). Giving up is the caller's: init.timeout_s is read by the
-// controller, which faults when the source has not started in time.
+// controller, which faults when the source has not started in time (whatever
+// the status of those ticks — a missing IMU never starts it either).
 //
 // The gauge: the world origin is the mean of the stance points at the start,
 // the heading init.yaw — neither is observable afterwards (telemetry
@@ -79,13 +87,15 @@
 //   5         ticks_without_confirmed_anchor ≥ ⌈max_no_anchor_s / T⌉   kNoAnchor
 //   —         Reset() (the controller's activation)              kRequested
 // A reset tick's state is invalid (kNotInitialized); the start runs again from
-// the next sample. A refused step (kPropagateRefused, or the defensive
-// kUpdateRefused) leaves the base where it was, fresh bit clear.
+// the next sample. kPropagateRefused leaves the base where it was, fresh bit
+// clear; the defensive kUpdateRefused has propagated (the base advanced, fresh)
+// without a contact update. Both count toward max_refused_ticks.
 //
 // ### Output
 //
 //   R_WB, p_WB, v_WB = ContactInekf::BaseFromImu(R̂_WI, p̂, v̂, ω̂_I, R_BI, p_BI)
-//   q_base = [p_WB, quat(R_WB) xyzw, unit]     v_base = [R_WBᵀ v_WB ; R_BI ω̂_I]
+//   q_base = [p_WB, quat(R_WB) xyzw, unit, in the last output's hemisphere]
+//   v_base = [R_WBᵀ v_WB ; R_BI ω̂_I]
 //   joints = the encoders (as truth); contact_mask = the slots in stance or unknown
 //   stamp = the older of the joint and IMU receipts; sequence = joint_sequence
 //
@@ -130,7 +140,8 @@ class ImuFrameKinematics {
   /// @param model           a free-flyer-root model whose joints are the body's
   /// @param contact_frames  one frame per slot, slot order
   /// @param imu_frame       the IMU's frame; must be on the root joint
-  /// @throws std::invalid_argument on a model without a free-flyer root, a frame
+  /// @throws std::invalid_argument on a model without a free-flyer root or with a
+  ///         joint of more than one DoF after it (nq ≠ nv + 1), a frame
   ///         it does not have, an IMU frame on another joint, no contact or more
   ///         than rtc::estimation::kInekfMaxContacts, or more joints than a
   ///         contact Jacobian holds.
@@ -147,6 +158,7 @@ class ImuFrameKinematics {
 
   /// r_c, J_c into `kin[c]` and ṙ_c into `rdot[c]` for every slot.
   /// @param q, qd  body joints in the model's joint order (num_joints() each)
+  /// @param kin    num_slots() entries whose jacobian is already 3 × num_joints()
   void Compute(std::span<const double> q, std::span<const double> qd,
                std::span<rtc::estimation::ContactKinematics> kin,
                std::span<Eigen::Vector3d> rdot) noexcept;
@@ -201,7 +213,11 @@ class InekfStateSource final : public MeasuredStateSource {
                 uint32_t planned, const MeasuredRobotState& out) noexcept;
   /// The reset the step's outputs call for (kNone = none), by the priority table.
   [[nodiscard]] EstimatorResetReason StepPolicy(rtc::estimation::ContactFsmStatus st) noexcept;
-  void FillTelemetry(MeasuredRobotState& out) noexcept;
+  /// `stepped`: a step ran on this tick's sample and propagated.
+  void FillTelemetry(MeasuredRobotState& out, bool stepped) noexcept;
+
+  /// The quiet-tick count saturates here (a frozen IMU must not wrap it to valid).
+  static constexpr uint32_t kMaxQuietTicks = 1U << 30U;
 
   Params params_;
   std::unique_ptr<ImuFrameKinematics> kin_model_;
@@ -222,8 +238,10 @@ class InekfStateSource final : public MeasuredStateSource {
   bool started_{false};
   bool have_sequence_{false};
   uint64_t last_sequence_{0};
-  uint32_t hold_ticks_{0};
+  uint32_t hold_ticks_{0};  ///< ticks since the last new sample (repeated or missing)
   int refused_ticks_{0};
+  Eigen::Vector4d last_quat_{Eigen::Vector4d::Zero()};  ///< the last output's quaternion (xyzw)
+  bool have_quat_{false};
   EstimatorTelemetry telemetry_{};
 
   // Per-tick scratch (fixed capacity).

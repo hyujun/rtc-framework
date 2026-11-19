@@ -23,7 +23,7 @@
 //       init:
 //         window_ticks: N            # ≥ 1 consecutive still samples start the filter
 //         timeout_s: s               # > 0: no start within it → the controller faults
-//         yaw: ψ                     # the initial ZYX heading of the IMU [rad]
+//         yaw: ψ                     # the initial ZYX heading of the IMU, [−2π, 2π] rad
 //         joint_speed_tolerance: v   # > 0, the largest body joint speed of a still sample [rad/s]
 //       policy:
 //         max_hold_ticks: n          # ≥ 0 ticks a repeated IMU sample keeps the state valid

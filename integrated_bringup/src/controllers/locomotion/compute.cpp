@@ -61,7 +61,7 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
     // An estimator that does not start in time is not waited on for ever: a
     // robot that will not hold still is not taken over (header).
     if (!reference_latched_ && !estop_active_ &&
-        measured_.status == loco::StateSourceStatus::kNotInitialized &&
+        measured_.kind == loco::StateSourceKind::kEstimated && !measured_.estimator.initialized &&
         ++init_wait_ticks_ >= init_timeout_ticks_) {
       Latch(FaultCause::kSource);
     }
