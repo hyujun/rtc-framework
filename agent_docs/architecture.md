@@ -161,4 +161,5 @@ integrated_bringup <-- rtc_controller_manager, rtc_controller_interface, rtc_con
                  + <exec_depend> udp_hand_driver, robot_descriptions, rtc_tools, repo_scripts
 rtc_tools (analysis tools, top of stack) <-- <exec_depend> rtc_msgs, pinocchio, xacro,
                  rtc_controllers (exec 전용 — rtc_controllers 는 rtc_tools 를 의존하지 않는다)
+rtc_teleop_input (operator input tool, top of stack) <-- <exec_depend> rtc_msgs, joy
 ```

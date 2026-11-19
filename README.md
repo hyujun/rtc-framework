@@ -169,6 +169,7 @@ PID=$(pidof -s integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 | [`rtc_mujoco_sim`](rtc_mujoco_sim/) | MuJoCo 3.x 시뮬레이터 노드와 뷰어 |
 | [`rtc_digital_twin`](rtc_digital_twin/) | RViz2 디지털 트윈 (Python) |
 | [`rtc_tools`](rtc_tools/) | 로그 플롯 · URDF/MJCF 변환 · 분석 스크립트 · 손 명령 GUI (Python) |
+| [`rtc_teleop_input`](rtc_teleop_input/) | 운영자 입력 — virtual 패드 GUI · 실물 패드 → 표준 배치 `Joy`, 패드 버튼의 E-STOP · reset (Python) |
 | [`repo_scripts`](repo_scripts/) | 설치 · 빌드 · RT 호스트 설정 스크립트 |
 
 ### 형상 추정
