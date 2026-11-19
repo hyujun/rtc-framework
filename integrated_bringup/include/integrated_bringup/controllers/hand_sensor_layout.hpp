@@ -46,10 +46,13 @@ inline constexpr std::size_t kHandSensorValuesPerFingertipCapacity =
 //   slot 4..6 = native displacement vector ux/uy/uz
 //                — populated by udp_hand_native only (capacitive direction),
 //                  zero from force-only backends.
+//              OR the wrench moment tx/ty/tz of a group that declares
+//                `has_native_moment` (mujoco_native — never a hand: CM
+//                refuses the flag together with a displacement).
 // Controllers honor per-slot availability via DeviceSensorLayout
-// `has_native_contact` / `has_native_displacement` (yaml-declared per device
-// group); reading raw slots without consulting the capability flags risks
-// treating zero-fill as a real signal.
+// `has_native_contact` / `has_native_displacement` / `has_native_moment`
+// (yaml-declared per device group); reading raw slots without consulting the
+// capability flags risks treating zero-fill as a real signal.
 inline constexpr std::size_t kHandInferenceValuesPerFingertipCapacity = 7;
 
 // Hand actuator count (assm_v1 hand: 10-DoF). integrated_bringup's own SSoT
