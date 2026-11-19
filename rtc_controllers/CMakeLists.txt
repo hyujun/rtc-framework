@@ -363,6 +363,12 @@ if(BUILD_TESTING)
   ament_add_gtest(test_contact_inekf_propagation_mc test/test_contact_inekf_propagation_mc.cpp
     TIMEOUT 900)
   target_link_libraries(test_contact_inekf_propagation_mc rtc_controllers)
+  # Contacts: fixed-slot bookkeeping against a packed dynamic-size reference
+  # (test/contact_inekf_packed_oracle.hpp), and the update's own gates.
+  ament_add_gtest(test_contact_inekf_slots test/test_contact_inekf_slots.cpp TIMEOUT 300)
+  target_link_libraries(test_contact_inekf_slots rtc_controllers)
+  ament_add_gtest(test_contact_inekf_update test/test_contact_inekf_update.cpp TIMEOUT 600)
+  target_link_libraries(test_contact_inekf_update rtc_controllers)
   # RT allocation gate: operator-new counting (${rtc_controllers_test_include})
   # plus the executable-wide C allocator gate (${rtc_base_test_include}), which
   # is what sees Eigen inside the static library. Same program-wide

@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace rtc::estimation::testing {
 namespace {
@@ -91,6 +92,55 @@ TEST(ContactInekfAlloc, RtCallsAllocateNothing) {
   EXPECT_TRUE(std::isfinite(sink));
   EXPECT_EQ(accepted, 200);
   EXPECT_TRUE(f.initialized());
+  EXPECT_EQ(news, 0U);
+  EXPECT_EQ(mallocs, 0U);
+}
+
+TEST(ContactInekfAlloc, ContactOperationsAllocateNothing) {
+  ContactInekf f;
+  StartFilter(f, 1, 2);
+  ASSERT_TRUE(f.initialized());
+  // Everything the RT caller would own is built before the gates.
+  std::vector<ContactKinematics> kin(4);
+  std::vector<ContactUpdateReport> rep(4);
+  Eigen::MatrixXd J = Eigen::MatrixXd::Constant(3, 6, 0.05);
+  for (int i = 0; i < 4; ++i) {
+    kin[static_cast<std::size_t>(i)] = Kin(FootPoint(i), true, J);
+  }
+  std::size_t news = 0;
+  std::size_t mallocs = 0;
+  int ok = 0;
+  {
+    rtc::testing::ScopedAllocGate new_gate;
+    rtc::testing::ScopedMallocGate malloc_gate;
+    for (int k = 0; k < 1000; ++k) {
+      const double t = 2e-3 * k;
+      ok +=
+          f.Propagate(Vec3(std::sin(t), 0.3, -0.2), Vec3(0.1, 0.2, 9.81), 2e-3) == InekfStatus::kOk
+              ? 1
+              : 0;
+      if (k % 100 == 50) {
+        const int j = 2 + (k / 100) % 2;
+        if (f.contact_active(j)) {
+          ok += f.RemoveContact(j) == InekfStatus::kOk ? 1 : 0;
+        } else {
+          ok += f.InsertContact(j, kin[static_cast<std::size_t>(j)]) == InekfStatus::kOk ? 1 : 0;
+        }
+      }
+      for (int i = 0; i < 4; ++i) {
+        const auto si = static_cast<std::size_t>(i);
+        kin[si].use = f.contact_active(i);
+        if (kin[si].use) {
+          kin[si].position = f.rotation().transpose() * (f.contact_position(i) - f.position());
+        }
+      }
+      ok += f.UpdateContacts(kin, rep) == InekfStatus::kOk ? 1 : 0;
+      (void)f.UpdateContacts(std::span<const ContactKinematics>(kin.data(), 3), rep);  // refused
+    }
+    news = new_gate.count();
+    mallocs = malloc_gate.count();
+  }
+  EXPECT_EQ(ok, 2010);
   EXPECT_EQ(news, 0U);
   EXPECT_EQ(mallocs, 0U);
 }
