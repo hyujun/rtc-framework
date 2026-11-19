@@ -2960,7 +2960,7 @@ test_package_lists_cover_every_package() {
   if [[ " $(get_base_packages) " == *" rtc_teleop_input "* ]]; then
     pass
   else
-    fail "rtc_teleop_input must be a base package (integrated_bringup depends on it)"
+    fail "rtc_teleop_input must be a base package (every build mode installs it)"
   fi
 }
 
