@@ -19,7 +19,9 @@
 
 #include <Eigen/Geometry>
 
+#include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <random>
@@ -564,87 +566,107 @@ TEST_F(InekfSourceTest, ResetIsRequestedBumpsTheEpochAndForgetsTheSequence) {
 // ── kinematics and output map oracles ───────────────────────────────────────
 
 TEST_F(InekfSourceTest, ImuFrameKinematicsMatchTheFullModelAndItsFiniteDifference) {
-  const pinocchio::Model& full = ctrl_->FullModel();
-  pinocchio::Data data(full);
-  ImuFrameKinematics kin(reduced_, kSoles, kImuFrame);
-  const int nj = kin.num_joints();
-  std::mt19937_64 rng(20261119U);
-  std::uniform_real_distribution<double> u(-1.0, 1.0);
-  std::array<est::ContactKinematics, 2> k{};
-  std::array<Eigen::Vector3d, 2> rdot{};
-  for (auto& x : k) {
-    x.jacobian.resize(3, nj);
-  }
-  const pinocchio::FrameIndex imu = full.getFrameId(kImuFrame);
-  Eigen::MatrixXd J(6, full.nv);
-  for (int sample = 0; sample < 50; ++sample) {
-    Eigen::VectorXd q = pinocchio::randomConfiguration(full, -Eigen::VectorXd::Ones(full.nq),
-                                                       Eigen::VectorXd::Ones(full.nq));
-    for (int a = 0; a < full.nq - 7; ++a) {
-      const double lo = std::max(-2.0, full.lowerPositionLimit(7 + a));
-      const double hi = std::min(2.0, full.upperPositionLimit(7 + a));
-      q(7 + a) = lo + (hi - lo) * 0.5 * (u(rng) + 1.0);
+  // The shipped IMU frame (on the root, not rotated) and one rotated on the root.
+  pinocchio::Model full_rot = ctrl_->FullModel();
+  pinocchio::Model reduced_rot = *reduced_;
+  const pinocchio::SE3 X(
+      Eigen::Quaterniond(Eigen::Vector4d(0.3, -0.5, 0.2, 0.78)).normalized().toRotationMatrix(),
+      Eigen::Vector3d(0.05, -0.02, 0.1));
+  full_rot.addFrame(pinocchio::Frame("imu_rot", 1, 0, X, pinocchio::OP_FRAME));
+  reduced_rot.addFrame(pinocchio::Frame("imu_rot", 1, 0, X, pinocchio::OP_FRAME));
+
+  struct Variant {
+    const pinocchio::Model* full;
+    std::shared_ptr<const pinocchio::Model> reduced;
+    std::string frame;
+  };
+
+  const std::vector<Variant> variants = {
+      {&ctrl_->FullModel(), reduced_, kImuFrame},
+      {&full_rot, std::make_shared<const pinocchio::Model>(reduced_rot), "imu_rot"}};
+  for (const Variant& variant : variants) {
+    const pinocchio::Model& full = *variant.full;
+    pinocchio::Data data(full);
+    ImuFrameKinematics kin(variant.reduced, kSoles, variant.frame);
+    const int nj = kin.num_joints();
+    std::mt19937_64 rng(20261119U);
+    std::uniform_real_distribution<double> u(-1.0, 1.0);
+    std::array<est::ContactKinematics, 2> k{};
+    std::array<Eigen::Vector3d, 2> rdot{};
+    for (auto& x : k) {
+      x.jacobian.resize(3, nj);
     }
-    // Two base poses per sample: the result may not depend on the base.
-    for (int pose = 0; pose < 2; ++pose) {
-      const Eigen::Quaterniond rot =
-          Eigen::Quaterniond(Eigen::Vector4d(u(rng), u(rng), u(rng), u(rng))).normalized();
-      q.head<3>() = Eigen::Vector3d(u(rng), u(rng), u(rng));
-      q.segment<4>(3) = rot.coeffs();
-      std::vector<double> qb;
-      std::vector<double> qd;
-      for (const int a : body_to_full_) {
-        qb.push_back(q(7 + a));
-        qd.push_back(u(rng));
+    const pinocchio::FrameIndex imu = full.getFrameId(variant.frame);
+    Eigen::MatrixXd J(6, full.nv);
+    for (int sample = 0; sample < 50; ++sample) {
+      Eigen::VectorXd q = pinocchio::randomConfiguration(full, -Eigen::VectorXd::Ones(full.nq),
+                                                         Eigen::VectorXd::Ones(full.nq));
+      for (int a = 0; a < full.nq - 7; ++a) {
+        const double lo = std::max(-2.0, full.lowerPositionLimit(7 + a));
+        const double hi = std::min(2.0, full.upperPositionLimit(7 + a));
+        q(7 + a) = lo + (hi - lo) * 0.5 * (u(rng) + 1.0);
       }
-      kin.Compute(qb, qd, k, rdot);
-      pinocchio::computeJointJacobians(full, data, q);
-      pinocchio::updateFramePlacements(full, data);
-      const Eigen::Matrix3d R_WI = data.oMf[imu].rotation();
-      const Eigen::Vector3d p_WI = data.oMf[imu].translation();
-      for (std::size_t c = 0; c < 2; ++c) {
-        const pinocchio::FrameIndex f = full.getFrameId(kSoles[c]);
-        const Eigen::Vector3d r = R_WI.transpose() * (data.oMf[f].translation() - p_WI);
-        J.setZero();
-        pinocchio::getFrameJacobian(full, data, f, pinocchio::LOCAL_WORLD_ALIGNED, J);
-        for (int i = 0; i < 3; ++i) {
-          ExpectClose(k[c].position(i), r(i), 1e-12, "r");
+      // Two base poses per sample: the result may not depend on the base.
+      for (int pose = 0; pose < 2; ++pose) {
+        const Eigen::Quaterniond rot =
+            Eigen::Quaterniond(Eigen::Vector4d(u(rng), u(rng), u(rng), u(rng))).normalized();
+        q.head<3>() = Eigen::Vector3d(u(rng), u(rng), u(rng));
+        q.segment<4>(3) = rot.coeffs();
+        std::vector<double> qb;
+        std::vector<double> qd;
+        for (const int a : body_to_full_) {
+          qb.push_back(q(7 + a));
+          qd.push_back(u(rng));
         }
-        Eigen::Vector3d rd = Eigen::Vector3d::Zero();
-        for (int j = 0; j < nj; ++j) {
-          const Eigen::Vector3d col =
-              R_WI.transpose() * J.block<3, 1>(0, 6 + body_to_full_[static_cast<std::size_t>(j)]);
-          rd += col * qd[static_cast<std::size_t>(j)];
+        kin.Compute(qb, qd, k, rdot);
+        pinocchio::computeJointJacobians(full, data, q);
+        pinocchio::updateFramePlacements(full, data);
+        const Eigen::Matrix3d R_WI = data.oMf[imu].rotation();
+        const Eigen::Vector3d p_WI = data.oMf[imu].translation();
+        for (std::size_t c = 0; c < 2; ++c) {
+          const pinocchio::FrameIndex f = full.getFrameId(kSoles[c]);
+          const Eigen::Vector3d r = R_WI.transpose() * (data.oMf[f].translation() - p_WI);
+          J.setZero();
+          pinocchio::getFrameJacobian(full, data, f, pinocchio::LOCAL_WORLD_ALIGNED, J);
           for (int i = 0; i < 3; ++i) {
-            ExpectClose(k[c].jacobian(i, j), col(i), 1e-12, "J");
+            ExpectClose(k[c].position(i), r(i), 1e-12, "r");
+          }
+          Eigen::Vector3d rd = Eigen::Vector3d::Zero();
+          for (int j = 0; j < nj; ++j) {
+            const Eigen::Vector3d col =
+                R_WI.transpose() * J.block<3, 1>(0, 6 + body_to_full_[static_cast<std::size_t>(j)]);
+            rd += col * qd[static_cast<std::size_t>(j)];
+            for (int i = 0; i < 3; ++i) {
+              ExpectClose(k[c].jacobian(i, j), col(i), 1e-12, "J");
+            }
+          }
+          for (int i = 0; i < 3; ++i) {
+            ExpectClose(rdot[c](i), rd(i), 1e-12, "rdot");
           }
         }
-        for (int i = 0; i < 3; ++i) {
-          ExpectClose(rdot[c](i), rd(i), 1e-12, "rdot");
-        }
       }
-    }
-    // J against the central difference of r (h = 1e-6).
-    std::vector<double> qb;
-    for (const int a : body_to_full_) {
-      qb.push_back(q(7 + a));
-    }
-    const std::vector<double> qd0(static_cast<std::size_t>(nj), 0.0);
-    kin.Compute(qb, qd0, k, rdot);
-    const auto jac = k;
-    std::array<est::ContactKinematics, 2> kp{};
-    std::array<est::ContactKinematics, 2> km{};
-    for (int j = 0; j < nj; ++j) {
-      auto qp = qb;
-      auto qm = qb;
-      qp[static_cast<std::size_t>(j)] += 1e-6;
-      qm[static_cast<std::size_t>(j)] -= 1e-6;
-      kin.Compute(qp, qd0, kp, rdot);
-      kin.Compute(qm, qd0, km, rdot);
-      for (std::size_t c = 0; c < 2; ++c) {
-        const Eigen::Vector3d fd = (kp[c].position - km[c].position) / 2e-6;
-        for (int i = 0; i < 3; ++i) {
-          EXPECT_LE(std::abs(fd(i) - jac[c].jacobian(i, j)), 1e-6) << sample << " " << j;
+      // J against the central difference of r (h = 1e-6).
+      std::vector<double> qb;
+      for (const int a : body_to_full_) {
+        qb.push_back(q(7 + a));
+      }
+      const std::vector<double> qd0(static_cast<std::size_t>(nj), 0.0);
+      kin.Compute(qb, qd0, k, rdot);
+      const auto jac = k;
+      std::array<est::ContactKinematics, 2> kp{};
+      std::array<est::ContactKinematics, 2> km{};
+      for (int j = 0; j < nj; ++j) {
+        auto qp = qb;
+        auto qm = qb;
+        qp[static_cast<std::size_t>(j)] += 1e-6;
+        qm[static_cast<std::size_t>(j)] -= 1e-6;
+        kin.Compute(qp, qd0, kp, rdot);
+        kin.Compute(qm, qd0, km, rdot);
+        for (std::size_t c = 0; c < 2; ++c) {
+          const Eigen::Vector3d fd = (kp[c].position - km[c].position) / 2e-6;
+          for (int i = 0; i < 3; ++i) {
+            EXPECT_LE(std::abs(fd(i) - jac[c].jacobian(i, j)), 1e-6) << sample << " " << j;
+          }
         }
       }
     }
@@ -750,6 +772,8 @@ uint64_t Digest(const MeasuredRobotState& s) {
 }
 
 TEST_F(InekfSourceTest, TheSameInputsGiveTheSameOutputsBitForBit) {
+  std::vector<int64_t> update_ns;
+  update_ns.reserve(2000);
   const auto run = [&]() {
     MakeStanding();
     now_ = 1'000'000'000'000;
@@ -759,6 +783,7 @@ TEST_F(InekfSourceTest, TheSameInputsGiveTheSameOutputsBitForBit) {
     const Eigen::Vector3d g = Accel();
     std::vector<uint64_t> digests;
     MeasuredRobotState out{};
+    update_ns.clear();
     int valid = 0;
     for (int t = 0; t < 2000; ++t) {
       SetImu(Eigen::Vector3d(n(rng), n(rng), n(rng)) * 5e-4,
@@ -769,7 +794,11 @@ TEST_F(InekfSourceTest, TheSameInputsGiveTheSameOutputsBitForBit) {
       }
       const uint64_t k = (t % 97 == 50) ? 0 : (t % 89 == 40 ? 3 : 1);
       const uint32_t planned = (t / 300) % 2 == 0 ? kBoth : 0b01U;
+      const auto t0 = std::chrono::steady_clock::now();
       valid += Step(*src, out, k, 0, planned) ? 1 : 0;
+      update_ns.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now() - t0)
+                              .count());
       digests.push_back(Digest(out));
     }
     EXPECT_GT(valid, 1000);
@@ -777,6 +806,10 @@ TEST_F(InekfSourceTest, TheSameInputsGiveTheSameOutputsBitForBit) {
   };
   const auto a = run();
   const auto b = run();
+  // Recorded, not judged (the time budget is the control PCs'): Update() on this host.
+  std::sort(update_ns.begin(), update_ns.end());
+  RecordProperty("update_p50_ns", static_cast<int>(update_ns[update_ns.size() / 2]));
+  RecordProperty("update_p99_ns", static_cast<int>(update_ns[update_ns.size() * 99 / 100]));
   ASSERT_EQ(a.size(), b.size());
   for (std::size_t t = 0; t < a.size(); ++t) {
     ASSERT_EQ(a[t], b[t]) << t;

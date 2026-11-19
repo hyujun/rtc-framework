@@ -1,0 +1,13 @@
+# sim overlay — locomotion_controller on the estimated base (estimator.source: inekf)
+#
+#   ros2 launch integrated_bringup sim_g1_loco.launch.py sim_overlay:=estimator_inekf
+#
+# The base comes from the pelvis IMU and the leg kinematics
+# (controllers/locomotion/inekf_state_source.hpp) instead of the simulator's
+# base lane; the estimator.inekf section of runtime.yaml configures it. The
+# evaluation arm of tools/standing_eval/run_arms.py --source inekf.
+integrated_rt_controller:
+  ros__parameters:
+    locomotion_controller:
+      estimator:
+        source: inekf

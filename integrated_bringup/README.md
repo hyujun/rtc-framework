@@ -417,7 +417,7 @@ ros2 launch integrated_bringup sim_ur5e_p1b.launch.py initial_controller:=demo_w
 `sim_ur5e_p1b`, `sim_iiwa7_leap`, `sim_g1_p1b` 는 `mujoco_simulator.yaml` 뒤, 명령줄 인자 앞에 params 파일 하나를 더 끼우는 `sim_overlay:=` 를 받습니다 (`sim_ur5e_p1a` 는 받지 않음). overlay 는 두 노드에 모두 전달되고 각 노드는 자기 섹션만 읽습니다. `sim_overlay:=` 없이 띄우면 출하 씬 그대로입니다.
 
 - **값 해석**: 이름만 주면 `config/<robot>/sim_overlays/<name>.yaml`, `/` 가 있거나 `.yaml` 로 끝나면 경로입니다. 해석되지 않는 값은 launch 를 실패시키고 에러에 출하 overlay 이름 목록이 실립니다.
-- **출하 overlay**: `config/ur5e_p1b/sim_overlays/` 에 `inference_pole`, `fingertip_grasp`, `fingertip_grasp_free`, `config/g1_loco/sim_overlays/` 에 `mpc_off`, `mpc_riccati` 가 있고 용도는 각 파일 헤더 주석이 갖습니다. 새 실험용 overlay 는 repo 밖에 두고 경로로 넘깁니다. overlay 는 다른 overlay 를 include 하지 못하므로 자기완결 파일이어야 합니다.
+- **출하 overlay**: `config/<robot>/sim_overlays/*.yaml` (ur5e_p1b · g1_loco) — 목록은 그 디렉토리, 용도는 각 파일 헤더 주석이 갖습니다. 새 실험용 overlay 는 repo 밖에 두고 경로로 넘깁니다. overlay 는 다른 overlay 를 include 하지 못하므로 자기완결 파일이어야 합니다.
 - **장면을 바꾸는 overlay 는 `urdf.extra_frames.scene_world` 도 둡니다.** 파라미터는 키 단위로 덮이므로 적지 않으면 `sim.yaml` 의 (다른 장면의) world 가 남습니다. 자세한 규칙은 [Task 목표의 기준 frame](#task-목표의-기준-frame-779) 을 봅니다.
 - **키 경로가 어긋나면 경고 없이 무시되어 출하값으로 돕니다.** 컨트롤러 미러 (`ros2 param get`) 나 기동 로그로 적용을 확인합니다. `sim.yaml` 의 override 는 overlay 아래에 깔리므로, overlay 가 `robot.arm.qdd_max` 를 적지 않으면 `sim.yaml` 값으로 돕니다.
 - **포구 컨트롤러**: 출하 overlay 는 없습니다. 탐색과 구간 계획기는 launch 인자 `catch_search_mode:=` · `catch_segment_mode:=` 로 바꿉니다. 지운 키 (`robot.arm.accel_limits_*`) 나 `joint_cmd.accel_constraint: box` 는 컨트롤러가 park 하고 ERROR 로그가 해당 키를 지목합니다.
