@@ -9,7 +9,11 @@ import pytest
 from launch import LaunchContext
 from launch_ros.actions import Node
 
-from rtc_teleop_input.launch_params import GAME_CONTROLLER_PARAMETERS, node_specs
+from rtc_teleop_input.launch_params import (
+    GAME_CONTROLLER_PARAMETERS,
+    check_params_file,
+    node_specs,
+)
 
 LAUNCH_FILE = Path(__file__).resolve().parents[1] / "launch" / "teleop_input.launch.py"
 
@@ -86,3 +90,34 @@ def test_launch_file_builds_the_specs(mode, count):
 
 def test_launch_file_does_not_use_joy_params_yaml():
     assert "joy-params" not in LAUNCH_FILE.read_text()
+
+
+@pytest.mark.parametrize("key", ["input", "output_topic", "pad_topic"])
+@pytest.mark.parametrize("node", ["teleop_input", "/**"])
+def test_params_file_may_not_set_launch_owned_keys(tmp_path, key, node):
+    path = tmp_path / "p.yaml"
+    path.write_text(f"{node}:\n  ros__parameters:\n    deflection: 0.4\n    {key}: x\n")
+    with pytest.raises(ValueError, match=key):
+        check_params_file(str(path))
+
+
+def test_params_file_with_other_keys_is_accepted(tmp_path):
+    path = tmp_path / "p.yaml"
+    path.write_text("teleop_input:\n  ros__parameters:\n    deflection: 0.4\n")
+    check_params_file(str(path))
+    empty = tmp_path / "e.yaml"
+    empty.write_text("")
+    check_params_file(str(empty))
+
+
+def test_launch_refuses_such_a_params_file(tmp_path):
+    path = tmp_path / "p.yaml"
+    path.write_text("teleop_input:\n  ros__parameters:\n    pad_topic: /p\n")
+    module = _load_launch_module()
+    context = LaunchContext()
+    context.launch_configurations.update(
+        {"input": "pad", "joy_topic": "/x/joy", **dict.fromkeys(module._OPTIONAL, "")}
+    )
+    context.launch_configurations["params_file"] = str(path)
+    with pytest.raises(ValueError, match="pad_topic"):
+        module._launch_setup(context)

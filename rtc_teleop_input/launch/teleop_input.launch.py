@@ -8,7 +8,8 @@
 ``joy_topic`` has no default (the consumer decides it). ``controller_name``
 enables the reset_fault button for that controller. ``params_file`` sets any
 other node parameter (key bindings, deflection, ...); an explicit launch
-argument wins over it. What is started: ``rtc_teleop_input.launch_params``.
+argument wins over it, and the file may not set input, output_topic or
+pad_topic (the launch arguments decide which nodes start). What is started: ``rtc_teleop_input.launch_params``.
 """
 
 from launch import LaunchDescription
@@ -16,7 +17,7 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-from rtc_teleop_input.launch_params import node_specs
+from rtc_teleop_input.launch_params import check_params_file, node_specs
 
 _OPTIONAL = {
     "skin": "pad skin: f710 | xbox (node default f710)",
@@ -33,6 +34,8 @@ def _launch_setup(context):
         name: LaunchConfiguration(name).perform(context)
         for name in ("input", "joy_topic", *_OPTIONAL)
     }
+    if arguments["params_file"]:
+        check_params_file(arguments["params_file"])
     actions = []
     for spec in node_specs(arguments):
         parameters = [spec.parameters]

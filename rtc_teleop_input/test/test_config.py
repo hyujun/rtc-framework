@@ -9,6 +9,7 @@ import pytest
 from rtc_teleop_input.layout import load_layout
 from rtc_teleop_input.model import (
     MAX_RATE_HZ,
+    STATUS_STALE_S,
     ConfigError,
     StatusBoard,
     StatusEntry,
@@ -45,15 +46,16 @@ def test_defaults():
     check()
 
 
-@pytest.mark.parametrize("rate", [0.0, -1.0, 1000.001, math.nan, math.inf])
+@pytest.mark.parametrize("rate", [0.0, -1.0, 1000.001, math.nan, math.inf, 30.0, 300.0, 600.0])
 def test_rate_out_of_range_is_refused(rate):
     with pytest.raises(ConfigError, match="rate_hz"):
         check(rate_hz=rate)
 
 
 def test_rate_bounds_accepted():
-    check(rate_hz=1000.0)
-    check(rate_hz=0.5)
+    # whole-millisecond periods only (the timer counts ms)
+    for rate in (1000.0, 500.0, 250.0, 100.0, 50.0, 40.0, 0.5):
+        check(rate_hz=rate)
 
 
 @pytest.mark.parametrize(
@@ -98,3 +100,10 @@ def test_status_board_keeps_the_latest_per_configured_topic():
     assert rows[0].level_name == "ERROR"
     assert rows[0].values == (("a", "1"), ("b", "2"))
     assert rows[1].level_name == "WARN"
+
+
+def test_status_goes_stale_after_two_seconds():
+    assert STATUS_STALE_S == 2.0
+    entry = StatusEntry("s", "n", 0, "", (), received_s=10.0)
+    assert not entry.is_stale(12.0)
+    assert entry.is_stale(12.001)

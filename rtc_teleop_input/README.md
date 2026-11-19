@@ -52,10 +52,11 @@ ros2 launch rtc_teleop_input teleop_input.launch.py joy_topic:=<topic> input:=pa
 - 키의 자동 반복은 무시한다. 창이 포커스를 잃으면 모든 키 · 스틱 · 버튼을 놓고, 다시 누를 때까지 놓인 채다.
 - `pad` 에서 상류가 `pad_timeout_s` (0.25 s) 넘게 조용하거나 크기가 다른 Joy 가 오면 놓은 상태를 낸다. 창에는 "pad lost" 가 뜬다.
 - 서비스가 떠 있지 않으면 호출하지 않고 창에 표시한다. 응답은 창의 "last reply" 에 나온다.
+- 창의 E-STOP 은 마우스를 누르는 순간 보낸다. 상태 패널의 토픽이 2 s 넘게 조용하면 그 행은 STALE 로 바뀐다.
 
 ## 설정
 
-노드 파라미터 전체와 기본값은 [`model.py`](rtc_teleop_input/model.py) 의 `TeleopConfig` 다. launch 인자에 없는 것 (키 배치 · 기울임 · 버튼 역할 · 시간) 은 `params_file:=<yaml>` 로 준다.
+노드 파라미터 전체와 기본값은 [`model.py`](rtc_teleop_input/model.py) 의 `TeleopConfig` 다. launch 인자에 없는 것 (키 배치 · 기울임 · 버튼 역할 · 시간) 은 `params_file:=<yaml>` 로 준다. `input` · `output_topic` · `pad_topic` 은 launch 인자로만 준다 (파일에 있으면 launch 가 거부한다).
 
 ```yaml
 teleop_input:
@@ -65,7 +66,7 @@ teleop_input:
     key_buttons: ["leftshoulder:Space", "b:Escape", "back:Backspace"]
 ```
 
-키 이름은 Qt 의 `Qt::Key_<이름>` 이다. `rate_hz` 는 (0, 1000], `controller_name` 이 비면 reset 은 꺼진다. 잘못된 값이면 노드가 시작하지 않는다.
+키 이름은 Qt 의 `Qt::Key_<이름>` 이다. 스틱 누름 (`leftstick` · `rightstick`) 은 마우스로 누를 수 없으니 필요하면 `key_buttons` 에 키를 단다. `rate_hz` 는 (0, 1000] 이고 주기가 정수 ms 여야 한다 (50 · 100 · 250 …). `controller_name` 이 비면 reset 은 꺼진다. 잘못된 값이면 노드가 시작하지 않는다.
 
 ## 문제 해결
 

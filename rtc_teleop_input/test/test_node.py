@@ -8,7 +8,6 @@ from array import array
 
 import pytest
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile
@@ -42,14 +41,11 @@ class Peer:
 
     def __init__(self, name):
         self.node = Node(name)
-        self.executor = SingleThreadedExecutor()
-        self.executor.add_node(self.node)
-        self.thread = threading.Thread(target=self.executor.spin, daemon=True)
-        self.thread.start()
+        self.spin = SpinThread(self.node)
+        self.spin.start()
 
     def close(self):
-        self.executor.shutdown(timeout_sec=1.0)
-        self.thread.join(timeout=2.0)
+        self.spin.stop()
         self.node.destroy_node()
 
 
@@ -312,4 +308,13 @@ def test_no_status_topics_no_subscription(ros, uid):
     node, _, _ = make_node(uid)
     assert not [s for s in node.subscriptions if s.msg_type is DiagnosticStatus]
     assert not [s for s in node.subscriptions if s.msg_type is Joy]  # virtual: no pad input
+    node.destroy_node()
+
+
+def test_spin_thread_stop_joins_before_returning(ros, uid):
+    node, _, _ = make_node(uid)
+    spin = SpinThread(node)
+    spin.start()
+    spin.stop()
+    assert not spin._thread.is_alive()
     node.destroy_node()

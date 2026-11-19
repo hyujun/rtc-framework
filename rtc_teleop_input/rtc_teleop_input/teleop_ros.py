@@ -226,23 +226,34 @@ class TeleopInputNode(Node):
 
 
 class SpinThread:
-    """Spins one node on a private executor in a daemon thread."""
+    """Spins one node on a private executor in a daemon thread.
+
+    ``stop`` ends the loop and joins the thread BEFORE shutting the executor
+    down: Jazzy's ``Executor.shutdown`` does not wait for a running callback
+    (its wait is skipped once the shutdown flag is set) and tears the wait set
+    down under it.
+    """
 
     def __init__(self, node: Node) -> None:
+        self._node = node
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(node)
+        self._stop = threading.Event()
         self._thread = threading.Thread(target=self._spin, daemon=True)
 
     def _spin(self) -> None:
         try:
-            self._executor.spin()
-        except Exception:  # a shutdown race ends the spin
-            if rclpy.ok():
+            while not self._stop.is_set():
+                self._executor.spin_once(timeout_sec=0.05)
+        except Exception:  # the context was shut down under the loop
+            if rclpy.ok() and not self._stop.is_set():
                 raise
 
     def start(self) -> None:
         self._thread.start()
 
     def stop(self) -> None:
-        self._executor.shutdown(timeout_sec=1.0)
+        self._stop.set()
         self._thread.join(timeout=2.0)
+        self._executor.remove_node(self._node)
+        self._executor.shutdown(timeout_sec=0)

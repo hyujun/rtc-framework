@@ -21,6 +21,8 @@ import time
 import rclpy
 from python_qt_binding.QtCore import Qt, QTimer
 from python_qt_binding.QtWidgets import QApplication
+from rclpy.exceptions import NameValidationException, ParameterException
+from rclpy.signals import SignalHandlerOptions
 
 from rtc_teleop_input.model import ConfigError
 from rtc_teleop_input.teleop_ros import SpinThread, TeleopInputNode
@@ -43,19 +45,24 @@ def start_timers(node, window) -> tuple[QTimer, QTimer]:
 
 
 def main(args=None) -> int:
-    rclpy.init(args=args)
-    app = QApplication(sys.argv)
-    # Ctrl-C (and launch's SIGINT) closes the window cleanly: the handler runs
+    # rclpy's own handlers would shut the context down under a running Qt
+    # loop; SIGINT and SIGTERM close the window instead. The handler runs
     # when Python next gets control, at the latest on the next publish tick.
-    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    app = QApplication(sys.argv)
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, lambda *_: app.quit())
     bridge = RosBridge()
+    node = None
     try:
         node = TeleopInputNode(
             on_status=bridge.status.emit, on_service_result=bridge.service_result.emit
         )
         window = TeleopWindow(node, bridge)
-    except ConfigError as exc:
+    except (ConfigError, ParameterException, NameValidationException) as exc:
         print(f"teleop_input: {exc}", file=sys.stderr)
+        if node is not None:
+            node.destroy_node()
         rclpy.try_shutdown()
         return 2
 

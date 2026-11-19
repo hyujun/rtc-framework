@@ -143,6 +143,13 @@ def validate_config(config: TeleopConfig, layout: GamepadLayout) -> KeyBindings:
         raise ConfigError("output_topic is required (the Joy topic the controller reads)")
     if not _finite_in(config.rate_hz, 0.0, MAX_RATE_HZ):
         raise ConfigError(f"rate_hz must be in (0, {MAX_RATE_HZ:g}], got {config.rate_hz}")
+    period_ms = 1000.0 / config.rate_hz
+    if abs(period_ms - round(period_ms)) > 1e-9:
+        # the publish timer counts whole milliseconds: 300 Hz would run at 333 Hz
+        raise ConfigError(
+            f"rate_hz must give a whole-millisecond period (50, 100, 250, ...), got "
+            f"{config.rate_hz:g} ({period_ms:.3f} ms)"
+        )
     if config.skin not in SKINS:
         raise ConfigError(f"skin must be one of {SKINS}, got '{config.skin}'")
     if not _finite_in(config.deflection, 0.0, 1.0):
@@ -429,6 +436,8 @@ class ButtonActions:
 
 
 LEVEL_NAMES = {0: "OK", 1: "WARN", 2: "ERROR", 3: "STALE"}
+# A status topic silent this long is shown STALE, whatever its last level said.
+STATUS_STALE_S = 2.0
 
 
 @dataclass(frozen=True)
@@ -443,6 +452,9 @@ class StatusEntry:
     @property
     def level_name(self) -> str:
         return LEVEL_NAMES.get(self.level, f"level {self.level}")
+
+    def is_stale(self, now: float) -> bool:
+        return now - self.received_s > STATUS_STALE_S
 
 
 @dataclass

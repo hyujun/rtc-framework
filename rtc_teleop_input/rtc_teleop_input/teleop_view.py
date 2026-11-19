@@ -16,6 +16,7 @@ which Qt queues to this (GUI) thread.
 
 from __future__ import annotations
 
+import html
 import time
 
 from python_qt_binding.QtCore import QEvent, QObject, Qt, Signal
@@ -77,7 +78,6 @@ class TeleopWindow(QWidget):
         self._virtual_input = config.input == "virtual"
         self._codes = key_codes(node.bindings.keys())
         self._board = StatusBoard(config.status_topics)
-        self._board_dirty = False
         self._replies = {"estop": "-", "reset": "-"}
         self.setWindowTitle(f"Teleop input — {config.input} → {config.output_topic}")
         self.setFocusPolicy(Qt.StrongFocus)
@@ -97,7 +97,8 @@ class TeleopWindow(QWidget):
             " font-size: 18px; border-radius: 6px; }"
             "QPushButton:pressed { background: #8e0000; }"
         )
-        self.estop_button.clicked.connect(node.actions.request_estop)
+        # on mouse-down: a press that slides off the button still stops
+        self.estop_button.pressed.connect(node.actions.request_estop)
 
         self.source_label = QLabel()
         self.deadman_label = QLabel()
@@ -176,7 +177,6 @@ class TeleopWindow(QWidget):
 
     def on_status(self, entry: StatusEntry) -> None:
         self._board.update(entry)
-        self._board_dirty = True
 
     def on_service_result(self, kind: str, ok: bool, message: str) -> None:
         if kind == "estop":
@@ -184,7 +184,7 @@ class TeleopWindow(QWidget):
         else:
             text = "ok" if ok else "refused"
         if message:
-            text += f" ({message})"
+            text += f" ({html.escape(message)})"
         color = "#2e7d32" if ok else "#c62828"
         self._replies[kind] = f"<span style='color:{color}'>{text}</span>"
 
@@ -205,11 +205,11 @@ class TeleopWindow(QWidget):
             source = "<b>virtual</b> (keyboard · mouse)"
         elif frame.lost:
             source = (
-                f"<b>pad</b> {config.pad_topic}: "
+                f"<b>pad</b> {html.escape(config.pad_topic)}: "
                 "<span style='color:#c62828'><b>pad lost</b> — publishing released</span>"
             )
         else:
-            source = f"<b>pad</b> {config.pad_topic}: connected"
+            source = f"<b>pad</b> {html.escape(config.pad_topic)}: connected"
         if node.relay is not None and node.relay.rejects:
             source += f" · rejected Joy: {node.relay.rejects}"
         self.source_label.setText(f"source: {source}")
@@ -232,21 +232,22 @@ class TeleopWindow(QWidget):
             f"E-STOP sent {node.estop_calls_sent}, last reply: {self._replies['estop']}<br>"
             f"reset sent {node.reset_calls_sent}, last reply: {self._replies['reset']}"
         )
-        if self._board_dirty:
-            self._board_dirty = False
-            self._refresh_status()
+        self._refresh_status(time.monotonic())
 
-    def _refresh_status(self) -> None:
+    def _refresh_status(self, now: float) -> None:
         for entry in self._board.rows():
             item = self._status_items.get(entry.topic)
             if item is None:
                 item = QTreeWidgetItem(self.status_tree)
                 item.setExpanded(True)
                 self._status_items[entry.topic] = item
-            item.setText(0, f"{entry.topic}  [{entry.level_name}]")
+            # a silent publisher is not trusted to still be what it last said
+            stale = entry.is_stale(now)
+            level = 3 if stale else entry.level
+            item.setText(0, f"{entry.topic}  [{'STALE' if stale else entry.level_name}]")
             item.setText(1, entry.message or entry.name)
             item.setData(0, Qt.ToolTipRole, entry.name)
-            item.setForeground(0, QColor(_LEVEL_COLORS.get(entry.level, "#6d6d6d")))
+            item.setForeground(0, QColor(_LEVEL_COLORS.get(level, "#6d6d6d")))
             while item.childCount() > len(entry.values):
                 item.removeChild(item.child(item.childCount() - 1))
             for i, (key, value) in enumerate(entry.values):

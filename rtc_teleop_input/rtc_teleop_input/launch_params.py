@@ -9,12 +9,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import yaml
+
 GAME_CONTROLLER_PARAMETERS = {
     "deadzone": 0.05,
     "autorepeat_rate": 20.0,
     "sticky_buttons": False,
     "coalesce_interval_ms": 1,
 }
+
+
+# Launch arguments decide these (which nodes start, the pad driver's remap),
+# so a params_file must not set them behind the launch's back.
+LAUNCH_OWNED = ("input", "output_topic", "pad_topic")
+
+
+def check_params_file(path: str) -> None:
+    """Refuses a params file that sets a launch-owned parameter for any node."""
+    with open(path) as stream:
+        data = yaml.safe_load(stream) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"params_file {path}: not a ROS parameter file")
+    for node, section in data.items():
+        params = (section or {}).get("ros__parameters", {}) if isinstance(section, dict) else {}
+        owned = sorted(set(params) & set(LAUNCH_OWNED))
+        if owned:
+            raise ValueError(
+                f"params_file {path}: '{node}' sets {', '.join(owned)} -- "
+                "give these as launch arguments (input:=, joy_topic:=, pad_topic:=)"
+            )
 
 
 @dataclass(frozen=True)

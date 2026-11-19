@@ -8,6 +8,7 @@
   <license>MIT</license>
 
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <!-- /rtc_cm/trigger_estop is std_srvs/Trigger, /rtc_cm/reset_fault is rtc_msgs/ResetFault. -->
   <exec_depend>std_srvs</exec_depend>
