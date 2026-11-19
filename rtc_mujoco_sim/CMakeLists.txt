@@ -328,6 +328,19 @@ if(mujoco_FOUND)
         mujoco::mujoco ament_index_cpp::ament_index_cpp)
     endif()
 
+    # The contact FSM + InEKF sequencer of rtc_controllers against MuJoCo
+    # contact truth (in-process sim scenarios on the public floating-base
+    # humanoid: quiet stance, pushes, a crane welded to a mocap body, low
+    # friction). rtc_controllers is a test-only dependency of this package
+    # (sibling rtc_* — not an upward edge); the model comes through the ament
+    # index at run time like test_g1_floating_stance.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_contact_fsm_sim.cpp")
+      find_package(rtc_controllers REQUIRED)
+      ament_add_gtest(test_contact_fsm_sim test/test_contact_fsm_sim.cpp TIMEOUT 600)
+      target_link_libraries(test_contact_fsm_sim
+        mujoco_simulator_lib rtc_controllers::rtc_controllers ament_index_cpp::ament_index_cpp)
+    endif()
+
     # imu_noise in the simulator: needs a scene whose export mixes a gyro and
     # an accelerometer (with MJCF noise=) with frame and contact sensors, so
     # the noised and the must-stay-raw entries share one export.

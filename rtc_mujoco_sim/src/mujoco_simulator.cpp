@@ -2150,6 +2150,36 @@ void MuJoCoSimulator::ResetForTest() noexcept {
   HandleReset();
 }
 
+bool MuJoCoSimulator::SetMocapPoseForTest(int mocap_index, const std::array<double, 3>& pos,
+                                          const std::array<double, 4>& quat) noexcept {
+  if (!model_ || !data_ || mocap_index < 0 || mocap_index >= model_->nmocap)
+    return false;
+  double norm2 = 0.0;
+  for (const double x : quat)
+    norm2 += x * x;
+  for (const double x : pos) {
+    if (!std::isfinite(x))
+      return false;
+  }
+  if (!std::isfinite(norm2) || !(norm2 > 0.0))
+    return false;
+  const double inv = 1.0 / std::sqrt(norm2);
+  const auto i = static_cast<std::size_t>(mocap_index);
+  for (std::size_t k = 0; k < 3; ++k)
+    data_->mocap_pos[3 * i + k] = pos[k];
+  for (std::size_t k = 0; k < 4; ++k)
+    data_->mocap_quat[4 * i + k] = quat[k] * inv;
+  return true;
+}
+
+bool MuJoCoSimulator::SetGeomFrictionForTest(int geom_id, double sliding) noexcept {
+  if (!model_ || geom_id < 0 || geom_id >= model_->ngeom || !std::isfinite(sliding) ||
+      !(sliding > 0.0))
+    return false;
+  model_->geom_friction[3 * static_cast<std::size_t>(geom_id)] = sliding;
+  return true;
+}
+
 std::vector<double> MuJoCoSimulator::GetQposForTest() const noexcept {
   if (!model_ || !data_)
     return {};
