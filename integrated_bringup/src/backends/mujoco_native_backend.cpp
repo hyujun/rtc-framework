@@ -541,7 +541,12 @@ void MujocoNativeBackend::OnWrench(int finger_idx,
   const double fx_d = msg.wrench.force.x;
   const double fy_d = msg.wrench.force.y;
   const double fz_d = msg.wrench.force.z;
-  if (!std::isfinite(fx_d) || !std::isfinite(fy_d) || !std::isfinite(fz_d)) {
+  const double tx_d = msg.wrench.torque.x;
+  const double ty_d = msg.wrench.torque.y;
+  const double tz_d = msg.wrench.torque.z;
+  const bool torque_finite =
+      !moment_lane_ || (std::isfinite(tx_d) && std::isfinite(ty_d) && std::isfinite(tz_d));
+  if (!std::isfinite(fx_d) || !std::isfinite(fy_d) || !std::isfinite(fz_d) || !torque_finite) {
     // Drop NaN/Inf — RT reader keeps last valid value. Throttled WARN so a
     // flooding bad publisher does not spam logs but the failure mode stays
     // visible (silent drop made debug "why did force freeze" too hard).
@@ -557,6 +562,11 @@ void MujocoNativeBackend::OnWrench(int finger_idx,
   tip.fx = static_cast<float>(fx_d);
   tip.fy = static_cast<float>(fy_d);
   tip.fz = static_cast<float>(fz_d);
+  if (moment_lane_) {
+    tip.tx = static_cast<float>(tx_d);
+    tip.ty = static_cast<float>(ty_d);
+    tip.tz = static_cast<float>(tz_d);
+  }
   tip.received_at_least_once = true;
   // Stamped HERE rather than at the RT read, and only for an ACCEPTED sample:
   // the question this answers is "how old is the force the controller is
@@ -613,19 +623,20 @@ void MujocoNativeBackend::ReadSensorState(DeviceStateCache& cache) noexcept {
     cache.inference_recv_steady_ns[fu] = tip.recv_steady_ns;
     cache.inference_sequence[fu] = cur_seq;
 
-    // Stride 7 mirror — slot 0 contact_flag / 4..6 displacement intentionally
-    // 0-filled (controller does not consume them; udp_hand backend remains
-    // the source for those lanes). Force values are preserved across stale
-    // ticks so the controller can keep using the last known fx/fy/fz.
+    // Stride 7 mirror — slot 0 contact_flag intentionally 0-filled, slots
+    // 4..6 the torque on a moment lane and 0-filled otherwise (where the
+    // udp_hand layout puts a displacement this backend does not have). The
+    // wrench is preserved across stale ticks so the controller can keep
+    // using the last known value.
     const std::size_t base =
         static_cast<std::size_t>(f) * static_cast<std::size_t>(kInferenceStride);
     cache.inference_data[base + 0] = 0.0F;
     cache.inference_data[base + 1] = tip.fx;
     cache.inference_data[base + 2] = tip.fy;
     cache.inference_data[base + 3] = tip.fz;
-    cache.inference_data[base + 4] = 0.0F;
-    cache.inference_data[base + 5] = 0.0F;
-    cache.inference_data[base + 6] = 0.0F;
+    cache.inference_data[base + 4] = tip.tx;
+    cache.inference_data[base + 5] = tip.ty;
+    cache.inference_data[base + 6] = tip.tz;
   }
 }
 

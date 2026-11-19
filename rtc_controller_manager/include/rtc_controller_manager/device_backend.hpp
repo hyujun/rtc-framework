@@ -297,6 +297,12 @@ class DeviceBackend {
   /// override to stash the layout before Configure().
   virtual void SetSensorLayout(const DeviceSensorLayout& /*layout*/) noexcept {}
 
+  /// True when this backend fills inference values 4..6 of each group with
+  /// the moment of its wrench once the forwarded layout sets
+  /// `has_native_moment`. CM refuses a layout that declares the flag for a
+  /// backend that does not, so a consumer never reads zeros as a moment.
+  [[nodiscard]] virtual bool SupportsNativeMoment() const noexcept { return false; }
+
   /// Callback fired by the backend on every fresh JOINT-state arrival. Every
   /// shipped backend calls NotifyStateReady() from its joint lane only; motor,
   /// sensor and wrench lanes are read latest-value and never fire it. In

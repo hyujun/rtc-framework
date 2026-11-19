@@ -112,11 +112,25 @@ class MujocoNativeBackend : public DeviceBackend {
                     CommandType command_type) noexcept override;
 
   // Fingertip wrench lane (mujoco-only extension — fills inference_data slots
-  // 1..3 with fx/fy/fz per fingertip, slots 0 / 4..6 zeroed). When the YAML
+  // 1..3 with fx/fy/fz per fingertip, slot 0 zeroed, slots 4..6 zeroed unless
+  // the group's layout sets has_native_moment). When the YAML
   // `devices.<group>.backend.fingertip_wrench_topics` list is empty
   // HasSensorState() stays true but ReadSensorState reports
   // num_inference_groups=0 and inference_enable all false.
   [[nodiscard]] bool HasSensorState() const noexcept override { return true; }
+
+  // Moment lane — opt-in per group through `sensor_layout.has_native_moment`
+  // (forwarded by CM before Configure, so the wrench callbacks never see it
+  // change). When set, slots 4..6 carry the WrenchStamped torque x/y/z as
+  // the topic publishes it (for rtc_mujoco_sim: the sensor site's axes, about
+  // the site origin, the force the group applies to its contact), and a
+  // non-finite torque drops the whole sample as a non-finite force does.
+  // Unset, the torque is not read at all and slots 4..6 stay 0.
+  void SetSensorLayout(const DeviceSensorLayout& layout) noexcept override {
+    moment_lane_ = layout.has_native_moment;
+  }
+
+  [[nodiscard]] bool SupportsNativeMoment() const noexcept override { return true; }
 
   // The only backend in this tree that carries the mode through: WriteCommand
   // stamps JointCommand.command_type from the enum and forwards the
@@ -161,14 +175,19 @@ class MujocoNativeBackend : public DeviceBackend {
   // Fingertip wrench mirror — sized to rtc::kMaxSensorGroups so a SensorMirror
   // fits the same per-group capacity as DeviceStateCache::inference_enable.
   // Stride 7 mirrors the legacy udp_hand layout (slot 0 contact_flag, 1..3
-  // fx/fy/fz, 4..6 displacement); mujoco only publishes fx/fy/fz so dead
-  // slots are zero-filled by ReadSensorState.
+  // fx/fy/fz, 4..6 displacement); mujoco publishes a wrench, so slot 0 is
+  // zero-filled by ReadSensorState and slots 4..6 carry the torque only on a
+  // moment lane (zero-filled otherwise).
   static constexpr int kInferenceStride = 7;
 
   struct FingertipForceMirror {
     float fx{0.0F};
     float fy{0.0F};
     float fz{0.0F};
+    // Stored only on a moment lane (0 otherwise).
+    float tx{0.0F};
+    float ty{0.0F};
+    float tz{0.0F};
     bool received_at_least_once{false};
     // Steady-clock receipt time of the sample above.
     // Stamped by OnWrench on the same lane that stamps `last_state_ns_` for
@@ -226,6 +245,10 @@ class MujocoNativeBackend : public DeviceBackend {
   std::array<uint64_t, kMaxSensorGroups> rt_last_seen_seq_{};
   std::array<int, kMaxSensorGroups> rt_miss_count_{};
   int max_missed_ticks_{5};
+
+  // has_native_moment of this group's layout. Written by SetSensorLayout
+  // before Configure creates the wrench subscriptions, read by both lanes.
+  bool moment_lane_{false};
 
   std::vector<rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr> wrench_subs_;
 

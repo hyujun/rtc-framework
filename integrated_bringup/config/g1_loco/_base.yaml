@@ -111,7 +111,8 @@
         # Foot contact rides this group's inference lane (sim.yaml
         # fingertip_wrench_topics — the name is the hand's, the lane is any
         # group's contact wrench lane): slot 0 contact flag, 1..3 force, 4..6
-        # displacement, 7 wide per sole; the sim backend fills 1..3.
+        # displacement or moment, 7 wide per sole; the sim backend fills 1..3
+        # and, with sim.yaml's sensor_layout.has_native_moment, 4..6 (moment).
         sensor_layout:
           primary_count_per_group: 0
           secondary_count_per_group: 0

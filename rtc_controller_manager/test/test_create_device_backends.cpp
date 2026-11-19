@@ -73,6 +73,28 @@ class CdbStubBackend : public DeviceBackend {
 
 RTC_REGISTER_DEVICE_BACKEND(cdb_test_backend, std::make_unique<CdbStubBackend>())
 
+// Same stub, but it fills a moment and records the layout CM forwards.
+class CdbMomentBackend : public CdbStubBackend {
+ public:
+  bool SupportsNativeMoment() const noexcept override { return true; }
+
+  void SetSensorLayout(const DeviceSensorLayout& layout) noexcept override { layout_ = layout; }
+
+  const DeviceSensorLayout& layout() const { return layout_; }
+
+ private:
+  DeviceSensorLayout layout_{};
+};
+
+RTC_REGISTER_DEVICE_BACKEND(cdb_moment_backend, std::make_unique<CdbMomentBackend>())
+
+DeviceSensorLayout MomentLayout() {
+  DeviceSensorLayout l;
+  l.inference_values_per_group = 7;
+  l.has_native_moment = true;
+  return l;
+}
+
 DeviceNameConfig MakeArmConfig(const std::string& backend_type) {
   DeviceNameConfig c;
   c.device_name = "arm";
@@ -265,6 +287,26 @@ TEST_F(CreateDeviceBackendsTest, DrainDropsSampleWhileTwinPublisherInactive) {
   EXPECT_FALSE(ControllerLifecycleTestAccess::CallDrainDigitalTwin(*node_));
   // Bit consumed anyway, so the drain does not spin on an un-publishable slot.
   EXPECT_FALSE(ControllerLifecycleTestAccess::IsDigitalTwinDirty(*node_, 0));
+}
+
+// ── has_native_moment needs a backend that fills it ─────────────────────────
+
+TEST_F(CreateDeviceBackendsTest, NativeMomentOnABackendWithoutItSkipsTheBackend) {
+  InjectArm("cdb_test_backend");
+  ControllerLifecycleTestAccess::SetSlotSensorLayout(*node_, 0, MomentLayout());
+  ControllerLifecycleTestAccess::CallCreateDeviceBackends(*node_);
+  EXPECT_EQ(nullptr, ControllerLifecycleTestAccess::GetBackend(*node_, 0));
+}
+
+TEST_F(CreateDeviceBackendsTest, NativeMomentOnABackendWithItForwardsTheLayout) {
+  InjectArm("cdb_moment_backend");
+  ControllerLifecycleTestAccess::SetSlotSensorLayout(*node_, 0, MomentLayout());
+  ControllerLifecycleTestAccess::CallCreateDeviceBackends(*node_);
+  auto* backend =
+      dynamic_cast<CdbMomentBackend*>(ControllerLifecycleTestAccess::GetBackend(*node_, 0));
+  ASSERT_NE(nullptr, backend);
+  EXPECT_TRUE(backend->configured());
+  EXPECT_TRUE(backend->layout().has_native_moment);
 }
 
 }  // namespace

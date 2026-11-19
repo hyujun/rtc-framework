@@ -473,6 +473,14 @@ class ControllerLifecycleTestAccess {
     return node.system_model_config_;
   }
 
+  static void SetSlotSensorLayout(RtControllerNode& node, std::size_t slot,
+                                  const DeviceSensorLayout& layout) {
+    if (node.slot_to_sensor_layout_.size() <= slot) {
+      node.slot_to_sensor_layout_.resize(slot + 1);
+    }
+    node.slot_to_sensor_layout_[slot] = layout;
+  }
+
   static std::optional<DeviceSensorLayout> GetSlotSensorLayout(const RtControllerNode& node,
                                                                std::size_t slot) {
     return slot < node.slot_to_sensor_layout_.size() ? node.slot_to_sensor_layout_[slot]

@@ -43,8 +43,11 @@
           # ── Foot contact on the contact wrench lane ────────────────────────
           # The name is the hand's; the lane is any group's contact wrench lane
           # (WD-16). Slot f of the inference lane = list index f, so this is
-          # LEFT then RIGHT, fx/fy/fz in slots 1..3 (stride 7). Sign:
-          # foot-on-floor, i.e. a standing foot reads a negative fz.
+          # LEFT then RIGHT, fx/fy/fz in slots 1..3 and — with
+          # sensor_layout.has_native_moment below — tx/ty/tz in slots 4..6
+          # (stride 7). Frame: the sole sensor site's axes, the moment about
+          # the site origin. Sign: foot-on-floor, i.e. a standing foot reads a
+          # negative fz.
           #
           # The locomotion controller logs it (locomotion_diag.csv meas_fz_*:
           # contact c reads slot c, so this list is in model.contacts order);
@@ -82,10 +85,13 @@
             gyro: ["imu-pelvis-angular-velocity", "imu-torso-angular-velocity"]
             accel: ["imu-pelvis-linear-acceleration", "imu-torso-linear-acceleration"]
         # The mujoco backend synthesizes neither a contact probability nor a
-        # displacement vector; consumers derive contact from |force|.
+        # displacement vector; consumers derive contact from |force|. It does
+        # carry the sole wrench's moment (slots 4..6 — where a hand layout has
+        # its displacement, hence sim only and this group only).
         sensor_layout:
           has_native_contact:  false
           has_native_displacement: false
+          has_native_moment: true
       p1b:
         backend:
           type: "mujoco_native"            # the sim's fake_response group — same topics, LPF echo

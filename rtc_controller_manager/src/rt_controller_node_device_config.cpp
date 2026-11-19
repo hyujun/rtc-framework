@@ -316,8 +316,10 @@ bool RtControllerNode::LoadDeviceNameConfigs() {
       const std::string ipg_key = sl_prefix + ".inference_values_per_group";
       const std::string hnc_key = sl_prefix + ".has_native_contact";
       const std::string hnd_key = sl_prefix + ".has_native_displacement";
+      const std::string hnm_key = sl_prefix + ".has_native_moment";
       const bool any = has_parameter(pri_key) || has_parameter(sec_key) || has_parameter(vpg_key) ||
-                       has_parameter(ipg_key) || has_parameter(hnc_key) || has_parameter(hnd_key);
+                       has_parameter(ipg_key) || has_parameter(hnc_key) || has_parameter(hnd_key) ||
+                       has_parameter(hnm_key);
       if (any) {
         // The backend's sensor lane writes group g's values at
         // g * values_per_group into a kMaxSensorChannels-wide buffer and its
@@ -367,15 +369,32 @@ bool RtControllerNode::LoadDeviceNameConfigs() {
             sl.has_native_contact = get_parameter(hnc_key).as_bool();
           if (has_parameter(hnd_key))
             sl.has_native_displacement = get_parameter(hnd_key).as_bool();
+          if (has_parameter(hnm_key))
+            sl.has_native_moment = get_parameter(hnm_key).as_bool();
+          // The moment takes inference values 4..6 of a group, the slots a
+          // displacement takes — the two cannot share them, and a stride
+          // below 7 has no room for them.
+          constexpr int kMomentStride = 7;
+          if (sl.has_native_moment &&
+              (sl.has_native_displacement || sl.inference_values_per_group < kMomentStride)) {
+            RCLCPP_ERROR(get_logger(),
+                         "[%s] sensor_layout has_native_moment needs inference values 4..6 of "
+                         "each group: has_native_displacement must be false (got %d) and "
+                         "inference_values_per_group >= %d (got %d)",
+                         group_name.c_str(), static_cast<int>(sl.has_native_displacement),
+                         kMomentStride, sl.inference_values_per_group);
+            config_invalid = true;
+          }
           cfg.sensor_layout = sl;
           RCLCPP_INFO(get_logger(),
                       "[%s] Sensor layout: primary=%d secondary=%d values_per_group=%d "
                       "inference_values_per_group=%d has_native_contact=%d "
-                      "has_native_displacement=%d",
+                      "has_native_displacement=%d has_native_moment=%d",
                       group_name.c_str(), sl.primary_count_per_group, sl.secondary_count_per_group,
                       sl.values_per_group, sl.inference_values_per_group,
                       static_cast<int>(sl.has_native_contact),
-                      static_cast<int>(sl.has_native_displacement));
+                      static_cast<int>(sl.has_native_displacement),
+                      static_cast<int>(sl.has_native_moment));
         }
       }
     }
@@ -703,6 +722,15 @@ void RtControllerNode::CreateDeviceBackends() {
     // can accept sensor messages from the first packet. Layout is silently
     // ignored by other backend types.
     if (uslot < slot_to_sensor_layout_.size() && slot_to_sensor_layout_[uslot].has_value()) {
+      // A declared moment lane that the backend does not fill would hand the
+      // controllers zeros as a moment — refuse it like the other binding errors.
+      if (slot_to_sensor_layout_[uslot]->has_native_moment && !backend->SupportsNativeMoment()) {
+        RCLCPP_ERROR(get_logger(),
+                     "Group '%s' declares sensor_layout.has_native_moment but backend type '%s' "
+                     "does not fill a moment — skip backend",
+                     group_name.c_str(), cfg.type.c_str());
+        continue;
+      }
       backend->SetSensorLayout(slot_to_sensor_layout_[uslot].value());
     }
 

@@ -35,6 +35,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -83,6 +84,13 @@ class MujocoNativeBackendTest : public ::testing::Test {
     cfg.state_topic = "/test_mujoco/joint_states";
     cfg.command_topic = "/test_mujoco/joint_command";
     backend_ = std::make_unique<rtc::MujocoNativeBackend>();
+    if (MomentLane()) {
+      // As CM forwards it: before Configure.
+      rtc::DeviceSensorLayout layout;
+      layout.inference_values_per_group = static_cast<int>(kInferStride);
+      layout.has_native_moment = true;
+      backend_->SetSensorLayout(layout);
+    }
     backend_->Configure(node_.get(), cfg, state_cb_group_);
 
     executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
@@ -103,12 +111,22 @@ class MujocoNativeBackendTest : public ::testing::Test {
     node_.reset();
   }
 
+  // The fixture's backend has no moment lane; the moment fixture below does.
+  virtual bool MomentLane() const { return false; }
+
   void PublishWrench(int finger, float fx, float fy, float fz) {
+    PublishWrench(finger, fx, fy, fz, 0.0, 0.0, 0.0);
+  }
+
+  void PublishWrench(int finger, float fx, float fy, float fz, double tx, double ty, double tz) {
     geometry_msgs::msg::WrenchStamped msg;
     msg.header.stamp = node_->now();
     msg.wrench.force.x = static_cast<double>(fx);
     msg.wrench.force.y = static_cast<double>(fy);
     msg.wrench.force.z = static_cast<double>(fz);
+    msg.wrench.torque.x = tx;
+    msg.wrench.torque.y = ty;
+    msg.wrench.torque.z = tz;
     wrench_pubs_[static_cast<std::size_t>(finger)]->publish(msg);
     SpinUntilDelivered();
   }
@@ -288,6 +306,111 @@ TEST_F(MujocoNativeBackendTest, Stride7_DeadSlotsAreZero) {
   EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 4], 0.0F);
   EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 5], 0.0F);
   EXPECT_FLOAT_EQ(cache.inference_data[1 * kInferStride + 6], 0.0F);
+}
+
+// ── Moment lane (sensor_layout.has_native_moment) ───────────────────────────
+
+// A torque that does not round to itself through float, so a slot that holds
+// anything but the float of the published value shows.
+constexpr double kTx = 0.123456789012;
+constexpr double kTy = -4.56789012345;
+constexpr double kTz = 7.89012345678;
+
+// Without the flag the torque is not read: slots 4..6 stay 0 with a non-zero
+// torque on the wire, and the force slots are what they always were.
+TEST_F(MujocoNativeBackendTest, NoMomentLane_IgnoresANonZeroTorque) {
+  PublishWrench(1, 1.5F, -2.5F, 3.5F, kTx, kTy, kTz);
+
+  rtc::DeviceStateCache cache{};
+  backend_->ReadSensorState(cache);
+  ASSERT_GE(cache.num_inference_groups, 2);
+  const std::array<float, 7> want = {0.0F, 1.5F, -2.5F, 3.5F, 0.0F, 0.0F, 0.0F};
+  for (std::size_t k = 0; k < want.size(); ++k) {
+    EXPECT_EQ(std::bit_cast<std::uint32_t>(cache.inference_data[1 * kInferStride + k]),
+              std::bit_cast<std::uint32_t>(want[k]))
+        << "slot " << k;
+  }
+}
+
+// ...and a non-finite torque does not drop the sample.
+TEST_F(MujocoNativeBackendTest, NoMomentLane_AcceptsANonFiniteTorque) {
+  PublishWrench(0, 1.0F, 2.0F, 3.0F, std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0);
+
+  rtc::DeviceStateCache cache{};
+  backend_->ReadSensorState(cache);
+  ASSERT_GE(cache.num_inference_groups, 1);
+  EXPECT_TRUE(cache.inference_enable[0]);
+  EXPECT_EQ(cache.inference_data[3], 3.0F);
+  EXPECT_EQ(cache.inference_data[4], 0.0F);
+}
+
+class MujocoNativeBackendMomentTest : public MujocoNativeBackendTest {
+ protected:
+  bool MomentLane() const override { return true; }
+};
+
+TEST_F(MujocoNativeBackendMomentTest, SupportsNativeMoment) {
+  EXPECT_TRUE(backend_->SupportsNativeMoment());
+}
+
+// Slots 4..6 carry the float of the published torque; 0..3 are unchanged.
+TEST_F(MujocoNativeBackendMomentTest, MomentLane_CarriesTheTorque) {
+  PublishWrench(1, 1.5F, -2.5F, 3.5F, kTx, kTy, kTz);
+
+  rtc::DeviceStateCache cache{};
+  backend_->ReadSensorState(cache);
+  ASSERT_GE(cache.num_inference_groups, 2);
+  const std::array<float, 7> want = {0.0F,
+                                     1.5F,
+                                     -2.5F,
+                                     3.5F,
+                                     static_cast<float>(kTx),
+                                     static_cast<float>(kTy),
+                                     static_cast<float>(kTz)};
+  for (std::size_t k = 0; k < want.size(); ++k) {
+    EXPECT_EQ(std::bit_cast<std::uint32_t>(cache.inference_data[1 * kInferStride + k]),
+              std::bit_cast<std::uint32_t>(want[k]))
+        << "slot " << k;
+  }
+  // Group 0 never reported: its slots are still 0.
+  for (std::size_t k = 0; k < kInferStride; ++k) {
+    EXPECT_EQ(cache.inference_data[k], 0.0F) << "group 0 slot " << k;
+  }
+}
+
+// A non-finite torque drops the whole sample: the previous wrench, its stamp
+// and its sequence stay, as for a non-finite force.
+TEST_F(MujocoNativeBackendMomentTest, MomentLane_NonFiniteTorqueDropsTheSample) {
+  PublishWrench(0, 7.0F, 8.0F, 9.0F, kTx, kTy, kTz);
+  rtc::DeviceStateCache before{};
+  backend_->ReadSensorState(before);
+
+  for (const double bad :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+    PublishWrench(0, 1.0F, 1.0F, 1.0F, 0.0, bad, 0.0);
+    rtc::DeviceStateCache cache{};
+    backend_->ReadSensorState(cache);
+    for (std::size_t k = 0; k < kInferStride; ++k) {
+      EXPECT_EQ(std::bit_cast<std::uint32_t>(cache.inference_data[k]),
+                std::bit_cast<std::uint32_t>(before.inference_data[k]))
+          << "slot " << k;
+    }
+    EXPECT_EQ(cache.inference_sequence[0], before.inference_sequence[0]);
+    EXPECT_EQ(cache.inference_recv_steady_ns[0], before.inference_recv_steady_ns[0]);
+  }
+}
+
+// The moment is held across stale ticks with the force, like it.
+TEST_F(MujocoNativeBackendMomentTest, MomentLane_StaleTickKeepsTheTorque) {
+  PublishWrench(0, 1.0F, 2.0F, 3.0F, kTx, kTy, kTz);
+  rtc::DeviceStateCache cache{};
+  for (int i = 0; i < kMaxMissedTicks + 2; ++i) {
+    backend_->ReadSensorState(cache);
+  }
+  EXPECT_FALSE(cache.inference_enable[0]);
+  EXPECT_EQ(cache.inference_data[4], static_cast<float>(kTx));
+  EXPECT_EQ(cache.inference_data[5], static_cast<float>(kTy));
+  EXPECT_EQ(cache.inference_data[6], static_cast<float>(kTz));
 }
 
 // ── WriteCommand direct-copy contract ────────────────────────────────────────
