@@ -47,8 +47,10 @@ inline constexpr std::size_t kHandSensorValuesPerFingertipCapacity =
 //                — populated by udp_hand_native only (capacitive direction),
 //                  zero from force-only backends.
 //              OR the wrench moment tx/ty/tz of a group that declares
-//                `has_native_moment` (mujoco_native — never a hand: CM
-//                refuses the flag together with a displacement).
+//                `has_native_moment` (mujoco_native; CM refuses the flag
+//                together with `has_native_displacement`). The fingertip
+//                parsers here read 4..6 as a displacement unconditionally,
+//                so a hand group must not declare it.
 // Controllers honor per-slot availability via DeviceSensorLayout
 // `has_native_contact` / `has_native_displacement` / `has_native_moment`
 // (yaml-declared per device group); reading raw slots without consulting the

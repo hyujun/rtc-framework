@@ -400,6 +400,19 @@ TEST_F(MujocoNativeBackendMomentTest, MomentLane_NonFiniteTorqueDropsTheSample) 
   }
 }
 
+// The moment is held across stale ticks with the force, like it.
+TEST_F(MujocoNativeBackendMomentTest, MomentLane_StaleTickKeepsTheTorque) {
+  PublishWrench(0, 1.0F, 2.0F, 3.0F, kTx, kTy, kTz);
+  rtc::DeviceStateCache cache{};
+  for (int i = 0; i < kMaxMissedTicks + 2; ++i) {
+    backend_->ReadSensorState(cache);
+  }
+  EXPECT_FALSE(cache.inference_enable[0]);
+  EXPECT_EQ(cache.inference_data[4], static_cast<float>(kTx));
+  EXPECT_EQ(cache.inference_data[5], static_cast<float>(kTy));
+  EXPECT_EQ(cache.inference_data[6], static_cast<float>(kTz));
+}
+
 // ── WriteCommand direct-copy contract ────────────────────────────────────────
 //
 // Pins the command-ordering convention: `slot.commands` is already in
