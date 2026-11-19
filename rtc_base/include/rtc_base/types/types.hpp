@@ -697,6 +697,12 @@ struct DeviceJointLimits {
 // match the active backend's runtime capability (e.g. udp_hand_native with
 // `ft_inferencer.enabled=true` → has_native_contact=true, mujoco backend
 // without contact emulation → false). Default false (assume derived path).
+//
+// `has_native_moment` says the backend puts the moment of a per-group wrench
+// in inference values 4..6 of each group, where `has_native_displacement`
+// puts a displacement — so a group declares at most one of the two, and CM
+// refuses the pair, an inference stride below 7, and a backend that does not
+// report `SupportsNativeMoment()`. Values 1..3 stay the force either way.
 struct DeviceSensorLayout {
   int primary_count_per_group{0};       // first sensor block per group
   int secondary_count_per_group{0};     // second sensor block per group
@@ -704,6 +710,7 @@ struct DeviceSensorLayout {
   int inference_values_per_group{0};    // ML inference output size per group
   bool has_native_contact{false};       // backend emits per-group contact signal
   bool has_native_displacement{false};  // backend emits per-group displacement signal
+  bool has_native_moment{false};        // backend emits per-group wrench moment (values 4..6)
 };
 
 // Per-device backend binding — parsed from `devices.<group>.backend:` in

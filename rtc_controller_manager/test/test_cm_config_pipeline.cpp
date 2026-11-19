@@ -424,6 +424,7 @@ TEST_F(CmConfigPipelineTest, DeviceConfigFullParse) {
   EXPECT_EQ(3, cfg.sensor_layout->inference_values_per_group);
   EXPECT_TRUE(cfg.sensor_layout->has_native_contact);
   EXPECT_FALSE(cfg.sensor_layout->has_native_displacement);
+  EXPECT_FALSE(cfg.sensor_layout->has_native_moment);  // omitted → false
 
   ASSERT_TRUE(cfg.joint_limits.has_value());
   EXPECT_EQ((std::vector<double>{1.0, 1.0}), cfg.joint_limits->max_velocity);
@@ -976,6 +977,58 @@ TEST_F(CmConfigPipelineTest, SensorLayoutAtCapacityConfigures) {
     EXPECT_EQ(params.inference_values_per_group, layout->inference_values_per_group);
     EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
   }
+}
+
+// ── sensor_layout.has_native_moment ─────────────────────────────────────────
+//
+// The moment takes inference values 4..6 of a group — the displacement's
+// slots — so it needs a stride of at least 7 and no displacement.
+
+TEST_F(CmConfigPipelineTest, NativeMomentWithoutItsSlotsRefusesConfigure) {
+  struct Case {
+    std::string label;
+    int64_t inference_values_per_group;
+    bool displacement;
+  };
+
+  const std::vector<Case> cases = {
+      {"with a displacement", 7, true},
+      {"inference stride 6", 6, false},
+  };
+  for (const auto& c : cases) {
+    SCOPED_TRACE(c.label);
+    LogSink::Install();
+    auto node = MakeNode();
+    DeclareArmDevice(*node);
+    DeclareSensorLayout(*node, {0, 0, 0, c.inference_values_per_group});
+    node->declare_parameter("devices.arm.sensor_layout.has_native_displacement", c.displacement);
+    node->declare_parameter("devices.arm.sensor_layout.has_native_moment", true);
+
+    EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+    EXPECT_EQ(1U, LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
+                                    {"[arm] sensor_layout has_native_moment needs"})
+                      .size());
+  }
+}
+
+TEST_F(CmConfigPipelineTest, NativeMomentIsParsedAndRefusedForABackendWithoutIt) {
+  LogSink::Install();
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  DeclareSensorLayout(*node, {0, 0, 0, 7});
+  node->declare_parameter("devices.arm.sensor_layout.has_native_moment", true);
+
+  // The layout parses; the stub backend does not fill a moment, so the
+  // binding is skipped like any other backend error.
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  const auto& layout = ArmConfig(*node).sensor_layout;
+  ASSERT_TRUE(layout.has_value());
+  EXPECT_TRUE(layout->has_native_moment);
+  EXPECT_FALSE(layout->has_native_displacement);
+  EXPECT_EQ(1U, LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
+                                  {"Group 'arm' declares sensor_layout.has_native_moment"})
+                    .size());
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
 }  // namespace
