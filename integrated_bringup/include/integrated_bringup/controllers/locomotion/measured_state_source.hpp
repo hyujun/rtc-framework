@@ -230,19 +230,20 @@ struct JointLaneVerdict {
   bool non_finite{false};
 };
 
+/// @brief Start a tick's output: the model's sizes, `kind`, `model_epoch`, the
+///        neutral state (zero joints, the identity base, zero velocity), no
+///        lane fresh or valid, no wrench, no stamp or sequence, zero telemetry.
+void BeginMeasuredState(const DeviceIndices& indices, StateSourceKind kind, uint32_t model_epoch,
+                        MeasuredRobotState& out) noexcept;
+
 /// @brief Read the body joint lanes and the hands into `out` — the part every
 ///        source shares (header: the hands' rule, the age rule). Writes the body
 ///        joints, `sequence` and `stamp_steady_ns` (the joint receipt), the hands,
-///        and their fresh / valid bits; `out.q` / `out.v` must already hold the
-///        neutral state. RT-safe.
+///        and their fresh / valid bits, over what BeginMeasuredState wrote. RT-safe.
 [[nodiscard]] JointLaneVerdict ReadJointLanes(const rtc::ControllerState& state,
                                               const DeviceIndices& indices, int64_t now_steady_ns,
                                               int64_t body_max_age_ns, int64_t hand_max_age_ns,
                                               HeldHands& held, MeasuredRobotState& out) noexcept;
-
-/// @brief Age of a lane's last receipt against `now`; negative when it never
-///        arrived, 0 when it is stamped after `now`.
-[[nodiscard]] int64_t LaneAgeNs(int64_t recv_steady_ns, int64_t now_steady_ns) noexcept;
 
 /// @brief The simulator's ground truth: the body group's joint and floating-base
 ///        lanes and the hand groups' joint lanes, copied. Contacts are all closed

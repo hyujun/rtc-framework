@@ -518,7 +518,6 @@ class LocomotionController final : public rtc::RTControllerInterface {
   double weight_{0.0};  ///< total_mass_ · |g| [N]
   uint32_t model_epoch_{1};
   std::unique_ptr<locomotion::MeasuredStateSource> source_;
-  int imu_site_{0};  ///< model.imu.primary_site's index
   /// Unlatched kNotInitialized ticks before kSource (estimator.inekf.init.timeout_s).
   std::uint32_t init_timeout_ticks_{std::numeric_limits<std::uint32_t>::max()};
 

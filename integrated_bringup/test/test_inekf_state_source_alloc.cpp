@@ -6,6 +6,7 @@
 // malloc_gate.hpp contract item 1).
 #include "integrated_bringup/controllers/locomotion/inekf_state_source.hpp"
 #include "locomotion_controller_rig.hpp"
+#include "locomotion_mpc_stub.hpp"
 #include "rtc_base/testing/malloc_gate.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 
@@ -29,12 +30,8 @@ class InekfSourceAlloc : public LocomotionControllerTest {
   void SetUp() override {
     Configure(ShippedConfig());
     MakeStanding();
-    const auto full_order = loco::JointOrder(ctrl_->FullModel());
-    std::vector<int> body_to_full;
-    for (const auto& name : loco::JointOrder(ctrl_->ReducedModel())) {
-      body_to_full.push_back(static_cast<int>(
-          std::find(full_order.begin(), full_order.end(), name) - full_order.begin()));
-    }
+    const std::vector<int> body_to_full =
+        integrated_bringup::LocomotionControllerTestAccess::ReducedToFull(*ctrl_);
     InekfStateSource::Params p;
     p.body_max_age_ns = 10'000'000;
     p.hand_max_age_ns = 50'000'000;

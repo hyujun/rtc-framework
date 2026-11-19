@@ -65,6 +65,11 @@ struct LocomotionControllerTestAccess {
     return -1;
   }
 
+  /// Reduced (body) joint j's slot in the full joint order (what the inekf source is given).
+  static const std::vector<int>& ReducedToFull(const LocomotionController& c) {
+    return c.reduced_to_full_;
+  }
+
   /// The dynamics model's state the tick handed the WBC and the MPC.
   static const rtc::tsid::ControlState& QpState(const LocomotionController& c) {
     return c.qp_state_;

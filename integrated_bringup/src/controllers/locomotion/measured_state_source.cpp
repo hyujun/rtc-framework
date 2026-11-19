@@ -77,17 +77,17 @@ bool Fresh(int64_t age_ns, int64_t max_age_ns) noexcept {
   return age_ns >= 0 && age_ns <= max_age_ns;
 }
 
-}  // namespace
-
-// A receipt stamped after `now` (the lane landed between the caller's clock
-// read and the state copy) is age 0 — the freshest sample there is, not a
-// stale one.
+// Age of a lane's last receipt; negative when it never arrived. A receipt
+// stamped after `now` (the lane landed between the caller's clock read and the
+// state copy) is age 0 — the freshest sample there is, not a stale one.
 int64_t LaneAgeNs(int64_t recv_steady_ns, int64_t now_steady_ns) noexcept {
   if (recv_steady_ns <= 0) {
     return -1;
   }
   return std::max<int64_t>(0, now_steady_ns - recv_steady_ns);
 }
+
+}  // namespace
 
 const char* ToString(StateSourceStatus status) noexcept {
   switch (status) {
@@ -195,6 +195,25 @@ EstimatorConfig ParseEstimatorConfig(const YAML::Node& estimator, const std::str
   return cfg;
 }
 
+void BeginMeasuredState(const DeviceIndices& indices, StateSourceKind kind, uint32_t model_epoch,
+                        MeasuredRobotState& out) noexcept {
+  const auto n = static_cast<std::size_t>(
+      std::clamp(indices.num_joints, 0, static_cast<int>(kMaxStateJoints)));
+  out.nq = 7 + static_cast<int>(n);
+  out.nv = 6 + static_cast<int>(n);
+  out.kind = kind;
+  out.model_epoch = model_epoch;
+  out.ee_wrench = {};
+  out.estimator = {};
+  out.fresh_mask = 0;
+  out.valid_mask = 0;
+  out.stamp_steady_ns = 0;
+  out.sequence = 0;
+  out.q.fill(0.0);
+  out.q[6] = 1.0;
+  out.v.fill(0.0);
+}
+
 JointLaneVerdict ReadJointLanes(const rtc::ControllerState& state, const DeviceIndices& indices,
                                 int64_t now_steady_ns, int64_t body_max_age_ns,
                                 int64_t hand_max_age_ns, HeldHands& held,
@@ -287,27 +306,13 @@ void TruthStateSource::Reset() noexcept {
 bool TruthStateSource::Update(const rtc::ControllerState& state, const DeviceIndices& indices,
                               const SourceTickInput& /*tick*/, int64_t now_steady_ns,
                               MeasuredRobotState& out) noexcept {
-  const auto n = static_cast<std::size_t>(
-      std::clamp(indices.num_joints, 0, static_cast<int>(kMaxStateJoints)));
-  out.nq = 7 + static_cast<int>(n);
-  out.nv = 6 + static_cast<int>(n);
-  out.kind = StateSourceKind::kTruth;
-  out.model_epoch = params_.model_epoch;
+  // A lane that fails this tick reads as the neutral state (zero joints, the
+  // identity base), never as whatever the caller's buffer held.
+  BeginMeasuredState(indices, StateSourceKind::kTruth, params_.model_epoch, out);
   out.state_epoch = state_epoch_;
   out.contact_mask = params_.num_contacts >= kMaxStateContacts
                          ? ~0U
                          : (1U << static_cast<uint32_t>(params_.num_contacts)) - 1U;
-  out.ee_wrench = {};
-  out.estimator = {};
-  out.fresh_mask = 0;
-  out.valid_mask = 0;
-  out.stamp_steady_ns = 0;
-  out.sequence = 0;
-  // A lane that fails this tick reads as the neutral state (zero joints, the
-  // identity base), never as whatever the caller's buffer held.
-  out.q.fill(0.0);
-  out.q[6] = 1.0;
-  out.v.fill(0.0);
 
   const JointLaneVerdict joints = ReadJointLanes(
       state, indices, now_steady_ns, params_.body_max_age_ns, params_.hand_max_age_ns, held_, out);

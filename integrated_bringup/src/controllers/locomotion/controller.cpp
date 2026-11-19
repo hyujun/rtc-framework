@@ -221,9 +221,6 @@ void LocomotionController::InitModels() {
   qp_state_.v = Eigen::VectorXd::Zero(reduced_model_->nv);
   full_data_ = std::make_unique<pinocchio::Data>(*full_model_);
   q_full_ = pinocchio::neutral(*full_model_);
-  imu_site_ = static_cast<int>(std::find(cfg_.model.imu.sites.begin(), cfg_.model.imu.sites.end(),
-                                         cfg_.model.imu.primary_site) -
-                               cfg_.model.imu.sites.begin());
   if (cfg_.estimator.inekf) {
     // The estimator's model binding, checked here once (the source builds its own).
     try {
@@ -293,7 +290,9 @@ std::string LocomotionController::WireDevices() {
       p.body_max_age_ns = body_age_ns;
       p.hand_max_age_ns = hand_age_ns;
       p.model_epoch = model_epoch_;
-      p.imu_site = imu_site_;
+      const auto& imu = cfg_.model.imu;  // the site index is its place in model.imu.sites
+      p.imu_site = static_cast<int>(
+          std::find(imu.sites.begin(), imu.sites.end(), imu.primary_site) - imu.sites.begin());
       p.config = *cfg_.estimator.inekf;
       source_ = std::make_unique<loco::InekfStateSource>(
           p,

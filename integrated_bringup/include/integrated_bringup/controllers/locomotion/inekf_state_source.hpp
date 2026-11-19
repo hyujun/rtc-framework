@@ -202,8 +202,6 @@ class InekfStateSource final : public MeasuredStateSource {
     return seq_;
   }
 
-  [[nodiscard]] const ImuFrameKinematics& Kinematics() const noexcept { return *kin_model_; }
-
  private:
   friend struct InekfStateSourceTestAccess;
 

@@ -6,6 +6,8 @@
 // ticks run on a synthetic clock so receipt gaps are exact.
 #include "integrated_bringup/controllers/locomotion/inekf_state_source.hpp"
 #include "locomotion_controller_rig.hpp"
+#include "locomotion_mpc_stub.hpp"
+#include "rtc_controllers/testing/bit_compare.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
@@ -70,15 +72,13 @@ constexpr uint32_t kBoth = 0b11U;
 const std::vector<std::string> kSoles = {"left_sole", "right_sole"};
 constexpr const char* kImuFrame = "imu_in_pelvis";
 
-bool SameBits(double a, double b) {
-  return std::bit_cast<uint64_t>(a) == std::bit_cast<uint64_t>(b);
-}
+using rtc::testing::BitsEqual;
 
 template <typename A, typename B>
-void ExpectSameBits(const A& a, const B& b, const char* what) {
+void ExpectBitsEqual(const A& a, const B& b, const char* what) {
   ASSERT_EQ(a.size(), b.size()) << what;
   for (Eigen::Index i = 0; i < a.size(); ++i) {
-    EXPECT_TRUE(SameBits(a.data()[i], b.data()[i]))
+    EXPECT_TRUE(BitsEqual(a.data()[i], b.data()[i]))
         << what << "[" << i << "] " << a.data()[i] << " vs " << b.data()[i];
   }
 }
@@ -94,11 +94,7 @@ class InekfSourceTest : public loco_rig::LocomotionControllerTest {
     MakeStanding();
     shipped_ = loco::ParseInekfSourceConfig(cfg_["estimator"]["inekf"], "inekf");
     reduced_ = std::make_shared<const pinocchio::Model>(ctrl_->ReducedModel());
-    const auto full_order = loco::JointOrder(ctrl_->FullModel());
-    for (const auto& name : loco::JointOrder(*reduced_)) {
-      body_to_full_.push_back(static_cast<int>(
-          std::find(full_order.begin(), full_order.end(), name) - full_order.begin()));
-    }
+    body_to_full_ = integrated_bringup::LocomotionControllerTestAccess::ReducedToFull(*ctrl_);
   }
 
   std::unique_ptr<InekfStateSource> MakeSource(const InekfSourceConfig& cfg,
@@ -187,6 +183,11 @@ class InekfSourceTest : public loco_rig::LocomotionControllerTest {
     o.kin = std::make_unique<ImuFrameKinematics>(reduced_, kSoles, kImuFrame);
     o.seq.Init(cfg.core, cfg.fsm, 2);
     return o;
+  }
+
+  // ⌈d / T⌉ of a policy duration (the source's own rule).
+  static int LimitTicks(double d) {
+    return static_cast<int>(std::ceil(d / (static_cast<double>(kT) * 1e-9) * (1.0 - 1e-12)));
   }
 
   InekfSourceConfig shipped_;
@@ -310,10 +311,10 @@ TEST_F(InekfSourceTest, ARepeatedSampleHoldsTheBaseBitForBitThenGoesStale) {
     EXPECT_EQ(0U, out.fresh_mask & loco::kBaseBit) << t;
     EXPECT_NE(0U, out.valid_mask & loco::kBaseBit) << t;
     for (std::size_t i = 0; i < 7; ++i) {
-      EXPECT_TRUE(SameBits(before.q[i], out.q[i])) << t << " q" << i;
+      EXPECT_TRUE(BitsEqual(before.q[i], out.q[i])) << t << " q" << i;
     }
     for (std::size_t i = 0; i < 6; ++i) {
-      EXPECT_TRUE(SameBits(before.v[i], out.v[i])) << t << " v" << i;
+      EXPECT_TRUE(BitsEqual(before.v[i], out.v[i])) << t << " v" << i;
     }
     EXPECT_EQ(body.positions[ch], out.q[7 + a]);
   }
@@ -384,10 +385,10 @@ TEST_F(InekfSourceTest, MissedSamplesStepOnTheNominalPeriodAndAGapResets) {
       ASSERT_EQ(est::ContactFsmStatus::kOk, o.seq.Step(in));
       const est::ContactInekf& a = src->Sequencer().core();
       const est::ContactInekf& b = o.seq.core();
-      ExpectSameBits(a.rotation().reshaped(), b.rotation().reshaped(), "R");
-      ExpectSameBits(a.velocity(), b.velocity(), "v");
-      ExpectSameBits(a.position(), b.position(), "p");
-      ExpectSameBits(a.covariance().reshaped(), b.covariance().reshaped(), "P");
+      ExpectBitsEqual(a.rotation().reshaped(), b.rotation().reshaped(), "R");
+      ExpectBitsEqual(a.velocity(), b.velocity(), "v");
+      ExpectBitsEqual(a.position(), b.position(), "p");
+      ExpectBitsEqual(a.covariance().reshaped(), b.covariance().reshaped(), "P");
     }
     EXPECT_EQ(static_cast<int>(k), out.estimator.periods);
   }
@@ -507,7 +508,7 @@ TEST_F(InekfSourceTest, NoConfirmedContactForTheLimitResets) {
   auto src = MakeSource(shipped_);
   MeasuredRobotState out{};
   ASSERT_TRUE(Step(*src, out));
-  const int limit = static_cast<int>(std::ceil(shipped_.policy.max_no_anchor_s / 2e-3 - 1e-9));
+  const int limit = LimitTicks(shipped_.policy.max_no_anchor_s);
   for (int t = 1; t < limit; ++t) {
     ASSERT_TRUE(Step(*src, out, 1, 0, /*planned=*/0U)) << t;
   }
@@ -531,7 +532,7 @@ TEST_F(InekfSourceTest, UpdatesThatGateEveryContactForTheLimitReset) {
   auto& body = state_.devices[loco_rig::kBody];
   body.positions[Channel("left_hip_pitch_joint")] -= 0.5;
   body.positions[Channel("right_hip_pitch_joint")] -= 0.5;
-  const int limit = static_cast<int>(std::ceil(shipped_.policy.max_gated_s / 2e-3 - 1e-9));
+  const int limit = LimitTicks(shipped_.policy.max_gated_s);
   int last_gated = 0;
   int ticks = 0;
   const uint32_t epoch = out.state_epoch;
@@ -578,7 +579,7 @@ TEST_F(InekfSourceTest, RefusedStepsInARowResetAndHoldTheBaseUntilThen) {
     EXPECT_EQ(t, out.estimator.periods) << "a refused sample is not consumed";
     EXPECT_EQ(0U, out.fresh_mask & loco::kBaseBit);
     for (std::size_t i = 0; i < 7; ++i) {
-      EXPECT_TRUE(SameBits(before.q[i], out.q[i])) << t << " q" << i;
+      EXPECT_TRUE(BitsEqual(before.q[i], out.q[i])) << t << " q" << i;
     }
   }
   const uint32_t epoch = out.state_epoch;
@@ -592,7 +593,7 @@ TEST_F(InekfSourceTest, TwoCausesOnOneTickRecordTheFirstOfThePriority) {
   Oracle o = MakeOracle(shipped_);
   MeasuredRobotState out{};
   ASSERT_TRUE(Step(*src, out));
-  const int limit = static_cast<int>(std::ceil(shipped_.policy.max_no_anchor_s / 2e-3 - 1e-9));
+  const int limit = LimitTicks(shipped_.policy.max_no_anchor_s);
   for (int t = 1; t < limit; ++t) {
     ASSERT_TRUE(Step(*src, out, 1, 0, 0U));
   }
@@ -827,16 +828,16 @@ TEST_F(InekfSourceTest, TheOutputIsTheBaseOfTheImuStateByTheHandWrittenMap) {
     const auto& body = state_.devices[loco_rig::kBody];
     for (int c = 0; c < idx.body.num_channels; ++c) {
       const auto a = static_cast<std::size_t>(idx.body.joint[static_cast<std::size_t>(c)]);
-      EXPECT_TRUE(SameBits(body.positions[static_cast<std::size_t>(c)], out.q[7 + a]));
-      EXPECT_TRUE(SameBits(body.velocities[static_cast<std::size_t>(c)], out.v[6 + a]));
+      EXPECT_TRUE(BitsEqual(body.positions[static_cast<std::size_t>(c)], out.q[7 + a]));
+      EXPECT_TRUE(BitsEqual(body.velocities[static_cast<std::size_t>(c)], out.v[6 + a]));
     }
   }
   // σ per sample → the core's density, bit for bit.
   const double root_t = std::sqrt(shipped_.imu.sample_period_s);
-  EXPECT_TRUE(SameBits(shipped_.imu.gyro_sigma * root_t, shipped_.core.gyro_noise_density));
-  EXPECT_TRUE(SameBits(shipped_.imu.accel_sigma * root_t, shipped_.core.accel_noise_density));
-  EXPECT_TRUE(SameBits(shipped_.imu.gyro_bias_walk, shipped_.core.gyro_bias_walk));
-  EXPECT_TRUE(SameBits(shipped_.imu.accel_bias_walk, shipped_.core.accel_bias_walk));
+  EXPECT_TRUE(BitsEqual(shipped_.imu.gyro_sigma * root_t, shipped_.core.gyro_noise_density));
+  EXPECT_TRUE(BitsEqual(shipped_.imu.accel_sigma * root_t, shipped_.core.accel_noise_density));
+  EXPECT_TRUE(BitsEqual(shipped_.imu.gyro_bias_walk, shipped_.core.gyro_bias_walk));
+  EXPECT_TRUE(BitsEqual(shipped_.imu.accel_bias_walk, shipped_.core.accel_bias_walk));
   EXPECT_EQ(shipped_.imu.sample_period_s, shipped_.fsm.period);
 }
 

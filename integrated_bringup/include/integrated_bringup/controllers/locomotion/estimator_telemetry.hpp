@@ -18,7 +18,9 @@
 namespace integrated_bringup::locomotion {
 
 inline constexpr std::size_t kMaxEstimatorSlots = 4;
-inline constexpr std::size_t kMaxEstimatorCovDiag = 15 + 3 * kMaxEstimatorSlots;
+/// Error-state rows before the slots (φ, v, p, then b_g, b_a after them).
+inline constexpr std::size_t kEstimatorCovDiagBase = 15;
+inline constexpr std::size_t kMaxEstimatorCovDiag = kEstimatorCovDiagBase + 3 * kMaxEstimatorSlots;
 
 /// Why the estimator last restarted.
 enum class EstimatorResetReason : std::uint8_t {

@@ -58,14 +58,7 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
     // latches one while the stop holds — so the tick below waits, solves
     // nothing and sends the MPC nothing, while the state, the models and the
     // logs still run.
-    // An estimator that does not start in time is not waited on for ever: a
-    // robot that will not hold still is not taken over (header).
-    if (!reference_latched_ && !estop_active_ &&
-        measured_.kind == loco::StateSourceKind::kEstimated && !measured_.estimator.initialized &&
-        ++init_wait_ticks_ >= init_timeout_ticks_) {
-      Latch(FaultCause::kSource);
-    }
-    if (source_ok_ && !reference_latched_ && !estop_active_ && !fault_latched_tick_) {
+    if (source_ok_ && !reference_latched_ && !estop_active_) {
       TryLatchReference(state);
     }
     if (mpc_enabled_ && source_ok_ && reference_latched_) {
@@ -177,6 +170,13 @@ void LocomotionController::ReadState(const ControllerState& state, int64_t now_n
     }
     source_epoch_seen_ = measured_.state_epoch;
     source_epoch_known_ = true;
+    // An estimator that does not start in time is not waited on for ever: a
+    // robot that will not hold still is not taken over (header).
+    if (!fault_latched_tick_ && !reference_latched_ && !estop_active_ &&
+        measured_.kind == loco::StateSourceKind::kEstimated && !measured_.estimator.initialized &&
+        ++init_wait_ticks_ >= init_timeout_ticks_) {
+      Latch(FaultCause::kSource);
+    }
   }
   if (source_ok_ && measured_.model_epoch != model_epoch_) {
     source_ok_ = false;

@@ -139,10 +139,8 @@ def source_overlays(
     sim_overlay:=estimator_inekf; an arm that already has an overlay (its own
     or a given one) cannot take a second, so that is refused.
     """
-    if source == "truth":
-        return dict(overlays)
     out = dict(overlays)
-    for arm in arms:
+    for arm in arms if source == "inekf" else ():
         own = overlays.get(arm, default_overlay(arm, mpc_layout))
         if own:
             raise ValueError(f"--source {source}: arm {arm} already runs with sim_overlay {own}")

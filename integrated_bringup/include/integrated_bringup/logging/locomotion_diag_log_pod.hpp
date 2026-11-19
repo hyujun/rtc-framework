@@ -173,6 +173,8 @@ struct LocomotionDiagLogPod {
   locomotion::EstimatorTelemetry estimator{};  ///< the source's record of this tick
 };
 
+static_assert(locomotion::kMaxEstimatorSlots == LocomotionDiagLogPod::kMaxContacts,
+              "the estimator columns are one per contact");
 static_assert(std::is_trivially_copyable_v<LocomotionDiagLogPod>,
               "LocomotionDiagLogPod must be trivially copyable for SPSC ring");
 
@@ -238,7 +240,7 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
       os << ",est_" << field << '_' << contact_names[c];
     }
   }
-  for (std::size_t i = 0; i < 15 + 3 * cols.contacts; ++i) {
+  for (std::size_t i = 0; i < locomotion::kEstimatorCovDiagBase + 3 * cols.contacts; ++i) {
     os << ",est_p_" << i;
   }
 }
@@ -317,22 +319,18 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
   for (double x : e.imu) {
     os << ',' << x;
   }
-  const std::size_t nc = std::min(cols.contacts, locomotion::kMaxEstimatorSlots);
-  for (std::size_t c = 0; c < nc; ++c) {
-    os << ',' << static_cast<unsigned>(e.mode[c]);
-  }
-  for (std::size_t c = 0; c < nc; ++c) {
-    os << ',' << static_cast<unsigned>(e.reason[c]);
-  }
-  for (std::size_t c = 0; c < nc; ++c) {
-    os << ',' << static_cast<unsigned>(e.update[c]);
+  const std::size_t nc = cols.contacts;
+  for (const auto* field : {&e.mode, &e.reason, &e.update}) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      os << ',' << static_cast<unsigned>((*field)[c]);
+    }
   }
   for (const auto* field : {&e.evidence, &e.speed, &e.m2}) {
     for (std::size_t c = 0; c < nc; ++c) {
       os << ',' << (*field)[c];
     }
   }
-  for (std::size_t i = 0; i < 15 + 3 * nc; ++i) {
+  for (std::size_t i = 0; i < locomotion::kEstimatorCovDiagBase + 3 * nc; ++i) {
     os << ',' << e.p_diag[i];
   }
 }

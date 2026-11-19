@@ -5,6 +5,7 @@
 // estimator's columns under the E-STOP and the fault.
 #include "locomotion_controller_rig.hpp"
 #include "locomotion_mpc_stub.hpp"
+#include "rtc_controllers/testing/bit_compare.hpp"
 
 #include <gtest/gtest.h>
 
@@ -25,9 +26,7 @@ YAML::Node InekfConfig(bool mpc) {
   return cfg;
 }
 
-bool SameBits(double a, double b) {
-  return std::bit_cast<uint64_t>(a) == std::bit_cast<uint64_t>(b);
-}
+using rtc::testing::BitsEqual;
 
 class LocomotionEstimatorTest : public LocomotionControllerTest {
  protected:
@@ -38,6 +37,13 @@ class LocomotionEstimatorTest : public LocomotionControllerTest {
   void SkipImuSamples() { state_.devices[kBody].imu_sequence[0] += 10; }
 
   const loco::MeasuredRobotState& Measured() const { return ctrl_->LastMeasuredState(); }
+
+  // round(init.timeout_s · control rate), as the controller counts it.
+  int InitTimeoutTicks() const {
+    return static_cast<int>(
+        std::lround(cfg_["estimator"]["inekf"]["init"]["timeout_s"].as<double>() *
+                    fx::kShippedProfileControlRateHz));
+  }
 
   Cause LastCause() const { return static_cast<Cause>(ctrl_->LastDiag().fault_cause); }
 };
@@ -76,9 +82,7 @@ TEST_F(LocomotionEstimatorTest, AWindowOfThreeWaitsTwoTicksWithoutAFault) {
 
 TEST_F(LocomotionEstimatorTest, AnEstimateThatDoesNotStartInTimeLatchesTheSourceFault) {
   BringUp(InekfConfig(false));
-  const auto timeout =
-      static_cast<int>(std::lround(cfg_["estimator"]["inekf"]["init"]["timeout_s"].as<double>() *
-                                   fx::kShippedProfileControlRateHz));
+  const int timeout = InitTimeoutTicks();
   Shake(0.1);
   for (int t = 1; t < timeout; ++t) {
     last_out_ = Tick();
@@ -93,9 +97,7 @@ TEST_F(LocomotionEstimatorTest, AnEstimateThatDoesNotStartInTimeLatchesTheSource
 
 TEST_F(LocomotionEstimatorTest, AnEstimateWithoutAnImuTimesOutToo) {
   BringUp(InekfConfig(false));
-  const auto timeout =
-      static_cast<int>(std::lround(cfg_["estimator"]["inekf"]["init"]["timeout_s"].as<double>() *
-                                   fx::kShippedProfileControlRateHz));
+  const int timeout = InitTimeoutTicks();
   state_.devices[kBody].imu_valid[0] = false;
   for (int t = 1; t < timeout; ++t) {
     last_out_ = Tick();
@@ -108,9 +110,7 @@ TEST_F(LocomotionEstimatorTest, AnEstimateWithoutAnImuTimesOutToo) {
 
 TEST_F(LocomotionEstimatorTest, TheStartTimeoutDoesNotRunUnderTheEstopAndRestartsAtTheClear) {
   BringUp(InekfConfig(false));
-  const auto timeout =
-      static_cast<int>(std::lround(cfg_["estimator"]["inekf"]["init"]["timeout_s"].as<double>() *
-                                   fx::kShippedProfileControlRateHz));
+  const int timeout = InitTimeoutTicks();
   Shake(0.1);
   ctrl_->TriggerEstop();
   for (int t = 0; t < timeout + 20; ++t) {
@@ -216,15 +216,15 @@ TEST_F(LocomotionEstimatorTest, TheWbcAndTheMpcGetTheSameStateBitForBit) {
     const auto& qp = LocomotionControllerTestAccess::QpState(*ctrl_);
     const auto& m = Measured();
     for (std::size_t i = 0; i < 7; ++i) {
-      mismatches += SameBits(qp.q(static_cast<Eigen::Index>(i)), m.q[i]) ? 0 : 1;
+      mismatches += BitsEqual(qp.q(static_cast<Eigen::Index>(i)), m.q[i]) ? 0 : 1;
     }
     for (std::size_t i = 0; i < 6; ++i) {
-      mismatches += SameBits(qp.v(static_cast<Eigen::Index>(i)), m.v[i]) ? 0 : 1;
+      mismatches += BitsEqual(qp.v(static_cast<Eigen::Index>(i)), m.v[i]) ? 0 : 1;
     }
     for (std::size_t j = 0; j < body_to_full.size(); ++j) {
       const auto a = static_cast<std::size_t>(body_to_full[j]);
-      mismatches += SameBits(qp.q(static_cast<Eigen::Index>(7 + j)), m.q[7 + a]) ? 0 : 1;
-      mismatches += SameBits(qp.v(static_cast<Eigen::Index>(6 + j)), m.v[6 + a]) ? 0 : 1;
+      mismatches += BitsEqual(qp.q(static_cast<Eigen::Index>(7 + j)), m.q[7 + a]) ? 0 : 1;
+      mismatches += BitsEqual(qp.v(static_cast<Eigen::Index>(6 + j)), m.v[6 + a]) ? 0 : 1;
     }
     EXPECT_EQ(m.sequence, ctrl_->LastDiag().source_sequence);
     by_sequence[m.sequence] = Seen{qp.q, qp.v};
@@ -242,10 +242,10 @@ TEST_F(LocomotionEstimatorTest, TheWbcAndTheMpcGetTheSameStateBitForBit) {
       }
       ++compared;
       for (Eigen::Index i = 0; i < it->second.q.size(); ++i) {
-        EXPECT_TRUE(SameBits(it->second.q(i), s.q[static_cast<std::size_t>(i)])) << "q" << i;
+        EXPECT_TRUE(BitsEqual(it->second.q(i), s.q[static_cast<std::size_t>(i)])) << "q" << i;
       }
       for (Eigen::Index i = 0; i < it->second.v.size(); ++i) {
-        EXPECT_TRUE(SameBits(it->second.v(i), s.v[static_cast<std::size_t>(i)])) << "v" << i;
+        EXPECT_TRUE(BitsEqual(it->second.v(i), s.v[static_cast<std::size_t>(i)])) << "v" << i;
       }
     }
   }

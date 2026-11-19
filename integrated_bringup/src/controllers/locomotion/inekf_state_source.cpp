@@ -29,6 +29,9 @@ namespace integrated_bringup::locomotion {
 namespace {
 
 namespace est = rtc::estimation;
+
+static_assert(kMaxEstimatorSlots == static_cast<std::size_t>(est::kInekfMaxContacts),
+              "the telemetry holds every slot the estimator has");
 using rtc::params::FindMissingKey;
 using rtc::params::FindUnknownKey;
 using rtc::params::Spelling;
@@ -419,20 +422,7 @@ EstimatorResetReason InekfStateSource::StepPolicy(est::ContactFsmStatus st) noex
 bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceIndices& indices,
                               const SourceTickInput& tick, int64_t now_steady_ns,
                               MeasuredRobotState& out) noexcept {
-  const auto n = static_cast<std::size_t>(
-      std::clamp(indices.num_joints, 0, static_cast<int>(kMaxStateJoints)));
-  out.nq = 7 + static_cast<int>(n);
-  out.nv = 6 + static_cast<int>(n);
-  out.kind = StateSourceKind::kEstimated;
-  out.model_epoch = params_.model_epoch;
-  out.ee_wrench = {};
-  out.fresh_mask = 0;
-  out.valid_mask = 0;
-  out.stamp_steady_ns = 0;
-  out.sequence = 0;
-  out.q.fill(0.0);
-  out.q[6] = 1.0;
-  out.v.fill(0.0);
+  BeginMeasuredState(indices, StateSourceKind::kEstimated, params_.model_epoch, out);
 
   const JointLaneVerdict joints = ReadJointLanes(
       state, indices, now_steady_ns, params_.body_max_age_ns, params_.hand_max_age_ns, held_, out);
@@ -477,7 +467,7 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
   // ── kinematics and the joint / IMU coherence ──────────────────────────────
   bool skew_invalid = false;
   bool kinematics_ok = joints_ok && !joints.body_stale;
-  if (!imu_missing && joints.body_present) {
+  if (!imu_missing) {  // an IMU sample implies the body device
     tel.skew_ns = out.stamp_steady_ns - imu_recv;
     const int64_t skew = tel.skew_ns < 0 ? -tel.skew_ns : tel.skew_ns;
     kinematics_ok = kinematics_ok && skew <= skew_ns_;
@@ -595,22 +585,16 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
       }
       const Eigen::Vector3d v_local = b.R_WB.transpose() * b.v_WB;
       const Eigen::Vector3d w_local = kin_model_->R_BI() * f.angular_velocity();
-      const std::array<double, 7> qb = {b.p_WB.x(), b.p_WB.y(), b.p_WB.z(), quat.x(),
-                                        quat.y(),   quat.z(),   quat.w()};
-      const std::array<double, 6> vb = {v_local.x(), v_local.y(), v_local.z(),
-                                        w_local.x(), w_local.y(), w_local.z()};
-      bool finite = true;
-      for (double x : qb) {
-        finite = finite && std::isfinite(x);
-      }
-      for (double x : vb) {
-        finite = finite && std::isfinite(x);
-      }
-      if (!finite) {
+      if (!(b.p_WB.allFinite() && quat.coeffs().allFinite() && v_local.allFinite() &&
+            w_local.allFinite())) {
         non_finite = true;
       } else {
         last_quat_ = quat.coeffs();
         have_quat_ = true;
+        const std::array<double, 7> qb = {b.p_WB.x(), b.p_WB.y(), b.p_WB.z(), quat.x(),
+                                          quat.y(),   quat.z(),   quat.w()};
+        const std::array<double, 6> vb = {v_local.x(), v_local.y(), v_local.z(),
+                                          w_local.x(), w_local.y(), w_local.z()};
         std::copy(qb.begin(), qb.end(), out.q.begin());
         std::copy(vb.begin(), vb.end(), out.v.begin());
         out.valid_mask |= kBaseBit;
@@ -621,7 +605,7 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
     }
   }
   if (!imu_missing) {
-    out.stamp_steady_ns = joints.body_present ? std::min(out.stamp_steady_ns, imu_recv) : imu_recv;
+    out.stamp_steady_ns = std::min(out.stamp_steady_ns, imu_recv);
   }
   out.state_epoch = state_epoch_;
   FillTelemetry(out, stepped);

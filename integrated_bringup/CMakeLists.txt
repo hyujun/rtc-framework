@@ -2203,7 +2203,8 @@ if(BUILD_TESTING)
     ENV ROS_DOMAIN_ID=52
   )
   target_include_directories(test_inekf_state_source PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
   target_compile_definitions(test_inekf_state_source PRIVATE
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   target_link_libraries(test_inekf_state_source
@@ -2231,7 +2232,8 @@ if(BUILD_TESTING)
     ENV ROS_DOMAIN_ID=52
   )
   target_include_directories(test_locomotion_estimator PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
   target_compile_definitions(test_locomotion_estimator PRIVATE
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   target_link_libraries(test_locomotion_estimator
