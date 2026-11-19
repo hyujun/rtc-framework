@@ -37,6 +37,9 @@
        robot_descriptions through the ament index (data-only package: a test
        edge, never <depend> / find_package — ARCH-5). -->
   <test_depend>robot_descriptions</test_depend>
+  <!-- Test-only: the contact FSM scenario test drives rtc_controllers'
+       estimation sequencer with this simulator's contact truth. -->
+  <test_depend>rtc_controllers</test_depend>
 
   <!-- MuJoCo >= 3.2 (optional C++ library — not a ROS2 package; install
        separately). The 3.2 floor comes from the object pool's mjSpec attach

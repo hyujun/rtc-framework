@@ -151,7 +151,7 @@ rtc_msgs, rtc_base (independent)
   |         rtc_base, rtc_msgs, rtc_communication, rtc_urdf_bridge
   +-- rtc_tsid <-- rtc_math, rtc_urdf_bridge, Pinocchio, ProxSuite, Eigen3, yaml-cpp
   +-- rtc_mpc  <-- rtc_base, rtc_urdf_bridge, Eigen3, yaml-cpp, Pinocchio (+ CMake-only: fmt, aligator)
-  +-- rtc_mujoco_sim <-- rtc_base, rtc_msgs, MuJoCo 3.x (optional)
+  +-- rtc_mujoco_sim <-- rtc_base, rtc_msgs, MuJoCo 3.x (optional) (+ test-only: rtc_controllers)
 rtc_math (independent) <-- Eigen3 (Pinocchio adapter optional, test-only rtc_base)
 rtc_urdf_bridge <-- Pinocchio, coal, tinyxml2, yaml-cpp
 udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base, rtc_msgs

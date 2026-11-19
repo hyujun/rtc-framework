@@ -600,6 +600,7 @@ rtc_mujoco_sim/
 | ROS 2 | `rtc_msgs` · `rtc_base` | `JointCommand` · `SimSensorState` · `LaunchBall` · `SetExternalWrench`, 공통 유틸 |
 | ROS 2 | `ament_index_cpp` · `tinyxml2` | `package://` 해석, MJCF `<option>` 파싱 (solver 우선순위) |
 | 런타임 | `robot_descriptions` · `rtc_tools` | MJCF 모델 · 메시, 세션 디렉토리 헬퍼 |
+| test | `rtc_controllers` | 접촉 FSM · InEKF 순서기 sim 시나리오 (`test_contact_fsm_sim`) |
 | 외부 | **MuJoCo ≥ 3.2** | 물리 엔진 (필수 — 없으면 노드 빌드 생략). Object Pool 이 mjSpec attach API 를 쓰므로 3.0 / 3.1 은 컴파일되지 않는다 |
 | 외부 | GLFW 3 | 3D 뷰어 (선택, 없으면 headless 전용) |
 

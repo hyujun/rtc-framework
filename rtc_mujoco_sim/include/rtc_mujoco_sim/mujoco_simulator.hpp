@@ -932,6 +932,15 @@ class MuJoCoSimulator {
   // the SimLoop owns this mutation, so a test that is not running the SimLoop
   // needs an inline entry point.
   void ResetForTest() noexcept;
+  // Write the world pose of mocap body `mocap_index` (0 … nmocap − 1; quat
+  // w, x, y, z, normalised here) and the sliding friction (> 0) of geom
+  // `geom_id`, for a test driving StepForTest: a crane welded to a mocap body
+  // and a low-friction floor. Same ownership rule — do NOT call while SimLoop
+  // runs. false (nothing written) on a bad index or a non-finite / zero-norm
+  // quaternion / non-positive friction.
+  [[nodiscard]] bool SetMocapPoseForTest(int mocap_index, const std::array<double, 3>& pos,
+                                         const std::array<double, 4>& quat) noexcept;
+  [[nodiscard]] bool SetGeomFrictionForTest(int geom_id, double sliding) noexcept;
   // The whole qpos (free joints included), the compiled qpos0, and a named
   // keyframe's qpos — what `reset_keyframe` promises to restore bit-exactly
   // (empty when the name is not a keyframe). Not RT: they allocate.
