@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rtc_teleop_input</name>
+  <version>0.1.0</version>
+  <description>Operator input for the RTC framework: publishes sensor_msgs/Joy in the standard gamepad layout from a virtual pad GUI (keyboard and mouse) or a real pad (joy game_controller_node), and calls the controller manager's E-STOP and reset_fault services from pad buttons.</description>
+  <maintainer email="jeryblueput@gmail.com">Junho Park</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <!-- /rtc_cm/trigger_estop is std_srvs/Trigger, /rtc_cm/reset_fault is rtc_msgs/ResetFault. -->
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>rtc_msgs</exec_depend>
+  <!-- Status panel: any diagnostic_msgs/DiagnosticStatus topic. -->
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <!-- Qt through python_qt_binding: the entry point runs under /usr/bin/python3
+       (`ros2 run`), so the binding is the ROS apt one, as in rtc_tools. -->
+  <exec_depend>python_qt_binding</exec_depend>
+  <!-- input:=pad launches joy's game_controller_node. -->
+  <exec_depend>joy</exec_depend>
+  <!-- standard_gamepad.yaml, found through the package share. -->
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
