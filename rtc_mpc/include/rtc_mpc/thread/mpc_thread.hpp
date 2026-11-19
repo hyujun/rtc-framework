@@ -155,6 +155,11 @@ class MPCThread : public rtc::PeriodicRtThread {
   // side has never stored (`valid == false`) skips the solve.
   void OnTick() noexcept override;
 
+  /// @brief Last step of every tick, after the publish: @p published says
+  ///        whether `Solve` returned true (and the solution went out as
+  ///        @p plan_id; 0 otherwise). Default: nothing. Loop thread only.
+  virtual void OnTickEnd(bool /*published*/, std::uint64_t /*plan_id*/) noexcept {}
+
   /// @brief Mark the current tick as a standing-solve tick, from inside
   ///        Solve(): an overrun it causes is counted in StandingOverrunCount.
   ///        Loop thread only.

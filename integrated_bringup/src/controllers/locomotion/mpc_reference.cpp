@@ -255,6 +255,12 @@ bool LocomotionController::SpawnMpcThread(std::unique_ptr<mpc::MPCHandlerBase> h
     auto thread = std::make_unique<mpc::HandlerMPCThread>();
     thread->Configure(*mpc_model_, std::move(handler), std::move(phase_owned_));
     thread->Init(mpc_manager_, launch);
+    // A record of an earlier thread run is not this one's: the RT tick reads
+    // "none" until this thread writes its first (thread start orders the two
+    // writers).
+    mpc_solve_record_.StartWrite() = mpc::SolveRecord{};
+    mpc_solve_record_.FinishWrite();
+    thread->SetSolveRecordSink(&mpc_solve_record_);
     thread->Start();
     // One thread too: its loop entry can refuse (thread count, layout).
     if (!AwaitMpcPool(*thread)) {

@@ -82,10 +82,12 @@
 /// expose solve-loop counters to tests and diagnostics. All reads/writes use `relaxed` memory
 /// ordering since the counters are not used for synchronisation.
 
+#include "rtc_mpc/comm/triple_buffer.hpp"
 #include "rtc_mpc/handler/mpc_handler_base.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_manager_base.hpp"
 #include "rtc_mpc/thread/mpc_thread.hpp"
+#include "rtc_mpc/thread/solve_record.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
 #pragma GCC diagnostic push
@@ -100,7 +102,9 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 
@@ -111,7 +115,10 @@ namespace rtc::mpc {
 class HandlerMPCThread final : public MPCThread {
  public:
   HandlerMPCThread() = default;
-  ~HandlerMPCThread() override = default;
+
+  // Joins here, not only in ~MPCThread: the loop calls this class's Solve /
+  // OnTickEnd, which must not run once its members are gone.
+  ~HandlerMPCThread() override { StopAndJoin(); }
 
   HandlerMPCThread(const HandlerMPCThread&) = delete;
   HandlerMPCThread& operator=(const HandlerMPCThread&) = delete;
@@ -140,6 +147,13 @@ class HandlerMPCThread final : public MPCThread {
                  std::unique_ptr<PhaseManagerBase> phase_manager,
                  YAML::Node factory_cfg_light = YAML::Node{},
                  YAML::Node factory_cfg_rich = YAML::Node{}) noexcept;
+
+  /// @brief The consumer's buffer for one SolveRecord per solve attempt
+  ///        (solve_record.hpp says which attempts and what each holds).
+  ///        Off-RT, before @ref MPCThread::Start; null (the default) writes
+  ///        none. The consumer stores a `SolveRecord{}` into it first, so it
+  ///        never reads another run's last record.
+  void SetSolveRecordSink(TripleBuffer<SolveRecord>* sink) noexcept { record_sink_ = sink; }
 
   // ── Observability (lock-free atomics; safe from any thread) ─────────────
 
@@ -222,6 +236,10 @@ class HandlerMPCThread final : public MPCThread {
  protected:
   bool Solve(const MPCStateSnapshot& state, MPCSolution& out) override;
 
+  // Writes the record Solve left for this tick (with the plan id when it
+  // published) into the sink.
+  void OnTickEnd(bool published, std::uint64_t plan_id) noexcept override;
+
   // The handler's MPCSolverConfig::num_threads against the launch config's
   // solver_threads: the pool is built for the latter, the solver runs the former.
   [[nodiscard]] bool SolverThreadsMatch() const noexcept override;
@@ -266,6 +284,17 @@ class HandlerMPCThread final : public MPCThread {
   bool require_fresh_state_{false};
   std::uint64_t last_attempted_sequence_{0};  // 0: none (sequences start at 1)
   bool last_attempt_returned_iterates_{false};
+
+  // The verdict of this tick's attempt, for OnTickEnd (loop thread only).
+  // `out` is null for a failed attempt: it has no iterates to summarise.
+  void StashRecord(SolveOutcome outcome, int err, const MPCSolution* out,
+                   const MPCStateSnapshot& state,
+                   std::chrono::steady_clock::time_point entry) noexcept;
+  TripleBuffer<SolveRecord>* record_sink_{nullptr};
+  SolveRecord pending_record_{};
+  bool record_pending_{false};
+  std::uint64_t record_seq_{0};
+  std::array<std::uint64_t, kSolveOutcomeCount> record_counts_{};
 
   // Observability counters (all `relaxed`).
   std::atomic<int> last_err_{0};

@@ -163,10 +163,11 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout,
   first_sequence_after_enable_ = 0;
 }
 
-void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
+std::uint64_t MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
   MPCSolution& slot = solution_buffer_.StartWrite();
   std::memcpy(&slot, &sol, sizeof(MPCSolution));
-  slot.plan_id = ++plan_counter_;
+  const std::uint64_t plan_id = ++plan_counter_;
+  slot.plan_id = plan_id;
   solution_buffer_.FinishWrite();
 
   // Timing probe — record the just-published solve_duration into the
@@ -186,6 +187,7 @@ void MPCSolutionManager::PublishSolution(const MPCSolution& sol) noexcept {
   // It pushes one rtc::RtTickTimingPayload per main-loop iteration with
   // t_state_us / t_compute_us / t_publish_us / t_total_us / jitter_us
   // captured around this PublishSolution call.
+  return plan_id;
 }
 
 MPCSolutionManager::SolveTimingStats MPCSolutionManager::GetSolveStats() const noexcept {

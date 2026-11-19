@@ -252,10 +252,12 @@ void MPCThread::OnTick() noexcept {
 
   // Phase 3: publish. PublishSolution is noexcept and runs off the RT
   // control loop, so the SPSC handoff is RT-safe for the controller side.
+  std::uint64_t plan_id = 0;
   if (ok) {
     RTC_TRACE_SCOPE("mpc_publish");
-    manager_->PublishSolution(scratch_);
+    plan_id = manager_->PublishSolution(scratch_);
   }
+  OnTickEnd(ok, plan_id);
 }
 
 }  // namespace rtc::mpc

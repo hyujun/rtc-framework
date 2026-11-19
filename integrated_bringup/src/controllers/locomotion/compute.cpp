@@ -475,6 +475,10 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   d.qp_pri_res = s != nullptr ? s->qp_pri_res : kNaN;
   d.qp_dua_res = s != nullptr ? s->qp_dua_res : kNaN;
+  d.state_source = measured_.kind == loco::StateSourceKind::kEstimated ? 1 : 0;
+  // The MPC thread's last attempt (none without an MPC: the buffer's default).
+  static_cast<void>(mpc_solve_record_.TryAcquireLatest());
+  d.mpc_last = mpc_solve_record_.Current();
   const auto& m = qp_.Margins();
   d.eom_residual_inf = d.tau_valid ? m.eom_residual_inf : kNaN;
   d.margin_friction_n = m.friction_n;
@@ -513,6 +517,7 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
     d.a_opt_base[i] = s != nullptr ? s->a_opt(static_cast<Eigen::Index>(i)) : 0.0;
   }
   d.num_contacts = static_cast<std::uint8_t>(contact_frames_full_.size());
+  d.wrench_des.fill(kNaN);  // a contact slot past the model's stays NaN
   Eigen::Index offset = 0;
   for (std::size_t c = 0; c < contact_frames_full_.size(); ++c) {
     const auto& p = full_data_->oMf[contact_frames_full_[c]].translation();
@@ -523,6 +528,11 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
     for (int k = 0; k < 6; ++k) {
       d.lambda[c * 6 + static_cast<std::size_t>(k)] =
           (s != nullptr && k < dim) ? s->lambda_opt(offset + k) : 0.0;
+      // The target the QP was handed: only on a tick it ran (s set by Solve()).
+      d.wrench_des[c * 6 + static_cast<std::size_t>(k)] =
+          (s != nullptr && k < dim && offset + k < ref_.lambda_des.size())
+              ? ref_.lambda_des(offset + k)
+              : kNaN;
     }
     offset += dim;
   }
@@ -563,6 +573,8 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
     const double servo = kp_[i] * (cmd - q) - kd_[i] * v;
     d.v[i] = v;
     d.tau_servo[i] = servo;
+    d.servo_kp[i] = kp_[i] * (cmd - q);
+    d.servo_kd[i] = -kd_[i] * v;
     servo2 += servo * servo;
     ff2 += ff * ff;
   }

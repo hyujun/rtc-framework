@@ -123,7 +123,11 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
 
 실기에서도 얻는 값과 sim 에서만 얻는 참값은 **다른 파일**이다.
 
-- **R tier** — `locomotion_diag.csv` (위). 예외는 `meas_fz_*` 하나다: G1 · b7 에는 발 F/T 가 없어 실기에서는 NaN 인 sim 전용 열이지만, 이름 · 자리는 그대로 둔다.
+- **R tier** — `locomotion_diag.csv` (위). 예외는 `meas_fz_*` 하나다: G1 · b7 에는 발 F/T 가 없어 실기에서는 NaN 인 sim 전용 열이지만, 이름 · 자리는 그대로 둔다. 끝에 붙인 열 (기존 열은 `test_locomotion_diag_golden` 이 고정한다):
+  - `state_source` — 0 = truth lane 복사, 1 = 추정.
+  - `wrench_des_<c>_{fx,fy,fz,tx,ty,tz}` — 그 tick 에 WBC QP 가 받은 접촉 wrench 목표 (`lambda_des`: stand · walk 는 plan 의 MPC wrench, idle 은 지렛대 규칙). world 축 · contact frame 원점 · 바닥→발. QP 가 돌지 않은 tick (waiting · E-STOP · 이미 latch 된 fault · degraded hold) 은 NaN — QP 가 돌고 실패한 tick 은 받은 목표를 남긴다. 점 접촉 (dim 3) 의 모멘트도 NaN.
+  - `servo_kp_<j>` · `servo_kd_<j>` — `tau_servo_<j>` 의 두 항 kp (q_cmd − q) 와 −kd q̇ (합은 반올림 차이까지 `tau_servo`). damping tick 의 kp 항은 0.
+  - `mpc_last_*` — MPC thread 가 마지막으로 끝낸 solve 시도 (`rtc_mpc` `thread/solve_record.hpp`): `seq` (이 thread run 의 기록 수, 0 = 없음) · `outcome` (−1 없음 · 0 published · 1 withheld · 2 deadline · 3 cold withheld · 4 failed) · `err` · `iterations` · `converged` · `initial` · `cold` · `prim_inf` · `consumed_prim` (publish 규칙이 보는 소비 구간 잔차) · `compute_us` · `state_seq` · `state_epoch` · `plan_id` (published 일 때). WBC 가 따르는 plan (`plan_id` · `sample_*`) 보다 새로울 수 있다. 두 시도가 한 tick 사이에 끝날 수 있어 `seq` 는 건너뛸 수 있다. 재활성화 (thread 는 pause 됐다 이어진다) 직후에는 새 시도가 끝날 때까지 앞 활성화의 마지막 기록이 남는다 — `state_epoch` · `plan_id` 로 가른다.
 - **T tier** — `locomotion_truth.csv` (`LocomotionTruthLog`, 열 계약은 `logging/locomotion_truth_log_pod.hpp`, 채움은 `controllers/locomotion/truth_log.hpp`). 같은 tick 에 쓰고 `tick` 열로 잇는다.
   - 행은 참값 lane 이 하나라도 신선한 tick 에만 쓰고 (`truth_mask` bit 0 = base, bit 1 + c = 접촉 c), 파일은 첫 행에서 열린다 (`rtc::LogOpen::kOnFirstRow`) — 참값 lane 이 없는 run (실기) 에는 파일이 없다. 0 으로 채운 열은 없고, 신선하지 않은 lane 은 NaN 이다.
   - 신선도: base 는 `IsBaseFresh`, 접촉은 `IsSensorGroupFresh` (backend 판정 + 수신 나이), 둘 다 `estimator.body_max_age_ms`. 나이 (`truth_base_age_us` · `truth_age_<c>_us`, −1 = 수신 없음) 와 sequence 는 늘 쓴다.

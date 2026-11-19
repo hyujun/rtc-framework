@@ -147,8 +147,9 @@ class MPCSolutionManager {
 
   /// @brief Publish a freshly computed solution. The published copy gets a
   ///        monotonic `plan_id`; @p sol itself is left untouched.
+  /// @return the `plan_id` the published copy carries.
   /// @note Called on the MPC thread. Non-blocking.
-  void PublishSolution(const MPCSolution& sol) noexcept;
+  std::uint64_t PublishSolution(const MPCSolution& sol) noexcept;
 
   /// @brief Read the latest RT-thread state snapshot.
   /// @note Called on the MPC thread at the top of a solve. Non-blocking.

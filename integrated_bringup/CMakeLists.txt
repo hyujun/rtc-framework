@@ -2284,6 +2284,35 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # locomotion_diag.csv's existing columns against a golden recorded before the
+  # R-tier columns were appended (by name; appended columns are ignored).
+  ament_add_gtest(test_locomotion_diag_golden test/test_locomotion_diag_golden.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_locomotion_diag_golden PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_locomotion_diag_golden PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+    LOCO_DIAG_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/test/data/locomotion_diag_golden.csv")
+  target_link_libraries(test_locomotion_diag_golden
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_diag_golden
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # The inekf source's Update() under the operator-new and the C malloc gates
   # (own binary: both replace process-wide entry points).
   ament_add_gtest(test_inekf_state_source_alloc test/test_inekf_state_source_alloc.cpp
@@ -2355,7 +2384,8 @@ if(BUILD_TESTING)
     ENV ROS_DOMAIN_ID=52
   )
   target_include_directories(test_locomotion_mpc PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
   target_compile_definitions(test_locomotion_mpc PRIVATE
     RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   target_link_libraries(test_locomotion_mpc
@@ -2696,6 +2726,7 @@ if(BUILD_TESTING)
     test_inekf_state_source_alloc
     test_locomotion_estimator
     test_locomotion_truth_log
+    test_locomotion_diag_golden
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
