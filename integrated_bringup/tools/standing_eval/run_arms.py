@@ -72,6 +72,10 @@ a host slower than the control PCs gives the MPC the solve time per simulated
 second that a fast one would. ``max_rtf`` is a ceiling: check the sim reached
 it (the CM's timing lines report sim seconds per wall interval).
 
+``--source inekf`` runs every arm on the estimated base (sim_overlay:=
+estimator_inekf); an arm that already runs with an overlay is refused up front
+(one overlay per launch). run.json records the source.
+
 Each run's recorder CSV / JSON and the controller log session land in
 ``<out>/<arm>_<k>/``. Run it under ``repo_scripts/scripts/with_verify_hold.sh``
 so no build starts between runs, with the workspace environment sourced.
@@ -105,6 +109,8 @@ LOCO_ARMS = ("loco", "reentry", "estop")
 WALK_ARMS = ("walk", "walk_estop")
 # a script (SCRIPTS) under a background recording
 EVENT_ARMS = ("reentry", "estop", *WALK_ARMS)
+# The state-source overlay of ``--source inekf`` (config/g1_loco/sim_overlays/).
+INEKF_OVERLAY = "estimator_inekf"
 TWIST_SCRIPT = Path(__file__).resolve().parent / "twist_script.py"
 TWIST_START_TIMEOUT_S = 90.0  # [wall] the script's wait for the controller's subscription
 WORKER_PROFILE = "mpc_par_sim"  # the simulation worker profile (--mpc-threads)
@@ -117,15 +123,37 @@ RECORDER_MARGIN_S = 30.0
 RECORDER_GRACE_S = 1.0  # recording past the last mark before the stop
 
 
+def default_overlay(arm: str, mpc_layout: bool) -> str | None:
+    """The sim_overlay an arm runs with when none is given (module docstring)."""
+    if arm in LOCO_ARMS and mpc_layout:
+        return "mpc_off"
+    return {"mpc_fb": "mpc_riccati"}.get(arm)
+
+
+def source_overlays(
+    arms: list[str], mpc_layout: bool, overlays: dict[str, str], source: str
+) -> dict[str, str]:
+    """`overlays` with the state source's overlay on every arm (``--source``).
+
+    truth is the shipped source: nothing changes. inekf runs each arm with
+    sim_overlay:=estimator_inekf; an arm that already has an overlay (its own
+    or a given one) cannot take a second, so that is refused.
+    """
+    out = dict(overlays)
+    for arm in arms if source == "inekf" else ():
+        own = overlays.get(arm, default_overlay(arm, mpc_layout))
+        if own:
+            raise ValueError(f"--source {source}: arm {arm} already runs with sim_overlay {own}")
+        out[arm] = INEKF_OVERLAY
+    return out
+
+
 def launch_args(
     arm: str, mpc_layout: bool, overlays: dict[str, str], mpc_threads: int | None = None
 ) -> list[str]:
     """The arm's launch arguments (module docstring); `overlays` replaces an arm's overlay."""
     under_mpc = arm in ("mpc", "mpc_fb", *WALK_ARMS) or mpc_layout
-    default = {"mpc_fb": "mpc_riccati"}.get(arm)
-    if arm in LOCO_ARMS and mpc_layout:
-        default = "mpc_off"
-    overlay = overlays.get(arm, default)
+    overlay = overlays.get(arm, default_overlay(arm, mpc_layout))
     pool = (
         [f"layout_profile:={WORKER_PROFILE}", f"mpc_threads:={mpc_threads}"]
         if under_mpc and mpc_threads is not None
@@ -592,6 +620,7 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
         "rtf": args.rtf,
         "z_ref": args.z_ref,
         "stop_window": args.stop_window,
+        "source": args.source,
     }
     args.run_out = out
     args.twist_proc = None
@@ -794,6 +823,12 @@ def main(argv: list[str] | None = None) -> int:
         "--rtf", type=float, default=None, help="max_rtf for the sim (module docstring)"
     )
     p.add_argument("--logging-root", type=Path, required=True)
+    p.add_argument(
+        "--source",
+        choices=("truth", "inekf"),
+        default="truth",
+        help="the controller's state source; inekf = sim_overlay:=estimator_inekf on every arm",
+    )
     args = p.parse_args(argv)
     # The stop window inside the script's rest; the walking stop while it walks.
     walking_s = wm.script_length(wm.WALK_SCRIPT[:-1])
@@ -804,6 +839,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.mpc_threads is not None:
         check_mpc_threads(p, args.mpc_threads, args.launch)
     args.overlay = dict(o.split("=", 1) for o in args.overlay)
+    try:
+        args.overlay = source_overlays(args.arms, args.mpc_layout, args.overlay, args.source)
+    except ValueError as e:
+        p.error(str(e))
     notes = []
     for k in range(args.k):
         for arm in args.arms:

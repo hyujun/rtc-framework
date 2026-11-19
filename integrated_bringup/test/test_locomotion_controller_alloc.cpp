@@ -2,7 +2,8 @@
 // nominal (the QP), degraded (a short source drop), fault (damping), the reset
 // and E-STOP services (the hold's waiting ticks, the clear's guard refusals,
 // the first passing tick), and a re-latch; with the MPC, the stand on its plan
-// and the fall back to the latched pose. Own binary: the gate replaces the global
+// and the fall back to the latched pose; with the inekf source, its start,
+// hold, restart and timeout in the tick. Own binary: the gate replaces the global
 // `operator new` (alloc_gate.hpp contract item 1).
 //
 // WHAT THIS GATE SEES: global `operator new` across translation units, so the
@@ -133,6 +134,69 @@ TEST_F(LocomotionAlloc, TheMpcPathAllocatesNothing) {
     worst = std::max(worst, GatedTick(false));
   }
   EXPECT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kIdle);
+  EXPECT_EQ(worst, 0U);
+}
+
+// The inekf source in the tick: the start on the activation tick, nominal
+// steps, a held then stale IMU (degraded, the latch), the reset and the
+// re-latch, a restart of the estimate after the latch (the epoch fault), the
+// E-STOP's waiting ticks, and an estimate that cannot start (the timeout).
+TEST_F(LocomotionAlloc, TheInekfSourcePathsAllocateNothing) {
+  YAML::Node cfg = YAML::Clone(ShippedConfig());
+  cfg["estimator"]["source"] = "inekf";
+  Configure(cfg, rclcpp::NodeOptions{}, "test_locomotion_inekf_alloc");
+  Activate();
+  MakeStanding();
+  // Every lane stamped now; the IMU sequence advanced by k (0 = the sample repeated).
+  const auto gated = [this](uint64_t k) {
+    const int64_t now = NowNs();
+    state_.iteration += 1;
+    auto& body = state_.devices[kBody];
+    body.joint_recv_steady_ns = now;
+    body.base_recv_steady_ns = now;
+    state_.devices[kHand].joint_recv_steady_ns = now;
+    for (int site = 0; site < body.num_imu_sites; ++site) {
+      body.imu_sequence[static_cast<std::size_t>(site)] += k;
+      body.imu_recv_steady_ns[static_cast<std::size_t>(site)] = now;
+    }
+    rtc::testing::ScopedAllocGate gate;
+    static_cast<void>(ctrl_->Compute(state_));
+    return gate.count();
+  };
+  std::size_t worst = gated(1);  // the activation tick: the start and the latch
+  ASSERT_EQ(LastMode(), Mode::kNominal);
+  for (int k = 0; k < 50; ++k) {
+    worst = std::max(worst, gated(1));
+  }
+  const int n = cfg_["fault"]["max_source_bad_ticks"].as<int>();
+  for (int k = 0; k < n + 6; ++k) {  // held, stale, degraded, the latch
+    worst = std::max(worst, gated(0));
+  }
+  ASSERT_EQ(LastMode(), Mode::kFault);
+  ctrl_->ResetFault();
+  for (int k = 0; k < 10; ++k) {
+    worst = std::max(worst, gated(1));
+  }
+  ASSERT_EQ(LastMode(), Mode::kNominal);
+  worst = std::max(worst, gated(11));  // a gap: the estimate restarts, the epoch fault
+  ASSERT_EQ(LastMode(), Mode::kFault);
+  ctrl_->ResetFault();
+  for (int k = 0; k < 10; ++k) {
+    worst = std::max(worst, gated(1));
+  }
+  ASSERT_EQ(LastMode(), Mode::kNominal);
+  ctrl_->TriggerEstop();
+  for (int k = 0; k < 10; ++k) {
+    worst = std::max(worst, gated(1));
+  }
+  ASSERT_EQ(LastMode(), Mode::kWaiting);
+  state_.devices[kBody].imu[0][0] = 0.1;  // shaking: a restart cannot start again
+  worst = std::max(worst, gated(11));
+  ctrl_->ClearEstop();
+  for (int k = 0; k < 300 && !ctrl_->HasLatchedFault(); ++k) {  // the start timeout
+    worst = std::max(worst, gated(1));
+  }
+  ASSERT_EQ(LastMode(), Mode::kFault);
   EXPECT_EQ(worst, 0U);
 }
 

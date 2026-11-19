@@ -77,6 +77,29 @@ def test_an_arm_overlay_still_replaces_its_own():
     ]
 
 
+def test_the_inekf_source_puts_its_overlay_on_every_arm():
+    overlays = run_arms.source_overlays(["mpc", "walk"], False, {}, "inekf")
+    assert overlays == {"mpc": "estimator_inekf", "walk": "estimator_inekf"}
+    assert run_arms.launch_args("walk", False, overlays) == [
+        "enable_mpc:=true",
+        "sim_overlay:=estimator_inekf",
+    ]
+    assert run_arms.source_overlays(["mpc", "walk"], False, {"x": "y"}, "truth") == {"x": "y"}
+
+
+@pytest.mark.parametrize(
+    ("arms", "mpc_layout", "overlays"),
+    [
+        (["mpc_fb"], False, {}),  # its own overlay
+        (["loco"], True, {}),  # mpc_off under the MPC layout
+        (["walk"], False, {"walk": "/x.yaml"}),  # a given one
+    ],
+)
+def test_the_inekf_source_refuses_an_arm_that_has_an_overlay(arms, mpc_layout, overlays):
+    with pytest.raises(ValueError, match="already runs with sim_overlay"):
+        run_arms.source_overlays(arms, mpc_layout, overlays, "inekf")
+
+
 DECLARED = "    'mpc_threads':\n        (default: '')\n"
 
 

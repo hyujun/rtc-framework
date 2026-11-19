@@ -180,7 +180,9 @@ class LocomotionControllerTest : public ::testing::Test {
     ASSERT_EQ(ctrl_->on_deactivate(rclcpp_lifecycle::State{}), CallbackReturn::SUCCESS);
   }
 
-  // The robot standing on both soles at the stand pose, at rest, every lane fresh.
+  // The robot standing on both soles at the stand pose, at rest, every lane
+  // fresh — the IMU sites (model.imu.sites: the pelvis and torso frames) read
+  // what a still IMU reads, no rate and the reaction to gravity in their frame.
   void MakeStanding() {
     const pinocchio::Model& full = ctrl_->FullModel();
     const auto& idx = ctrl_->Indices();
@@ -207,9 +209,28 @@ class LocomotionControllerTest : public ::testing::Test {
     }
     body.base_pose = {0.0, 0.0, -z_min, 0.0, 0.0, 0.0, 1.0};
     body.base_valid = true;
+    q.head<3>() = Eigen::Vector3d(0.0, 0.0, -z_min);
+    pinocchio::framesForwardKinematics(full, data, q);
+    const Eigen::Vector3d up_g(0.0, 0.0, full.gravity.linear().norm());
+    body.num_imu_sites = 2;
+    const char* sites[] = {"imu_in_pelvis", "imu_in_torso"};
+    for (std::size_t s = 0; s < 2; ++s) {
+      const Eigen::Vector3d f = data.oMf[full.getFrameId(sites[s])].rotation().transpose() * up_g;
+      body.imu[s] = {0.0, 0.0, 0.0, f.x(), f.y(), f.z()};
+      body.imu_valid[s] = true;
+    }
     auto& hand = state_.devices[kHand];
     hand.valid = true;
     hand.num_channels = idx.hands[0].num_channels;
+  }
+
+  // The IMU lane of this tick: every site a new sample stamped `now`.
+  void StampImu(int64_t now) {
+    auto& body = state_.devices[kBody];
+    for (int s = 0; s < body.num_imu_sites; ++s) {
+      body.imu_sequence[static_cast<std::size_t>(s)] += 1;
+      body.imu_recv_steady_ns[static_cast<std::size_t>(s)] = now;
+    }
   }
 
   // One tick with every lane stamped now.
@@ -219,6 +240,7 @@ class LocomotionControllerTest : public ::testing::Test {
     state_.devices[kBody].joint_recv_steady_ns = now;
     state_.devices[kBody].base_recv_steady_ns = now;
     state_.devices[kHand].joint_recv_steady_ns = now;
+    StampImu(now);
     return ctrl_->Compute(state_);
   }
 
@@ -229,6 +251,7 @@ class LocomotionControllerTest : public ::testing::Test {
     state_.devices[kBody].joint_recv_steady_ns = now - 1'000'000'000;
     state_.devices[kBody].base_recv_steady_ns = now;
     state_.devices[kHand].joint_recv_steady_ns = now;
+    StampImu(now);
     return ctrl_->Compute(state_);
   }
 

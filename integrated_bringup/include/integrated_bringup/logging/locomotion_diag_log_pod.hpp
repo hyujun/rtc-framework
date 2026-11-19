@@ -2,12 +2,15 @@
 // causes, the state source's verdict, the whole-body QP's outcome and margins,
 // the measured base, the contact forces, the servo / feedforward split per body
 // joint, and what walking is judged against (the command, the gait, the plan's
-// base velocity, the measured contact normal forces), and the plan sampled this
-// tick before the plausibility check (a refused one too). The joint lanes the generic joint log
-// already carries (measured q, the position target, gravity, feedforward) are in
-// JointFeedforwardLog, written by the same tick with the same `tick` column for the join.
+// base velocity, the measured contact normal forces), the plan sampled this
+// tick before the plausibility check (a refused one too), and the state
+// estimator's own record (estimator_telemetry.hpp; zero under the truth source). The joint lanes
+// the generic joint log already carries (measured q, the position target, gravity, feedforward) are
+// in JointFeedforwardLog, written by the same tick with the same `tick` column for the join.
 #ifndef INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_DIAG_LOG_POD_HPP_
 #define INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_DIAG_LOG_POD_HPP_
+
+#include "integrated_bringup/controllers/locomotion/estimator_telemetry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -167,8 +170,11 @@ struct LocomotionDiagLogPod {
   /// before them, total.
   std::uint64_t plan_holds{0};
   LocomotionPlanSampleDiag sample{};
+  locomotion::EstimatorTelemetry estimator{};  ///< the source's record of this tick
 };
 
+static_assert(locomotion::kMaxEstimatorSlots == LocomotionDiagLogPod::kMaxContacts,
+              "the estimator columns are one per contact");
 static_assert(std::is_trivially_copyable_v<LocomotionDiagLogPod>,
               "LocomotionDiagLogPod must be trivially copyable for SPSC ring");
 
@@ -225,6 +231,18 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
   os << ",plan_holds,sample_plan_id,sample_converged,sample_iterations,sample_prim_inf,"
         "sample_prim_head,sample_prim_node,sample_dual_inf,sample_mask,sample_progress,"
         "sample_a_joint_max,sample_a_joint_idx,sample_check";
+  os << ",est_initialized,est_reset_reason,est_reset_count,est_imu_sequence,est_periods,"
+        "est_skew_us,est_hold_ticks,est_step_status,est_core_status,est_report_valid,"
+        "est_planned_mask,est_mask,est_no_anchor_ticks,est_gated_ticks,est_refused_ticks,"
+        "est_unobservable,imu_gx,imu_gy,imu_gz,imu_ax,imu_ay,imu_az";
+  for (const char* field : {"mode", "reason", "update", "evidence", "speed", "m2"}) {
+    for (std::size_t c = 0; c < cols.contacts; ++c) {
+      os << ",est_" << field << '_' << contact_names[c];
+    }
+  }
+  for (std::size_t i = 0; i < locomotion::kEstimatorCovDiagBase + 3 * cols.contacts; ++i) {
+    os << ",est_p_" << i;
+  }
 }
 
 inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogPod& p,
@@ -290,6 +308,31 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
      << s.iterations << ',' << s.prim_inf << ',' << s.prim_head << ',' << s.prim_node << ','
      << s.dual_inf << ',' << s.mask << ',' << s.progress << ',' << s.a_joint_max << ','
      << s.a_joint_idx << ',' << static_cast<unsigned>(s.check);
+  const auto& e = p.estimator;
+  os << ',' << (e.initialized ? 1 : 0) << ',' << static_cast<unsigned>(e.reset_reason) << ','
+     << e.reset_count << ',' << e.imu_sequence << ',' << e.periods << ','
+     << static_cast<double>(e.skew_ns) * 1e-3 << ',' << e.hold_ticks << ','
+     << static_cast<unsigned>(e.step_status) << ',' << static_cast<unsigned>(e.core_status) << ','
+     << (e.report_valid ? 1 : 0) << ',' << e.planned_mask << ',' << e.estimated_mask << ','
+     << e.no_anchor_ticks << ',' << e.gated_ticks << ',' << e.refused_ticks << ','
+     << static_cast<unsigned>(e.unobservable);
+  for (double x : e.imu) {
+    os << ',' << x;
+  }
+  const std::size_t nc = cols.contacts;
+  for (const auto* field : {&e.mode, &e.reason, &e.update}) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      os << ',' << static_cast<unsigned>((*field)[c]);
+    }
+  }
+  for (const auto* field : {&e.evidence, &e.speed, &e.m2}) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      os << ',' << (*field)[c];
+    }
+  }
+  for (std::size_t i = 0; i < locomotion::kEstimatorCovDiagBase + 3 * nc; ++i) {
+    os << ',' << e.p_diag[i];
+  }
 }
 
 }  // namespace integrated_bringup

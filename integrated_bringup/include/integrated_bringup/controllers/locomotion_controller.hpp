@@ -78,7 +78,11 @@
 //             gravity; that is the intent (no large torque from a bad state).
 // Fault causes: the QP's health reached Fault; the source was not ok for more
 // than fault.max_source_bad_ticks ticks in a row while a reference was
-// latched (an unlatched controller only waits); the output was not finite;
+// latched (an unlatched controller only waits); the source restarted its
+// state (a new state epoch) while a reference was latched; an estimating
+// source had not started (any status) for estimator.inekf.init.timeout_s of
+// unlatched ticks outside the E-STOP, counted since the last restart of the
+// reference (not necessarily in a row); the output was not finite;
 // the state's model epoch is not the controller's; the plan was lost off a
 // still double support; the pose guard refused the pose for the settle time.
 //
@@ -106,6 +110,18 @@
 // earlier session describes a robot state that switch has already replaced.
 // The first tick re-latches as above and logs once that a latched fault was
 // dropped.
+//
+// The state source (estimator.source, fixed at configure): truth copies the
+// simulator's lanes, inekf estimates the base (inekf_state_source.hpp) on the
+// body group's model.imu.primary_site with estimator.inekf.imu_frame as its
+// frame. Each tick the source is given the contact mask of the previous tick
+// (all contacts after an activation or a restart of the MPC stream) as its
+// prior. A change of the source's state epoch from one tick to the next — the
+// estimate restarted — restarts the MPC's state stream (no plan made on the
+// old state is sampled again) and, if a reference was latched, latches the
+// fault (kSource) on that tick: the base it was following jumped. Before the
+// latch the restart only waits for the source to start again. The activation's
+// own Reset() of the source is not such a change.
 //
 // YAML (`locomotion_controller:`): model.* (humanoid_model_config.hpp),
 // whole_body_qp.* (rtc_tsid; `health:` sets the degraded / fault rule),
@@ -177,6 +193,7 @@
 #define INTEGRATED_BRINGUP_CONTROLLERS_LOCOMOTION_CONTROLLER_HPP_
 
 #include "integrated_bringup/controllers/locomotion/humanoid_model_config.hpp"
+#include "integrated_bringup/controllers/locomotion/inekf_state_source.hpp"
 #include "integrated_bringup/controllers/locomotion/locomotion_status.hpp"
 #include "integrated_bringup/controllers/locomotion/measured_state_source.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
@@ -362,6 +379,11 @@ class LocomotionController final : public rtc::RTControllerInterface {
 
   [[nodiscard]] const locomotion::DeviceIndices& Indices() const noexcept { return indices_; }
 
+  /// The measured-state source (null until the device configs wire it).
+  [[nodiscard]] const locomotion::MeasuredStateSource* StateSource() const noexcept {
+    return source_.get();
+  }
+
   /// True when this configuration runs the MPC (mpc.enabled).
   [[nodiscard]] bool MpcEnabled() const noexcept { return mpc_enabled_; }
 
@@ -404,6 +426,7 @@ class LocomotionController final : public rtc::RTControllerInterface {
   };
 
   void InitModels();
+  [[nodiscard]] std::vector<std::string> ContactFrameNames() const;
   [[nodiscard]] std::string WireDevices();
   void ResetLogState() noexcept;
 
@@ -494,7 +517,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   double total_mass_{0.0};
   double weight_{0.0};  ///< total_mass_ · |g| [N]
   uint32_t model_epoch_{1};
-  std::unique_ptr<locomotion::TruthStateSource> source_;
+  std::unique_ptr<locomotion::MeasuredStateSource> source_;
+  /// Unlatched kNotInitialized ticks before kSource (estimator.inekf.init.timeout_s).
+  std::uint32_t init_timeout_ticks_{std::numeric_limits<std::uint32_t>::max()};
 
   // ── QP (built at Pass 1, ticked on the RT thread) ──────────────────────────
   rtc::tsid::RobotModelInfo info_;
@@ -515,6 +540,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::atomic<FaultCause> fault_cause_{FaultCause::kNone};  ///< read by on_activate
   Mode mode_{Mode::kWaiting};
   uint32_t source_bad_ticks_{0};
+  uint32_t source_epoch_seen_{0};   ///< the source's state epoch of the last tick
+  bool source_epoch_known_{false};  ///< false until the first tick after an activation
+  uint32_t init_wait_ticks_{0};     ///< kNotInitialized ticks since the last restart
   uint32_t fault_count_{0};
   uint64_t tick_count_{0};
   bool estop_active_{false};

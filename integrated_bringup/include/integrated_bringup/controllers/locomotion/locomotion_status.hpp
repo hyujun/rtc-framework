@@ -71,9 +71,13 @@ enum class LocomotionStatusKey : std::uint8_t {
   kCmdHeight,
   kCmdValid,
   kCmdFresh,
-  kCmdStaleTicks,        ///< filter ticks the input was stale
-  kCmdNonFiniteTicks,    ///< filter ticks with a non-finite used axis (the axis kept its value)
-  kCmdIgnoredAxisTicks,  ///< filter ticks with a non-zero angular.x / angular.y
+  kCmdStaleTicks,         ///< filter ticks the input was stale
+  kCmdNonFiniteTicks,     ///< filter ticks with a non-finite used axis (the axis kept its value)
+  kCmdIgnoredAxisTicks,   ///< filter ticks with a non-zero angular.x / angular.y
+  kSourceStatus,          ///< the state source's verdict (StateSourceStatus name)
+  kEstimatorResets,       ///< the estimator's resets since configure (0 under truth)
+  kEstimatorResetReason,  ///< the last one's EstimatorResetReason code
+  kEstimatorContactMask,  ///< contacts the estimator holds in stance or unknown
   kCount,
 };
 

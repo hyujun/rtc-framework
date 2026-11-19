@@ -105,6 +105,14 @@ const char* ToString(StateSourceStatus status) noexcept {
       return "base_invalid";
     case StateSourceStatus::kNonFinite:
       return "non_finite";
+    case StateSourceStatus::kImuMissing:
+      return "imu_missing";
+    case StateSourceStatus::kImuStale:
+      return "imu_stale";
+    case StateSourceStatus::kImuSkew:
+      return "imu_skew";
+    case StateSourceStatus::kNotInitialized:
+      return "not_initialized";
   }
   return "unknown";
 }
@@ -158,25 +166,125 @@ DeviceIndices BuildDeviceIndices(const std::vector<std::string>& joint_order, in
 }
 
 EstimatorConfig ParseEstimatorConfig(const YAML::Node& estimator, const std::string& context) {
-  const std::initializer_list<const char*> keys = {"source", "body_max_age_ms", "hand_max_age_ms"};
+  const std::initializer_list<const char*> required = {"source", "body_max_age_ms",
+                                                       "hand_max_age_ms"};
   if (!estimator || !estimator.IsMap()) {
     Refuse(context, "expected a map, got " + Spelling(estimator));
   }
-  if (const auto unknown = FindUnknownKey(estimator, keys)) {
+  if (const auto unknown =
+          FindUnknownKey(estimator, {"source", "body_max_age_ms", "hand_max_age_ms", "inekf"})) {
     Refuse(context, "unknown key '" + *unknown + "'");
   }
-  if (const auto missing = FindMissingKey(estimator, keys)) {
+  if (const auto missing = FindMissingKey(estimator, required)) {
     Refuse(context, "required key '" + *missing + "' is missing");
   }
   EstimatorConfig cfg;
   const YAML::Node source = estimator["source"];
-  if (!source.IsScalar() || source.Scalar() != "truth") {
-    Refuse(context + ".source", "expected 'truth' (the only source), got " + Spelling(source));
+  if (!rtc::params::ReadEnum(source, {"truth", "inekf"})) {
+    Refuse(context + ".source", "expected 'truth' or 'inekf', got " + Spelling(source));
   }
   cfg.source = source.Scalar();
   cfg.body_max_age_ms = ReadAgeMs(estimator, "body_max_age_ms", context);
   cfg.hand_max_age_ms = ReadAgeMs(estimator, "hand_max_age_ms", context);
+  const YAML::Node inekf = estimator["inekf"];
+  if (inekf && !inekf.IsNull()) {
+    cfg.inekf = ParseInekfSourceConfig(inekf, context + ".inekf");
+  } else if (cfg.source == "inekf") {
+    Refuse(context, "source 'inekf' needs the 'inekf' section");
+  }
   return cfg;
+}
+
+void BeginMeasuredState(const DeviceIndices& indices, StateSourceKind kind, uint32_t model_epoch,
+                        MeasuredRobotState& out) noexcept {
+  const auto n = static_cast<std::size_t>(
+      std::clamp(indices.num_joints, 0, static_cast<int>(kMaxStateJoints)));
+  out.nq = 7 + static_cast<int>(n);
+  out.nv = 6 + static_cast<int>(n);
+  out.kind = kind;
+  out.model_epoch = model_epoch;
+  out.ee_wrench = {};
+  out.estimator = {};
+  out.fresh_mask = 0;
+  out.valid_mask = 0;
+  out.stamp_steady_ns = 0;
+  out.sequence = 0;
+  out.q.fill(0.0);
+  out.q[6] = 1.0;
+  out.v.fill(0.0);
+}
+
+JointLaneVerdict ReadJointLanes(const rtc::ControllerState& state, const DeviceIndices& indices,
+                                int64_t now_steady_ns, int64_t body_max_age_ns,
+                                int64_t hand_max_age_ns, HeldHands& held,
+                                MeasuredRobotState& out) noexcept {
+  JointLaneVerdict verdict;
+  // ── body joints ───────────────────────────────────────────────────────────
+  const int body = indices.body.device;
+  if (body < 0 || body >= state.num_devices || body >= rtc::ControllerState::kMaxDevices) {
+    verdict.body_unreadable = true;
+  } else {
+    verdict.body_present = true;
+    const auto& dev = state.devices[static_cast<std::size_t>(body)];
+    const int nc = indices.body.num_channels;
+    if (!JointLanesReadable(dev, nc)) {
+      verdict.body_unreadable = true;
+    } else {
+      bool finite = true;
+      for (int c = 0; c < nc; ++c) {
+        const auto ci = static_cast<std::size_t>(c);
+        const auto a = static_cast<std::size_t>(indices.body.joint[ci]);
+        out.q[7 + a] = dev.positions[ci];
+        out.v[6 + a] = dev.velocities[ci];
+        finite = finite && std::isfinite(dev.positions[ci]) && std::isfinite(dev.velocities[ci]);
+      }
+      if (!finite) {
+        verdict.non_finite = true;
+      } else {
+        out.valid_mask |= kBodyJointsBit;
+        if (Fresh(LaneAgeNs(dev.joint_recv_steady_ns, now_steady_ns), body_max_age_ns)) {
+          out.fresh_mask |= kBodyJointsBit;
+        } else {
+          verdict.body_stale = true;
+        }
+      }
+    }
+    out.sequence = dev.joint_sequence;
+    out.stamp_steady_ns = dev.joint_recv_steady_ns;
+  }
+
+  // ── hands: fresh → copy and hold; stale → the held joints, at rest ────────
+  const auto nh =
+      static_cast<std::size_t>(std::clamp(indices.num_hands, 0, static_cast<int>(kMaxStateHands)));
+  for (std::size_t h = 0; h < nh; ++h) {
+    const DeviceChannelMap& map = indices.hands[h];
+    const bool present = map.device >= 0 && map.device < state.num_devices &&
+                         map.device < rtc::ControllerState::kMaxDevices;
+    const rtc::DeviceState* dev =
+        present ? &state.devices[static_cast<std::size_t>(map.device)] : nullptr;
+    bool fresh = dev != nullptr && JointLanesReadable(*dev, map.num_channels) &&
+                 Fresh(LaneAgeNs(dev->joint_recv_steady_ns, now_steady_ns), hand_max_age_ns);
+    // A hand sample with a NaN in it is a stale hand, not a failed state.
+    for (int c = 0; fresh && c < map.num_channels; ++c) {
+      const auto ci = static_cast<std::size_t>(c);
+      fresh = std::isfinite(dev->positions[ci]) && std::isfinite(dev->velocities[ci]);
+    }
+    for (int c = 0; c < map.num_channels; ++c) {
+      const auto ci = static_cast<std::size_t>(c);
+      const auto a = static_cast<std::size_t>(map.joint[ci]);
+      if (fresh) {
+        held.q[a] = dev->positions[ci];
+      }
+      out.q[7 + a] = held.q[a];
+      out.v[6 + a] = fresh ? dev->velocities[ci] : 0.0;
+    }
+    if (fresh) {
+      held.seen |= HandBit(h);
+      out.fresh_mask |= HandBit(h);
+    }
+    out.valid_mask |= held.seen & HandBit(h);
+  }
+  return verdict;
 }
 
 TruthStateSource::TruthStateSource(const Params& params) : params_(params) {
@@ -192,73 +300,30 @@ TruthStateSource::TruthStateSource(const Params& params) : params_(params) {
 
 void TruthStateSource::Reset() noexcept {
   ++state_epoch_;
-  held_hand_q_.fill(0.0);
-  hands_seen_ = 0;
+  held_ = HeldHands{};
 }
 
 bool TruthStateSource::Update(const rtc::ControllerState& state, const DeviceIndices& indices,
-                              int64_t now_steady_ns, MeasuredRobotState& out) noexcept {
-  const auto n = static_cast<std::size_t>(
-      std::clamp(indices.num_joints, 0, static_cast<int>(kMaxStateJoints)));
-  out.nq = 7 + static_cast<int>(n);
-  out.nv = 6 + static_cast<int>(n);
-  out.kind = StateSourceKind::kTruth;
-  out.model_epoch = params_.model_epoch;
+                              const SourceTickInput& /*tick*/, int64_t now_steady_ns,
+                              MeasuredRobotState& out) noexcept {
+  // A lane that fails this tick reads as the neutral state (zero joints, the
+  // identity base), never as whatever the caller's buffer held.
+  BeginMeasuredState(indices, StateSourceKind::kTruth, params_.model_epoch, out);
   out.state_epoch = state_epoch_;
   out.contact_mask = params_.num_contacts >= kMaxStateContacts
                          ? ~0U
                          : (1U << static_cast<uint32_t>(params_.num_contacts)) - 1U;
-  out.ee_wrench = {};
-  out.fresh_mask = 0;
-  out.valid_mask = 0;
-  out.stamp_steady_ns = 0;
-  out.sequence = 0;
-  // A lane that fails this tick reads as the neutral state (zero joints, the
-  // identity base), never as whatever the caller's buffer held.
-  out.q.fill(0.0);
-  out.q[6] = 1.0;
-  out.v.fill(0.0);
 
-  bool body_unreadable = false;
-  bool body_stale = false;
-  bool base_missing = false;
+  const JointLaneVerdict joints = ReadJointLanes(
+      state, indices, now_steady_ns, params_.body_max_age_ns, params_.hand_max_age_ns, held_, out);
+  bool base_missing = !joints.body_present;
   bool base_stale = false;
   bool base_invalid = false;
-  bool non_finite = false;
+  bool non_finite = joints.non_finite;
 
-  // ── body: joints + floating base ──────────────────────────────────────────
-  const int body = indices.body.device;
-  if (body < 0 || body >= state.num_devices || body >= rtc::ControllerState::kMaxDevices) {
-    body_unreadable = true;
-    base_missing = true;
-  } else {
-    const auto& dev = state.devices[static_cast<std::size_t>(body)];
-    const int nc = indices.body.num_channels;
-    if (!JointLanesReadable(dev, nc)) {
-      body_unreadable = true;
-    } else {
-      bool finite = true;
-      for (int c = 0; c < nc; ++c) {
-        const auto ci = static_cast<std::size_t>(c);
-        const auto a = static_cast<std::size_t>(indices.body.joint[ci]);
-        out.q[7 + a] = dev.positions[ci];
-        out.v[6 + a] = dev.velocities[ci];
-        finite = finite && std::isfinite(dev.positions[ci]) && std::isfinite(dev.velocities[ci]);
-      }
-      if (!finite) {
-        non_finite = true;
-      } else {
-        out.valid_mask |= kBodyJointsBit;
-        if (Fresh(LaneAgeNs(dev.joint_recv_steady_ns, now_steady_ns), params_.body_max_age_ns)) {
-          out.fresh_mask |= kBodyJointsBit;
-        } else {
-          body_stale = true;
-        }
-      }
-    }
-    out.sequence = dev.joint_sequence;
-    out.stamp_steady_ns = dev.joint_recv_steady_ns;
-
+  // ── body: the floating base ───────────────────────────────────────────────
+  if (joints.body_present) {
+    const auto& dev = state.devices[static_cast<std::size_t>(indices.body.device)];
     if (!dev.base_valid || dev.base_recv_steady_ns <= 0) {
       base_missing = true;
     } else {
@@ -298,44 +363,11 @@ bool TruthStateSource::Update(const rtc::ControllerState& state, const DeviceInd
     }
   }
 
-  // ── hands: fresh → copy and hold; stale → the held joints, at rest ────────
-  const auto nh =
-      static_cast<std::size_t>(std::clamp(indices.num_hands, 0, static_cast<int>(kMaxStateHands)));
-  for (std::size_t h = 0; h < nh; ++h) {
-    const DeviceChannelMap& map = indices.hands[h];
-    const bool present = map.device >= 0 && map.device < state.num_devices &&
-                         map.device < rtc::ControllerState::kMaxDevices;
-    const rtc::DeviceState* dev =
-        present ? &state.devices[static_cast<std::size_t>(map.device)] : nullptr;
-    bool fresh =
-        dev != nullptr && JointLanesReadable(*dev, map.num_channels) &&
-        Fresh(LaneAgeNs(dev->joint_recv_steady_ns, now_steady_ns), params_.hand_max_age_ns);
-    // A hand sample with a NaN in it is a stale hand, not a failed state.
-    for (int c = 0; fresh && c < map.num_channels; ++c) {
-      const auto ci = static_cast<std::size_t>(c);
-      fresh = std::isfinite(dev->positions[ci]) && std::isfinite(dev->velocities[ci]);
-    }
-    for (int c = 0; c < map.num_channels; ++c) {
-      const auto ci = static_cast<std::size_t>(c);
-      const auto a = static_cast<std::size_t>(map.joint[ci]);
-      if (fresh) {
-        held_hand_q_[a] = dev->positions[ci];
-      }
-      out.q[7 + a] = held_hand_q_[a];
-      out.v[6 + a] = fresh ? dev->velocities[ci] : 0.0;
-    }
-    if (fresh) {
-      hands_seen_ |= HandBit(h);
-      out.fresh_mask |= HandBit(h);
-    }
-    out.valid_mask |= hands_seen_ & HandBit(h);
-  }
-
   // The documented precedence, whatever order the lanes were read in.
   StateSourceStatus status = StateSourceStatus::kOk;
-  if (body_unreadable) {
+  if (joints.body_unreadable) {
     status = StateSourceStatus::kBodyUnreadable;
-  } else if (body_stale) {
+  } else if (joints.body_stale) {
     status = StateSourceStatus::kBodyStale;
   } else if (base_missing) {
     status = StateSourceStatus::kBaseMissing;

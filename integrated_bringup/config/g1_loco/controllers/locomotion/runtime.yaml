@@ -36,12 +36,62 @@ locomotion_controller:
     damping_kd: [5, 5, 5, 5, 5, 5,  5, 5, 5, 5, 5, 5,  5, 5, 5,  2, 2, 2, 2,  2, 2, 2, 2]
 
   # Where the measured state comes from. truth = the simulator's base and joint
-  # lanes. Ages are against the tick's clock: the body lane (joints and base)
-  # fails the state when older; a stale hand only holds still.
+  # lanes; inekf = the base estimated from the pelvis IMU (model.imu.primary_site)
+  # and the leg kinematics, the simulator's base lane unread. Ages are against
+  # the tick's clock: the body lane (joints, and truth's base) fails the state
+  # when older; a stale hand only holds still. The inekf section is checked
+  # with either source. Schema: controllers/locomotion/inekf_source_config.hpp;
+  # the rules (start, cadence, resets): inekf_state_source.hpp.
   estimator:
     source: truth
     body_max_age_ms: 10.0
     hand_max_age_ms: 50.0
+    inekf:
+      imu_frame: "imu_in_pelvis"      # the pelvis site's axes; on the root joint
+      imu:                            # the simulator's IMU noise (mujoco_simulator.yaml)
+        sample_period_s: 0.002        # = 1 / control_rate
+        gyro_sigma: 5.0e-4            # per sample [rad/s]
+        accel_sigma: 1.0e-2           # per sample [m/s^2]
+        gyro_bias_walk: 1.0e-5        # [rad/s^2/sqrt(Hz)]
+        accel_bias_walk: 1.0e-4       # [m/s^3/sqrt(Hz)]
+      core:
+        gravity: 9.81
+        contact_noise_density: 1.0e-3     # anchor random walk [m/sqrt(s)]
+        joint_position_sigma: 1.0e-3      # encoder noise in a contact update [rad]
+        kinematic_sigma: 2.0e-3           # contact point model error [m]
+        contact_gate_chi2: 16.27          # chi2(3), 99.9 %
+        prior_velocity_sigma: 0.1         # [m/s]
+        prior_position_sigma: 0.01        # [m]
+        prior_yaw_sigma: 0.01             # [rad]
+        prior_gyro_bias_sigma: 1.0e-3     # [rad/s]
+        prior_accel_bias_sigma: 5.0e-2    # [m/s^2]
+        stationary_accel_tolerance: 0.2   # |‖a‖ − g| of a still sample [m/s^2]
+        stationary_gyro_tolerance: 0.02   # ‖ω‖ of a still sample [rad/s]
+      fsm:                            # contact state machine (contact_fsm.hpp)
+        enter_speed: 0.05             # [m/s]
+        slip_speed: 0.15              # [m/s]
+        nis_low: 6.25                 # chi2(3), 90 %
+        nis_high: 11.34               # chi2(3), 99 %
+        enter_dwell: 0.010            # [s]
+        confirm_dwell: 0.010
+        release_dwell: 0.004
+        slip_dwell: 0.006
+        nis_dwell: 0.006
+        recover_dwell: 0.020
+        evidence_time_constant: 0.020
+        unknown_noise_scale: 100.0
+      init:
+        window_ticks: 1               # the activation tick's sample starts the filter
+        timeout_s: 0.5                # not started by then → the source fault
+        yaw: 0.0                      # [rad]
+        joint_speed_tolerance: 0.05   # [rad/s]
+      policy:
+        max_hold_ticks: 2
+        max_joint_imu_skew_ticks: 1
+        max_skew_invalid_ticks: 5
+        max_no_anchor_s: 0.5
+        max_gated_s: 0.1
+        max_refused_ticks: 5
 
   # The operator's velocity command (geometry_msgs/Twist, under the controller's
   # namespace): linear.x / linear.y / angular.z = v_x / v_y / yaw rate,

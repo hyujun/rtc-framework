@@ -80,6 +80,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   # Humanoid locomotion controller config (W1-F03 #1026; the controller is W6-F03)
   src/controllers/locomotion/humanoid_model_config.cpp
   src/controllers/locomotion/measured_state_source.cpp
+  src/controllers/locomotion/inekf_state_source.cpp
   src/controllers/locomotion/controller.cpp
   src/controllers/locomotion/compute.cpp
   src/controllers/locomotion/lifecycle.cpp
@@ -2195,6 +2196,95 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # The inekf state source on the installed g1_loco model: start, cadence,
+  # skew, reset policy, kinematics / output oracles, determinism, its YAML.
+  ament_add_gtest(test_inekf_state_source test/test_inekf_state_source.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_inekf_state_source PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_compile_definitions(test_inekf_state_source PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_inekf_state_source
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_inekf_state_source
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # locomotion_controller with estimator.source inekf: same q / v to the WBC and
+  # the MPC, epoch → stream restart / fault, start timeout, E-STOP telemetry.
+  ament_add_gtest(test_locomotion_estimator test/test_locomotion_estimator.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_locomotion_estimator PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_compile_definitions(test_locomotion_estimator PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_estimator
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_estimator
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
+  # The inekf source's Update() under the operator-new and the C malloc gates
+  # (own binary: both replace process-wide entry points).
+  ament_add_gtest(test_inekf_state_source_alloc test/test_inekf_state_source_alloc.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_inekf_state_source_alloc PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  rtc_base_add_test_includes(test_inekf_state_source_alloc)
+  target_compile_definitions(test_inekf_state_source_alloc PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_inekf_state_source_alloc
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_inekf_state_source_alloc
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+  target_compile_options(test_inekf_state_source_alloc PRIVATE -Wno-mismatched-new-delete)
+
   # The CM's operator stop and estop_on_clear policy over the two g1_loco
   # controllers (demo_joint + locomotion, MPC off) on the CM's own tick body:
   # the hold on the wire, the verified clear handing back to demo_joint, and
@@ -2572,6 +2662,9 @@ if(BUILD_TESTING)
     test_locomotion_mpc
     test_locomotion_fault
     test_loco_estop_on_clear
+    test_inekf_state_source
+    test_inekf_state_source_alloc
+    test_locomotion_estimator
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
