@@ -60,19 +60,12 @@ def parse_layout(data: object) -> GamepadLayout:
 
 def layout_path() -> Path:
     """The installed layout file; the source tree's copy when not installed."""
-    try:
-        from ament_index_python.packages import (
-            PackageNotFoundError,
-            get_package_share_directory,
-        )
+    from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 
-        try:
-            return Path(get_package_share_directory("rtc_teleop_input")) / "config" / LAYOUT_FILE
-        except PackageNotFoundError:
-            pass
-    except ImportError:
-        pass
-    return Path(__file__).resolve().parents[1] / "config" / LAYOUT_FILE
+    try:
+        return Path(get_package_share_directory("rtc_teleop_input")) / "config" / LAYOUT_FILE
+    except PackageNotFoundError:
+        return Path(__file__).resolve().parents[1] / "config" / LAYOUT_FILE
 
 
 def load_layout(path: str | Path | None = None) -> GamepadLayout:

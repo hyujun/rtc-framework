@@ -98,38 +98,37 @@ class KeyBindings:
         return tuple(self.axes) + tuple(self.buttons)
 
 
-def _finite_in(value: float, lo: float, hi: float, lo_open: bool = True) -> bool:
-    return math.isfinite(value) and (value > lo if lo_open else value >= lo) and value <= hi
+def _finite_in(value: float, lo: float, hi: float) -> bool:
+    """value in (lo, hi] and finite."""
+    return math.isfinite(value) and lo < value <= hi
 
 
 def parse_bindings(config: TeleopConfig, layout: GamepadLayout) -> KeyBindings:
     axes: dict[str, tuple[int, int]] = {}
     buttons: dict[str, int] = {}
-    seen_targets: set[tuple[str, int]] = set()
+
+    def split(entry: str, param: str, shape: str, seen: set[str]) -> tuple[str, str]:
+        target, sep, key = entry.partition(":")
+        if not sep or not key or not target:
+            raise ConfigError(f"{param} entry '{entry}' is not '{shape}'")
+        if target in seen:
+            raise ConfigError(f"{param} binds '{target}' twice")
+        seen.add(target)
+        if key in axes or key in buttons:
+            raise ConfigError(f"key '{key}' is bound twice")
+        return target, key
+
     try:
+        seen: set[str] = set()
         for entry in config.key_axes:
-            target, sep, key = entry.partition(":")
-            if not sep or not key or len(target) < 2 or target[-1] not in "+-":
+            target, key = split(entry, "key_axes", "<axis><+|->:<key>", seen)
+            if len(target) < 2 or target[-1] not in "+-":
                 raise ConfigError(f"key_axes entry '{entry}' is not '<axis><+|->:<key>'")
-            index = layout.axis_index(target[:-1])
-            sign = 1 if target[-1] == "+" else -1
-            if (target, 0) in seen_targets:
-                raise ConfigError(f"key_axes binds '{target}' twice")
-            seen_targets.add((target, 0))
-            if key in axes or key in buttons:
-                raise ConfigError(f"key '{key}' is bound twice")
-            axes[key] = (index, sign)
+            axes[key] = (layout.axis_index(target[:-1]), 1 if target[-1] == "+" else -1)
+        seen = set()
         for entry in config.key_buttons:
-            target, sep, key = entry.partition(":")
-            if not sep or not key or not target:
-                raise ConfigError(f"key_buttons entry '{entry}' is not '<button>:<key>'")
-            index = layout.button_index(target)
-            if (target, 1) in seen_targets:
-                raise ConfigError(f"key_buttons binds '{target}' twice")
-            seen_targets.add((target, 1))
-            if key in axes or key in buttons:
-                raise ConfigError(f"key '{key}' is bound twice")
-            buttons[key] = index
+            target, key = split(entry, "key_buttons", "<button>:<key>", seen)
+            buttons[key] = layout.button_index(target)
     except LayoutError as exc:
         raise ConfigError(str(exc)) from exc
     return KeyBindings(axes=axes, buttons=buttons)
@@ -145,9 +144,10 @@ def validate_config(config: TeleopConfig, layout: GamepadLayout) -> KeyBindings:
         raise ConfigError(f"rate_hz must be in (0, {MAX_RATE_HZ:g}], got {config.rate_hz}")
     period_ms = 1000.0 / config.rate_hz
     if abs(period_ms - round(period_ms)) > 1e-9:
-        # the publish timer counts whole milliseconds: 300 Hz would run at 333 Hz
+        # the Qt publish timer counts whole milliseconds: 300 Hz would run at 333 Hz
         raise ConfigError(
-            f"rate_hz must give a whole-millisecond period (50, 100, 250, ...), got "
+            "rate_hz must give a whole-millisecond period (50, 100, 250, ...; the Qt "
+            f"publish timer counts milliseconds), got "
             f"{config.rate_hz:g} ({period_ms:.3f} ms)"
         )
     if config.skin not in SKINS:
@@ -331,7 +331,6 @@ class PadRelay:
         self._prev_buttons = (0,) * len(layout.buttons)
         self._received_s: float | None = None
         self._presses = [0] * len(layout.buttons)
-        self._tapped: set[int] = set()
         self._rejects = 0
 
     def on_upstream(self, axes: Sequence[float], buttons: Sequence[int], now: float) -> None:
@@ -347,7 +346,6 @@ class PadRelay:
             for i, (was, now_b) in enumerate(zip(self._prev_buttons, current, strict=True)):
                 if now_b == 1 and was != 1:
                     self._presses[i] += 1
-                    self._tapped.add(i)
             self._prev_buttons = current
             self._axes = tuple(axes)
             self._buttons = current
@@ -361,8 +359,6 @@ class PadRelay:
         with self._lock:
             presses = tuple(self._presses)
             self._presses = [0] * len(self._layout.buttons)
-            tapped = self._tapped
-            self._tapped = set()
             silent = self._received_s is None or now - self._received_s > self._timeout_s
             if silent:
                 # The pad comes back from a released state: a button still held
@@ -373,7 +369,8 @@ class PadRelay:
                 return released_frame(self._layout, "pad", presses, lost=True)
             if self._axes is None or self._buttons is None:
                 return released_frame(self._layout, "pad", presses)
-            buttons = tuple(1 if i in tapped else b for i, b in enumerate(self._buttons))
+            # a press since the last tick is published even if already released
+            buttons = tuple(1 if n else b for n, b in zip(presses, self._buttons, strict=True))
             return PadFrame(source="pad", axes=self._axes, buttons=buttons, presses=presses)
 
 

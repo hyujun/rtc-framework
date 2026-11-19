@@ -210,9 +210,6 @@ class PadCanvas(QWidget):
             self.cancel_interaction()
             self.update()
 
-    def skin(self) -> str:
-        return self._skin
-
     def set_interactive(self, on: bool) -> None:
         self._interactive = bool(on)
         if not on:

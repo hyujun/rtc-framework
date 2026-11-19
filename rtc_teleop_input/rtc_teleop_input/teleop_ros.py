@@ -118,20 +118,15 @@ class TeleopInputNode(Node):
         self.reset_calls_sent = 0
 
         self._joy_pub = self.create_publisher(Joy, self.config.output_topic, _JOY_QOS)
-        self._input_subs = []
         if self.config.input == "pad":
             self.relay = PadRelay(self.layout, self.config.pad_timeout_s)
-            self._input_subs.append(
-                self.create_subscription(Joy, self.config.pad_topic, self._on_pad, _JOY_QOS)
-            )
+            self.create_subscription(Joy, self.config.pad_topic, self._on_pad, _JOY_QOS)
         for topic in self.config.status_topics:
-            self._input_subs.append(
-                self.create_subscription(
-                    DiagnosticStatus,
-                    topic,
-                    lambda msg, topic=topic: self._on_status_msg(topic, msg),
-                    _STATUS_QOS,
-                )
+            self.create_subscription(
+                DiagnosticStatus,
+                topic,
+                lambda msg, topic=topic: self._on_status_msg(topic, msg),
+                _STATUS_QOS,
             )
         self._estop_client = self.create_client(Trigger, self.config.estop_service)
         self._reset_client = self.create_client(ResetFault, self.config.reset_service)
@@ -169,22 +164,15 @@ class TeleopInputNode(Node):
         if self._on_service_result is not None:
             self._on_service_result(kind, ok, message)
 
-    def _on_estop_done(self, future) -> None:
+    def _on_done(self, kind: str, future) -> None:
         try:
             response = future.result()
         except Exception as exc:  # the call failed in the middleware
-            self._report("estop", False, f"call failed: {exc}")
+            self._report(kind, False, f"call failed: {exc}")
             return
-        # Trigger.success is the latch state when the server answered
-        self._report("estop", bool(response.success), response.message)
-
-    def _on_reset_done(self, future) -> None:
-        try:
-            response = future.result()
-        except Exception as exc:
-            self._report("reset", False, f"call failed: {exc}")
-            return
-        self._report("reset", bool(response.ok), response.message)
+        # Trigger.success is the latch state when the server answered; ResetFault.ok
+        ok = response.success if kind == "estop" else response.ok
+        self._report(kind, bool(ok), response.message)
 
     # ── caller (GUI) thread ─────────────────────────────────────────────
 
@@ -203,26 +191,22 @@ class TeleopInputNode(Node):
         self.last_frame = frame
         actions = self.actions.step(frame, now)
         for _ in range(actions.estop_calls):
-            self._call_estop()
+            if self._call("estop", self._estop_client, Trigger.Request()):
+                self.estop_calls_sent += 1
         if actions.reset_call:
-            self._call_reset()
+            request = ResetFault.Request()
+            request.controller_name = self.config.reset_controller_name
+            if self._call("reset", self._reset_client, request):
+                self.reset_calls_sent += 1
         return frame
 
-    def _call_estop(self) -> None:
-        if not self._estop_client.service_is_ready():
-            self._report("estop", False, f"{self.config.estop_service} is not available")
-            return
-        self.estop_calls_sent += 1
-        self._estop_client.call_async(Trigger.Request()).add_done_callback(self._on_estop_done)
-
-    def _call_reset(self) -> None:
-        if not self._reset_client.service_is_ready():
-            self._report("reset", False, f"{self.config.reset_service} is not available")
-            return
-        self.reset_calls_sent += 1
-        request = ResetFault.Request()
-        request.controller_name = self.config.reset_controller_name
-        self._reset_client.call_async(request).add_done_callback(self._on_reset_done)
+    def _call(self, kind: str, client, request) -> bool:
+        """Sends one call, or reports the service missing; True when sent."""
+        if not client.service_is_ready():
+            self._report(kind, False, f"{client.srv_name} is not available")
+            return False
+        client.call_async(request).add_done_callback(lambda f: self._on_done(kind, f))
+        return True
 
 
 class SpinThread:
@@ -231,7 +215,9 @@ class SpinThread:
     ``stop`` ends the loop and joins the thread BEFORE shutting the executor
     down: Jazzy's ``Executor.shutdown`` does not wait for a running callback
     (its wait is skipped once the shutdown flag is set) and tears the wait set
-    down under it.
+    down under it. rtc_tools' joint_command_ros.SpinThread is the same wrapper
+    without this ordering; it is not imported, to keep rtc_tools (and its
+    analysis dependencies) out of this package.
     """
 
     def __init__(self, node: Node) -> None:
