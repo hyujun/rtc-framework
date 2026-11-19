@@ -246,7 +246,8 @@ class TeleopWindow(QWidget):
             level = 3 if stale else entry.level
             item.setText(0, f"{entry.topic}  [{'STALE' if stale else entry.level_name}]")
             item.setText(1, entry.message or entry.name)
-            item.setData(0, Qt.ToolTipRole, entry.name)
+            # the tooltip guesses rich text; the name comes off the network
+            item.setData(0, Qt.ToolTipRole, html.escape(entry.name))
             item.setForeground(0, QColor(_LEVEL_COLORS.get(level, "#6d6d6d")))
             while item.childCount() > len(entry.values):
                 item.removeChild(item.child(item.childCount() - 1))

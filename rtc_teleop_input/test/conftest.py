@@ -10,8 +10,12 @@ from __future__ import annotations
 import itertools
 import os
 
-import pytest
-import rclpy
+# Test DDS domain of this package (validate_test_domains.py reads the literal;
+# --list shows the allocation). Set before rclpy is imported by any test.
+os.environ["ROS_DOMAIN_ID"] = "60"
+
+import pytest  # noqa: E402
+import rclpy  # noqa: E402
 
 _ids = itertools.count()
 
