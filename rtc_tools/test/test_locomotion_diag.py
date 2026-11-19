@@ -202,6 +202,20 @@ def test_parse_names():
     assert ld.parse_ff_joints(ff_header()) == JOINTS
 
 
+def test_parse_names_with_the_r_tier_columns_appended():
+    # The R tier appends its blocks after the existing columns; none of their
+    # prefixes may read as a contact or a joint.
+    header = [*diag_header(), "state_source"]
+    header += [
+        f"wrench_des_{c}_{a}" for c in CONTACTS for a in ("fx", "fy", "fz", "tx", "ty", "tz")
+    ]
+    header += [f"servo_kp_{j}" for j in JOINTS] + [f"servo_kd_{j}" for j in JOINTS]
+    header += ["mpc_last_seq", "mpc_last_outcome", "mpc_last_plan_id"]
+    names = ld.parse_diag_names(header)
+    assert names.contacts == CONTACTS
+    assert names.joints == JOINTS
+
+
 def test_join_on_tick(session: Path):
     sess = ld.load_session(session, group="body")
     assert len(sess.diag["tick"]) == N

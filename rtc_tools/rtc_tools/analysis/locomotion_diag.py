@@ -10,7 +10,9 @@ The locomotion controller writes one row per tick into a session directory:
 ``foot_<c>_{x,y,z}``, ``a_base_*``, ``servo_norm``, ``ff_norm``, per contact
 ``lambda_<c>_{fx,fy,fz,tx,ty,tz}``, per joint ``v_<j>`` and ``tau_servo_<j>``.
 Contact and joint names are read from the header (the ``lambda_*_fz`` and
-``tau_servo_*`` columns), never assumed. Fixed columns used here:
+``tau_servo_*`` columns), never assumed; columns appended later (the R tier's
+``state_source``, ``wrench_des_<c>_*``, ``servo_kp_<j>`` / ``servo_kd_<j>``,
+``mpc_last_*``) do not share those prefixes. Fixed columns used here:
 ``t_relative_s``, ``tick``, ``mode`` (0 waiting — no latched reference: before
 the first valid state, under the E-STOP or while the pose guard refuses the
 pose —, 1 nominal, 2 degraded, 3 fault), ``fault_cause`` (0 none, 1 solve
