@@ -1011,6 +1011,18 @@ TEST_F(CmConfigPipelineTest, NativeMomentWithoutItsSlotsRefusesConfigure) {
   }
 }
 
+// The flag alone opens the layout block with an inference stride of 0.
+TEST_F(CmConfigPipelineTest, NativeMomentAloneRefusesConfigure) {
+  LogSink::Install();
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("devices.arm.sensor_layout.has_native_moment", true);
+  EXPECT_EQ(CallbackReturn::FAILURE, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ(1U, LogSink::Matching(RCUTILS_LOG_SEVERITY_ERROR,
+                                  {"[arm] sensor_layout has_native_moment needs"})
+                    .size());
+}
+
 TEST_F(CmConfigPipelineTest, NativeMomentIsParsedAndRefusedForABackendWithoutIt) {
   LogSink::Install();
   auto node = MakeNode();
