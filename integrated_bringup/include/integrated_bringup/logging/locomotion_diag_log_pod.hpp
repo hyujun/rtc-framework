@@ -180,7 +180,8 @@ struct LocomotionDiagLogPod {
   /// (ref_.lambda_des: the plan's MPC wrench under stand / walk, the lever-rule
   /// static share when idle), per contact [f; τ] — world axes, about the contact
   /// frame origin, floor-on-foot. NaN on a tick the QP did not run (waiting,
-  /// E-STOP, fault, a degraded hold); τ NaN for a point (dim 3) contact.
+  /// E-STOP, a latched fault, a degraded hold — not a tick whose solve ran and
+  /// failed, which logs the target it had); τ NaN for a point (dim 3) contact.
   std::array<double, kMaxContacts * 6> wrench_des{};
   /// tau_servo's two terms, the same tick reconstruction: kp (q_cmd − q) and
   /// −kd q̇ [N·m] (their sum is tau_servo up to rounding).
