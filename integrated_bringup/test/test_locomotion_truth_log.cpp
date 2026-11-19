@@ -178,6 +178,15 @@ TEST(LocomotionTruthLog, TheCopNeedsANormalForceAboveTheThreshold) {
     EXPECT_TRUE(std::isnan(pod.cop[0]) && std::isnan(pod.cop[1]));
     EXPECT_FALSE(std::isnan(pod.grf[2]));  // the wrench is still logged
   }
+  {  // no threshold set: no CoP at all rather than an unguarded ratio
+    rtc::DeviceState d = Lanes();
+    SetGroup(d, 0, {0.0F, 0.0F, -100.0F, 1.0F, 1.0F, 0.0F});
+    loco::TruthLogInputs in = Inputs();
+    in.cop_min_fz = 0.0;
+    LocomotionTruthLogPod pod{};
+    loco::FillLocomotionTruthLog(d, in, pod);
+    EXPECT_TRUE(std::isnan(pod.cop[0]));
+  }
   rtc::DeviceState d = Lanes();
   SetGroup(d, 0,
            {0.0F, 0.0F, -std::nextafter(static_cast<float>(kCopMin), 100.0F), 1.0F, 1.0F, 0.0F});

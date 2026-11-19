@@ -306,11 +306,13 @@ class ControllerLogSet {
   /// a controller's cleanup→configure cycle silently kill CSV logging (#238).
   ///
   /// Non-RT lifecycle path ONLY (controller `on_cleanup`, or `on_configure`
-  /// rollback). Precondition: no drain and no Push() in flight — by cleanup the
-  /// controller is Inactive, so the RT producer is quiescent. A final
-  /// DrainAll() flushes any residual samples first; destroying each LogChannel
-  /// then closes its ofstream. The CSV file persists on disk and a re-register
-  /// reopens it in append mode (no duplicate header, no data loss).
+  /// rollback), on the thread that runs the drain timer — no drain, lazy open
+  /// or TakeOpenFailures() may run beside it (the CM spins every controller
+  /// node and its lifecycle services on one nrt executor thread). Precondition: no drain and no
+  /// Push() in flight — by cleanup the controller is Inactive, so the RT producer is quiescent. A
+  /// final DrainAll() flushes any residual samples first; destroying each LogChannel then closes
+  /// its ofstream. The CSV file persists on disk and a re-register reopens it in append mode (no
+  /// duplicate header, no data loss).
   void Reset() noexcept {
     DrainAll();
     channels_.clear();

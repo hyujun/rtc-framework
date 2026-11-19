@@ -72,7 +72,7 @@ void FillLocomotionTruthLog(const rtc::DeviceState& body, const TruthLogInputs& 
         w[3 + k] = -static_cast<double>(body.inference_data[at + 4 + k]);
       }
       // τ = p × f with p = (x, y, 0): τ_x = y f_z, τ_y = −x f_z.
-      if (w[2] > in.cop_min_fz) {
+      if (in.cop_min_fz > 0.0 && w[2] > in.cop_min_fz) {
         cop[0] = -w[4] / w[2];
         cop[1] = w[3] / w[2];
       }

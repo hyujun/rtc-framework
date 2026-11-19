@@ -29,7 +29,7 @@ struct TruthLogInputs {
   int stride{0};
   /// The body group's sensor_layout.has_native_moment.
   bool moment{false};
-  /// Normal force at or below which a CoP is NaN [N] (> 0).
+  /// Normal force at or below which a CoP is NaN [N]; not > 0 → every CoP NaN.
   double cop_min_fz{0.0};
 };
 
