@@ -411,6 +411,7 @@ print_summary() {
   echo "  ros2 run rtc_tools plot_ur_trajectory <workspace>/logging_data/ur5e_control_log_YYMMDD_HHMM.csv"
   echo "  ros2 run rtc_tools motion_editor_gui"
   echo "  ros2 run rtc_tools compare_mjcf_urdf        # MJCF vs URDF parameter comparison"
+  echo "  ros2 launch rtc_teleop_input teleop_input.launch.py joy_topic:=<topic>  # virtual / real pad -> Joy"
   echo ""
   echo -e "${CYAN}${BOLD}── VS Code Debugging ───────────────────────────────────${NC}"
   echo "  # Debug build + IntelliSense:"
