@@ -2,6 +2,7 @@
 
 #include "rtc_math/se3/so3.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -62,6 +63,18 @@ constexpr double kAlignmentGuard = 0.1;
 bool UsableScale(double x) noexcept {
   const double x2 = x * x;
   return std::isfinite(x2) && x > 0.0 && x2 >= std::numeric_limits<double>::min();
+}
+
+// Σ = σ_q² J Jᵀ + σ_kin² I (body frame). Coefficient-wise product: a
+// dynamic inner dimension must not reach the blocked GEMM path.
+Mat3 ContactBodyNoise(const ContactKinematics& kin, double sigma_q, double sigma_kin) noexcept {
+  Mat3 S = (sigma_q * sigma_q) * kin.jacobian.lazyProduct(kin.jacobian.transpose());
+  S.diagonal().array() += sigma_kin * sigma_kin;
+  return S;
+}
+
+bool KinematicsFinite(const ContactKinematics& kin) noexcept {
+  return kin.position.allFinite() && kin.jacobian.allFinite();
 }
 
 void NeumaierAdd(double& sum, double& comp, double x) noexcept {
@@ -186,6 +199,7 @@ void ContactInekf::Reset() noexcept {
     d.setZero();
   }
   active_.fill(false);
+  inserted_.fill(false);
   noise_scale_.fill(1.0);
   P_.setZero(dim(), dim());
 }
@@ -461,6 +475,7 @@ InekfStatus ContactInekf::Propagate(const Eigen::Vector3d& gyro, const Eigen::Ve
   p_ = m.p;
   omega_ = w;
   P_ = work_;
+  inserted_.fill(false);
   return InekfStatus::kOk;
 }
 
@@ -476,6 +491,227 @@ InekfStatus ContactInekf::SetContactNoiseScale(int slot, double scale) noexcept 
     return InekfStatus::kBadNoiseScale;
   }
   noise_scale_[static_cast<std::size_t>(slot)] = scale;
+  return InekfStatus::kOk;
+}
+
+// ── ContactInekf: contacts ────────────────────────────────────────────────────
+
+InekfStatus ContactInekf::InsertContact(int slot, const ContactKinematics& kin) noexcept {
+  if (!configured()) {
+    return InekfStatus::kNotConfigured;
+  }
+  if (!initialized_) {
+    return InekfStatus::kNotInitialized;
+  }
+  if (!SlotInRange(slot)) {
+    return InekfStatus::kBadSlot;
+  }
+  const auto si = static_cast<std::size_t>(slot);
+  if (active_[si]) {
+    return InekfStatus::kSlotActive;
+  }
+  if (!KinematicsFinite(kin)) {
+    return InekfStatus::kNonFiniteInput;
+  }
+  const Mat3 sigma = ContactBodyNoise(kin, config_.joint_position_sigma, config_.kinematic_sigma);
+  const Vec3 d = p_ + R_ * kin.position;
+  const int o = SlotOffset(slot);
+
+  // ξ_d = ξ_p + R δr: the slot copies p's rows and columns.
+  work_ = P_;
+  work_.middleRows(o, 3) = P_.middleRows(6, 3);
+  work_.middleCols(o, 3) = P_.middleCols(6, 3);
+  work_.block<3, 3>(o, o) = P_.block<3, 3>(6, 6) + R_ * sigma * R_.transpose();
+
+  active_[si] = true;
+  Tidy(work_);
+  if (!d.allFinite() || !work_.allFinite()) {
+    active_[si] = false;
+    return InekfStatus::kNonFiniteResult;
+  }
+  if (!ActiveBlockPositiveDefinite(work_)) {
+    active_[si] = false;
+    return InekfStatus::kNotPositiveDefinite;
+  }
+  d_[si] = d;
+  P_ = work_;
+  inserted_[si] = true;
+  return InekfStatus::kOk;
+}
+
+InekfStatus ContactInekf::RemoveContact(int slot) noexcept {
+  if (!configured()) {
+    return InekfStatus::kNotConfigured;
+  }
+  if (!SlotInRange(slot)) {
+    return InekfStatus::kBadSlot;
+  }
+  const auto si = static_cast<std::size_t>(slot);
+  if (!active_[si]) {
+    return InekfStatus::kSlotInactive;
+  }
+  const int o = SlotOffset(slot);
+  P_.middleRows(o, 3).setZero();
+  P_.middleCols(o, 3).setZero();
+  d_[si].setZero();
+  active_[si] = false;
+  inserted_[si] = false;
+  noise_scale_[si] = 1.0;
+  return InekfStatus::kOk;
+}
+
+InekfStatus ContactInekf::UpdateContacts(std::span<const ContactKinematics> kinematics,
+                                         std::span<ContactUpdateReport> report) noexcept {
+  if (!configured()) {
+    return InekfStatus::kNotConfigured;
+  }
+  if (!initialized_) {
+    return InekfStatus::kNotInitialized;
+  }
+  const auto n = static_cast<std::size_t>(num_slots_);
+  if (kinematics.size() != n || report.size() != n) {
+    return InekfStatus::kSizeMismatch;
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!kinematics[i].use) {
+      continue;
+    }
+    if (!active_[i]) {
+      return InekfStatus::kSlotInactive;
+    }
+    if (!KinematicsFinite(kinematics[i])) {
+      return InekfStatus::kNonFiniteInput;
+    }
+  }
+
+  // Per-slot innovation and m² on the prior P, then the χ² gate.
+  std::array<int, kInekfMaxContacts> used{};
+  std::array<Mat3, kInekfMaxContacts> noise;
+  std::array<Vec3, kInekfMaxContacts> innov;
+  std::array<ContactUpdateReport, kInekfMaxContacts> local{};
+  int k = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    ContactUpdateReport& out = local[i];
+    if (!active_[i]) {
+      continue;
+    }
+    if (!kinematics[i].use) {
+      out.result = ContactUpdateResult::kNotRequested;
+      continue;
+    }
+    if (inserted_[i]) {
+      // Its anchor covariance already holds this sample's kinematic noise.
+      out.result = ContactUpdateResult::kInsertedThisStep;
+      continue;
+    }
+    const int o = SlotOffset(static_cast<int>(i));
+    const Mat3 sigma =
+        ContactBodyNoise(kinematics[i], config_.joint_position_sigma, config_.kinematic_sigma);
+    const Mat3 Ni = R_ * sigma * R_.transpose();
+    const Vec3 zi = R_ * kinematics[i].position + p_ - d_[i];
+    Mat3 Si = P_.block<3, 3>(6, 6) + P_.block<3, 3>(o, o) + Ni;
+    Si -= P_.block<3, 3>(6, o);
+    Si -= P_.block<3, 3>(o, 6);
+    if (!Si.allFinite() || !zi.allFinite()) {  // Cholesky can pass NaN pivots
+      return InekfStatus::kNonFiniteResult;
+    }
+    const Eigen::LLT<Mat3> si_llt(Si);
+    if (si_llt.info() != Eigen::Success) {
+      return InekfStatus::kNotPositiveDefinite;
+    }
+    out.innovation = R_.transpose() * zi;
+    out.mahalanobis2 = zi.dot(si_llt.solve(zi));
+    if (!(out.mahalanobis2 <= config_.contact_gate_chi2)) {
+      out.result = ContactUpdateResult::kGated;
+      continue;
+    }
+    out.result = ContactUpdateResult::kUsed;
+    used[static_cast<std::size_t>(k)] = static_cast<int>(i);
+    noise[static_cast<std::size_t>(k)] = Ni;
+    innov[static_cast<std::size_t>(k)] = zi;
+    ++k;
+  }
+  auto publish = [&] { std::copy_n(local.begin(), n, report.begin()); };
+  if (k == 0) {
+    publish();
+    return InekfStatus::kOk;
+  }
+
+  // Stacked update.
+  const int D = dim();
+  const int rows = 3 * k;
+  h_.setZero(rows, D);
+  n_.setZero(rows, rows);
+  z_.setZero(rows);
+  for (int q = 0; q < k; ++q) {
+    const auto qi = static_cast<std::size_t>(q);
+    h_.block<3, 3>(3 * q, 6) = -Mat3::Identity();
+    h_.block<3, 3>(3 * q, SlotOffset(used[qi])) = Mat3::Identity();
+    n_.block<3, 3>(3 * q, 3 * q) = noise[qi];
+    z_.segment<3>(3 * q) = innov[qi];
+  }
+  pht_.noalias() = P_ * h_.transpose();
+  s_.noalias() = h_ * pht_;
+  s_ += n_;
+  s_llt_.compute(s_);
+  if (s_llt_.info() != Eigen::Success) {
+    return InekfStatus::kNotPositiveDefinite;
+  }
+  kt_ = pht_.transpose();
+  s_llt_.solveInPlace(kt_);
+  gain_ = kt_.transpose();
+  DiagVector delta(D);
+  delta.noalias() = gain_ * z_;
+
+  // X̂⁺ = Exp(δ_X) X̂ (global exp3 / left Jacobian), θ̂⁺ = θ̂ + δ_θ.
+  const Vec3 dphi = delta.head<3>();
+  const Mat3 dR = rtc::math::se3::exp3(dphi);
+  const Mat3 J = rtc::math::se3::leftJacobian(dphi);
+  const Mat3 R1 = dR * R_;
+  const Vec3 v1 = dR * v_ + J * delta.segment<3>(3);
+  const Vec3 p1 = dR * p_ + J * delta.segment<3>(6);
+  std::array<Vec3, kInekfMaxContacts> d1 = d_;
+  for (int i = 0; i < num_slots_; ++i) {
+    const auto si = static_cast<std::size_t>(i);
+    if (active_[si]) {
+      d1[si] = dR * d_[si] + J * delta.segment<3>(SlotOffset(i));
+    }
+  }
+  const int bg = BiasOffset();
+  const Vec3 bg1 = bg_ + delta.segment<3>(bg);
+  const Vec3 ba1 = ba_ + delta.segment<3>(bg + 3);
+
+  // Joseph form.
+  work_.setIdentity(D, D);
+  work_.noalias() -= gain_ * h_;
+  next_.noalias() = work_ * P_;
+  left_.noalias() = next_ * work_.transpose();
+  kn_.noalias() = gain_ * n_;
+  left_.noalias() += kn_ * gain_.transpose();
+  Tidy(left_);
+  // Defensive: with S finite and positive definite P⁺ ⪯ P and every gated
+  // innovation is bounded by S, so this needs P within rounding of the
+  // double range.
+  bool finite = left_.allFinite() && R1.allFinite() && v1.allFinite() && p1.allFinite() &&
+                bg1.allFinite() && ba1.allFinite();
+  for (const Vec3& x : d1) {
+    finite = finite && x.allFinite();
+  }
+  if (!finite) {
+    return InekfStatus::kNonFiniteResult;
+  }
+  if (!ActiveBlockPositiveDefinite(left_)) {
+    return InekfStatus::kNotPositiveDefinite;
+  }
+
+  R_ = R1;
+  v_ = v1;
+  p_ = p1;
+  d_ = d1;
+  bg_ = bg1;
+  ba_ = ba1;
+  P_ = left_;
+  publish();
   return InekfStatus::kOk;
 }
 

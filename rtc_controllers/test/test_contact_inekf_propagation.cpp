@@ -472,21 +472,6 @@ TEST(ContactInekfLongRun, RotationStaysOrthonormal) {
 
 // ── Gauge: world yaw about gravity + translation ─────────────────────────────
 
-Cov GaugeAdjoint(const ContactInekf& f, const Mat3& Rz, const Vec3& t) {
-  Cov A = Cov::Zero(f.dim(), f.dim());
-  A.block<3, 3>(0, 0) = Rz;
-  A.block<3, 3>(3, 3) = Rz;
-  A.block<3, 3>(6, 0) = rtc::math::se3::hat(t) * Rz;
-  A.block<3, 3>(6, 6) = Rz;
-  for (int i = 0; i < f.num_slots(); ++i) {
-    const int o = ContactInekf::SlotOffset(i);
-    A.block<3, 3>(o, 0) = rtc::math::se3::hat(t) * Rz;
-    A.block<3, 3>(o, o) = Rz;
-  }
-  A.block<6, 6>(f.BiasOffset(), f.BiasOffset()).setIdentity();
-  return A;
-}
-
 TEST(ContactInekfGauge, PropagationIsYawAndTranslationInvariant) {
   constexpr int kTicks = 2000;
   constexpr double kDt = 2e-3;

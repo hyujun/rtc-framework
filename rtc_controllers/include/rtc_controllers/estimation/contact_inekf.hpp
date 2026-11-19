@@ -120,6 +120,39 @@
 // (|pitch| > 84.3°, gravity near the IMU x axis), where the configured ZYX
 // heading stops being a usable initial condition.
 //
+// ### Contacts
+//
+// A contact point i has IMU-frame position r_i (forward kinematics) and joint
+// Jacobian J_i = ∂r_i/∂q (3 × n_j, IMU frame, no base columns); its body-frame
+// noise is Σ_i = σ_q² J_i J_iᵀ + σ_kin² I.
+//
+// Insert (slot inactive → active): d_i = p + R r_i. With X = Exp(ξ)X̂ the new
+// error is ξ_d,i = ξ_p + R δr_i (the attitude error cancels — the point of
+// the right-invariant form), so the slot's rows and columns copy those of p
+// and P[d_i, d_i] = P[p, p] + R Σ_i Rᵀ.
+//
+// Remove (active → inactive): the slot's rows, columns and mean go to +0.0
+// (marginalisation); every other entry is untouched. Its noise scale returns
+// to 1.
+//
+// Update, for the requested active slots:
+//
+//   z_i = R̂ r_i + p̂ − d̂_i = H_i e + R̂ δr_i,   H_i = [0 0 −I … I(d_i) … 0 0]
+//   N_i = R̂ Σ_i R̂ᵀ,   S_i = H_i P H_iᵀ + N_i,   m_i² = z_iᵀ S_i⁻¹ z_i
+//
+// A slot with m_i² > contact_gate_chi2 (computed before any update) is left
+// out and reported, as is a slot inserted since the last Propagate() (its
+// anchor covariance already holds that kinematic sample); the rest are
+// stacked into one update:
+//
+//   S = H P Hᵀ + N,   K = P Hᵀ S⁻¹ (Cholesky solve),   δ = K z
+//   X̂⁺ = Exp(δ_X) X̂,   θ̂⁺ = θ̂ + δ_θ,   P⁺ = (I − KH) P (I − KH)ᵀ + K N Kᵀ
+//
+// Exp here is rtc_math's exp3 / left Jacobian (an update step is not bounded
+// by kMaxRotationStep). The reported innovation is the body-frame R̂ᵀ z_i.
+// N is block diagonal: contacts driven by shared joints are treated as
+// independent (their encoder-noise cross terms are not modelled).
+//
 // ### IMU → base
 //
 // BaseFromImu() turns the IMU state into the base pose and world velocity of a
@@ -154,6 +187,8 @@ inline constexpr double kMaxRotationStep = 0.7;
 /// NOMINAL step (missed ticks × period), not a measured clock difference.
 inline constexpr double kMinPropagationStep = 2e-4;
 inline constexpr double kMaxPropagationStep = 2e-2;
+/// Column capacity of a contact Jacobian (joints that move one contact point).
+inline constexpr int kInekfMaxJacobianCols = 64;
 
 /// Outcome of a filter call. Anything but kOk left the state untouched.
 enum class InekfStatus : std::uint8_t {
@@ -173,6 +208,9 @@ enum class InekfStatus : std::uint8_t {
   kTooManyStancePoints = 13,  ///< More stance points than Init()'s slot count.
   kBadSlot = 14,              ///< Slot index outside [0, num_slots()).
   kBadNoiseScale = 15,        ///< Anchor-noise scale below 1.
+  kSlotActive = 16,           ///< InsertContact on a slot that is already active.
+  kSlotInactive = 17,         ///< RemoveContact, or a requested update, on an inactive slot.
+  kSizeMismatch = 18,         ///< UpdateContacts spans not num_slots() long.
 };
 
 /// Γ_M(φ) = Σ_k [φ]×ᵏ/(k+M)! for M ∈ {0, 1, 2}, by its power series. Valid
@@ -210,6 +248,35 @@ class StationaryImuAccumulator {
   std::int64_t count_{0};
 };
 
+/// IMU-frame forward kinematics of one contact point.
+struct ContactKinematics {
+  using Jacobian =
+      Eigen::Matrix<double, 3, Eigen::Dynamic, Eigen::ColMajor, 3, kInekfMaxJacobianCols>;
+  Eigen::Vector3d position{Eigen::Vector3d::Zero()};  ///< r_i in I [m]
+  /// ∂r_i/∂q in I [m/rad]; 0 … kInekfMaxJacobianCols columns (the storage
+  /// capacity — a wider assignment is the caller's error and is not checked).
+  Jacobian jacobian{3, 0};
+  bool use{false};  ///< UpdateContacts only: include this slot
+};
+
+/// Why a slot did or did not enter the last UpdateContacts().
+enum class ContactUpdateResult : std::uint8_t {
+  kInactive = 0,      ///< Slot inactive and not requested.
+  kNotRequested = 1,  ///< Active, `use` = false: anchor kept, no update.
+  kUsed = 2,          ///< Entered the stacked update.
+  kGated = 3,         ///< m² above contact_gate_chi2: left out.
+  /// Inserted since the last Propagate(): its anchor covariance already holds
+  /// this sample's kinematic noise, so using it again would count it twice.
+  kInsertedThisStep = 4,
+};
+
+/// Per-slot outcome of UpdateContacts(); written only when it returns kOk.
+struct ContactUpdateReport {
+  Eigen::Vector3d innovation{Eigen::Vector3d::Zero()};  ///< R̂ᵀ z_i [m], requested slots
+  double mahalanobis2{0.0};  ///< m_i² before the update, requested slots
+  ContactUpdateResult result{ContactUpdateResult::kInactive};
+};
+
 /// Base pose and world velocity derived from the IMU state.
 struct BaseState {
   Eigen::Matrix3d R_WB{Eigen::Matrix3d::Identity()};
@@ -219,8 +286,6 @@ struct BaseState {
 
 /// Contact-aided right-invariant EKF over SE_{2+n}(3) with augmented IMU bias.
 /// See the file preamble for every equation, frame and sign.
-///
-/// This revision provides configuration, initialisation and IMU propagation.
 class ContactInekf {
  public:
   using CovMatrix = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor,
@@ -274,8 +339,22 @@ class ContactInekf {
 
   /// Scale slot i's anchor random walk by `scale` ≥ 1 (σ_d → scale·σ_d) from
   /// the next Propagate() on; (scale·σ_d)² must stay finite. Persists until
-  /// changed or Reset().
+  /// changed, RemoveContact() or Reset().
   [[nodiscard]] InekfStatus SetContactNoiseScale(int slot, double scale) noexcept;
+
+  /// Anchor slot `slot` at the contact point `kin` (position + Jacobian; `use`
+  /// is ignored). The slot must be inactive.
+  [[nodiscard]] InekfStatus InsertContact(int slot, const ContactKinematics& kin) noexcept;
+
+  /// Marginalise slot `slot` out. The slot must be active.
+  [[nodiscard]] InekfStatus RemoveContact(int slot) noexcept;
+
+  /// One stacked contact update. `kinematics` and `report` are num_slots()
+  /// long; slot i enters if kinematics[i].use (it must then be active and
+  /// finite). Slots gated by χ² are left out and reported; if none remain the
+  /// state is unchanged and the call still returns kOk.
+  [[nodiscard]] InekfStatus UpdateContacts(std::span<const ContactKinematics> kinematics,
+                                           std::span<ContactUpdateReport> report) noexcept;
 
   /// Drop the state, slot mask and noise scales; keep the configuration.
   void Reset() noexcept;
@@ -375,6 +454,7 @@ class ContactInekf {
   Eigen::Vector3d omega_{Eigen::Vector3d::Zero()};
   std::array<Eigen::Vector3d, kInekfMaxContacts> d_;
   std::array<bool, kInekfMaxContacts> active_{};
+  std::array<bool, kInekfMaxContacts> inserted_{};  // since the last Propagate()
   std::array<double, kInekfMaxContacts> noise_scale_{1.0, 1.0, 1.0, 1.0};
   CovMatrix P_;
 
@@ -388,6 +468,26 @@ class ContactInekf {
   CovMatrix next_;
   CovMatrix packed_;
   Eigen::LLT<CovMatrix> llt_;
+
+  // Update scratch: stacked rows ≤ 3·kInekfMaxContacts. h_ / gain_ hold the
+  // last computed update's H and K.
+  static constexpr int kMaxRows = 3 * kInekfMaxContacts;
+  using RowsMatrix =
+      Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor, kMaxRows, kMaxRows>;
+  using HMatrix = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor, kMaxRows,
+                                kInekfMaxDim>;
+  using GainMatrix = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor,
+                                   kInekfMaxDim, kMaxRows>;
+  using RowsVector = Eigen::Matrix<double, Eigen::Dynamic, 1, Eigen::ColMajor, kMaxRows, 1>;
+  HMatrix h_;
+  GainMatrix gain_;
+  GainMatrix pht_;
+  GainMatrix kn_;
+  HMatrix kt_;
+  RowsMatrix s_;
+  RowsMatrix n_;
+  RowsVector z_;
+  Eigen::LLT<RowsMatrix> s_llt_;
 };
 
 }  // namespace rtc::estimation

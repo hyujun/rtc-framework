@@ -10,6 +10,7 @@
 
 #include <Eigen/Core>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -45,6 +46,11 @@ struct ContactInekfTestAccess {
   static const Cov& Phi(const ContactInekf& f) { return f.phi_; }
 
   static const Cov& Qd(const ContactInekf& f) { return f.qd_; }
+
+  /// H and K of the last computed stacked update (rows 3·used).
+  static Eigen::MatrixXd H(const ContactInekf& f) { return f.h_; }
+
+  static Eigen::MatrixXd Gain(const ContactInekf& f) { return f.gain_; }
 
   static void MeanMap(const Eigen::Matrix3d& R, const Eigen::Vector3d& v, const Eigen::Vector3d& p,
                       const Eigen::Vector3d& w, const Eigen::Vector3d& a, double dt, double g0,
@@ -261,6 +267,83 @@ inline Snapshot Capture(const ContactInekf& f) {
 inline bool BitEqual(const Snapshot& a, const Snapshot& b) {
   return a.values.size() == b.values.size() && a.flags == b.flags &&
          std::memcmp(a.values.data(), b.values.data(), a.values.size() * sizeof(double)) == 0;
+}
+
+}  // namespace rtc::estimation::testing
+
+namespace rtc::estimation::testing {
+
+/// Contact kinematics with an optional Jacobian (zero columns by default).
+inline ContactKinematics Kin(const Vec3& r, bool use = true,
+                             const Eigen::MatrixXd& J = Eigen::MatrixXd(3, 0)) {
+  ContactKinematics k;
+  k.position = r;
+  k.jacobian = J;
+  k.use = use;
+  return k;
+}
+
+/// Σ = σ_q² J Jᵀ + σ_kin² I, computed here independently of the core.
+inline Mat3 BodyNoise(const ContactKinematics& k, const ContactInekf::Config& c) {
+  const Eigen::MatrixXd J = k.jacobian;
+  Mat3 S = c.joint_position_sigma * c.joint_position_sigma * (J * J.transpose());
+  S += c.kinematic_sigma * c.kinematic_sigma * Mat3::Identity();
+  return S;
+}
+
+/// Ad of the world gauge G = (Rz, t) on the full layout (every slot moved by t).
+inline Cov GaugeAdjoint(const ContactInekf& f, const Mat3& Rz, const Vec3& t) {
+  Cov A = Cov::Zero(f.dim(), f.dim());
+  A.block<3, 3>(0, 0) = Rz;
+  A.block<3, 3>(3, 3) = Rz;
+  A.block<3, 3>(6, 0) = rtc::math::se3::hat(t) * Rz;
+  A.block<3, 3>(6, 6) = Rz;
+  for (int i = 0; i < f.num_slots(); ++i) {
+    const int o = ContactInekf::SlotOffset(i);
+    A.block<3, 3>(o, 0) = rtc::math::se3::hat(t) * Rz;
+    A.block<3, 3>(o, o) = Rz;
+  }
+  A.block<6, 6>(f.BiasOffset(), f.BiasOffset()).setIdentity();
+  return A;
+}
+
+/// Each active slot's body-frame point as the filter predicts it, requested.
+inline std::vector<ContactKinematics> PredictedKinematics(const ContactInekf& f) {
+  std::vector<ContactKinematics> k(static_cast<std::size_t>(f.num_slots()));
+  for (int i = 0; i < f.num_slots(); ++i) {
+    if (f.contact_active(i)) {
+      k[static_cast<std::size_t>(i)] =
+          Kin(f.rotation().transpose() * (f.contact_position(i) - f.position()));
+    }
+  }
+  return k;
+}
+
+/// Nominal foot point of slot j in the IMU frame.
+inline Vec3 FootPoint(int j) {
+  return Vec3(0.1 * ((j % 2) == 0 ? 1.0 : -1.0), 0.1 * (j - 1.5), -0.7);
+}
+
+/// Initialized 4-slot filter, moved to |p| = scale, |v| = min(scale, 2), with
+/// `active` slots anchored through InsertContact (P built only by operations).
+inline void StartFilter(ContactInekf& f, std::uint64_t seed, int active, double scale = 10.0) {
+  std::mt19937_64 rng(seed + 7);
+  std::normal_distribution<double> nd(0.0, 1.0);
+  std::uniform_real_distribution<double> ud(-3.0, 3.0);
+  f.Init(FixtureConfig(), 4);
+  const Vec3 a(0.3, -0.2, 9.8);
+  if (f.Initialize(Vec3::Zero(), a, 2.0, ud(rng), {}) != InekfStatus::kOk) {
+    return;
+  }
+  const Vec3 p = Vec3(nd(rng), nd(rng), nd(rng)).normalized() * scale;
+  const Vec3 v = Vec3(nd(rng), nd(rng), nd(rng)).normalized() * std::min(scale, 2.0);
+  ContactInekfTestAccess::SetState(f, f.rotation(), v, p, ZeroContacts(), {}, f.gyro_bias(),
+                                   f.accel_bias(), f.covariance());
+  for (int j = 0; j < active; ++j) {
+    if (f.InsertContact(j, Kin(FootPoint(j))) != InekfStatus::kOk) {
+      return;
+    }
+  }
 }
 
 }  // namespace rtc::estimation::testing
