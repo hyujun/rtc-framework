@@ -49,6 +49,9 @@ add_library(rtc_controllers STATIC
   # Contact-aided right-invariant EKF core (IMU propagation, covariance,
   # stationary initialisation). Eigen + rtc_math only — no model, no ROS.
   src/controllers/estimation/contact_inekf.cpp
+  # Per-slot contact state machine + the tick sequencer driving the core with
+  # it. Same dependency set as the core.
+  src/controllers/estimation/contact_fsm.cpp
   src/controllers/estimation/payload_estimator.cpp
   # G2 schema layer: gains PODs + YAML parsers, lifted out of the
   # controllers/{direct,indirect} adapters so they would outlive them — which
@@ -378,6 +381,24 @@ if(BUILD_TESTING)
   target_include_directories(test_contact_inekf_alloc PRIVATE
     ${rtc_base_test_include} ${rtc_controllers_test_include})
   target_compile_options(test_contact_inekf_alloc PRIVATE -Wno-mismatched-new-delete)
+  # Contact FSM + sequencer: the hand-written transition oracle and the
+  # same-tick rule on the FSM alone, the sequencer's core contract and failure
+  # rows on the real core, and the synthetic world (test/contact_fsm_testing.hpp,
+  # an analytic generator independent of the FSM and the core) with the
+  # pre-registered detection thresholds.
+  ament_add_gtest(test_contact_fsm_table test/test_contact_fsm_table.cpp)
+  target_link_libraries(test_contact_fsm_table rtc_controllers)
+  ament_add_gtest(test_contact_fsm_sequencer test/test_contact_fsm_sequencer.cpp TIMEOUT 300)
+  target_link_libraries(test_contact_fsm_sequencer rtc_controllers)
+  ament_add_gtest(test_contact_fsm_synthetic test/test_contact_fsm_synthetic.cpp TIMEOUT 900)
+  target_link_libraries(test_contact_fsm_synthetic rtc_controllers)
+  # Same two allocation sensors as test_contact_inekf_alloc, own binary (the
+  # C allocator gate is one TU per executable).
+  ament_add_gtest(test_contact_fsm_alloc test/test_contact_fsm_alloc.cpp)
+  target_link_libraries(test_contact_fsm_alloc rtc_controllers)
+  target_include_directories(test_contact_fsm_alloc PRIVATE
+    ${rtc_base_test_include} ${rtc_controllers_test_include})
+  target_compile_options(test_contact_fsm_alloc PRIVATE -Wno-mismatched-new-delete)
 
   # #236 S1 golden-vector harness: the joint-space PD core pinned bit-for-bit
   # against a literal copy of the pre-extraction inline form. That literal oracle

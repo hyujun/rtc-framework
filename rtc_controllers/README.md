@@ -32,7 +32,7 @@ URDF 기반 매니퓰레이터용 제어 법칙·궤적·estimator 라이브러�
 | compliance | `compliance/safety_limiter.hpp` · `torque_estop.hpp` · `joint_command_tail.hpp` · `compliance_state_machine.hpp` | 출력 안전층 · torque E-STOP hold · 관절 명령 tail · 상태 머신 |
 | grasp | `grasp/grasp_controller.hpp` · `grasp_types.hpp` · `grasp_state.hpp` | `GraspController` 적응형 PI 힘 제어 · 파라미터/FSM 타입 · tick 상태 POD |
 | grasp | `grasp/pull_force_estimator.hpp` | 당김 힘 estimator |
-| estimation | `estimation/momentum_observer.hpp` · `payload_estimator.hpp` · `inertial_estimator.hpp` · `contact_inekf.hpp` | 모멘텀 observer 잔차 · payload 질량/COM · 관성 회귀 · 접촉 InEKF |
+| estimation | `estimation/momentum_observer.hpp` · `payload_estimator.hpp` · `inertial_estimator.hpp` · `contact_inekf.hpp` · `contact_fsm.hpp` | 모멘텀 observer 잔차 · payload 질량/COM · 관성 회귀 · 접촉 InEKF · 접촉점별 상태기계와 InEKF 순서기 |
 | trajectory | `trajectory/*.hpp` | 5차 다항식 궤적 ([아래](#궤적-생성기)) |
 | inference | `inference/policy_io.hpp` · `reach_gate.hpp` · `params/policy_io_params.hpp` · `params/reach_gate_params.hpp` | 학습 정책 tensor marshalling · reach gate |
 | 공용 | `gain_floor.hpp` | 비음수 게인 floor `FloorNonNegativeGain` (NUM-6) |
