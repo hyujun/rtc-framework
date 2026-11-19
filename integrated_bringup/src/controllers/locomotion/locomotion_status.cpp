@@ -1,6 +1,7 @@
 // See locomotion_status.hpp.
 #include "integrated_bringup/controllers/locomotion/locomotion_status.hpp"
 
+#include "integrated_bringup/controllers/locomotion/measured_state_source.hpp"
 #include "rtc_mpc/reference/command_filter.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
@@ -48,6 +49,10 @@ constexpr const char* kKeyNames[kLocomotionStatusKeyCount] = {
     "cmd_stale_ticks",
     "cmd_nonfinite_ticks",
     "cmd_ignored_axis_ticks",
+    "source_status",
+    "estimator_resets",
+    "estimator_reset_reason",
+    "estimator_contact_mask",
 };
 
 }  // namespace
@@ -195,6 +200,14 @@ void FormatLocomotionStatusValue(LocomotionStatusKey key, const LocomotionDiagLo
       return u64(cmd.nonfinite_count);
     case Key::kCmdIgnoredAxisTicks:
       return u64(cmd.ignored_axis_count);
+    case Key::kSourceStatus:
+      return str(locomotion::ToString(static_cast<locomotion::StateSourceStatus>(s.source_status)));
+    case Key::kEstimatorResets:
+      return u64(s.estimator.reset_count);
+    case Key::kEstimatorResetReason:
+      return u64(s.estimator.reset_reason);
+    case Key::kEstimatorContactMask:
+      return u64(s.estimator.estimated_mask);
     case Key::kCount:
       break;
   }

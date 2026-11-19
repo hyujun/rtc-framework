@@ -20,11 +20,13 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <utility>
 
@@ -61,6 +63,11 @@ struct LocomotionControllerTestAccess {
       }
     }
     return -1;
+  }
+
+  /// The dynamics model's state the tick handed the WBC and the MPC.
+  static const rtc::tsid::ControlState& QpState(const LocomotionController& c) {
+    return c.qp_state_;
   }
 
   /// Guard refusals before kPoseGuard latches (round(0.5 s · control rate)).
@@ -108,6 +115,11 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
       if (gate.load() > 0) {
         gate.fetch_sub(1);
       }
+    }
+    {
+      const std::lock_guard<std::mutex> lock(snapshot_mutex);
+      snapshots[snapshot_count % kSnapshots] = state;
+      ++snapshot_count;
     }
     if (ctx.horizon != nullptr) {  // what the phase manager built from the command
       horizon_command_sequence.store(ctx.horizon->command_sequence);
@@ -220,6 +232,11 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
   // Read back from the last Solve's horizon: the command the planner integrated.
   std::atomic<std::uint64_t> horizon_command_sequence{0};
   std::atomic<double> horizon_base_vx{0.0};  ///< node 0 base v_x [m/s]
+  // The states the solves were given, the last kSnapshots (snapshot_count total).
+  static constexpr std::size_t kSnapshots = 256;
+  std::mutex snapshot_mutex;
+  std::array<rtc::mpc::MPCStateSnapshot, kSnapshots> snapshots{};
+  std::size_t snapshot_count{0};
 
  private:
   double weight_;

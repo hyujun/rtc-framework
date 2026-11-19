@@ -107,6 +107,20 @@ void LocomotionController::LoadConfig(const YAML::Node& cfg) {
   cos_tilt_ = std::cos(cfg_.pose_guard_base_tilt_rad);
   guard_settle_ticks_ =
       static_cast<uint32_t>(std::max<long>(1, std::lround(kPoseGuardSettleS / GetDefaultDt())));
+  init_timeout_ticks_ = std::numeric_limits<std::uint32_t>::max();
+  if (cfg_.estimator.inekf) {
+    const auto& inekf = *cfg_.estimator.inekf;
+    // The IMU noise is stated per sample of the control tick: one IMU sample a tick.
+    const double dt = GetDefaultDt();
+    if (!(std::abs(inekf.imu.sample_period_s - dt) <= 1e-9 * dt)) {
+      Fail("estimator.inekf.imu.sample_period_s is " + std::to_string(inekf.imu.sample_period_s) +
+           " s but the control period is " + std::to_string(dt) + " s");
+    }
+    if (cfg_.estimator.source == "inekf") {
+      init_timeout_ticks_ =
+          static_cast<uint32_t>(std::max<long>(1, std::lround(inekf.init.timeout_s / dt)));
+    }
+  }
   cfg_loaded_ = true;
   config_error_ = GetDeviceNameConfig(cfg_.model.body_group) != nullptr
                       ? WireDevices()
@@ -207,6 +221,19 @@ void LocomotionController::InitModels() {
   qp_state_.v = Eigen::VectorXd::Zero(reduced_model_->nv);
   full_data_ = std::make_unique<pinocchio::Data>(*full_model_);
   q_full_ = pinocchio::neutral(*full_model_);
+  imu_site_ = static_cast<int>(std::find(cfg_.model.imu.sites.begin(), cfg_.model.imu.sites.end(),
+                                         cfg_.model.imu.primary_site) -
+                               cfg_.model.imu.sites.begin());
+  if (cfg_.estimator.inekf) {
+    // The estimator's model binding, checked here once (the source builds its own).
+    try {
+      const loco::ImuFrameKinematics probe(reduced_model_, ContactFrameNames(),
+                                           cfg_.estimator.inekf->imu_frame);
+      static_cast<void>(probe);
+    } catch (const std::invalid_argument& e) {
+      Fail(std::string("estimator.inekf: ") + e.what());
+    }
+  }
   total_mass_ = pinocchio::computeTotalMass(*full_model_);
   weight_ = total_mass_ * full_model_->gravity.linear().norm();
   ++model_epoch_;
@@ -259,12 +286,28 @@ std::string LocomotionController::WireDevices() {
       kd_[i] = cfg_.pd_kd[i];
       damping_kd_[i] = cfg_.damping_kd[i];
     }
-    loco::TruthStateSource::Params p;
-    p.body_max_age_ns = static_cast<int64_t>(cfg_.estimator.body_max_age_ms * 1e6);
-    p.hand_max_age_ns = static_cast<int64_t>(cfg_.estimator.hand_max_age_ms * 1e6);
-    p.num_contacts = static_cast<int>(cfg_.model.contacts.size());
-    p.model_epoch = model_epoch_;
-    source_ = std::make_unique<loco::TruthStateSource>(p);
+    const auto body_age_ns = static_cast<int64_t>(cfg_.estimator.body_max_age_ms * 1e6);
+    const auto hand_age_ns = static_cast<int64_t>(cfg_.estimator.hand_max_age_ms * 1e6);
+    if (cfg_.estimator.source == "inekf") {
+      loco::InekfStateSource::Params p;
+      p.body_max_age_ns = body_age_ns;
+      p.hand_max_age_ns = hand_age_ns;
+      p.model_epoch = model_epoch_;
+      p.imu_site = imu_site_;
+      p.config = *cfg_.estimator.inekf;
+      source_ = std::make_unique<loco::InekfStateSource>(
+          p,
+          std::make_unique<loco::ImuFrameKinematics>(reduced_model_, ContactFrameNames(),
+                                                     p.config.imu_frame),
+          reduced_to_full_);
+    } else {
+      loco::TruthStateSource::Params p;
+      p.body_max_age_ns = body_age_ns;
+      p.hand_max_age_ns = hand_age_ns;
+      p.num_contacts = static_cast<int>(cfg_.model.contacts.size());
+      p.model_epoch = model_epoch_;
+      source_ = std::make_unique<loco::TruthStateSource>(p);
+    }
   } catch (const std::exception& e) {
     return e.what();
   }
@@ -277,6 +320,14 @@ void LocomotionController::OnDeviceConfigsSet() {
     return;
   }
   config_error_ = WireDevices();
+}
+
+std::vector<std::string> LocomotionController::ContactFrameNames() const {
+  std::vector<std::string> frames;
+  for (const auto& c : cfg_.model.contacts) {
+    frames.push_back(c.frame);
+  }
+  return frames;
 }
 
 std::optional<pinocchio::SE3> LocomotionController::FullFramePlacement(

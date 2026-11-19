@@ -17,10 +17,17 @@
 //
 // MeasuredStateSource is the seam between "where the state comes from" and the
 // control law: TruthStateSource below copies the simulator's ground truth, and
-// an estimator (IMU + kinematics) is the second implementation. Both run on the
-// RT tick: Update() is noexcept and allocation-free.
+// InekfStateSource (inekf_state_source.hpp) estimates the base from the IMU and
+// the leg kinematics. Which one runs is `estimator.source`, fixed at configure.
+// Both run on the RT tick: Update() is noexcept and allocation-free. Each tick
+// the caller hands the source a SourceTickInput (the contact prior it knows);
+// a source that estimates also fills `estimator` (estimator_telemetry.hpp),
+// truth leaves it zero. `state_epoch` is written on every Update, valid or
+// not, and changes only when the source restarts its state (Reset(), or an
+// estimator's own reset): a consumer that compares it tick to tick sees every
+// discontinuity of the base.
 //
-// Verdict. `status` is the first failure in this order: body joints
+// Verdict (truth). `status` is the first failure in this order: body joints
 // unreadable, body joints stale, base missing, base stale, base pose invalid,
 // non-finite value. `valid` is status == kOk. A lane that fails reads as the
 // neutral state (zero joints, the identity base, zero velocity) and its
@@ -32,7 +39,9 @@
 // so: the hands are held still and their frames only place the end-effectors.
 #pragma once
 
+#include "integrated_bringup/controllers/locomotion/estimator_telemetry.hpp"
 #include "integrated_bringup/controllers/locomotion/humanoid_model_config.hpp"
+#include "integrated_bringup/controllers/locomotion/inekf_source_config.hpp"
 #include "rtc_base/types/types.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -40,6 +49,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -78,6 +88,11 @@ enum class StateSourceStatus : uint8_t {
   kBaseStale,       ///< base lane older than the body age limit
   kBaseInvalid,     ///< base quaternion norm off 1 by more than kQuaternionNormTolerance
   kNonFinite,       ///< a NaN / Inf in q or v
+  kImuMissing,      ///< primary IMU site not reported, flagged invalid, non-finite, or its sequence
+                    ///< went back
+  kImuStale,        ///< the IMU sample repeated for more than the hold budget
+  kImuSkew,         ///< joint and IMU receipts further apart than the invalid bound
+  kNotInitialized,  ///< the estimator has not started (no still window yet, or just reset)
 };
 
 [[nodiscard]] const char* ToString(StateSourceStatus status) noexcept;
@@ -110,6 +125,13 @@ struct MeasuredRobotState {
   StateSourceKind kind{StateSourceKind::kTruth};
   StateSourceStatus status{StateSourceStatus::kBodyUnreadable};
   bool valid{false};
+  EstimatorTelemetry estimator{};  ///< zero from a source that estimates nothing
+};
+
+/// @brief What the caller knows on this tick that a source may use.
+struct SourceTickInput {
+  /// Bit c = contact c planned closed (the controller's mask as of the last tick).
+  uint32_t planned_mask{0};
 };
 
 static_assert(std::is_trivially_copyable_v<MeasuredRobotState>,
@@ -152,17 +174,20 @@ struct HandRoster {
 /// @brief The `estimator` section of the controller config.
 ///
 ///   estimator:
-///     source: truth          # the only source today
-///     body_max_age_ms: 10.0  # body joint and base lanes, (0, 1000]
+///     source: truth          # truth | inekf
+///     body_max_age_ms: 10.0  # body joint and base (truth) lanes, (0, 1000]
 ///     hand_max_age_ms: 50.0  # hand joint lanes, (0, 1000]
+///     inekf: {...}           # inekf_source_config.hpp; required with source: inekf
 struct EstimatorConfig {
   std::string source;
   double body_max_age_ms{0.0};
   double hand_max_age_ms{0.0};
+  std::optional<InekfSourceConfig> inekf;  ///< parsed (and checked) whenever present
 };
 
 /// @throws std::invalid_argument on an unknown or missing key, a source other than
-///         "truth", or an age outside (0, 1000] ms.
+///         "truth" or "inekf", an age outside (0, 1000] ms, `inekf` missing with
+///         source: inekf, or an `inekf` section ParseInekfSourceConfig refuses.
 [[nodiscard]] EstimatorConfig ParseEstimatorConfig(const YAML::Node& estimator,
                                                    const std::string& context);
 
@@ -182,11 +207,42 @@ class MeasuredStateSource {
   virtual void Reset() noexcept = 0;
 
   /// Fill `out` from this tick's `state`. RT: no allocation, no throw.
+  /// @param tick           what the caller knows on this tick (SourceTickInput)
   /// @param now_steady_ns  the steady clock, read on this tick
   /// @return out.valid
   [[nodiscard]] virtual bool Update(const rtc::ControllerState& state, const DeviceIndices& indices,
-                                    int64_t now_steady_ns, MeasuredRobotState& out) noexcept = 0;
+                                    const SourceTickInput& tick, int64_t now_steady_ns,
+                                    MeasuredRobotState& out) noexcept = 0;
 };
+
+/// @brief The hands' last fresh joints, held while a hand is stale (every source
+///        treats the hands alike: they only place the end-effectors).
+struct HeldHands {
+  std::array<double, kMaxStateJoints> q{};
+  uint32_t seen{0};  ///< HandBit(h) set once hand h has been fresh
+};
+
+/// @brief The joint lanes' part of a verdict.
+struct JointLaneVerdict {
+  bool body_present{false};  ///< the body device slot exists in the state
+  bool body_unreadable{false};
+  bool body_stale{false};
+  bool non_finite{false};
+};
+
+/// @brief Read the body joint lanes and the hands into `out` — the part every
+///        source shares (header: the hands' rule, the age rule). Writes the body
+///        joints, `sequence` and `stamp_steady_ns` (the joint receipt), the hands,
+///        and their fresh / valid bits; `out.q` / `out.v` must already hold the
+///        neutral state. RT-safe.
+[[nodiscard]] JointLaneVerdict ReadJointLanes(const rtc::ControllerState& state,
+                                              const DeviceIndices& indices, int64_t now_steady_ns,
+                                              int64_t body_max_age_ns, int64_t hand_max_age_ns,
+                                              HeldHands& held, MeasuredRobotState& out) noexcept;
+
+/// @brief Age of a lane's last receipt against `now`; negative when it never
+///        arrived, 0 when it is stamped after `now`.
+[[nodiscard]] int64_t LaneAgeNs(int64_t recv_steady_ns, int64_t now_steady_ns) noexcept;
 
 /// @brief The simulator's ground truth: the body group's joint and floating-base
 ///        lanes and the hand groups' joint lanes, copied. Contacts are all closed
@@ -204,15 +260,15 @@ class TruthStateSource final : public MeasuredStateSource {
   explicit TruthStateSource(const Params& params);
 
   void Reset() noexcept override;
+  /// `tick` is not read: truth knows no prior.
   [[nodiscard]] bool Update(const rtc::ControllerState& state, const DeviceIndices& indices,
-                            int64_t now_steady_ns, MeasuredRobotState& out) noexcept override;
+                            const SourceTickInput& tick, int64_t now_steady_ns,
+                            MeasuredRobotState& out) noexcept override;
 
  private:
   Params params_;
   uint32_t state_epoch_{0};
-  // A hand's last fresh joints, held while it is stale.
-  std::array<double, kMaxStateJoints> held_hand_q_{};
-  uint32_t hands_seen_{0};  ///< HandBit(h) set once hand h has been fresh
+  HeldHands held_;
 };
 
 }  // namespace integrated_bringup::locomotion

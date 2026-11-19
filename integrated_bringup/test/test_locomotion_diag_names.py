@@ -15,6 +15,14 @@ from pathlib import Path
 
 from rtc_tools.analysis import locomotion_diag as ld
 
+_SOURCE_HEADER = (
+    Path(__file__).resolve().parents[1]
+    / "include"
+    / "integrated_bringup"
+    / "controllers"
+    / "locomotion"
+    / "measured_state_source.hpp"
+)
 _HEADER = (
     Path(__file__).resolve().parents[1]
     / "include"
@@ -57,3 +65,14 @@ def test_the_pose_guard_column_is_in_the_csv_header_and_the_docstring():
     text = _HEADER.read_text()
     assert "pose_guard_mask," in text
     assert "pose_guard_mask" in ld.__doc__
+
+
+def test_the_source_status_names_cover_every_status_in_order():
+    text = _SOURCE_HEADER.read_text()
+    m = re.search(r"enum class StateSourceStatus : uint8_t \{(.*?)\};", text, re.S)
+    assert m, "enum StateSourceStatus not found"
+    names = re.findall(r"^\s*k(\w+)", m.group(1), re.M)
+    assert names[0] == "Ok"
+    assert len(ld.SOURCE_STATUS_NAMES) == len(names)
+    assert ld.SOURCE_STATUS_NAMES[names.index("NotInitialized")] == "not initialized"
+    assert ld.SOURCE_STATUS_NAMES[names.index("ImuMissing")] == "imu missing"

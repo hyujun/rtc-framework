@@ -192,7 +192,7 @@ TEST(TruthStateSource, CopiesTheFullStateThroughTheLayoutMap) {
   const auto state = MakeState();
   MeasuredRobotState out{};
 
-  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  ASSERT_TRUE(src.Update(state, idx, {}, kNow, out));
 
   EXPECT_EQ(StateSourceStatus::kOk, out.status);
   EXPECT_EQ(StateSourceKind::kTruth, out.kind);
@@ -241,7 +241,7 @@ TEST(TruthStateSource, NormalisesANearUnitQuaternion) {
     p[i] *= 1.0 + 5e-4;  // inside the tolerance
   }
   MeasuredRobotState out{};
-  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  ASSERT_TRUE(src.Update(state, idx, {}, kNow, out));
   const double norm = std::sqrt(out.q[3] * out.q[3] + out.q[4] * out.q[4] + out.q[5] * out.q[5] +
                                 out.q[6] * out.q[6]);
   EXPECT_NEAR(1.0, norm, 4 * std::numeric_limits<double>::epsilon());
@@ -319,7 +319,7 @@ TEST(TruthStateSource, ReportsTheFirstBodyOrBaseFault) {
     auto state = MakeState();
     c.spoil(state);
     MeasuredRobotState out{};
-    EXPECT_FALSE(src.Update(state, idx, kNow, out)) << c.what;
+    EXPECT_FALSE(src.Update(state, idx, {}, kNow, out)) << c.what;
     EXPECT_FALSE(out.valid) << c.what;
     EXPECT_EQ(c.expected, out.status) << c.what << ": " << ToString(out.status);
   }
@@ -335,7 +335,7 @@ TEST(TruthStateSource, AFailedLaneReadsNeutralAndClaimsNoSample) {
   out.q.fill(5.0);  // whatever the caller's buffer held
   out.v.fill(5.0);
 
-  EXPECT_FALSE(src.Update(state, idx, kNow, out));
+  EXPECT_FALSE(src.Update(state, idx, {}, kNow, out));
   EXPECT_EQ(StateSourceStatus::kBaseMissing, out.status);  // precedes non-finite
   EXPECT_EQ(0U, out.valid_mask & (kBodyJointsBit | kBaseBit));
   EXPECT_EQ(0U, out.fresh_mask & (kBodyJointsBit | kBaseBit));
@@ -355,7 +355,7 @@ TEST(TruthStateSource, AReceiptStampedAfterNowIsFresh) {
   state.devices[kBodyDevice].base_recv_steady_ns = kNow + 5000;
   state.devices[kHandDevice].joint_recv_steady_ns = kNow + 1000;
   MeasuredRobotState out{};
-  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  ASSERT_TRUE(src.Update(state, idx, {}, kNow, out));
   EXPECT_EQ(kBodyJointsBit | kBaseBit | HandBit(0), out.fresh_mask);
 }
 
@@ -364,13 +364,13 @@ TEST(TruthStateSource, AStaleHandHoldsItsJointsAtRestWithoutFailingTheState) {
   TruthStateSource src(MakeParams());
   auto state = MakeState();
   MeasuredRobotState out{};
-  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  ASSERT_TRUE(src.Update(state, idx, {}, kNow, out));
   const double held = out.q[7 + Joint("h1")];
 
   // The hand goes quiet (past its 50 ms) and its last message moves on.
   state.devices[kHandDevice].joint_recv_steady_ns = kNow - 51 * kMs;
   state.devices[kHandDevice].positions[0] = 9.0;
-  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  ASSERT_TRUE(src.Update(state, idx, {}, kNow, out));
   EXPECT_EQ(StateSourceStatus::kOk, out.status);
   EXPECT_EQ(held, out.q[7 + Joint("h1")]);
   EXPECT_EQ(0.0, out.v[6 + Joint("h1")]);
@@ -381,7 +381,7 @@ TEST(TruthStateSource, AStaleHandHoldsItsJointsAtRestWithoutFailingTheState) {
   // A NaN sample is a stale hand too, never a failed state.
   state.devices[kHandDevice].joint_recv_steady_ns = kNow - 1 * kMs;
   state.devices[kHandDevice].velocities[1] = kNaN;
-  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  ASSERT_TRUE(src.Update(state, idx, {}, kNow, out));
   EXPECT_EQ(held, out.q[7 + Joint("h1")]);
   EXPECT_EQ(0U, out.fresh_mask & HandBit(0));
 }
@@ -393,7 +393,7 @@ TEST(TruthStateSource, AHandThatNeverReportedIsAtZeroAndNotValid) {
   state.devices[kHandDevice].valid = false;
   MeasuredRobotState out{};
   out.q.fill(5.0);  // whatever the caller's buffer held
-  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  ASSERT_TRUE(src.Update(state, idx, {}, kNow, out));
   EXPECT_EQ(0.0, out.q[7 + Joint("h0")]);
   EXPECT_EQ(0.0, out.q[7 + Joint("h1")]);
   EXPECT_EQ(0U, out.valid_mask & HandBit(0));
@@ -404,12 +404,12 @@ TEST(TruthStateSource, ResetBumpsTheEpochAndForgetsTheHeldHand) {
   TruthStateSource src(MakeParams());
   auto state = MakeState();
   MeasuredRobotState out{};
-  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  ASSERT_TRUE(src.Update(state, idx, {}, kNow, out));
   const uint32_t epoch = out.state_epoch;
 
   src.Reset();
   state.devices[kHandDevice].valid = false;
-  ASSERT_TRUE(src.Update(state, idx, kNow, out));
+  ASSERT_TRUE(src.Update(state, idx, {}, kNow, out));
   EXPECT_EQ(epoch + 1, out.state_epoch);
   EXPECT_EQ(0.0, out.q[7 + Joint("h1")]);
   EXPECT_EQ(0U, out.valid_mask & HandBit(0));
@@ -420,7 +420,7 @@ TEST(TruthStateSource, NoContactsMeansAnEmptyPrior) {
   p.num_contacts = 0;
   TruthStateSource src(p);
   MeasuredRobotState out{};
-  ASSERT_TRUE(src.Update(MakeState(), MakeIndices(), kNow, out));
+  ASSERT_TRUE(src.Update(MakeState(), MakeIndices(), {}, kNow, out));
   EXPECT_EQ(0U, out.contact_mask);
 }
 
@@ -509,7 +509,7 @@ uint64_t TruthDigest(int ticks) {
     if ((faults >> 31U & 0x3FU) == 0) {
       src.Reset();
     }
-    const bool ok = src.Update(state, idx, kNow, out);
+    const bool ok = src.Update(state, idx, {}, kNow, out);
     h = FnvValue(h, ok);
     h = FnvValue(h, out.nq);
     h = FnvValue(h, out.nv);

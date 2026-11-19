@@ -17,7 +17,8 @@ pose —, 1 nominal, 2 degraded, 3 fault), ``fault_cause`` (0 none, 1 solve
 health, 2 source, 3 non-finite, 4 model epoch, 5 plan loss, 6 pose guard),
 ``fault_latched``, ``pose_guard_mask`` (optional; the guard's verdict bits,
 0 = passed), ``source_status`` (0 ok, 1 body unreadable,
-2 body stale, 3 base missing, 4 base stale, 5 base invalid, 6 non-finite),
+2 body stale, 3 base missing, 4 base stale, 5 base invalid, 6 non-finite,
+7 imu missing, 8 imu stale, 9 imu skew, 10 not initialized),
 ``health`` (0 nominal, 1 degraded, 2 fault), ``tau_valid``, ``qp_status``,
 ``qp_iterations``, ``solve_time_us``, ``wbc_tick_us``, ``eom_residual_inf``,
 the five ``margin_*`` columns with ``margins_stale``, ``base_p{x,y,z}``,
@@ -98,6 +99,10 @@ SOURCE_STATUS_NAMES = (
     "base stale",
     "base invalid",
     "non-finite",
+    "imu missing",
+    "imu stale",
+    "imu skew",
+    "not initialized",
 )
 
 Table = dict[str, np.ndarray]

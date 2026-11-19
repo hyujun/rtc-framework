@@ -58,7 +58,14 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
     // latches one while the stop holds — so the tick below waits, solves
     // nothing and sends the MPC nothing, while the state, the models and the
     // logs still run.
-    if (source_ok_ && !reference_latched_ && !estop_active_) {
+    // An estimator that does not start in time is not waited on for ever: a
+    // robot that will not hold still is not taken over (header).
+    if (!reference_latched_ && !estop_active_ &&
+        measured_.status == loco::StateSourceStatus::kNotInitialized &&
+        ++init_wait_ticks_ >= init_timeout_ticks_) {
+      Latch(FaultCause::kSource);
+    }
+    if (source_ok_ && !reference_latched_ && !estop_active_ && !fault_latched_tick_) {
       TryLatchReference(state);
     }
     if (mpc_enabled_ && source_ok_ && reference_latched_) {
@@ -106,6 +113,7 @@ void LocomotionController::ServiceRequests() noexcept {
     if (source_) {
       source_->Reset();
     }
+    source_epoch_known_ = false;  // the activation's own restart of the source
     ClearLatch();
     serviced_reset_epoch_ = fault_reset_epoch_.load(std::memory_order_acquire);
     serviced_estop_state_ = estop_state_.load(std::memory_order_acquire);
@@ -135,6 +143,7 @@ void LocomotionController::RestartReference() noexcept {
   reference_latched_ = false;
   hand_hold_mask_ = 0;
   source_bad_ticks_ = 0;
+  init_wait_ticks_ = 0;
   guard_fail_ticks_ = 0;
   pose_guard_mask_ = 0;
   tau_prev_.fill(0.0);
@@ -152,7 +161,23 @@ void LocomotionController::ClearLatch() noexcept {
 }
 
 void LocomotionController::ReadState(const ControllerState& state, int64_t now_ns) noexcept {
-  source_ok_ = source_ != nullptr && source_->Update(state, indices_, now_ns, measured_);
+  loco::SourceTickInput tick;
+  tick.planned_mask = contact_mask_;  // the last tick's mask (header)
+  source_ok_ = source_ != nullptr && source_->Update(state, indices_, tick, now_ns, measured_);
+  if (source_ != nullptr) {
+    // The state epoch is written on every tick, valid or not (the source's
+    // contract), so this runs before the early return below.
+    if (source_epoch_known_ && measured_.state_epoch != source_epoch_seen_) {
+      if (mpc_enabled_) {
+        RestartMpcStream();
+      }
+      if (reference_latched_) {
+        Latch(FaultCause::kSource);
+      }
+    }
+    source_epoch_seen_ = measured_.state_epoch;
+    source_epoch_known_ = true;
+  }
   if (source_ok_ && measured_.model_epoch != model_epoch_) {
     source_ok_ = false;
     Latch(FaultCause::kModelEpoch);
@@ -431,6 +456,7 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   d.source_valid_mask = measured_.valid_mask;
   d.source_bad_ticks = source_bad_ticks_;
   d.source_sequence = measured_.sequence;
+  d.estimator = measured_.estimator;
   d.source_age_us = measured_.stamp_steady_ns > 0
                         ? static_cast<double>(now_ns - measured_.stamp_steady_ns) * 1e-3
                         : -1.0;
