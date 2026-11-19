@@ -11,6 +11,7 @@
 #define INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_DIAG_LOG_POD_HPP_
 
 #include "integrated_bringup/controllers/locomotion/estimator_telemetry.hpp"
+#include "rtc_mpc/thread/solve_record.hpp"
 
 #include <algorithm>
 #include <array>
@@ -171,6 +172,24 @@ struct LocomotionDiagLogPod {
   std::uint64_t plan_holds{0};
   LocomotionPlanSampleDiag sample{};
   locomotion::EstimatorTelemetry estimator{};  ///< the source's record of this tick
+
+  // ── Appended (R tier, locomotion-controller.md "Log tiers") ───────────────
+  /// Where measured_ came from: 0 the truth lane copied, 1 an estimate.
+  std::uint8_t state_source{0};
+  /// The contact wrench target the whole-body QP was handed this tick
+  /// (ref_.lambda_des: the plan's MPC wrench under stand / walk, the lever-rule
+  /// static share when idle), per contact [f; τ] — world axes, about the contact
+  /// frame origin, floor-on-foot. NaN on a tick the QP did not run (waiting,
+  /// E-STOP, fault, a degraded hold); τ NaN for a point (dim 3) contact.
+  std::array<double, kMaxContacts * 6> wrench_des{};
+  /// tau_servo's two terms, the same tick reconstruction: kp (q_cmd − q) and
+  /// −kd q̇ [N·m] (their sum is tau_servo up to rounding).
+  std::array<double, kMaxJoints> servo_kp{};
+  std::array<double, kMaxJoints> servo_kd{};
+  /// The MPC thread's last finished solve attempt (rtc_mpc
+  /// thread/solve_record.hpp) — seq 0 / outcome −1 without one or without an
+  /// MPC. Not the plan the WBC follows (plan_id / sample_*), which can be older.
+  rtc::mpc::SolveRecord mpc_last{};
 };
 
 static_assert(locomotion::kMaxEstimatorSlots == LocomotionDiagLogPod::kMaxContacts,
@@ -243,6 +262,20 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
   for (std::size_t i = 0; i < locomotion::kEstimatorCovDiagBase + 3 * cols.contacts; ++i) {
     os << ",est_p_" << i;
   }
+  os << ",state_source";
+  for (std::size_t c = 0; c < cols.contacts; ++c) {
+    for (const char* axis : {"fx", "fy", "fz", "tx", "ty", "tz"}) {
+      os << ",wrench_des_" << contact_names[c] << '_' << axis;
+    }
+  }
+  for (const char* prefix : {"servo_kp_", "servo_kd_"}) {
+    for (std::size_t i = 0; i < cols.joints; ++i) {
+      os << ',' << prefix << joint_names[i];
+    }
+  }
+  os << ",mpc_last_seq,mpc_last_outcome,mpc_last_err,mpc_last_iterations,mpc_last_converged,"
+        "mpc_last_initial,mpc_last_cold,mpc_last_prim_inf,mpc_last_consumed_prim,"
+        "mpc_last_compute_us,mpc_last_state_seq,mpc_last_state_epoch,mpc_last_plan_id";
 }
 
 inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogPod& p,
@@ -333,6 +366,21 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
   for (std::size_t i = 0; i < locomotion::kEstimatorCovDiagBase + 3 * nc; ++i) {
     os << ',' << e.p_diag[i];
   }
+  os << ',' << static_cast<unsigned>(p.state_source);
+  for (std::size_t i = 0; i < nc * 6; ++i) {
+    os << ',' << p.wrench_des[i];
+  }
+  for (std::size_t i = 0; i < cols.joints; ++i) {
+    os << ',' << p.servo_kp[i];
+  }
+  for (std::size_t i = 0; i < cols.joints; ++i) {
+    os << ',' << p.servo_kd[i];
+  }
+  const auto& m = p.mpc_last;
+  os << ',' << m.seq << ',' << static_cast<int>(m.outcome) << ',' << m.err << ',' << m.iterations
+     << ',' << (m.converged ? 1 : 0) << ',' << (m.initial_solve ? 1 : 0) << ','
+     << (m.cold_start ? 1 : 0) << ',' << m.prim_inf << ',' << m.consumed_prim << ',' << m.compute_us
+     << ',' << m.state_sequence << ',' << m.state_epoch << ',' << m.plan_id;
 }
 
 }  // namespace integrated_bringup

@@ -629,6 +629,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   rtc::SeqLock<rtc::mpc::FilteredCommand> command_out_;  ///< timer → publish thread, tests
   /// timer → RT tick (the diagnostic log): one producer (PushCommand), one consumer (FillLogs).
   rtc::mpc::TripleBuffer<LocomotionCommandLogSample> command_log_;
+  /// MPC thread → RT tick (the diagnostic log): the thread's last solve attempt
+  /// (SetSolveRecordSink; reset to SolveRecord{} before each thread starts).
+  rtc::mpc::TripleBuffer<rtc::mpc::SolveRecord> mpc_solve_record_;
   /// The body group's inference values per group (0 = no lane), from the device configs.
   int contact_force_stride_{0};
   /// The body group's sensor_layout.has_native_moment (the T tier's moment columns).

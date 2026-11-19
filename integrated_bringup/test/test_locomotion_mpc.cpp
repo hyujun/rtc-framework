@@ -6,6 +6,7 @@
 // handler on the real MPC thread (one producer, as in the run); one smoke test
 // runs the installed MPC itself.
 #include "locomotion_mpc_stub.hpp"
+#include "rtc_controllers/testing/bit_compare.hpp"
 
 #include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/executors/single_threaded_executor.hpp>
@@ -28,6 +29,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -1070,6 +1072,150 @@ TEST_F(LocomotionContactForceLogTest, NoSensorLayoutIsNoLane) {
   TickFor(1);
   EXPECT_EQ(ctrl_->LastDiag().meas_contact_valid, 0U);
   EXPECT_TRUE(std::isnan(ctrl_->LastDiag().meas_fz[0]));
+}
+
+// ── R-tier columns (locomotion-controller.md "Log tiers") ──────────────────
+
+// wrench_des is the λ target the QP was handed on that tick, per contact at
+// its own offset; NaN on a tick the QP did not run.
+void ExpectWrenchDesIsTheQpTarget(const LocomotionController& ctrl, const YAML::Node& cfg) {
+  const auto& d = ctrl.LastDiag();
+  const Eigen::VectorXd& lambda = ctrl.Reference().lambda_des;
+  Eigen::Index offset = 0;
+  const YAML::Node contacts = cfg["model"]["contacts"];
+  for (std::size_t c = 0; c < contacts.size(); ++c) {
+    const int dim = contacts[c]["dim"].as<int>();
+    for (int k = 0; k < 6; ++k) {
+      const double got = d.wrench_des[c * 6 + static_cast<std::size_t>(k)];
+      if (k < dim) {
+        EXPECT_TRUE(rtc::testing::BitsEqual(got, lambda(offset + k))) << c << ' ' << k;
+      } else {
+        EXPECT_TRUE(std::isnan(got)) << "a point contact has no moment: " << c << ' ' << k;
+      }
+    }
+    offset += dim;
+  }
+}
+
+void ExpectWrenchDesNaN(const LocomotionController& ctrl) {
+  for (const double x : ctrl.LastDiag().wrench_des) {
+    EXPECT_TRUE(std::isnan(x));
+  }
+}
+
+TEST_F(LocomotionMpcTest, WrenchDesIsTheStandPlansTargetTheQpWasHanded) {
+  BringUpWithStub();
+  ReachStand();
+  for (int k = 0; k < 20; ++k) {
+    last_out_ = Tick();
+    ASSERT_EQ(ctrl_->Source(), Source::kStand);
+    ASSERT_EQ(LastMode(), Mode::kNominal);
+    ExpectWrenchDesIsTheQpTarget(*ctrl_, cfg_);
+  }
+  // The MPC's own record: its last attempt, published, after the plan the
+  // WBC follows at the latest; seq never goes back.
+  const auto& m = ctrl_->LastDiag().mpc_last;
+  EXPECT_GT(m.seq, 0U);
+  EXPECT_EQ(m.outcome, rtc::mpc::SolveOutcome::kPublished);
+  EXPECT_GE(m.plan_id, ctrl_->LastDiag().plan_id);
+  std::uint64_t seq = m.seq;
+  for (int k = 0; k < 20; ++k) {
+    last_out_ = Tick();
+    EXPECT_GE(ctrl_->LastDiag().mpc_last.seq, seq);
+    seq = ctrl_->LastDiag().mpc_last.seq;
+  }
+}
+
+// Idle (no MPC): the lever-rule static share, with one point contact (dim 3)
+// beside a 6-dim one so a wrong offset shows.
+TEST_F(LocomotionMpcTest, WrenchDesUnderIdleWithAPointContact) {
+  YAML::Node cfg = YAML::Clone(ShippedConfig());
+  cfg["model"]["contacts"][0]["dim"] = 3;
+  Configure(cfg, rclcpp::NodeOptions{}, "test_locomotion_wrench_des");
+  Activate();
+  MakeStanding();
+  for (int k = 0; k < 5; ++k) {
+    last_out_ = Tick();
+  }
+  ASSERT_EQ(LastMode(), Mode::kNominal);
+  ASSERT_EQ(ctrl_->Source(), Source::kIdle);
+  ExpectWrenchDesIsTheQpTarget(*ctrl_, cfg);
+  EXPECT_EQ(ctrl_->LastDiag().mpc_last.seq, 0U) << "no MPC, no record";
+  EXPECT_EQ(ctrl_->LastDiag().mpc_last.outcome, rtc::mpc::SolveOutcome::kNone);
+}
+
+TEST_F(LocomotionMpcTest, WrenchDesIsNaNWhenTheQpDidNotRun) {
+  Configure(ShippedConfig(), rclcpp::NodeOptions{}, "test_locomotion_wrench_nan");
+  Activate();
+  last_out_ = ctrl_->Compute(state_);  // no lane yet: waiting
+  ASSERT_EQ(LastMode(), Mode::kWaiting);
+  ExpectWrenchDesNaN(*ctrl_);
+  MakeStanding();
+  last_out_ = Tick();
+  ASSERT_EQ(LastMode(), Mode::kNominal);
+  last_out_ = StaleTick();  // a short source drop: the hold
+  ASSERT_EQ(LastMode(), Mode::kDegraded);
+  ExpectWrenchDesNaN(*ctrl_);
+  for (int k = 0; k < 8; ++k) {
+    last_out_ = StaleTick();
+  }
+  ASSERT_EQ(LastMode(), Mode::kFault);
+  last_out_ = Tick();  // latched: damping, no QP
+  ASSERT_EQ(LastMode(), Mode::kFault);
+  ExpectWrenchDesNaN(*ctrl_);
+}
+
+// servo_kp / servo_kd are kp (q_cmd − q) and −kd q̇ from the tick's own inputs,
+// each one; their sum is tau_servo to rounding; under damping the kp term is 0.
+TEST_F(LocomotionMpcTest, TheServoSplitIsItsTwoTerms) {
+  Configure(ShippedConfig(), rclcpp::NodeOptions{}, "test_locomotion_servo_split");
+  Activate();
+  MakeStanding();
+  const auto kp = cfg_["pd_feedforward"]["kp"].as<std::vector<double>>();
+  const auto kd = cfg_["pd_feedforward"]["kd"].as<std::vector<double>>();
+  auto& body = state_.devices[kBody];
+  for (int c = 0; c < body.num_channels; ++c) {
+    body.velocities[static_cast<std::size_t>(c)] = 0.01 * (c + 1) * (c % 2 == 0 ? 1.0 : -1.0);
+  }
+  const auto check = [&](bool damping) {
+    const auto& d = ctrl_->LastDiag();
+    const auto& out = last_out_.devices[kBody];
+    for (std::size_t i = 0; i < kp.size(); ++i) {
+      const double q = body.positions[i];
+      const double v = body.velocities[i];
+      EXPECT_TRUE(rtc::testing::BitsEqual(d.servo_kp[i], kp[i] * (out.commands[i] - q))) << i;
+      EXPECT_TRUE(rtc::testing::BitsEqual(d.servo_kd[i], -kd[i] * v)) << i;
+      const double sum = d.servo_kp[i] + d.servo_kd[i];
+      EXPECT_LE(std::abs(d.tau_servo[i] - sum),
+                1e-12 * std::max(1.0, std::abs(d.servo_kp[i]) + std::abs(d.servo_kd[i])))
+          << i;
+      if (damping) {
+        EXPECT_EQ(d.servo_kp[i], 0.0) << "damping commands the measured q: " << i;
+      }
+    }
+  };
+  for (int k = 0; k < 3; ++k) {
+    last_out_ = Tick();
+  }
+  ASSERT_EQ(LastMode(), Mode::kNominal);
+  EXPECT_EQ(ctrl_->LastDiag().state_source, 0U) << "truth";
+  check(false);
+  for (int k = 0; k < 9; ++k) {
+    last_out_ = StaleTick();
+  }
+  last_out_ = Tick();
+  ASSERT_EQ(LastMode(), Mode::kFault);
+  check(true);
+}
+
+TEST_F(LocomotionMpcTest, TheStateSourceColumnIsOneUnderTheEstimator) {
+  YAML::Node cfg = YAML::Clone(ShippedConfig());
+  cfg["estimator"]["source"] = "inekf";
+  Configure(cfg, rclcpp::NodeOptions{}, "test_locomotion_state_source");
+  Activate();
+  MakeStanding();
+  last_out_ = Tick();
+  EXPECT_EQ(ctrl_->LastDiag().state_source, 1U);
 }
 
 }  // namespace
