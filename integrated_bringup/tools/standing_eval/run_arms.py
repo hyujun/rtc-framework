@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -100,6 +101,7 @@ import yaml
 
 from rtc_tools.analysis import stance_metrics as sm, walk_metrics as wm
 from rtc_tools.launch.cpu_shield import mpc_solver_threads
+from rtc_tools.validation.model_match import model_match
 
 LOCO = "locomotion_controller"
 ARMS = ("servo", "loco", "lowpd", "mpc", "mpc_fb", "reentry", "estop", "walk", "walk_estop")
@@ -606,6 +608,128 @@ def newest_session(root: Path, after: float) -> Path | None:
     return best
 
 
+# ── provenance ────────────────────────────────────────────────────────────
+
+REPO = Path(__file__).resolve().parents[3]
+CONFIG_SOURCE = Path(__file__).resolve().parents[2] / "config"
+PLANT_LINE = re.compile(r"\[MuJoCoSimulator\] Loaded '([^']+)'")
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def tree_sha256(root: Path, files: list[Path]) -> str | None:
+    """One hash of `files` (paths relative to `root`) read under `root`; None if one is missing."""
+    digest = hashlib.sha256()
+    for rel in files:
+        path = root / rel
+        if not path.is_file():
+            return None
+        digest.update(str(rel).encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def config_hashes(profile: str, installed_root: Path, source_root: Path = CONFIG_SOURCE) -> dict:
+    """The profile's configuration as the launch read it against the checkout's.
+
+    The launch reads the installed copy, and parts of an install tree are
+    copies made at build time rather than links: a build older than the
+    checkout runs other values than the ones the commit names. The file list is
+    the checkout's, so a file an older build left behind does not count.
+    """
+    source = source_root / profile
+    files = sorted(p.relative_to(source) for p in source.rglob("*") if p.is_file())
+    return {
+        "profile": profile,
+        "files": len(files),
+        "source_sha256": tree_sha256(source, files),
+        "installed_sha256": tree_sha256(installed_root / profile, files),
+    }
+
+
+def overlay_record(launch_args: list[str], profile: str) -> dict | None:
+    """The run's overlay file: its path, hash and the generator's note beside it, if any.
+
+    The note is ``<overlay>.meta.json`` (what the overlay was generated from —
+    the search parameters of a tuning candidate).
+    """
+    values = [a.split(":=", 1)[1] for a in launch_args if a.startswith("sim_overlay:=")]
+    if not values:
+        return None
+    from integrated_bringup.sim_overlay import resolve_sim_overlay
+
+    path = Path(resolve_sim_overlay(values[-1], profile))
+    record: dict = {"path": str(path), "sha256": file_sha256(path)}
+    meta = path.with_suffix(".meta.json")
+    if meta.is_file():
+        record["meta"] = json.loads(meta.read_text())
+    return record
+
+
+def find_urdf(node) -> dict | None:
+    """The first ``urdf: {package, path}`` mapping of a parameter tree."""
+    if isinstance(node, dict):
+        urdf = node.get("urdf")
+        if isinstance(urdf, dict) and "package" in urdf and "path" in urdf:
+            return urdf
+        for value in node.values():
+            found = find_urdf(value)
+            if found is not None:
+                return found
+    return None
+
+
+def model_record(base_yaml: Path, launch_log: str) -> dict:
+    """The controller's URDF against the plant the simulator loaded (model_match)."""
+    from ament_index_python.packages import get_package_share_directory
+
+    loaded = PLANT_LINE.search(launch_log)
+    urdf = find_urdf(yaml.safe_load(base_yaml.read_text()))
+    if loaded is None or urdf is None:
+        return {"error": "no plant line in the launch log" if loaded is None else "no urdf"}
+    urdf_path = Path(get_package_share_directory(urdf["package"])) / urdf["path"]
+    plant = Path(loaded.group(1))
+    try:
+        match = model_match(urdf_path, plant, urdf.get("root_joint_type") == "floating")
+    except Exception as exc:  # an unverified model is recorded as such, never as a match
+        return {
+            "urdf": str(urdf_path),
+            "plant": str(plant),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    return {
+        "urdf": str(urdf_path),
+        "plant": str(plant),
+        "plant_sha256": file_sha256(plant),
+        **match,
+    }
+
+
+def git_state(repo: Path = REPO) -> dict:
+    """The checkout's commit and whether anything tracked or unignored differs from it."""
+
+    def git(*cmd: str) -> str | None:
+        r = subprocess.run(["git", "-C", str(repo), *cmd], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    status = git("status", "--porcelain")
+    return {"commit": git("rev-parse", "HEAD"), "dirty": None if status is None else bool(status)}
+
+
+def provenance(profile: str, launch_args: list[str], launch_log: str) -> dict:
+    """What a judge needs to tell this run's build, configuration and plant from another's."""
+    from ament_index_python.packages import get_package_share_directory
+
+    installed = Path(get_package_share_directory("integrated_bringup")) / "config"
+    return {
+        **git_state(),
+        "config": config_hashes(profile, installed),
+        "overlay": overlay_record(launch_args, profile),
+        "model_match": model_record(installed / profile / "_base.yaml", launch_log),
+    }
+
+
 def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
     out = args.out / f"{arm}_{k}"
     out.mkdir(parents=True, exist_ok=True)
@@ -727,6 +851,12 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                 note["session"] = session.name
             # What the controller ran, beside what the tool asked for.
             note["solver_threads"] = solver_threads(out / "launch.log")
+            try:
+                note["provenance"] = provenance(
+                    args.profile, extra, (out / "launch.log").read_text(errors="replace")
+                )
+            except Exception as exc:  # the run's data is kept; the judge refuses it
+                note["provenance_error"] = f"{type(exc).__name__}: {exc}"
             (out / "run.json").write_text(json.dumps(note, indent=2) + "\n")
     return note
 
@@ -754,6 +884,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("-k", type=int, default=5, help="runs per arm")
     p.add_argument("--launch", default="sim_g1_loco.launch.py")
+    p.add_argument(
+        "--profile",
+        help="the launch's config profile (config/<profile>); default: from --launch "
+        "(sim_<profile>.launch.py)",
+    )
     p.add_argument(
         "--runtime-yaml",
         type=Path,
@@ -839,6 +974,11 @@ def main(argv: list[str] | None = None) -> int:
         help="the controller's state source; inekf = sim_overlay:=estimator_inekf on every arm",
     )
     args = p.parse_args(argv)
+    if args.profile is None:
+        named = re.fullmatch(r"sim_(.+)\.launch\.py", args.launch)
+        if named is None:
+            p.error(f"--profile is needed: --launch {args.launch} is not sim_<profile>.launch.py")
+        args.profile = named.group(1)
     # The stop window inside the script's rest; the walking stop while it walks.
     script = wm.COMMAND_SCRIPTS[args.script]
     walking_s = wm.script_length(script[:-1])

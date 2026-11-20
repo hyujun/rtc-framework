@@ -584,3 +584,82 @@ def test_a_process_deaf_to_sigint_is_killed():
     assert run_arms.stop_group(proc, timeout=0.5) == -9
     proc.stdout.close()
     assert run_arms.stop_group(None) is None
+
+
+# ── provenance ────────────────────────────────────────────────────────────
+
+
+def _tree(root, files):
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+
+
+def test_an_install_that_matches_the_checkout_has_the_same_config_hash(tmp_path):
+    files = {"p/_base.yaml": "a: 1\n", "p/controllers/x.yaml": "b: 2\n"}
+    _tree(tmp_path / "src", files)
+    _tree(tmp_path / "inst", {**files, "p/left_by_an_older_build.yaml": "c: 3\n"})
+    h = run_arms.config_hashes("p", tmp_path / "inst", tmp_path / "src")
+    assert h["files"] == 2 and h["source_sha256"] is not None
+    assert h["installed_sha256"] == h["source_sha256"]  # the leftover file is not the checkout's
+
+
+def test_a_stale_installed_value_changes_the_config_hash(tmp_path):
+    _tree(tmp_path / "src", {"p/_base.yaml": "a: 1\n", "p/controllers/x.yaml": "b: 2\n"})
+    _tree(tmp_path / "inst", {"p/_base.yaml": "a: 1\n", "p/controllers/x.yaml": "b: 3\n"})
+    h = run_arms.config_hashes("p", tmp_path / "inst", tmp_path / "src")
+    assert h["installed_sha256"] not in (None, h["source_sha256"])
+
+
+def test_a_file_missing_from_the_install_leaves_no_installed_hash(tmp_path):
+    _tree(tmp_path / "src", {"p/_base.yaml": "a: 1\n", "p/new.yaml": "b: 2\n"})
+    _tree(tmp_path / "inst", {"p/_base.yaml": "a: 1\n"})
+    assert (
+        run_arms.config_hashes("p", tmp_path / "inst", tmp_path / "src")["installed_sha256"]
+        is None
+    )
+
+
+def test_the_config_hash_tells_a_moved_value_from_the_same_bytes(tmp_path):
+    _tree(tmp_path / "a", {"p/x.yaml": "1", "p/y.yaml": "2"})
+    _tree(tmp_path / "b", {"p/x.yaml": "2", "p/y.yaml": "1"})
+    files = [Path("x.yaml"), Path("y.yaml")]
+    assert run_arms.tree_sha256(tmp_path / "a" / "p", files) != run_arms.tree_sha256(
+        tmp_path / "b" / "p", files
+    )
+
+
+def test_the_overlay_record_carries_the_hash_and_the_generators_note(tmp_path):
+    overlay = tmp_path / "cand.yaml"
+    overlay.write_text("/**:\n  ros__parameters: {}\n")
+    assert run_arms.overlay_record(["enable_mpc:=true"], "g1_loco") is None
+    plain = run_arms.overlay_record([f"sim_overlay:={overlay}"], "g1_loco")
+    assert plain == {"path": str(overlay), "sha256": run_arms.file_sha256(overlay)}
+    (tmp_path / "cand.meta.json").write_text('{"theta": {"state": 0.5}}')
+    noted = run_arms.overlay_record([f"sim_overlay:={overlay}"], "g1_loco")
+    assert noted["meta"] == {"theta": {"state": 0.5}}
+    overlay.write_text("/**:\n  ros__parameters: {a: 1}\n")
+    assert (
+        run_arms.overlay_record([f"sim_overlay:={overlay}"], "g1_loco")["sha256"]
+        != plain["sha256"]
+    )
+
+
+def test_the_urdf_is_found_in_the_parameter_tree():
+    tree = {"/**": {"ros__parameters": {"x": 1, "urdf": {"package": "p", "path": "a/b.urdf"}}}}
+    assert run_arms.find_urdf(tree) == {"package": "p", "path": "a/b.urdf"}
+    assert run_arms.find_urdf({"urdf": "a string"}) is None
+
+
+def test_a_run_whose_plant_is_not_in_the_log_has_no_model_match(tmp_path):
+    base = tmp_path / "_base.yaml"
+    base.write_text("urdf: {package: robot_descriptions, path: nope.urdf}\n")
+    assert "error" in run_arms.model_record(base, "no plant here")
+    unreadable = run_arms.model_record(base, "[MuJoCoSimulator] Loaded '/nope.xml'  nq=1")
+    assert "error" in unreadable and "mass_kg" not in unreadable
+
+
+def test_the_checkout_state_is_a_commit_and_a_flag():
+    state = run_arms.git_state()
+    assert len(state["commit"]) == 40 and isinstance(state["dirty"], bool)
+    assert run_arms.git_state(Path("/"))["commit"] is None

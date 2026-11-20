@@ -54,6 +54,8 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 | `analyze_stance_metrics` | 그 CSV 를 다시 판정 (`--settle` · `--z-ref` 바꿔 재계산) | `analyze_stance_metrics stance.csv --z-ref 0.764431` |
 | `plot_locomotion_diag` | locomotion 세션 (`locomotion_diag.csv` · `joint_ff.csv`) 의 그림 7 장 + JSON 요약 | 아래 절 |
 | `estimator_metrics` | `estimator_replay` 재생 CSV 의 open-loop 추정기 지표 + K run 일관성 판정 (정의는 모듈 docstring) | `estimator_metrics replay.csv [--compare-online]` |
+| `walk_eval` | 보행 run 묶음의 tier 선언 지표 (`_truth` · `_est`, 없는 tier 는 거부) · run 유효성 · arm 통계 · 순위 비용 (정의는 모듈 docstring) | `walk_eval <batch> --spec spec.yaml --out eval.json` |
+| `model_match` | 제어 URDF 와 sim MJCF 가 같은 몸인지: 총질량 · CoM · 합성 관성의 차 (pinocchio · mujoco 필요) | `model_match robot.urdf.xacro scene.xml` |
 | `analyze_hand_canfd_gate` | CAN FD 손 실기 run 의 G-3 게이트 판정 (D55) | `analyze_hand_canfd_gate <session> g3.log --node-log node.log` |
 | `analyze_hand_gravity_ff` | 손 중력 feedforward A/B/A run (`joint_ff.csv`) 의 PASS / FAIL 판정 | `analyze_hand_gravity_ff <session> --json-out ff.json` |
 | `joint_command_gui` | 손 관절 슬라이더 명령 GUI (`joint_state_publisher_gui` 류) | 아래 절 |

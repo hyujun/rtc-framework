@@ -99,6 +99,9 @@ import numpy as np
 import yaml
 
 from rtc_tools.analysis import catching_vision as cv, clock_phase, hand_close, planner_solves
+from rtc_tools.analysis.binomial_stats import (
+    wilson_interval,  # noqa: F401 — this module's name too
+)
 from rtc_tools.analysis.catch_gate_map import REASON_NONE
 from rtc_tools.analysis.catch_speed_budget import (
     DEFAULT_CATCH_FRAME,
@@ -173,24 +176,6 @@ GATE_MAP_AXES = (
 
 
 # ══ Statistics ════════════════════════════════════════════════════════════════
-
-
-def wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
-    """Wilson score interval for k successes in n trials.
-
-    ``z`` is stated, never implied: 1.96 is the two-sided 95 % interval, whose
-    lower bound is the 97.5 % one-sided bound the truth verdict uses.
-    """
-    if n <= 0:
-        return (math.nan, math.nan)
-    if not 0 <= k <= n:
-        raise ValueError(f"k={k} outside [0, n={n}]")
-    p = k / n
-    z2 = z * z
-    denom = 1.0 + z2 / n
-    centre = (p + z2 / (2 * n)) / denom
-    half = z * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / denom
-    return (max(0.0, centre - half), min(1.0, centre + half))
 
 
 def _wilson_lower_vec(k: np.ndarray, n: int, z: float) -> np.ndarray:

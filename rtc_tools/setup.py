@@ -55,6 +55,8 @@ setup(
             "analyze_stance_metrics = rtc_tools.analysis.stance_metrics:main",
             "plot_locomotion_diag = rtc_tools.analysis.locomotion_diag:main",
             "estimator_metrics = rtc_tools.analysis.estimator_metrics:main",
+            "walk_eval = rtc_tools.analysis.walk_eval:main",
+            "model_match = rtc_tools.validation.model_match:main",
             "joint_command_gui = rtc_tools.gui.joint_command_gui:main",
         ],
     },
