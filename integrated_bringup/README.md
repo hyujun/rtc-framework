@@ -115,6 +115,7 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `initial_controller` | `""` (YAML) | 시작 컨트롤러. 기본은 profile 의 `sim.yaml` (`ur5e_p1a` · `iiwa7_leap` 은 wbc, `p2` · `p2_left` 는 `hand_joint_controller`, 나머지는 `demo_joint_controller`). 기동 완료 신호는 `RtControllerNode reached Active state` 로그 |
 | `enable_mpc` | `""` (YAML) | `mpc.enabled` 를 launch 시점에 덮는다 — `sim_iiwa7_leap` 은 `demo_wbc_controller` 의 것 (YAML 기본 `false`), `sim_g1_loco` 는 `locomotion_controller` 의 것, 나머지 sim 은 CPU layout 만 (기본 `false`) |
 | `layout_profile` | `""` (`enable_mpc`) | CPU layout profile 이름. `mpc_par_sim` 은 sim 에 없는 driver 의 slot 을 MPC worker 로 쓴다. 모르는 이름은 거부 |
+| `command_input` | `twist` | `locomotion_controller` 의 속도 명령 메시지: `twist` (`g1/cmd_vel`) 또는 `joy` (`g1/joy`, `sensor_msgs/Joy` — [rtc_teleop_input](../rtc_teleop_input/README.md) 이 낸다). `sim_g1_loco` 만 |
 | `mpc_threads` | `""` (YAML 1) | `locomotion_controller` 의 `mpc.solver.num_threads`. profile 의 worker 가 N − 1 개 미만이면 거부 (`sim_g1_loco` 만) |
 | `mpc_engine` | `""` (YAML) | `mock` / `handler` (`demo_wbc_controller` 의 MPC 엔진). `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2` 에는 없다 |
 | `sim_overlay` | `""` | 출하 씬을 건드리지 않고 바꾸는 overlay (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2`). [Scene overlay](#scene-overlay-sim_overlay--출하-씬을-건드리지-않고-바꾸기) |
