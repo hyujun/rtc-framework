@@ -2943,6 +2943,27 @@ test_lttng_compat_gate_has_an_escape_hatch() {
   rm -rf "$root"
 }
 
+test_package_lists_cover_every_package() {
+  # build.sh / install.sh build with --packages-select, which does not follow
+  # dependencies: a package directory missing from every list is never built
+  # by a clean install, and its dependents break at find_package or launch.
+  # The two sim-only packages are added by build.sh's mode switch, not by the
+  # lists. find, not git ls-files, so that a new untracked package counts.
+  local repo_root listed dir missing=""
+  repo_root="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+  listed=" $(get_base_packages) $(get_robot_packages) rtc_mujoco_sim rtc_digital_twin "
+  while IFS= read -r dir; do
+    [[ "$listed" == *" ${dir} "* ]] || missing+=" ${dir}"
+  done < <(find "$repo_root" -mindepth 2 -maxdepth 2 -name package.xml -printf '%h\n' \
+             | xargs -n1 basename | sort)
+  expect_eq "every package directory is in a build list" "" "$missing"
+  if [[ " $(get_base_packages) " == *" rtc_teleop_input "* ]]; then
+    pass
+  else
+    fail "rtc_teleop_input must be a base package (every build mode installs it)"
+  fi
+}
+
 test_external_driver_slots_per_tier
 test_external_driver_slots_share_a_core_only_on_the_degraded_tiers
 test_print_thread_layout_uses_the_slot_helpers
@@ -2977,5 +2998,6 @@ test_write_file_if_changed_atomic_no_partial
 test_with_temporary_disable_restores_on_success
 test_with_temporary_disable_restores_on_failure
 test_with_temporary_disable_missing_hook
+test_package_lists_cover_every_package
 
 summary_and_exit test_rt_common.sh

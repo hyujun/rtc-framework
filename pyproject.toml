@@ -56,6 +56,7 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = [
   "rtc_tools",
+  "rtc_teleop_input",
   "rtc_digital_twin",
   "integrated_bringup",
   "shape_estimation",

@@ -39,6 +39,7 @@ colcon 의 pytest 는 시스템 python 이라 `.venv` 에만 있는 의존성 (m
 | `rtc_communication/` · `rtc_inference/` · `rtc_digital_twin/` | UDP · CAN (vcan0 없으면 skip) · RS485 PTY · ONNX · pytest | vcan0 설정 후 CAN, 실제 모델 · RViz2 smoke |
 | `robot_descriptions/` | `rtc_tools` 의 `test_real_model_pairs.py` (venv 직접) · `test_vendored_manifests.py`, `rtc_urdf_bridge` 의 `test_real_model_inertial_gate` (G1 URDF 는 `test_g1_sole_frames` 도); G1 부동 MJCF 는 `rtc_mujoco_sim` 의 `test_g1_floating_stance` | 그 모델을 여는 launch smoke |
 | `rtc_tools/` | pytest. MJCF/URDF 를 고쳤으면 `test_real_model_pairs.py` 가 게이트 (colcon 에서 skip 될 수 있음) | venv 직접 실행 ([Test Commands](#test-commands)); `joint_command_gui` 를 고쳤으면 proto2 SIL (`sil_mode:=firmware`) 에서 Enable · 포즈 재생 — 절차는 rtc_tools README joint_command_gui 절 |
+| `rtc_teleop_input/` | pytest 전체 — model (키 · 포커스 · 자동 반복 · 버튼 규칙 · 중계) · rclpy 노드 (주기 · 중계 · 비차단 호출) · launch · offscreen Qt (skip 0 이어야 한다) | 실물 패드 smoke (`input:=pad`, README 의 문제 해결 표) · virtual GUI 의 키 · 포커스 |
 | `repo_scripts/` · `.claude/hooks/` | `test_rt_common` · `test_install_deps` · `test_install_python` · `test_build_jobs` · `test_can_setup` + shell unit test. hook · `validate_test_*.py` · 그 import 를 고쳤으면 `bash repo_scripts/test/test_verify_changes.sh` (CI 전용 — `colcon test` 도 `--run` 도 돌리지 않는다) | `check_rt_setup.sh --summary` |
 | `shape_estimation*/` | ToF + exploration gtest | `/shape/estimate` echo, `/shape/explore` 액션 |
 | `integrated_bringup/` demo FSM | demo_wbc · demo_joint · demo_task · grasp_phase_manager · virtual_tcp gtest | BT coordinator 통합 |

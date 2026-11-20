@@ -1,0 +1,40 @@
+# Standard gamepad layout of the sensor_msgs/Joy this package publishes:
+# array index = position in these lists. It is the SDL GameController order
+# that joy's game_controller_node publishes (SDL_CONTROLLER_AXIS_* and
+# SDL_CONTROLLER_BUTTON_*, SDL 2.30), so a real pad's Joy is relayed as is.
+#
+# This file is the single source of the name <-> index table. A consumer that
+# keeps its own copy (a C++ table) must test it against the installed file.
+#
+# Sign (game_controller_node, value = -raw / 32767): a stick pushed LEFT or UP
+# reads positive (leftx, lefty, rightx, righty); a trigger rests at 0 and reads
+# -1 fully pressed.
+axes:
+  - leftx
+  - lefty
+  - rightx
+  - righty
+  - triggerleft
+  - triggerright
+buttons:
+  - a
+  - b
+  - x
+  - y
+  - back
+  - guide
+  - start
+  - leftstick
+  - rightstick
+  - leftshoulder
+  - rightshoulder
+  - dpad_up
+  - dpad_down
+  - dpad_left
+  - dpad_right
+  - misc1
+  - paddle1
+  - paddle2
+  - paddle3
+  - paddle4
+  - touchpad
