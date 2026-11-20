@@ -164,6 +164,7 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
   - 로그가 9 자리라 실로그 재생은 online 과 bit 동일하지 않다.
     - double 입력의 재생은 bit 동일하다 (`test_estimator_replay`).
     - rig 의 CSV 왕복은 base 차 ≤ 1e-6 이다.
+  - `--joint-sigma σ [--joint-seed n]` 은 source 가 읽는 관절 위치에 seed 고정 white noise N(0, σ²) 를 더한다 (sim 의 encoder 는 정확하다). truth 접촉 속도는 기록된 관절로 계산한다. 기본 0 은 bit 동일이고, 값은 sidecar 에 남는다. 그 재생의 NIS 는 보고만 한다.
   - 지표는 `rtc_tools` `estimator_metrics` 가 계산한다.
   - `g1_loco` 의 `estimator.inekf` noise 값은 이 재생으로 맞춘 것이다. `imu.accel_sigma` 와 `core.contact_noise_density` 는 sim 이 넣는 noise 가 아니라 기록된 보행에서 상태 공분산이 참값 오차와 맞도록 고른 값이다 (근거는 `runtime.yaml` 의 주석).
     - sim 의 가속도계는 제어 tick 마다 순간값 한 표본이라, 보행 중에는 넣은 noise 보다 훨씬 큰 적분 오차를 낸다.
