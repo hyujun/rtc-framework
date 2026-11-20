@@ -919,6 +919,108 @@ TEST_F(InekfSourceTest, TheSameInputsGiveTheSameOutputsBitForBit) {
   }
 }
 
+// ── the recorded inputs ─────────────────────────────────────────────────────
+//
+// Both sources record the estimator's inputs through one reading
+// (ReadImuSite + RecordEstimatorInputs), so a truth-driven run logs what an
+// offline replay steps on: the same lanes give the same input fields bit for
+// bit, and each one is the value its definition names.
+
+TEST_F(InekfSourceTest, BothSourcesRecordTheSameInputsByTheirDefinition) {
+  auto inekf = MakeSource(shipped_);
+  loco::TruthStateSource::Params tp;
+  tp.body_max_age_ns = 10 * 1'000'000;
+  tp.hand_max_age_ns = 50 * 1'000'000;
+  tp.num_contacts = 2;
+  tp.model_epoch = 3;
+  tp.imu_site = 0;
+  loco::TruthStateSource truth(tp);
+  auto& body = state_.devices[loco_rig::kBody];
+  MeasuredRobotState a{};
+  MeasuredRobotState b{};
+
+  struct Want {
+    bool present;
+    bool valid;
+    int64_t age_ns;
+    int64_t skew_ns;
+  };
+
+  // A tick: the IMU sequence advanced by one and stamped at the clock, the
+  // joints `joint_after_ns` later.
+  const auto stamp = [&](int64_t joint_after_ns) {
+    now_ += kT;
+    body.imu_sequence[0] += 1;
+    body.imu_recv_steady_ns[0] = now_;
+    body.joint_recv_steady_ns = now_ + joint_after_ns;
+    state_.devices[loco_rig::kHand].joint_recv_steady_ns = now_;
+  };
+  const auto check = [&](const char* what, const loco::DeviceIndices& idx, int64_t now,
+                         const Want& w) {
+    SCOPED_TRACE(what);
+    static_cast<void>(inekf->Update(state_, idx, {0b111U}, now, a));
+    static_cast<void>(truth.Update(state_, idx, {0b111U}, now, b));
+    const auto& ea = a.estimator;
+    const auto& eb = b.estimator;
+    for (std::size_t i = 0; i < 6; ++i) {
+      EXPECT_TRUE(BitsEqual(ea.imu[i], eb.imu[i])) << "imu " << i;
+      EXPECT_TRUE(BitsEqual(ea.imu[i], w.present ? body.imu[0][i] : 0.0)) << "imu " << i;
+    }
+    EXPECT_EQ(ea.imu_valid, eb.imu_valid);
+    EXPECT_EQ(ea.imu_sequence, eb.imu_sequence);
+    EXPECT_EQ(ea.imu_age_ns, eb.imu_age_ns);
+    EXPECT_EQ(ea.skew_ns, eb.skew_ns);
+    EXPECT_EQ(ea.planned_mask, eb.planned_mask);
+    EXPECT_EQ(w.valid, ea.imu_valid);
+    EXPECT_EQ(w.present ? body.imu_sequence[0] : 0U, ea.imu_sequence);
+    EXPECT_EQ(w.age_ns, ea.imu_age_ns);
+    EXPECT_EQ(w.skew_ns, ea.skew_ns);
+    EXPECT_EQ(kBoth, ea.planned_mask) << "the prior, masked to the model's contacts";
+    // Truth records the inputs and estimates nothing.
+    EXPECT_FALSE(eb.initialized);
+    EXPECT_EQ(-1, eb.periods);
+    EXPECT_EQ(0U, eb.reset_count);
+    EXPECT_EQ(0U, eb.estimated_mask);
+    EXPECT_EQ(0U, eb.num_slots);
+  };
+  const auto& idx = ctrl_->Indices();
+  constexpr int64_t kUs = 1'000;
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+  stamp(300 * kUs);  // joints after the IMU: positive skew, read at the joints
+  check("joints after", idx, now_ + 300 * kUs, {true, true, 300 * kUs, 300 * kUs});
+  stamp(-400 * kUs);  // joints before the IMU, read at the IMU
+  check("joints before", idx, now_, {true, true, 0, -400 * kUs});
+  stamp(0);
+  body.imu_recv_steady_ns[0] = now_ + kUs;  // landed after the clock read
+  check("stamped after now", idx, now_, {true, true, 0, -kUs});
+  body.imu_sequence[0] -= 3;  // inekf's own verdict (missing, a reset); the reading is valid
+  check("sequence back", idx, now_, {true, true, 0, -kUs});
+  stamp(0);
+  body.imu_valid[0] = false;
+  check("producer invalid", idx, now_ + 50 * kUs, {true, false, 50 * kUs, 0});
+  body.imu_valid[0] = true;
+  stamp(0);
+  body.imu[0][1] = kNaN;
+  check("gyro NaN", idx, now_, {true, false, 0, 0});
+  body.imu[0][1] = 0.0;
+  stamp(0);
+  body.imu[0][5] = std::numeric_limits<double>::infinity();
+  check("accel Inf", idx, now_, {true, false, 0, 0});
+  body.imu[0][5] = 9.81;
+  stamp(0);
+  body.imu_recv_steady_ns[0] = 0;
+  check("never received", idx, now_, {true, false, -1, 0});
+  stamp(0);
+  body.num_imu_sites = 0;
+  check("no site", idx, now_, {false, false, -1, 0});
+  body.num_imu_sites = 2;
+  stamp(0);
+  loco::DeviceIndices no_body = idx;
+  no_body.body.device = -1;
+  check("no body device", no_body, now_, {false, false, -1, 0});
+}
+
 // ── estimator.inekf ─────────────────────────────────────────────────────────
 
 TEST_F(InekfSourceTest, TheSectionRefusesEveryMalformedValueAndPassesItsNeighbour) {

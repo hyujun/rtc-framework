@@ -274,14 +274,17 @@ std::string LocomotionController::WireDevices() {
     }
     const auto body_age_ns = static_cast<int64_t>(cfg_.estimator.body_max_age_ms * 1e6);
     const auto hand_age_ns = static_cast<int64_t>(cfg_.estimator.hand_max_age_ms * 1e6);
+    // Both sources read the primary IMU site — inekf steps on it, truth records it
+    // for an offline replay. Its index is its place in model.imu.sites.
+    const auto& imu = cfg_.model.imu;
+    const auto imu_site = static_cast<int>(
+        std::find(imu.sites.begin(), imu.sites.end(), imu.primary_site) - imu.sites.begin());
     if (cfg_.estimator.source == "inekf") {
       loco::InekfStateSource::Params p;
       p.body_max_age_ns = body_age_ns;
       p.hand_max_age_ns = hand_age_ns;
       p.model_epoch = model_epoch_;
-      const auto& imu = cfg_.model.imu;  // the site index is its place in model.imu.sites
-      p.imu_site = static_cast<int>(
-          std::find(imu.sites.begin(), imu.sites.end(), imu.primary_site) - imu.sites.begin());
+      p.imu_site = imu_site;
       p.config = *cfg_.estimator.inekf;
       source_ = std::make_unique<loco::InekfStateSource>(
           p,
@@ -294,6 +297,7 @@ std::string LocomotionController::WireDevices() {
       p.hand_max_age_ns = hand_age_ns;
       p.num_contacts = static_cast<int>(cfg_.model.contacts.size());
       p.model_epoch = model_epoch_;
+      p.imu_site = imu_site;
       source_ = std::make_unique<loco::TruthStateSource>(p);
     }
   } catch (const std::exception& e) {
