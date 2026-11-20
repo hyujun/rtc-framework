@@ -10,9 +10,11 @@ is read, which reply ends the run, and the windows cut from the recording.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 _PATH = Path(__file__).resolve().parents[1] / "tools" / "standing_eval" / "run_arms.py"
 _SPEC = importlib.util.spec_from_file_location("standing_eval_run_arms", _PATH)
@@ -88,16 +90,56 @@ def test_the_inekf_source_puts_its_overlay_on_every_arm():
 
 
 @pytest.mark.parametrize(
-    ("arms", "mpc_layout", "overlays"),
+    ("arm", "mpc_layout", "own"),
     [
-        (["mpc_fb"], False, {}),  # its own overlay
-        (["loco"], True, {}),  # mpc_off under the MPC layout
-        (["walk"], False, {"walk": "/x.yaml"}),  # a given one
+        ("mpc_fb", False, "mpc_riccati"),  # its own overlay
+        ("loco", True, "mpc_off"),  # mpc_off under the MPC layout
     ],
 )
-def test_the_inekf_source_refuses_an_arm_that_has_an_overlay(arms, mpc_layout, overlays):
-    with pytest.raises(ValueError, match="already runs with sim_overlay"):
-        run_arms.source_overlays(arms, mpc_layout, overlays, "inekf")
+def test_the_inekf_source_merges_into_an_arm_that_has_an_overlay(tmp_path, arm, mpc_layout, own):
+    overlays = run_arms.source_overlays([arm], mpc_layout, {}, "inekf", tmp_path, "g1_loco")
+    merged = Path(overlays[arm])
+    assert merged == tmp_path / f"{arm}_inekf.yaml"
+    params = yaml.safe_load(merged.read_text())["integrated_rt_controller"]["ros__parameters"]
+    loco = params["locomotion_controller"]
+    assert loco["estimator"]["source"] == "inekf"  # the estimator overlay's
+    assert (
+        loco["mpc"]["riccati"]["enabled"] is True
+        if own == "mpc_riccati"
+        else (loco["mpc"]["enabled"] is False)
+    )  # the arm's own
+    meta = json.loads(merged.with_suffix(".meta.json").read_text())
+    assert [Path(c["path"]).stem for c in meta["components"]] == [own, "estimator_inekf"]
+    assert run_arms.launch_args(arm, mpc_layout, overlays)[-1] == f"sim_overlay:={merged}"
+
+
+def test_the_inekf_source_merges_a_given_overlay_and_refuses_a_conflict(tmp_path):
+    given = tmp_path / "cand.yaml"
+    given.write_text(
+        "integrated_rt_controller:\n  ros__parameters:\n    locomotion_controller:\n"
+        "      mpc:\n        max_policy_age_s: 0.35\n"
+    )
+    overlays = run_arms.source_overlays(
+        ["walk"], False, {"walk": str(given)}, "inekf", tmp_path / "o", "g1_loco"
+    )
+    loco = yaml.safe_load(Path(overlays["walk"]).read_text())["integrated_rt_controller"][
+        "ros__parameters"
+    ]["locomotion_controller"]
+    assert loco["mpc"]["max_policy_age_s"] == 0.35 and loco["estimator"]["source"] == "inekf"
+    # A candidate that sets the source itself to something else cannot be merged.
+    given.write_text(
+        "integrated_rt_controller:\n  ros__parameters:\n    locomotion_controller:\n"
+        "      estimator:\n        source: truth\n"
+    )
+    with pytest.raises(ValueError, match="estimator"):
+        run_arms.source_overlays(
+            ["walk"], False, {"walk": str(given)}, "inekf", tmp_path / "o", "g1_loco"
+        )
+    # A name that resolves to nothing is refused, not skipped.
+    with pytest.raises(ValueError, match="no_such_overlay"):
+        run_arms.source_overlays(
+            ["walk"], False, {"walk": "no_such_overlay"}, "inekf", tmp_path / "o", "g1_loco"
+        )
 
 
 DECLARED = "    'mpc_threads':\n        (default: '')\n"
