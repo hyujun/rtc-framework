@@ -180,6 +180,16 @@ mujoco_simulator:
             white_sigma: 1.0e-2      # the G1 MJCF's declared accelerometer noise=
             bias_sigma: 5.0e-2
             bias_walk_sigma: 1.0e-4
+        # ── IMU rate export ──────────────────────────────────────────────────
+        # "tick_mean": the gyro / accelerometer export is the mean of the IMU
+        # site's motion over one control step (orientation and velocity
+        # differenced between consecutive steps' snapshots, each at the instant
+        # the other sensors describe), not MuJoCo's reading at one instant. Under implicitfast the accelerometer's instant value
+        # is the explicit qacc, which differs from the realised velocity change
+        # by far more than the injected noise. The MJCF cutoff, then imu_noise,
+        # apply as before. Default "sample" = MuJoCo's value. Kept identical
+        # in g1_loco and b7_loco (installed-config test).
+        imu_rate_export: "tick_mean"
 
     # ── Fake Response (LPF echo, no physics) ─────────────────────────────────
     # The public scene has no hand; the hand group echoes its command through a

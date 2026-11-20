@@ -90,6 +90,7 @@ if(mujoco_FOUND)
     src/mujoco_simulator.cpp
     src/mujoco_sim_loop.cpp
     src/imu_noise_model.cpp
+    src/imu_rate_export.cpp
     src/object_pool.cpp
     src/projectile_ball.cpp
     src/ros2_resource_provider.cpp
@@ -177,6 +178,12 @@ if(mujoco_FOUND)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_imu_noise_model.cpp")
       ament_add_gtest(test_imu_noise_model test/test_imu_noise_model.cpp)
       target_link_libraries(test_imu_noise_model mujoco_simulator_lib)
+    endif()
+
+    # IMU tick-mean export: pure helper (SO(3) log, Γ₁⁻¹), no MJCF needed.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_imu_rate_export_model.cpp")
+      ament_add_gtest(test_imu_rate_export_model test/test_imu_rate_export_model.cpp)
+      target_link_libraries(test_imu_rate_export_model mujoco_simulator_lib)
     endif()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_projectile_ball.cpp")
@@ -350,6 +357,16 @@ if(mujoco_FOUND)
       target_compile_definitions(test_imu_noise_export PRIVATE
         IMU_NOISE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/imu_noise_scene.xml"
         CONTACT_MJCF_PATH="${MJCF_CONTACT_FIXTURE}")
+    endif()
+
+    # imu_rate_export in the simulator: needs a scene whose IMU site turns
+    # about more than one axis, with frame sensors on that site as the
+    # reference and an accelerometer cutoff the motion reaches.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_imu_rate_export.cpp")
+      ament_add_gtest(test_imu_rate_export test/test_imu_rate_export.cpp TIMEOUT 120)
+      target_link_libraries(test_imu_rate_export mujoco_simulator_lib)
+      target_compile_definitions(test_imu_rate_export PRIVATE
+        IMU_RATE_MJCF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/imu_rate_scene.xml")
     endif()
 
     # Object pool against a compiled model: needs a scene with a floor and a

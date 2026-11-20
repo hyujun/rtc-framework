@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <utility>
 
 namespace rtc {
 
@@ -125,6 +126,29 @@ void MuJoCoSimulator::ReadSensors() noexcept {
         g->sensor_buffer[offset++] = data_->sensordata[si.adr + d];
       }
     }
+    // tick_mean: the IMU entries become the mean between the last two
+    // snapshots, when a fresh pair exists; otherwise they stay sensordata. A
+    // ball reset or an object refresh at the loop top runs mj_forward between
+    // the snapshot and here: the mean still describes the step (the snapshot
+    // was taken before it), and only sensordata moved to the step's end.
+    if (g->imu_rate_fresh && g->imu_rate_snapshots >= 2) {
+      for (std::size_t c = 0; c < g->imu_rate_channels.size(); ++c) {
+        const auto& ch = g->imu_rate_channels[c];
+        double v[3];
+        const bool ok = ch.gyro ? TickMeanGyro(g->imu_rate_prev[c], g->imu_rate_cur[c], v)
+                                : TickMeanAccel(g->imu_rate_prev[c], g->imu_rate_cur[c],
+                                                model_->opt.gravity, v);
+        if (!ok)
+          continue;
+        for (int a = 0; a < 3; ++a) {
+          // MuJoCo's cutoff for a real-valued sensor: |x| <= cutoff.
+          if (ch.cutoff > 0.0)
+            v[a] = std::clamp(v[a], -ch.cutoff, ch.cutoff);
+          g->sensor_buffer[ch.offset + static_cast<std::size_t>(a)] = v[a];
+        }
+      }
+    }
+    g->imu_rate_fresh = false;
     // On the exported copy only, every step (the publish decimation is
     // applied later, at the callback), so one step is one noise sample.
     if (g->imu_noise_enabled) {
@@ -132,6 +156,46 @@ void MuJoCoSimulator::ReadSensors() noexcept {
         g->imu_noise.Apply(c, g->sensor_buffer.data() + g->imu_noise_offsets[c]);
       }
     }
+  }
+}
+
+void MuJoCoSimulator::SnapshotImuSites() noexcept {
+  if (!model_ || !data_)
+    return;
+  // RK4 reruns the forward pass for its stages, so after mj_step the
+  // kinematics are a stage's, not the instant sensordata describes.
+  const bool stage_kinematics = model_->opt.integrator == mjINT_RK4;
+  const mjtNum* gravity = model_->opt.gravity;
+  for (auto& g : groups_) {
+    if (g->imu_rate_channels.empty())
+      continue;
+    if (stage_kinematics) {
+      g->imu_rate_snapshots = 0;
+      g->imu_rate_fresh = false;
+      continue;
+    }
+    // A velocity change across a gravity switch is not one specific force:
+    // start the pair again.
+    if (!std::equal(g->imu_rate_gravity.begin(), g->imu_rate_gravity.end(), gravity)) {
+      std::copy_n(gravity, 3, g->imu_rate_gravity.begin());
+      g->imu_rate_snapshots = 0;
+    }
+    // Swap, not copy: the buffers keep their storage on the sim step.
+    std::swap(g->imu_rate_prev, g->imu_rate_cur);
+    for (std::size_t c = 0; c < g->imu_rate_channels.size(); ++c) {
+      const int site = g->imu_rate_channels[c].site;
+      ImuSiteSnapshot& s = g->imu_rate_cur[c];
+      std::copy_n(data_->site_xmat + 9 * site, 9, s.rot.begin());
+      // [angular; linear] at the site origin, world-oriented (flg_local 0):
+      // from the forward pass of the last mj_step, as sensordata is.
+      mjtNum vel6[6];
+      mj_objectVelocity(model_, data_, mjOBJ_SITE, site, vel6, 0);
+      std::copy_n(vel6 + 3, 3, s.vel.begin());
+      s.time = data_->time;
+    }
+    if (g->imu_rate_snapshots < 2)
+      ++g->imu_rate_snapshots;
+    g->imu_rate_fresh = true;
   }
 }
 
@@ -838,6 +902,9 @@ void MuJoCoSimulator::HandleReset() noexcept {
   for (auto& g : groups_) {
     if (g->imu_noise_enabled)
       g->imu_noise.Reset();
+    // The pre-reset snapshots are of another motion: start the pair again.
+    g->imu_rate_snapshots = 0;
+    g->imu_rate_fresh = false;
   }
   ReadState();
   fprintf(stdout, "[SimLoop] Reset to initial pose\n");
@@ -1277,6 +1344,11 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
         RTC_TRACE_SCOPE("mj_step");
         mj_step(model_, data_);
       }
+      // Inside the loop: a ball reset or an object refresh at the top of the
+      // next iteration runs mj_forward, which would move the kinematics to
+      // the end of the step.
+      if (sub == cfg_.n_substeps - 1)
+        SnapshotImuSites();
       // Before ClearContactForces, and inside this loop — mjData::contact does
       // not survive the next mj_step.
       AccumulateBallContacts(step + 1, model_->opt.timestep);
