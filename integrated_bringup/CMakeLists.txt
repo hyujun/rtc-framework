@@ -235,6 +235,12 @@ install(
 )
 
 install(
+  PROGRAMS scripts/demo_controller_sequence.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME demo_controller_sequence
+)
+
+install(
   PROGRAMS scripts/motion_editor_gui.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME motion_editor_gui
@@ -2647,6 +2653,11 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_preset_speed test/test_demo_gui_preset_speed.py)
   ament_add_pytest_test(test_demo_gui_preset_toggle test/test_demo_gui_preset_toggle.py)
   ament_add_pytest_test(test_demo_gui_sequence test/test_demo_gui_sequence.py)
+  ament_add_pytest_test(test_demo_sequence test/test_demo_sequence.py)
+  # The CLI's rclpy side against a fake stack: opens participants, so it holds
+  # the package's domain and its lock (end of this block).
+  ament_add_pytest_test(test_demo_sequence_ros test/test_demo_sequence_ros.py
+    ENV ROS_DOMAIN_ID=52)
   ament_add_pytest_test(test_demo_gui_pull test/test_demo_gui_pull.py)
   ament_add_pytest_test(test_demo_gui_task_frame test/test_demo_gui_task_frame.py)
   ament_add_pytest_test(test_demo_gui_goal_frame test/test_demo_gui_goal_frame.py)
@@ -2767,6 +2778,7 @@ if(BUILD_TESTING)
     test_locomotion_estimator
     test_locomotion_truth_log
     test_locomotion_diag_golden
+    test_demo_sequence_ros
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
