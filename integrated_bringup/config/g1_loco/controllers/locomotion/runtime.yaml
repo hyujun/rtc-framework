@@ -48,15 +48,25 @@ locomotion_controller:
     hand_max_age_ms: 50.0
     inekf:
       imu_frame: "imu_in_pelvis"      # the pelvis site's axes; on the root joint
-      imu:                            # the simulator's IMU noise (mujoco_simulator.yaml)
+      # The gyro and the two bias walks are the simulator's IMU noise
+      # (mujoco_simulator.yaml). accel_sigma is not: the accelerometer is one
+      # instantaneous sample per control tick, and against the true velocity
+      # increments that sample's error while walking is about 0.5 m/s^2 per
+      # tick (white from 2 ms to 200 ms), 50 times the injected 1e-2. With 1e-2
+      # the filter put contact innovations into the accel bias and the tilt,
+      # then into the yaw gyro bias. 0.35 is the value fitted on recorded walks
+      # (state covariance against the truth); standing it is conservative.
+      imu:
         sample_period_s: 0.002        # = 1 / control_rate
         gyro_sigma: 5.0e-4            # per sample [rad/s]
-        accel_sigma: 1.0e-2           # per sample [m/s^2]
+        accel_sigma: 0.35             # per sample [m/s^2] (fitted, see above)
         gyro_bias_walk: 1.0e-5        # [rad/s^2/sqrt(Hz)]
         accel_bias_walk: 1.0e-4       # [m/s^3/sqrt(Hz)]
       core:
         gravity: 9.81
-        contact_noise_density: 1.0e-3     # anchor random walk [m/sqrt(s)]
+        # A stance sole's frame origin moves 2e-3 ... 5e-3 m/sqrt(s) while
+        # walking (rolling, creep); fitted together with accel_sigma.
+        contact_noise_density: 2.0e-3     # anchor random walk [m/sqrt(s)]
         joint_position_sigma: 1.0e-3      # encoder noise in a contact update [rad]
         kinematic_sigma: 2.0e-3           # contact point model error [m]
         contact_gate_chi2: 16.27          # chi2(3), 99.9 %
