@@ -11,10 +11,13 @@
 #pragma GCC diagnostic ignored "-Wshadow"
 #pragma GCC diagnostic ignored "-Wpedantic"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
+#include <pinocchio/algorithm/joint-configuration.hpp>
+#include <pinocchio/algorithm/model.hpp>
 #include <pinocchio/multibody/model.hpp>
 #pragma GCC diagnostic pop
 
 #include <algorithm>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -200,6 +203,34 @@ void ValidateAgainstModel(const HumanoidModelConfig& cfg, const pinocchio::Model
            "'universe' (got '" +
                cfg.base_frame + "')");
   }
+}
+
+BodyModel BuildBodyModel(const pinocchio::Model& full, const pinocchio::Model& body_tree) {
+  BodyModel out;
+  out.joint_names = JointOrder(body_tree);
+  const std::vector<std::string> full_order = JointOrder(full);
+  const std::set<std::string> body(out.joint_names.begin(), out.joint_names.end());
+  std::vector<pinocchio::JointIndex> lock;
+  for (const auto& name : full_order) {
+    if (body.count(name) == 0) {
+      lock.push_back(full.getJointId(name));
+    }
+  }
+  out.locked = !lock.empty();
+  out.reduced = std::make_shared<const pinocchio::Model>(
+      pinocchio::buildReducedModel(full, lock, pinocchio::neutral(full)));
+  if (JointOrder(*out.reduced) != out.joint_names) {
+    throw std::invalid_argument(
+        "the dynamics model (hands locked) does not have the body tree's joint order");
+  }
+  std::map<std::string, int> full_index;
+  for (std::size_t a = 0; a < full_order.size(); ++a) {
+    full_index[full_order[a]] = static_cast<int>(a);
+  }
+  for (const auto& name : out.joint_names) {
+    out.reduced_to_full.push_back(full_index.at(name));
+  }
+  return out;
 }
 
 std::vector<std::string> JointOrder(const pinocchio::Model& model) {

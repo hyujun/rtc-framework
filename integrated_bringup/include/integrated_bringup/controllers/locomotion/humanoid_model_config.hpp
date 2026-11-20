@@ -38,6 +38,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -107,6 +108,25 @@ void ValidateAgainstModel(const HumanoidModelConfig& cfg, const pinocchio::Model
 /// @brief The model's joint names in configuration order, without the universe and
 ///        without a free-flyer root — the order a device roster must have.
 [[nodiscard]] std::vector<std::string> JointOrder(const pinocchio::Model& model);
+
+/// @brief The dynamics model the humanoid controller runs on: the system model
+///        with every actuated joint off the body tree (the hands) locked at
+///        neutral, in the body tree's joint order. Built once at configure and
+///        shared by every consumer that must run on the controller's model (the
+///        offline estimator replay).
+struct BodyModel {
+  std::shared_ptr<const pinocchio::Model> reduced;
+  std::vector<std::string> joint_names;  ///< the body tree's JointOrder (= the reduced model's)
+  std::vector<int> reduced_to_full;      ///< body joint j → its index in JointOrder(full)
+  bool locked{false};                    ///< some actuated joint is off the body tree
+};
+
+/// @param full       the system model (free-flyer root, one-DoF joints)
+/// @param body_tree  the body group's tree model
+/// @throws std::invalid_argument when the reduced model's joint order is not the
+///         body tree's (a body joint missing from `full`, or another order).
+[[nodiscard]] BodyModel BuildBodyModel(const pinocchio::Model& full,
+                                       const pinocchio::Model& body_tree);
 
 /// @brief The first place two joint orders differ.
 struct JointOrderMismatch {
