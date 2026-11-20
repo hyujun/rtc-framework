@@ -1,6 +1,7 @@
 // locomotion_controller: construction, the two models and the QP (Pass 1), the
 // device layout (Pass 3), and the cross-thread hooks. See locomotion_controller.hpp.
 #include "integrated_bringup/controllers/locomotion_controller.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "rtc_urdf_bridge/free_flyer_root.hpp"
 
 #pragma GCC diagnostic push
@@ -61,26 +62,13 @@ void LocomotionController::LoadConfig(const YAML::Node& cfg) {
   cfg_loaded_ = false;
   cfg_ = ParseLocomotionControllerConfig(cfg);
 
-  parsed_log_entries_.clear();
-  if (cfg["logs"]) {
-    if (!cfg["logs"].IsSequence()) {
-      Fail("'logs' must be a sequence");
-    }
-    for (const auto& entry : cfg["logs"]) {
-      if (!entry.IsMap() || !entry["msg_type"]) {
-        Fail("each `logs` entry needs `msg_type`");
-      }
-      ParsedLogEntry e;
-      e.msg_type = entry["msg_type"].as<std::string>();
-      if (entry["instance"]) {
-        e.instance = entry["instance"].as<std::string>();
-      }
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != kJointFeedforwardLogMsgType &&
-          e.msg_type != kLocomotionDiagLogMsgType && e.msg_type != kLocomotionTruthLogMsgType) {
-        Fail("unknown msg_type in `logs`: " + e.msg_type);
-      }
-      parsed_log_entries_.push_back(std::move(e));
-    }
+  if (const std::string reason =
+          ParseLogEntries(cfg,
+                          {"rtc_msgs/DeviceStateLog", kJointFeedforwardLogMsgType,
+                           kLocomotionDiagLogMsgType, kLocomotionTruthLogMsgType},
+                          parsed_log_entries_);
+      !reason.empty()) {
+    Fail(reason);
   }
 
   // The device slots are the `topics:` groups in order: the body, then the hands.

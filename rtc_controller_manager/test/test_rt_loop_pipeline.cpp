@@ -84,7 +84,6 @@ class RtLoopPipelineTest : public ::testing::Test {
     auto node = std::make_shared<RtControllerNode>("test_rt_loop_pipeline_node");
     node->declare_parameter("enable_logging", false);
     node->declare_parameter("enable_timing_log", false);
-    node->declare_parameter("enable_device_log", false);
     node->declare_parameter("control_rate", control_rate);
     node->declare_parameter("config_variant", std::string("test_fixtures"));
     node->declare_parameter("initial_controller", std::string("rtc_cm_cfg_test"));

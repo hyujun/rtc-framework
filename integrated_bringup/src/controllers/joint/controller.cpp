@@ -464,7 +464,7 @@ void DemoJointController::OnDeviceConfigsSet() {
   try {
     BuildMomentumObserverWiring(momentum_params_, arm_model_, primary_joint_names_,
                                 /*device_index=*/0, momentum_wiring_);
-    LogMomentumObserverWiring(logger_, momentum_wiring_, momentum_params_);
+    LogMomentumObserverWiring(logger_, momentum_wiring_, momentum_params_, SessionLoggingEnabled());
   } catch (const std::exception& e) {
     momentum_config_error_ = e.what();
     RCLCPP_ERROR(logger_, "momentum_observer configuration failed: %s",
@@ -1142,29 +1142,15 @@ void DemoJointController::LoadConfig(const YAML::Node& cfg) {
   // ── Phase C: parse `logs:` section ──────────────────────────────────────
   // Validation only; RegisterLog calls happen in on_configure once
   // device_name_configs_ is populated and joint_names are available.
-  parsed_log_entries_.clear();
-  if (cfg["logs"]) {
-    if (!cfg["logs"].IsSequence()) {
-      throw std::runtime_error("DemoJointController: 'logs' must be a sequence");
-    }
-    for (const auto& entry : cfg["logs"]) {
-      if (!entry.IsMap() || !entry["msg_type"]) {
-        throw std::runtime_error("DemoJointController: each `logs` entry needs `msg_type`");
-      }
-      ParsedLogEntry e;
-      e.msg_type = entry["msg_type"].as<std::string>();
-      if (entry["instance"]) {
-        e.instance = entry["instance"].as<std::string>();
-      }
-      // Closed-set msg_type validation (typo = hard fail at parse time).
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
-          e.msg_type != integrated_bringup::kPullEstimatorLogMsgType &&
-          e.msg_type != integrated_bringup::kMomentumObserverLogMsgType &&
-          e.msg_type != integrated_bringup::kGraspDiagLogMsgType) {
-        throw std::runtime_error("DemoJointController: unknown msg_type in `logs`: " + e.msg_type);
-      }
-      parsed_log_entries_.push_back(std::move(e));
-    }
+  if (const std::string reason =
+          ParseLogEntries(cfg,
+                          {"rtc_msgs/DeviceStateLog", "rtc_msgs/DeviceSensorLog",
+                           integrated_bringup::kPullEstimatorLogMsgType,
+                           integrated_bringup::kMomentumObserverLogMsgType,
+                           integrated_bringup::kGraspDiagLogMsgType},
+                          parsed_log_entries_);
+      !reason.empty()) {
+    throw std::runtime_error("DemoJointController: " + reason);
   }
 }
 

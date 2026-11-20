@@ -31,7 +31,6 @@
     # ── Logging configuration ─────────────────────────────────────────────────
     enable_logging: true
     enable_timing_log: true
-    enable_device_log: true
     max_log_sessions: 10
 
     # ── System URDF + model topology ─────────────────────────────────────────

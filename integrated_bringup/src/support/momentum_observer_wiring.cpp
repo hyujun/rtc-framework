@@ -290,7 +290,7 @@ void BuildMomentumObserverWiring(const MomentumObserverParams& params,
 }
 
 void LogMomentumObserverWiring(const rclcpp::Logger& logger, const MomentumObserverWiring& w,
-                               const MomentumObserverParams& params) {
+                               const MomentumObserverParams& params, bool session_logging) {
   if (!w.enabled()) {
     const char* why = !params.has_block ? "no 'momentum_observer' block in demo_shared.yaml"
                                         : (!params.enabled ? "block present but enabled: false"
@@ -310,10 +310,12 @@ void LogMomentumObserverWiring(const rclcpp::Logger& logger, const MomentumObser
   if (gains.empty()) {
     gains = std::to_string(kDefaultMomentumObserverGain) + " (default)";
   }
-  RCLCPP_INFO(logger,
-              "[momentum_observer] enabled — device %d, dof %d, K_I [%s]. Residual r is logged to "
-              "momentum_observer.csv; held/E-STOP ticks appear as valid=0 rows.",
-              w.device_index, w.dof, gains.c_str());
+  RCLCPP_INFO(logger, "[momentum_observer] enabled — device %d, dof %d, K_I [%s]. %s",
+              w.device_index, w.dof, gains.c_str(),
+              session_logging ? "Residual r is logged to momentum_observer.csv; held/E-STOP "
+                                "ticks appear as valid=0 rows."
+                              : "Session logging is off (enable_logging: false): no "
+                                "momentum_observer.csv.");
 }
 
 void ResetMomentumObserverRtState(MomentumObserverWiring& w) noexcept {

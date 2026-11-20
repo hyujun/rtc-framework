@@ -265,6 +265,7 @@ RTControllerInterface::CallbackReturn DemoInferenceController::on_configure(
         .inference_diag_enabled = true,
         .inference_diag_tip_names = reach_enabled_ ? tip_names : std::vector<std::string>{},
     };
+    ctx.session_logging_enabled = SessionLoggingEnabled();
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       ResetLogState();

@@ -80,6 +80,7 @@ CallbackReturn DemoDualArmController::on_configure(const rclcpp_lifecycle::State
         .dualarm_diag_task_names = task_names_,
         .dualarm_diag_joint_names = body_joint_names_,
     };
+    ctx.session_logging_enabled = SessionLoggingEnabled();
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       TearDownConfigured();

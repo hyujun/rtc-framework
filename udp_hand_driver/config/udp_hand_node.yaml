@@ -147,6 +147,7 @@
     # link_status는 loop_rate_hz(~500Hz)로 보낼 필요 없음.
     # loop_rate_hz / publish_rate 비율로 decimation됨 (예: 500/100=5 -> ~100Hz link_status).
     publish_rate: 100.0
+    enable_timing_log: true           # 손 tick 마다 timing/hand_timing_log.csv 한 행. false = 파일 없음
 
     # -- 스레드 레이아웃 / CPU affinity (issue #345) --
     # 이 셋만 노드 *생성자* 에서 declare 된다 — main() 이 spin 하기 전에, 즉 어떤

@@ -28,6 +28,8 @@
 // refusals at configure, the shipped p2 YAML, and on_configure on a real
 // LifecycleNode.
 #include "hand_joint_test_rig.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
+#include "rtc_base/testing/isolated_session_dir.hpp"
 #include "rtc_urdf_bridge/closed_chain_handle.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -53,6 +55,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1164,6 +1167,159 @@ TEST(HandJointLifecycle, AConfigErrorRefusesConfigure) {
   const rclcpp_lifecycle::State unconfigured;
   EXPECT_EQ(ctrl->on_configure(unconfigured, node, YAML::Load(rig.yaml)),
             rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::FAILURE);
+}
+
+// ── Session logging switch and the `logs:` parse (#1126) ───────────────────
+
+using LifecycleReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
+// Every regular file under `dir`, relative — empty when the session is clean.
+std::vector<std::string> FilesUnder(const std::filesystem::path& dir) {
+  std::vector<std::string> out;
+  for (const auto& e : std::filesystem::recursive_directory_iterator(dir)) {
+    if (e.is_regular_file()) {
+      out.push_back(std::filesystem::relative(e.path(), dir).string());
+    }
+  }
+  return out;
+}
+
+// configure → activate → deactivate → cleanup, twice: the second configure is
+// the re-configure a controller sees when the manager cycles it.
+void CycleTwice(HandJointController& ctrl, const Rig& rig, const char* node_name) {
+  const rclcpp_lifecycle::State unconfigured;
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>(node_name);
+    ASSERT_EQ(ctrl.on_configure(unconfigured, node, YAML::Load(rig.yaml)), LifecycleReturn::SUCCESS)
+        << "cycle " << cycle;
+    ASSERT_EQ(ctrl.on_activate(unconfigured), LifecycleReturn::SUCCESS) << "cycle " << cycle;
+    ASSERT_EQ(ctrl.on_deactivate(unconfigured), LifecycleReturn::SUCCESS) << "cycle " << cycle;
+    ASSERT_EQ(ctrl.on_cleanup(unconfigured), LifecycleReturn::SUCCESS) << "cycle " << cycle;
+  }
+}
+
+TEST(HandJointSessionLogging, OffOpensNothingUnderTheSessionAcrossReconfigure) {
+  const rtc::testing::ScopedSessionDir session{"hj_log_off"};
+  const Rig rig = ClosedRig();
+  auto ctrl = BringUp(rig);
+  ASSERT_EQ(ctrl->ConfigError(), "");
+  ctrl->SetSessionLoggingEnabled(false);
+  CycleTwice(*ctrl, rig, "hand_joint_controller_log_off");
+  EXPECT_FALSE(std::filesystem::exists(session.Dir() / "controllers"));
+  EXPECT_EQ(FilesUnder(session.Dir()), std::vector<std::string>{});
+}
+
+// The control for the test above: the same rig with the switch left on does
+// reach the session, so "nothing there" is the switch and not the rig.
+TEST(HandJointSessionLogging, OnRegistersTheShippedChannels) {
+  const rtc::testing::ScopedSessionDir session{"hj_log_on"};
+  const Rig rig = ClosedRig();
+  auto ctrl = BringUp(rig);
+  ASSERT_EQ(ctrl->ConfigError(), "");
+  ASSERT_TRUE(ctrl->SessionLoggingEnabled()) << "the default is on";
+  CycleTwice(*ctrl, rig, "hand_joint_controller_log_on");
+  EXPECT_TRUE(
+      std::filesystem::is_directory(session.Dir() / "controllers" / "hand_joint_controller"));
+}
+
+// `logs:` with its items deleted (a null value) is no logs, not a refusal; a
+// scalar is still refused with the reason.
+TEST(HandJointSessionLogging, ANullLogsSectionConfiguresWithNoChannel) {
+  const rtc::testing::ScopedSessionDir session{"hj_logs_null"};
+  std::string yaml = Yaml();
+  const auto at = yaml.find("logs:");
+  ASSERT_NE(at, std::string::npos);
+  yaml = yaml.substr(0, at) + "logs:\n";
+  const Rig rig = ClosedRig(yaml);
+  auto ctrl = BringUp(rig);
+  ASSERT_EQ(ctrl->ConfigError(), "");
+  CycleTwice(*ctrl, rig, "hand_joint_controller_logs_null");
+  EXPECT_FALSE(std::filesystem::exists(session.Dir() / "controllers"));
+
+  // LoadConfig throws; the manager's PreConfigure turns that into a refusal.
+  const Rig scalar = ClosedRig(Yaml().substr(0, at) + "logs: 5\n");
+  try {
+    BringUp(scalar);
+    ADD_FAILURE() << "a scalar `logs:` was accepted";
+  } catch (const std::runtime_error& e) {
+    EXPECT_NE(std::string(e.what()).find("'logs' must be a sequence"), std::string::npos)
+        << e.what();
+  }
+}
+
+struct LogEntry {
+  std::string msg_type;
+  std::string instance;
+};
+
+std::string Parse(const std::string& yaml, std::vector<LogEntry>& out) {
+  return integrated_bringup::ParseLogEntries(YAML::Load(yaml), {"a/One", "b/Two"}, out);
+}
+
+TEST(ParseLogEntries, AbsentNullAndEmptyAreNoEntries) {
+  std::vector<LogEntry> out{{"stale", "x"}};
+  EXPECT_EQ(Parse("other: 1", out), "");
+  EXPECT_TRUE(out.empty()) << "out is cleared first";
+  EXPECT_EQ(Parse("logs:", out), "");
+  EXPECT_TRUE(out.empty());
+  EXPECT_EQ(Parse("logs: ~", out), "");
+  EXPECT_EQ(Parse("logs: []", out), "");
+  EXPECT_TRUE(out.empty());
+}
+
+TEST(ParseLogEntries, ReadsTypesAndInstancesInOrder) {
+  std::vector<LogEntry> out;
+  EXPECT_EQ(Parse("logs:\n  - {msg_type: b/Two, instance: t}\n  - {msg_type: a/One}", out), "");
+  ASSERT_EQ(out.size(), 2u);
+  EXPECT_EQ(out[0].msg_type, "b/Two");
+  EXPECT_EQ(out[0].instance, "t");
+  EXPECT_EQ(out[1].msg_type, "a/One");
+  EXPECT_EQ(out[1].instance, "") << "a missing instance is the registration's refusal";
+}
+
+TEST(ParseLogEntries, RefusesWhatIsNotTheSchemaAndKeepsNothing) {
+  std::vector<LogEntry> out;
+  EXPECT_EQ(Parse("logs: 5", out), "'logs' must be a sequence");
+  EXPECT_EQ(Parse("logs: {msg_type: a/One}", out), "'logs' must be a sequence");
+  EXPECT_EQ(Parse("logs:\n  - {msg_type: a/One}\n  - {instance: x}", out),
+            "each `logs` entry needs `msg_type`");
+  EXPECT_TRUE(out.empty()) << "a refused section leaves no half-parsed entries";
+  EXPECT_EQ(Parse("logs:\n  - plain", out), "each `logs` entry needs `msg_type`");
+  EXPECT_EQ(Parse("logs:\n  - {msg_type: a/One, instance: [x]}", out),
+            "`msg_type` and `instance` of a `logs` entry must be strings");
+  EXPECT_EQ(Parse("logs:\n  - {msg_type: {a: 1}}", out),
+            "`msg_type` and `instance` of a `logs` entry must be strings");
+  const auto unknown = Parse("logs:\n  - {msg_type: a/One}\n  - {msg_type: c/Three}", out);
+  EXPECT_NE(unknown.find("unknown msg_type in `logs`: c/Three"), std::string::npos) << unknown;
+  EXPECT_NE(unknown.find("a/One b/Two"), std::string::npos) << "names the accepted set";
+  EXPECT_TRUE(out.empty());
+}
+
+// Off registers nothing and warns about nothing, but a YAML error stays one.
+TEST(RegisterControllerLogs, OffBindsNoChannelAndStillRefusesAMissingInstance) {
+  const rtc::testing::ScopedSessionDir session{"reg_off"};
+  rtc::ControllerLogSet log_set{"reg_off_test"};
+  integrated_bringup::LogRegistrationContext ctx{
+      .logger = rclcpp::get_logger("reg_off_test"),
+      .log_set = log_set,
+      .state_logs = {{"hand_state", {{"j0"}, {}}}},
+      .joint_ff_enabled = true,
+      .joint_ff_joint_names = {"j0"},
+  };
+  ctx.session_logging_enabled = false;
+  const std::vector<LogEntry> entries{{"rtc_msgs/DeviceStateLog", "hand_state"},
+                                      {"integrated_bringup/JointFeedforwardLog", "joint_ff"}};
+  auto reg = integrated_bringup::RegisterControllerLogs(entries, ctx);
+  EXPECT_EQ(reg.status, integrated_bringup::LogRegistrationStatus::kSuccess);
+  EXPECT_TRUE(reg.handles.state.empty());
+  EXPECT_FALSE(static_cast<bool>(reg.handles.joint_ff));
+  EXPECT_FALSE(reg.handles.joint_ff.Push(JointFeedforwardLogPod{})) << "an unbound Push is a no-op";
+  EXPECT_TRUE(log_set.empty());
+  EXPECT_EQ(FilesUnder(session.Dir()), std::vector<std::string>{});
+
+  const std::vector<LogEntry> broken{{"rtc_msgs/DeviceStateLog", ""}};
+  EXPECT_EQ(integrated_bringup::RegisterControllerLogs(broken, ctx).status,
+            integrated_bringup::LogRegistrationStatus::kMissingInstance);
 }
 
 }  // namespace

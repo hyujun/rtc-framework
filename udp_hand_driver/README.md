@@ -212,6 +212,7 @@ ros2 topic echo /hand/link_status --once     # 별도 터미널
 | `min_rate_hz` / `rate_fail_threshold` | `30.0` / `5` | polling rate 하한 / 연속 미달 횟수 |
 | `link_fail_timeout_ms` | `100.0` | link-down 시간 budget. cycle 수는 `ms/1000 × loop_rate_hz / comm_decimation` (센서는 `/ sensor_decimation` 추가) |
 | `startup_grace_ms` / `link_startup_grace_ms` / `sensor_startup_grace_ms` | `1000.0` / `100.0` / `0.0` | 기동 직후 rate / link / 센서 검사 유예 [ms] |
+| `enable_timing_log` | `true` | `false` 면 `hand_timing_log.csv` 를 쓰지 않는다 (stats JSON · `link_status` 는 그대로) |
 | `sil_mode` | `"off"` | [SIL 모드](#sil-모드-sil_mode) |
 | `fake_lpf_time_constant_s` · `fake_effort_stiffness` · `fake_effort_damping` | `0.1` · `1.0` · `0.1` | `loopmodel` 전용 |
 | `hand_cpu_slot` / `aux_cpu_slot` / `use_cpu_affinity` | tier `hand_driver` slot / `0` / `true` | main 레인 (hand_comm 이 상속) 이 붙을 slot — 단독 launch 전용, robot launch 는 덮어쓴다 / `hand_aux_io` 가 붙을 slot / 프로세스 내부 pin on-off. 정수 slot 인덱스, `-1` = 그 레인 pin 안 함. 이 셋만 노드 생성자에서 declare 된다 |

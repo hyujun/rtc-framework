@@ -52,3 +52,13 @@ non-RT 외부 통신 토픽은 **컨트롤러가 소유**한다. 아래 경로�
 | `catching_diag.csv` · `planner_events.csv` | catching | [demo-catching-controller.md](demo-catching-controller.md#tick-레코드-csv) |
 
 `mpc` 스레드의 타이밍은 `<session>/timing/mpc_timing_log.csv` 에, CM 의 스레드별 타이밍은 `<session>/timing/` 아래에 쌓인다 ([rtc_controller_manager README](../../rtc_controller_manager/README.md)).
+
+## 로그 끄기
+
+스위치는 세 단이다. 위가 꺼지면 아래는 보지 않는다.
+
+- `_base.yaml` `enable_logging: false` — CM timing CSV 와, controller 가 세션에 여는 파일 전부 (`logs:` 채널, `planner_*` · `nlp_candidates.csv`, `mpc_timing_log.csv`) 가 열리지 않는다. 경고는 없다.
+- 그 아래 `enable_timing_log` 는 CM timing CSV 2개만, 각 controller YAML 의 `logs:` 는 그 controller 의 채널만 정한다. `logs:` 를 비우려면 `logs: []` 나 항목을 지운 `logs:` (null) 모두 된다.
+- 손 driver 는 별도 프로세스다: `udp_hand_node_<profile>.yaml` 의 `enable_timing_log: false` 가 `timing/hand_timing_log.csv` 를 끈다 ([udp_hand_driver README](../../udp_hand_driver/README.md)).
+
+Proto2 처럼 손 driver 가 있는 robot launch 에서 고주기 CSV 를 모두 끄려면 위 첫째와 셋째, 두 줄이다. 꺼도 남는 것: launch 가 만드는 세션 폴더와 그 retention (`max_log_sessions`), driver 가 10 s 마다 덮어쓰는 `device/hand_stats*.json`, ROS 로그 (`~/.ros/log`).

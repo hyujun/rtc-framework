@@ -134,6 +134,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   declare_once("startup_grace_ms", 1000.0);
   declare_once("link_startup_grace_ms", 100.0);
   declare_once("sensor_startup_grace_ms", 0.0);
+  // Per-tick timing CSV (<session>/timing/hand_timing_log.csv). false records
+  // no tick at all — no producer, no drain timer, no file; the stats JSON and
+  // link_status are unaffected. Read at configure.
+  declare_once("enable_timing_log", true);
 
   // SIL entry point. Device-side firmware-process spawn is the launch layer's
   // job (a node cannot spawn a peer process); this param drives the node-side
@@ -752,6 +756,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_configure(const rclcpp_lifecycle::St
   // ~100 Hz link_status at a 500 Hz loop). Derived from loop_rate_hz, not a
   // hardcoded 500, so a non-500 loop keeps the intended link_status rate.
   const double publish_rate = get_parameter("publish_rate").as_double();
+  enable_timing_log_ = get_parameter("enable_timing_log").as_bool();
   // State-publish callbacks fire once per comm cycle — i.e. at
   // loop_rate_hz / comm_decimation, not loop_rate_hz — because decimated skip
   // cycles do no publish. Base the link_status decimation on that effective
@@ -1166,7 +1171,9 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // Inject producer before the loop starts so the CommLoop thread sees a
   // non-null producer on its first iteration. The loop (PeriodicRtThread)
   // computes jitter against its own loop_rate_hz period budget.
-  comm_loop_.SetTimingProducer(&hand_timing_producer_);
+  // enable_timing_log false: no producer, so the loop records no tick.
+  comm_loop_.SetTimingProducer(enable_timing_log_ ? &hand_timing_producer_
+                                                  : static_cast<rtc::HandTimingBuffer*>(nullptr));
 
   // Per-run counters, reset where the controllers reset their own (Start →
   // PrepareRun → ResetCommStats) so one stats JSON never mixes two runs.
@@ -1324,7 +1331,7 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // because StopRuntime() now cancels it to quiesce the aux lane — keeping both
   // on one flag would either skip on_deactivate's straggler drain (if the flag
   // were cleared) or leave the timer dead after deactivate -> activate (if not).
-  if (!hand_timing_opened_) {
+  if (enable_timing_log_ && !hand_timing_opened_) {
     if (!hand_timing_logger_.Open(timing_file_suffix_)) {
       RCLCPP_WARN(::udp_hand_driver::logging::NodeLogger(),
                   "UdpHandTimingLogger::Open() failed — timing CSV disabled");
@@ -1338,8 +1345,10 @@ UdpHandNode::CallbackReturn UdpHandNode::on_activate(const rclcpp_lifecycle::Sta
   // burst writes up to kHandTimingBufferCapacity (512) CSV rows, two orders
   // of magnitude more per invocation than CM's equivalent drain, which its own
   // nrt_logging thread runs at 100 Hz (rt_tick_timing_sample.hpp) (issue #345).
-  hand_timing_timer_ =
-      create_wall_timer(std::chrono::seconds(1), [this]() { DrainHandTiming(); }, cb_group_aux_);
+  if (enable_timing_log_) {
+    hand_timing_timer_ =
+        create_wall_timer(std::chrono::seconds(1), [this]() { DrainHandTiming(); }, cb_group_aux_);
+  }
 
   RCLCPP_INFO(::udp_hand_driver::logging::NodeLogger(), "UdpHandNode activated");
   return CallbackReturn::SUCCESS;
