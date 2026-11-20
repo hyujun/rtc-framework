@@ -460,6 +460,7 @@ void SetupLocomotionStatusPublisher(rtc::RTControllerInterface& ctrl,
 
 void PublishLocomotionStatus(ControllerTopicHandles& handles, const LocomotionDiagLogPod& status,
                              bool mpc_enabled, const rtc::mpc::FilteredCommand& cmd,
+                             const LocomotionCommandSource& source,
                              const LocomotionMpcCounters& counters) noexcept {
   if (!handles.locomotion_status_pub) {
     return;
@@ -470,8 +471,8 @@ void PublishLocomotionStatus(ControllerTopicHandles& handles, const LocomotionDi
   msg.message.assign(LocomotionSourceName(status.ref_source));
   char buf[kLocomotionStatusValueChars];
   for (std::size_t i = 0; i < msg.values.size(); ++i) {  // sized at setup
-    FormatLocomotionStatusValue(static_cast<LocomotionStatusKey>(i), status, cmd, counters, buf,
-                                sizeof(buf));
+    FormatLocomotionStatusValue(static_cast<LocomotionStatusKey>(i), status, cmd, source, counters,
+                                buf, sizeof(buf));
     msg.values[i].value.assign(buf);
   }
   handles.locomotion_status_pub->publish(msg);

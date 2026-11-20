@@ -10,12 +10,14 @@
 
 #include <geometry_msgs/msg/twist.hpp>
 #include <rclcpp/executors/single_threaded_executor.hpp>
+#include <sensor_msgs/msg/joy.hpp>
 
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -1216,6 +1218,302 @@ TEST_F(LocomotionMpcTest, TheStateSourceColumnIsOneUnderTheEstimator) {
   MakeStanding();
   last_out_ = Tick();
   EXPECT_EQ(ctrl_->LastDiag().state_source, 1U);
+}
+
+// ── velocity_command.type joy (and the Twist path's sample, unchanged) ──────
+
+// The Twist callback's whole sample, bit for bit: the six axes as sent (also
+// NaN, ±inf, −0.0, a denormal and 1e300 — the filter, not the callback, judges
+// them), sequence + 1, the receive time between the steady clock before and
+// after the call, and the source fields at their Twist values.
+TEST_F(LocomotionCommandTest, TheTwistCallbackStoresTheWholeSampleUnchanged) {
+  BringUpSpinning();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  const std::array<std::array<double, 6>, 8> fixtures{{
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {1.0, 1.0, 1.0, 1.0, 1.0, 1.0},
+      {-1.0, -1.0, -1.0, -1.0, -1.0, -1.0},
+      {nan, 0.5, -0.25, nan, 0.0, nan},
+      {inf, -inf, 0.125, inf, -inf, 2.0},
+      {-0.0, -0.0, -0.0, -0.0, -0.0, -0.0},
+      {4.9e-324, -4.9e-324, 2.2e-308, 0.0, 0.0, 1e-310},
+      {1e300, -1e300, 1e300, -1e300, 1e300, -1e300},
+  }};
+  for (std::size_t i = 0; i < fixtures.size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto& f = fixtures[i];
+    geometry_msgs::msg::Twist t;
+    t.linear.x = f[0];
+    t.linear.y = f[1];
+    t.linear.z = f[2];
+    t.angular.x = f[3];
+    t.angular.y = f[4];
+    t.angular.z = f[5];
+    const auto before = LocomotionControllerTestAccess::RawCommand(*ctrl_);
+    const std::int64_t t0 = rtc::SteadyNowNs();
+    LocomotionControllerTestAccess::OnTwist(*ctrl_, t);
+    const std::int64_t t1 = rtc::SteadyNowNs();
+    const auto s = LocomotionControllerTestAccess::RawCommand(*ctrl_);
+    const std::array<double, 6> got{s.twist.linear_x,  s.twist.linear_y,  s.twist.linear_z,
+                                    s.twist.angular_x, s.twist.angular_y, s.twist.angular_z};
+    EXPECT_EQ(std::memcmp(got.data(), f.data(), sizeof(got)), 0) << "the axes bit for bit";
+    EXPECT_EQ(s.sequence, before.sequence + 1);
+    EXPECT_GE(s.recv_steady_ns, t0);
+    EXPECT_LE(s.recv_steady_ns, t1);
+    EXPECT_EQ(s.source.input, 0U);
+    EXPECT_EQ(s.source.deadman, -1);
+    EXPECT_EQ(s.source.joy_rejects, 0U);
+  }
+}
+
+class LocomotionJoyCommandTest : public LocomotionCommandTest {
+ protected:
+  static constexpr const char* kJoyTopic = "/g1/joy";
+  static constexpr std::size_t kLefty = 1;
+  static constexpr std::size_t kDeadman = 9;  // leftshoulder
+
+  void SetUp() override {
+    LocomotionCommandTest::SetUp();
+    joy_pub_ = helper_->create_publisher<sensor_msgs::msg::Joy>(kJoyTopic, rclcpp::QoS(1));
+  }
+
+  static YAML::Node JoyMpcConfig() {
+    YAML::Node cfg = MpcConfig();
+    cfg["velocity_command"]["topic"] = "g1/joy";
+    cfg["velocity_command"]["type"] = "joy";
+    cfg["velocity_command"]["joy"]["linear_x"] = "lefty";
+    cfg["velocity_command"]["joy"]["linear_y"] = "leftx";
+    cfg["velocity_command"]["joy"]["angular_z"] = "rightx";
+    cfg["velocity_command"]["joy"]["deadman"] = "leftshoulder";
+    return cfg;
+  }
+
+  static sensor_msgs::msg::Joy Joy(float lefty, int deadman) {
+    sensor_msgs::msg::Joy j;
+    j.axes.assign(6, 0.0F);
+    j.buttons.assign(21, 0);
+    j.axes[kLefty] = lefty;
+    j.buttons[kDeadman] = deadman;
+    return j;
+  }
+
+  // Spin, tick and publish `joy` at 50 Hz until `done` holds or `deadline`
+  // passes; whether it held.
+  bool SpinUntil(const std::function<bool()>& done, std::chrono::milliseconds deadline,
+                 const sensor_msgs::msg::Joy* joy) {
+    const auto end = std::chrono::steady_clock::now() + deadline;
+    auto next_pub = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() < end) {
+      if (joy != nullptr && std::chrono::steady_clock::now() >= next_pub) {
+        joy_pub_->publish(*joy);
+        next_pub += 20ms;
+      }
+      executor_.spin_some(1ms);
+      last_out_ = Tick();
+      if (done()) {
+        return true;
+      }
+      std::this_thread::sleep_for(2ms);
+    }
+    return done();
+  }
+
+  rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr joy_pub_;
+};
+
+// The Joy callback's sample: every message — a zero one too (released,
+// too short, a NaN axis) — refreshes the receive time on the steady clock and
+// the sequence; header.stamp is not read (an hour off either way changes
+// nothing); deadman and rejects ride in the sample.
+TEST_F(LocomotionJoyCommandTest, TheJoyCallbackStoresEveryMessageWithItsReceiveTime) {
+  BringUpSpinning(JoyMpcConfig());
+  auto nan_axis = Joy(std::numeric_limits<float>::quiet_NaN(), 1);
+  auto too_short = Joy(0.25F, 1);
+  too_short.buttons.resize(5);
+
+  struct Case {
+    sensor_msgs::msg::Joy msg;
+    double vx;
+    int deadman;
+    std::uint64_t reject;
+  };
+
+  const std::vector<Case> cases{
+      {Joy(0.25F, 1), 0.5, 1, 0}, {Joy(0.25F, 0), 0.0, 0, 0}, {Joy(0.25F, 2), 0.0, 0, 0},
+      {nan_axis, 0.0, 1, 1},      {too_short, 0.0, 0, 1},
+  };
+  for (const std::int32_t stamp_sec : {0, 3600, -3600}) {
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+      SCOPED_TRACE(std::to_string(stamp_sec) + " / " + std::to_string(i));
+      sensor_msgs::msg::Joy msg = cases[i].msg;
+      msg.header.stamp.sec = stamp_sec;
+      const auto before = LocomotionControllerTestAccess::RawCommand(*ctrl_);
+      const std::int64_t t0 = rtc::SteadyNowNs();
+      LocomotionControllerTestAccess::OnJoy(*ctrl_, msg);
+      const std::int64_t t1 = rtc::SteadyNowNs();
+      const auto s = LocomotionControllerTestAccess::RawCommand(*ctrl_);
+      EXPECT_EQ(s.twist.linear_x, cases[i].vx);
+      EXPECT_EQ(s.twist.linear_y, 0.0);
+      EXPECT_EQ(s.twist.angular_z, 0.0);
+      EXPECT_EQ(s.sequence, before.sequence + 1);
+      EXPECT_GE(s.recv_steady_ns, t0);
+      EXPECT_LE(s.recv_steady_ns, t1);
+      EXPECT_EQ(s.source.input, 1U);
+      EXPECT_EQ(s.source.deadman, cases[i].deadman);
+      EXPECT_EQ(s.source.joy_rejects, before.source.joy_rejects + cases[i].reject);
+    }
+  }
+}
+
+TEST_F(LocomotionJoyCommandTest, OnlyTheConfiguredSubscriptionExists) {
+  BringUpSpinning(JoyMpcConfig());
+  ASSERT_TRUE(
+      SpinUntil([this] { return helper_->count_subscribers(kJoyTopic) == 1U; }, 2000ms, nullptr));
+  EXPECT_EQ(helper_->count_subscribers(kTwistTopic), 0U);
+  EXPECT_TRUE(ctrl_->VelocityCommandSubscribed());
+  EXPECT_EQ(ctrl_->LastCommandSource().input, 1U) << "tagged joy before the first message";
+  EXPECT_EQ(ctrl_->LastCommandSource().deadman, 0);
+}
+
+TEST_F(LocomotionJoyCommandTest, TheTwistModeHasNoJoySubscription) {
+  BringUpSpinning();
+  SpinFor(200ms);
+  EXPECT_EQ(helper_->count_subscribers(kTwistTopic), 1U);
+  EXPECT_EQ(helper_->count_subscribers(kJoyTopic), 0U);
+  EXPECT_EQ(ctrl_->LastCommandSource().input, 0U);
+  EXPECT_EQ(ctrl_->LastCommandSource().deadman, -1);
+}
+
+TEST_F(LocomotionJoyCommandTest, WithoutAnMpcNothingIsSubscribed) {
+  YAML::Node cfg = JoyMpcConfig();
+  cfg["mpc"]["enabled"] = false;
+  Configure(cfg, rclcpp::NodeOptions{}, "test_locomotion_mpc");
+  SpinController();
+  SpinFor(200ms);
+  EXPECT_FALSE(ctrl_->VelocityCommandSubscribed());
+  EXPECT_EQ(helper_->count_subscribers(kJoyTopic), 0U);
+  EXPECT_EQ(helper_->count_subscribers(kTwistTopic), 0U);
+}
+
+TEST_F(LocomotionJoyCommandTest, AJoyReachesTheFilterAndThePlanner) {
+  BringUpSpinning(JoyMpcConfig());
+  ReachStand();
+  const auto seq0 = stub_->horizon_command_sequence.load();
+  const auto joy = Joy(0.15F, 1);  // 0.15 × v_max 2.0 = 0.3 m/s
+  ASSERT_TRUE(
+      SpinUntil([this] { return std::abs(ctrl_->LastCommand().v_x - 0.3) <= 0.02; }, 2000ms, &joy))
+      << ctrl_->LastCommand().v_x;
+  const auto cmd = ctrl_->LastCommand();
+  EXPECT_TRUE(cmd.fresh);
+  EXPECT_EQ(cmd.v_y, 0.0);
+  const auto source = ctrl_->LastCommandSource();
+  EXPECT_EQ(source.input, 1U);
+  EXPECT_EQ(source.deadman, 1);
+  EXPECT_EQ(source.joy_rejects, 0U);
+  ASSERT_TRUE(SpinUntil(
+      [&] {
+        return stub_->horizon_command_sequence.load() > seq0 &&
+               std::abs(stub_->horizon_base_vx.load() - ctrl_->LastCommand().v_x) <= 0.02;
+      },
+      2000ms, &joy))
+      << "the planner's node 0 base velocity follows the command";
+  last_out_ = Tick();
+  EXPECT_EQ(ctrl_->LastDiag().cmd_input, 1U);
+  EXPECT_EQ(ctrl_->LastDiag().cmd_deadman, 1);
+}
+
+TEST_F(LocomotionJoyCommandTest, ReleasingTheDeadmanStopsAsAFreshCommand) {
+  BringUpSpinning(JoyMpcConfig());
+  const auto go = Joy(0.15F, 1);
+  ASSERT_TRUE(
+      SpinUntil([this] { return std::abs(ctrl_->LastCommand().v_x - 0.3) <= 0.02; }, 2000ms, &go));
+  const auto stale0 = ctrl_->LastCommand().stale_count;
+  const auto released = Joy(0.15F, 0);  // the stick still pushed, the deadman let go
+  ASSERT_TRUE(
+      SpinUntil([this] { return std::abs(ctrl_->LastCommand().v_x) < 1e-3; }, 2000ms, &released));
+  const auto cmd = ctrl_->LastCommand();
+  EXPECT_TRUE(cmd.fresh) << "a released deadman is a command, not silence";
+  EXPECT_EQ(cmd.stale_count - stale0, 0U);
+  EXPECT_EQ(ctrl_->LastCommandSource().deadman, 0);
+  ASSERT_TRUE(PublishStatus());
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdInput), "1");
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdDeadman), "0");
+}
+
+TEST_F(LocomotionJoyCommandTest, ASilentPadStopsThroughStale) {
+  BringUpSpinning(JoyMpcConfig());
+  const auto go = Joy(0.15F, 1);
+  ASSERT_TRUE(
+      SpinUntil([this] { return std::abs(ctrl_->LastCommand().v_x - 0.3) <= 0.02; }, 2000ms, &go));
+  const auto stale0 = ctrl_->LastCommand().stale_count;
+  // nothing published with the deadman still held: stale after command.t_stale
+  ASSERT_TRUE(SpinUntil(
+      [this] {
+        const auto c = ctrl_->LastCommand();
+        return std::abs(c.v_x) < 1e-3 && !c.fresh;
+      },
+      2000ms, nullptr));
+  EXPECT_GT(ctrl_->LastCommand().stale_count - stale0, 0U);
+}
+
+TEST_F(LocomotionJoyCommandTest, AnUnreadableJoyIsZeroAndCounted) {
+  BringUpSpinning(JoyMpcConfig());
+  const auto go = Joy(0.15F, 1);
+  ASSERT_TRUE(
+      SpinUntil([this] { return std::abs(ctrl_->LastCommand().v_x - 0.3) <= 0.02; }, 2000ms, &go));
+  auto bad = Joy(std::numeric_limits<float>::quiet_NaN(), 1);
+  ASSERT_TRUE(SpinUntil(
+      [this] {
+        return std::abs(ctrl_->LastCommand().v_x) < 1e-3 &&
+               ctrl_->LastCommandSource().joy_rejects > 0U;
+      },
+      2000ms, &bad))
+      << "unlike a Twist, a NaN axis does not hold the last value";
+  EXPECT_TRUE(ctrl_->LastCommand().fresh);
+  const auto rejects = ctrl_->LastCommandSource().joy_rejects;
+  ASSERT_TRUE(PublishStatus());
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdJoyRejects), std::to_string(rejects));
+}
+
+TEST_F(LocomotionJoyCommandTest, AReactivationStartsFromRestInJoyMode) {
+  BringUpSpinning(JoyMpcConfig());
+  const auto go = Joy(0.15F, 1);
+  ASSERT_TRUE(
+      SpinUntil([this] { return std::abs(ctrl_->LastCommand().v_x - 0.3) <= 0.02; }, 2000ms, &go));
+  Deactivate();
+  SpinFor(100ms);
+  Activate();
+  const auto cmd = ctrl_->LastCommand();
+  EXPECT_EQ(cmd.sequence, 0U);
+  EXPECT_FALSE(cmd.valid);
+  EXPECT_EQ(cmd.v_x, 0.0) << "nothing from the last session";
+  EXPECT_EQ(ctrl_->LastCommandSource().input, 1U);
+  EXPECT_EQ(ctrl_->LastCommandSource().deadman, 0);
+  EXPECT_EQ(ctrl_->LastCommandSource().joy_rejects, 0U);
+  EXPECT_EQ(helper_->count_subscribers(kJoyTopic), 1U);
+  ASSERT_TRUE(
+      SpinUntil([this] { return std::abs(ctrl_->LastCommand().v_x - 0.3) <= 0.02; }, 2000ms, &go));
+}
+
+TEST_F(LocomotionCommandTest, TheStatusTopicCarriesTheTwistSourceKeys) {
+  BringUpSpinning();
+  const auto twist = Twist(0.3);
+  SpinFor(300ms, &twist);
+  ASSERT_TRUE(PublishStatus());
+  ASSERT_EQ(last_status_.values.size(), integrated_bringup::kLocomotionStatusKeyCount);
+  EXPECT_EQ(last_status_.values[static_cast<std::size_t>(LocomotionStatusKey::kCmdInput)].key,
+            "cmd_input");
+  EXPECT_EQ(last_status_.values[static_cast<std::size_t>(LocomotionStatusKey::kCmdDeadman)].key,
+            "cmd_deadman");
+  EXPECT_EQ(last_status_.values[static_cast<std::size_t>(LocomotionStatusKey::kCmdJoyRejects)].key,
+            "cmd_joy_rejects");
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdInput), "0");
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdDeadman), "-1");
+  EXPECT_EQ(Value(LocomotionStatusKey::kCmdJoyRejects), "0");
+  last_out_ = Tick();
+  EXPECT_EQ(ctrl_->LastDiag().cmd_input, 0U);
+  EXPECT_EQ(ctrl_->LastDiag().cmd_deadman, -1);
 }
 
 }  // namespace

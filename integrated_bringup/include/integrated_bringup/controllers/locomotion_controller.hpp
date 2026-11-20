@@ -195,6 +195,7 @@
 
 #include "integrated_bringup/controllers/locomotion/humanoid_model_config.hpp"
 #include "integrated_bringup/controllers/locomotion/inekf_state_source.hpp"
+#include "integrated_bringup/controllers/locomotion/joy_command.hpp"
 #include "integrated_bringup/controllers/locomotion/locomotion_status.hpp"
 #include "integrated_bringup/controllers/locomotion/measured_state_source.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
@@ -231,6 +232,7 @@
 #include <rclcpp/logger.hpp>
 #include <rclcpp/subscription.hpp>
 #include <rclcpp/timer.hpp>
+#include <sensor_msgs/msg/joy.hpp>
 
 #include <Eigen/Core>
 #include <yaml-cpp/yaml.h>
@@ -284,11 +286,25 @@ struct LocomotionControllerConfig {
   YAML::Node whole_body_qp;
   LocomotionMpcConfig mpc;
   std::string velocity_command_topic;  ///< `velocity_command.topic`; empty = no command path
+  /// `velocity_command.type`: false = geometry_msgs/Twist (the default), true = sensor_msgs/Joy.
+  bool velocity_command_joy{false};
+  locomotion::JoyCommandMapping velocity_command_joy_map{};  ///< `velocity_command.joy` (type joy)
 };
+
+/// The command timer's output with its source (one SeqLock: never torn apart).
+struct LocomotionCommandOut {
+  rtc::mpc::FilteredCommand cmd{};
+  LocomotionCommandSource source{};
+};
+
+static_assert(std::is_trivially_copyable_v<LocomotionCommandOut>,
+              "LocomotionCommandOut travels through a SeqLock");
 
 /// @brief One Twist as the subscription stores it for the command timer.
 struct RawVelocityCommandSample {
   rtc::mpc::RawVelocityCommand twist{};
+  /// Which callback wrote it and what it saw (a Twist: input 0, deadman −1).
+  LocomotionCommandSource source{};
   /// Steady clock at the callback. Before the first message: a stamp no clock
   /// is within t_stale of, so the filter reads it as stale (its age test is
   /// overflow-safe).
@@ -305,8 +321,10 @@ struct LocomotionCommandLogSample {
   double v_y{0.0};
   double omega_z{0.0};
   double base_height{0.0};
-  bool fresh{false};      ///< the filter's input was fresh at this step
-  std::int32_t gait{-1};  ///< the phase manager's gait index; −1 = none
+  bool fresh{false};        ///< the filter's input was fresh at this step
+  std::int32_t gait{-1};    ///< the phase manager's gait index; −1 = none
+  std::uint8_t input{0};    ///< LocomotionCommandSource::input of the step's sample
+  std::int8_t deadman{-1};  ///< LocomotionCommandSource::deadman of the step's sample
 };
 
 static_assert(std::is_trivially_copyable_v<LocomotionCommandLogSample>,
@@ -407,15 +425,23 @@ class LocomotionController final : public rtc::RTControllerInterface {
     return fault_latched_tick_ ? ReferenceSource::kFault : ref_source_;
   }
 
-  /// True when a Twist subscription exists (mpc.enabled and a topic configured).
-  [[nodiscard]] bool VelocityCommandSubscribed() const noexcept { return velocity_sub_ != nullptr; }
+  /// True when a command subscription exists (mpc.enabled and a topic configured):
+  /// the Twist one or, under `velocity_command.type: joy`, the Joy one.
+  [[nodiscard]] bool VelocityCommandSubscribed() const noexcept {
+    return velocity_sub_ != nullptr || joy_sub_ != nullptr;
+  }
 
   /// The command filter's last output (what the phase manager was last given).
   [[nodiscard]] rtc::mpc::FilteredCommand LastCommand() const noexcept {
-    return command_out_.Load();
+    return command_out_.Load().cmd;
   }
 
-  /// Twist messages the subscription stored since the last activation.
+  /// The input behind LastCommand: type, deadman, Joy rejects.
+  [[nodiscard]] LocomotionCommandSource LastCommandSource() const noexcept {
+    return command_out_.Load().source;
+  }
+
+  /// Messages (Twist or Joy) the subscription stored since the last activation.
   [[nodiscard]] std::uint64_t VelocityCommandsReceived() const noexcept {
     return raw_command_.Load().sequence;
   }
@@ -447,8 +473,13 @@ class LocomotionController final : public rtc::RTControllerInterface {
   // The velocity command (command.cpp). Off the RT thread: the subscription
   // callback (Store only), the timer (the filter's one writer).
   void OnVelocityCommand(const geometry_msgs::msg::Twist& msg) noexcept;
+  void OnJoyCommand(const sensor_msgs::msg::Joy& msg) noexcept;
+  /// The sample before any message (and after an activation): stale, at rest,
+  /// tagged with the configured input.
+  [[nodiscard]] RawVelocityCommandSample RestCommandSample() const noexcept;
   void StepCommand() noexcept;
-  void PushCommand(const rtc::mpc::FilteredCommand& cmd) noexcept;
+  void PushCommand(const rtc::mpc::FilteredCommand& cmd,
+                   const LocomotionCommandSource& source) noexcept;
   void StartCommandTimer() noexcept;  ///< activation: the filter reset, the timer up
   void StopCommandTimer() noexcept;   ///< from PauseMpc and StopMpcThread
   void StoreMpcCounters() noexcept;   ///< the 1 Hz timer (and the thread's stop: zeros)
@@ -623,10 +654,12 @@ class LocomotionController final : public rtc::RTControllerInterface {
   LocomotionPlanSampleDiag sample_diag_{};  ///< this tick's sample, for the diag log
   // The velocity command: the subscription stores, the timer steps the filter.
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr velocity_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;  ///< type joy, instead
+  locomotion::JoyCommandScale joy_scale_{};  ///< command.v_max / hdot_max, set at configure
   rtc::SeqLock<RawVelocityCommandSample> raw_command_;  ///< callback → timer
   rclcpp::CallbackGroup::SharedPtr command_cb_group_;
   rclcpp::TimerBase::SharedPtr command_timer_;
-  rtc::SeqLock<rtc::mpc::FilteredCommand> command_out_;  ///< timer → publish thread, tests
+  rtc::SeqLock<LocomotionCommandOut> command_out_;  ///< timer → publish thread, tests
   /// timer → RT tick (the diagnostic log): one producer (PushCommand), one consumer (FillLogs).
   rtc::mpc::TripleBuffer<LocomotionCommandLogSample> command_log_;
   /// MPC thread → RT tick (the diagnostic log): the thread's last solve attempt

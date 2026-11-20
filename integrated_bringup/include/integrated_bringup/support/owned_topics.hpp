@@ -407,6 +407,7 @@ void SetupLocomotionStatusPublisher(rtc::RTControllerInterface& ctrl,
 // values are LocomotionStatusLevel / FormatLocomotionStatusValue (pure).
 void PublishLocomotionStatus(ControllerTopicHandles& handles, const LocomotionDiagLogPod& status,
                              bool mpc_enabled, const rtc::mpc::FilteredCommand& cmd,
+                             const LocomotionCommandSource& source,
                              const LocomotionMpcCounters& counters) noexcept;
 
 // Stamp the reference frame the GraspState / WbcState / PayloadEstimate *vector*

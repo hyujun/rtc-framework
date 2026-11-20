@@ -190,16 +190,32 @@ LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg
   if (cfg["mpc"]) {
     out.mpc = ParseMpc(cfg["mpc"], root + ".mpc");
   }
-  // `velocity_command:` — the Twist topic, no default: a misspelt key or an
-  // empty name must not fall back to a topic nobody publishes on.
+  // `velocity_command:` — the topic, no default: a misspelt key or an empty
+  // name must not fall back to a topic nobody publishes on. `type` picks the
+  // message (twist when absent); `joy` maps a Joy (joy_command.hpp).
   if (cfg["velocity_command"]) {
     const std::string where = root + ".velocity_command";
-    CheckKeys(cfg["velocity_command"], where, {"topic"});
-    const YAML::Node t = cfg["velocity_command"]["topic"];
+    const YAML::Node vc = cfg["velocity_command"];
+    CheckKeys(vc, where, {"topic", "type", "joy"}, {"topic"});
+    const YAML::Node t = vc["topic"];
     if (!t.IsScalar() || t.Scalar().empty()) {
       Refuse(where + ".topic", "expected a non-empty topic name, got " + Spelling(t));
     }
     out.velocity_command_topic = t.Scalar();
+    if (const YAML::Node type = vc["type"]) {
+      if (!type.IsScalar() || (type.Scalar() != "twist" && type.Scalar() != "joy")) {
+        Refuse(where + ".type", "expected twist or joy, got " + Spelling(type));
+      }
+      out.velocity_command_joy = type.Scalar() == "joy";
+    }
+    if (out.velocity_command_joy) {
+      if (!vc["joy"]) {
+        Refuse(where + ".joy", "required with type joy");
+      }
+      out.velocity_command_joy_map = locomotion::ParseJoyCommandMapping(vc["joy"], where + ".joy");
+    } else if (vc["joy"]) {
+      Refuse(where + ".joy", "only with type joy (the type is twist)");
+    }
   }
   return out;
 }

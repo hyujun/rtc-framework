@@ -42,6 +42,18 @@ struct LocomotionControllerTestAccess {
 
   static std::uint32_t StateEpoch(const LocomotionController& c) { return c.mpc_state_epoch_; }
 
+  // The velocity command's subscription callbacks, called as the executor
+  // would, and the slot they write.
+  static void OnTwist(LocomotionController& c, const geometry_msgs::msg::Twist& m) {
+    c.OnVelocityCommand(m);
+  }
+
+  static void OnJoy(LocomotionController& c, const sensor_msgs::msg::Joy& m) { c.OnJoyCommand(m); }
+
+  static RawVelocityCommandSample RawCommand(const LocomotionController& c) {
+    return c.raw_command_.Load();
+  }
+
   static const rtc::tsid::ContactState& Contacts(const LocomotionController& c) {
     return c.contacts_;
   }

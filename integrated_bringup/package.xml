@@ -42,6 +42,10 @@
        x86_64 전용 마커 — aarch64 venv 에는 없으므로 motion_editor_gui 는 x86_64 에서만 돈다. -->
   <exec_depend>repo_scripts</exec_depend>
   <exec_depend>rtc_tools</exec_depend>
+  <!-- sim launches name rtc_teleop_input as the Joy source of locomotion_controller's
+       velocity_command.type joy; test_locomotion_joy_command reads its installed
+       standard_gamepad.yaml (the controller keeps a C++ copy, no runtime read). -->
+  <exec_depend>rtc_teleop_input</exec_depend>
   <exec_depend>robot_descriptions</exec_depend>
   <exec_depend>udp_hand_driver</exec_depend>
   <exec_depend>ur_robot_driver</exec_depend>
@@ -50,6 +54,7 @@
   <exec_depend>ur_calibration</exec_depend>
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>rtc_teleop_input</test_depend>
   <test_depend>eigen</test_depend>
   <!-- tinyxml2: test_g1_loco_joint_order reads the plant MJCF's <actuator> order -->
   <test_depend>tinyxml2</test_depend>

@@ -546,6 +546,8 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   d.cmd_h = cmd.base_height;
   d.cmd_valid = cmd.fresh;
   d.gait_latest = cmd.gait;
+  d.cmd_input = cmd.input;
+  d.cmd_deadman = cmd.deadman;
   for (std::size_t i = 0; i < 3; ++i) {
     d.ref_base_v[i] = plan ? wbc_ref_.v_ref[i] : kNaN;
   }

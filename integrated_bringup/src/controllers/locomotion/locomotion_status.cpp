@@ -53,6 +53,9 @@ constexpr const char* kKeyNames[kLocomotionStatusKeyCount] = {
     "estimator_resets",
     "estimator_reset_reason",
     "estimator_contact_mask",
+    "cmd_input",
+    "cmd_deadman",
+    "cmd_joy_rejects",
 };
 
 }  // namespace
@@ -126,6 +129,14 @@ std::uint8_t LocomotionStatusLevel(const LocomotionDiagLogPod& d, bool mpc_enabl
 
 void FormatLocomotionStatusValue(LocomotionStatusKey key, const LocomotionDiagLogPod& s,
                                  const rtc::mpc::FilteredCommand& cmd,
+                                 const LocomotionMpcCounters& c, char* buf,
+                                 std::size_t size) noexcept {
+  FormatLocomotionStatusValue(key, s, cmd, LocomotionCommandSource{}, c, buf, size);
+}
+
+void FormatLocomotionStatusValue(LocomotionStatusKey key, const LocomotionDiagLogPod& s,
+                                 const rtc::mpc::FilteredCommand& cmd,
+                                 const LocomotionCommandSource& source,
                                  const LocomotionMpcCounters& c, char* buf,
                                  std::size_t size) noexcept {
   if (buf == nullptr || size == 0) {
@@ -208,6 +219,13 @@ void FormatLocomotionStatusValue(LocomotionStatusKey key, const LocomotionDiagLo
       return u64(s.estimator.reset_reason);
     case Key::kEstimatorContactMask:
       return u64(s.estimator.estimated_mask);
+    case Key::kCmdInput:
+      return u64(source.input);
+    case Key::kCmdDeadman:
+      std::snprintf(buf, size, "%d", static_cast<int>(source.deadman));
+      return;
+    case Key::kCmdJoyRejects:
+      return u64(source.joy_rejects);
     case Key::kCount:
       break;
   }
