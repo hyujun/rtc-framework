@@ -93,6 +93,7 @@
     # link_status는 loop_rate_hz(~500Hz)로 보낼 필요 없음.
     # loop_rate_hz / publish_rate 비율로 decimation됨 (예: 500/100=5 -> ~100Hz link_status).
     publish_rate: 100.0
+    enable_timing_log: true           # 손 tick 마다 timing/hand_timing_log.csv 한 행. false = 파일 없음
 
     # -- 센서 LPF 설정 (4차 Bessel LPF) --
     # 유효 센서 샘플링 레이트 = loop_rate_hz / (comm_decimation * sensor_decimation)

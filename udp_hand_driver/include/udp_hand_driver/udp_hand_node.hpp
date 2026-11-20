@@ -627,6 +627,9 @@ class UdpHandNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::TimerBase::SharedPtr hand_timing_timer_;
   bool hand_timing_opened_{false};
   std::uint64_t hand_timing_drop_baseline_{0};
+  // `enable_timing_log`, read at on_configure. false leaves all of the above
+  // idle: no producer on the loop, no timer, the CSV never opens.
+  bool enable_timing_log_{true};
 
   // Aux lane (issue #345). Created in the constructor, NOT on_configure: the
   // group is handed to main()'s aux executor before the first lifecycle

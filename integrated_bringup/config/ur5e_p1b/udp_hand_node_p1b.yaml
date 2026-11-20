@@ -76,6 +76,7 @@
     # -- Publish rate (link_status decimation) --
     # loop_rate_hz / publish_rate 비율 (250/50=5 -> ~50Hz link_status).
     publish_rate: 50.0
+    enable_timing_log: true           # 손 tick 마다 timing/hand_timing_log.csv 한 행. false = 파일 없음
 
     # -- 조인트 이름 (firmware wire-slot order) --
     # 이 순서는 펌웨어 wire-slot 순서다 — URDF/_base.yaml 의 joint 순서와

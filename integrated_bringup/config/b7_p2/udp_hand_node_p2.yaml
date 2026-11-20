@@ -58,6 +58,7 @@
     # 네이티브 CAN 호스트 p99 1521 µs → 500 Hz (D89). IXXAT USB 호스트라면 400.
     loop_rate_hz: 500.0
     publish_rate: 100.0               # link_status decimation 기준 (500/100 = 5)
+    enable_timing_log: true           # 손 tick 마다 timing/hand_timing_log.csv 한 행. false = 파일 없음
     comm_decimation: 1
     sensor_decimation: 1
 

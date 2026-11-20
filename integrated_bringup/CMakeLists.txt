@@ -2583,6 +2583,7 @@ if(BUILD_TESTING)
   # estop_on_clear ships on the two humanoid sims only; every other profile
   # resumes, and a profile that switches must name a controller it ships.
   ament_add_pytest_test(test_estop_on_clear_profiles test/test_estop_on_clear_profiles.py)
+  ament_add_pytest_test(test_shipped_logging_switches test/test_shipped_logging_switches.py)
   ament_add_pytest_test(test_cm_rt_params_wiring test/test_cm_rt_params_wiring.py)
   # Shipped initial_qpos: length/type (always) + MJCF keyframe agreement (skips
   # without the mujoco pip module, which CI installs and /usr/bin/python3 lacks).

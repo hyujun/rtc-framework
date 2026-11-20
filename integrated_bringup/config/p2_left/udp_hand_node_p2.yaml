@@ -35,6 +35,7 @@
     recv_timeout_ms: 0.9
     loop_rate_hz: 500.0               # = _base.yaml control_rate
     publish_rate: 100.0
+    enable_timing_log: true           # 손 tick 마다 timing/hand_timing_log.csv 한 행. false = 파일 없음
     comm_decimation: 1
     sensor_decimation: 1
 
