@@ -28,11 +28,14 @@ PLAN_LOSS = ld.FAULT_CAUSE_NAMES.index("plan loss")
 OTHER_FAULT = next(i for i in range(1, len(ld.FAULT_CAUSE_NAMES)) if i != PLAN_LOSS)
 
 
-def synthetic(ratio=0.4, truth_ratio=None, fault_at=None, fault_code=OTHER_FAULT, length=30.0):
+def synthetic(
+    ratio=0.4, truth_ratio=None, fault_at=None, fault_code=OTHER_FAULT, length=30.0,
+    script=wm.WALK_SCRIPT,
+):  # fmt: skip
     """(diag, truth) tables; the base advances at `ratio` (T: `truth_ratio`) of the command."""
     n = int(round(length / DT)) + 1
     t = np.arange(n) * DT
-    cmd = np.array([wm.command_at(wm.WALK_SCRIPT, x - START) for x in t])
+    cmd = np.array([wm.command_at(script, x - START) for x in t])
     stepping = (t >= START + 0.5) & (t < START + 16.5)
     phase = np.mod(t - (START + 0.5), 2 * STEP)
     mask = np.full(n, 3)
@@ -44,8 +47,10 @@ def synthetic(ratio=0.4, truth_ratio=None, fault_at=None, fault_code=OTHER_FAULT
 
     def base(r):
         psi = np.concatenate([[0.0], np.cumsum(cmd[:-1, 2] * DT)])
-        px = np.concatenate([[0.0], np.cumsum(r * cmd[:-1, 0] * np.cos(psi[:-1]) * DT)])
-        py = np.concatenate([[0.0], np.cumsum(r * cmd[:-1, 0] * np.sin(psi[:-1]) * DT)])
+        c, sn = np.cos(psi[:-1]), np.sin(psi[:-1])
+        ux, uy = r * cmd[:-1, 0], r * cmd[:-1, 1]  # the heading frame's forward / left
+        px = np.concatenate([[0.0], np.cumsum((ux * c - uy * sn) * DT)])
+        py = np.concatenate([[0.0], np.cumsum((ux * sn + uy * c) * DT)])
         zeros = np.zeros(n)
         return {
             "px": px, "py": py, "pz": np.full(n, 0.75),
@@ -61,6 +66,7 @@ def synthetic(ratio=0.4, truth_ratio=None, fault_at=None, fault_code=OTHER_FAULT
         "fault_cause": fault,
         "contact_mask": mask.astype(float),
         "cmd_vx": cmd[:, 0],
+        "cmd_vy": cmd[:, 1],
         "cmd_wz": cmd[:, 2],
         "ref_source": np.ones(n),
         "plausibility_rejects": zeros,
@@ -92,7 +98,7 @@ def synthetic(ratio=0.4, truth_ratio=None, fault_at=None, fault_code=OTHER_FAULT
     return diag, truth
 
 
-def run_of(diag, truth=None, drop_truth_rows=None):
+def run_of(diag, truth=None, drop_truth_rows=None, script=wm.WALK_SCRIPT):
     header = list(diag)
     aligned = None
     if truth is not None:
@@ -104,7 +110,7 @@ def run_of(diag, truth=None, drop_truth_rows=None):
     log = we.RunLog(
         header=header, diag=diag, contacts=ld.parse_diag_names(header).contacts, truth=aligned
     )
-    return we.Run(log, wm.WALK_SCRIPT)
+    return we.Run(log, script)
 
 
 # ── tiers ─────────────────────────────────────────────────────────────────
@@ -537,3 +543,65 @@ def test_an_unreadable_run_is_listed_and_the_batch_goes_on(tmp_path):
     again = we.evaluate_batch(tmp_path, spec)["arms"]["C"]
     assert again["summary"] == {"n": 0}
     assert not {r["run"]: r for r in again["runs"]}["C_0"]["checks"]["zero_no_such_column"]
+
+
+# ── other directions ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("name", "direction"), [("back", (-1.0, 0.0)), ("side", (0.0, 1.0))])
+def test_a_backward_or_sideways_script_is_measured_along_its_own_direction(name, direction):
+    script = wm.COMMAND_SCRIPTS[name]
+    run = run_of(*synthetic(ratio=0.5, truth_ratio=0.5, script=script), script=script)
+    speed = math.hypot(script[1].vx1, script[1].vy1)
+    assert run.direction == pytest.approx(direction) and run.v_cmd == pytest.approx(speed)
+    assert run.speed_window == pytest.approx((START + 2.8, START + 16.0), abs=2 * DT)
+    v = we.evaluate(
+        run, ["v_ratio_truth", "v_mps_est", "lateral_drift_m_est", "completed", "rate_stop"]
+    )
+    assert v["v_ratio_truth"] == pytest.approx(0.5, rel=1e-9)  # half the command, that way
+    assert v["v_mps_est"] == pytest.approx(0.5 * speed, rel=1e-9)  # a speed along it: positive
+    assert v["lateral_drift_m_est"] == pytest.approx(0.0, abs=1e-9)
+    assert v["completed"] is True
+    assert v["rate_stop"] == pytest.approx(speed / we.RATE_WINDOW_S)
+    assert run.crossings["turn_start"] is None and run.crossings["stop"] == pytest.approx(
+        START + 16.0, abs=2 * DT
+    )
+    assert we.log_spans_script(run)
+
+
+def test_a_base_that_goes_the_wrong_way_has_a_negative_ratio():
+    script = wm.COMMAND_SCRIPTS["back"]
+    diag, truth = synthetic(ratio=-0.2, script=script)  # commanded back, walks forward
+    assert we.evaluate(run_of(diag, truth, script=script), ["v_ratio_est"])[
+        "v_ratio_est"
+    ] == pytest.approx(-0.2, rel=1e-9)
+
+
+def test_every_script_is_as_long_as_the_walk_and_ends_in_the_same_stop():
+    for name, script in wm.COMMAND_SCRIPTS.items():
+        assert wm.script_length(script) == wm.script_length(wm.WALK_SCRIPT), name
+        assert script[-1].length_s == 10.0, name
+        assert wm.command_at(script, 20.0) == (0.0, 0.0, 0.0), name  # at rest in the stop
+    assert wm.command_at(wm.COMMAND_SCRIPTS["side"], 1.0) == pytest.approx((0.0, 0.1, 0.0))
+    assert wm.command_at(wm.COMMAND_SCRIPTS["back"], 5.0) == pytest.approx((-0.3, 0.0, 0.0))
+    assert wm.command_at(wm.WALK_SCRIPT, 1.0) == pytest.approx((0.25, 0.0, 0.0))
+
+
+def test_an_arm_can_declare_the_model_difference_it_runs_with(tmp_path):
+    heavy = {**PROVENANCE, "model_match": {"mass_kg": 0.8, "com_m": 4e-3, "inertia_kgm2": 0.05}}
+    for arm in ("C", "P"):
+        write_run(tmp_path / f"{arm}_0", *synthetic(), note={"provenance": heavy})
+    spec = {
+        "arms": {
+            "C": {"runs": "C_*"},
+            "P": {
+                "runs": "P_*",
+                "validity": {"model": {"mass_kg": 1.0, "com_m": 0.01, "inertia_kgm2": 0.1}},
+            },
+        },
+        "validity": {"single_support_s": [0.40, 0.50]},
+    }
+    out = we.evaluate_batch(tmp_path, spec)["arms"]
+    assert not out["C"]["runs"][0]["checks"]["model_match"]  # the batch's tolerance
+    assert out["P"]["runs"][0]["valid"]  # the arm's declared one
+    assert "single_support" in out["P"]["runs"][0]["checks"]  # the rest of the batch's still holds

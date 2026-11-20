@@ -71,6 +71,8 @@ class Segment:
     vx0: float  # v_x at the segment's start; linear to vx1 at its end
     vx1: float
     wz: float
+    vy0: float = 0.0  # v_y likewise (last, so the forward scripts read as before)
+    vy1: float = 0.0
 
 
 # The walking command script [s, m/s, rad/s]: ramp 0 → 0.5 m/s, hold, a yaw
@@ -109,6 +111,16 @@ def _curve(wz: float) -> tuple[Segment, ...]:
     )
 
 
+def _line(vx: float, vy: float) -> tuple[Segment, ...]:
+    # One planar direction held: the WALK_SCRIPT ramp to (vx, vy), 14 s at it
+    # (16 s of walking, as in WALK_SCRIPT), the same 10 s stop.
+    return (
+        Segment("A", 2.0, 0.0, vx, 0.0, 0.0, vy),
+        Segment("B", 14.0, vx, vx, 0.0, vy, vy),
+        Segment("E", 10.0, 0.0, 0.0, 0.0),
+    )
+
+
 # The command scripts a run can publish, by name. Every one ends in a 10 s
 # stop and is as long as WALK_SCRIPT, so a run's length and stop window do not
 # depend on the script. walk_summary judges WALK_SCRIPT only (its segments by
@@ -117,6 +129,10 @@ def _curve(wz: float) -> tuple[Segment, ...]:
 # pre-registered fallback should the 0.4 rad/s turns not survive).
 COMMAND_SCRIPTS: dict[str, tuple[Segment, ...]] = {
     "walk": WALK_SCRIPT,
+    # Walking backwards and sideways (to the left), for the robustness
+    # scenarios: slower than the forward walk, as the gait's reach that way is.
+    "back": _line(-0.3, 0.0),
+    "side": _line(0.0, 0.2),
     "turn": _turn(0.4),
     "curve": _curve(0.4),
     "turn_slow": _turn(0.3),
@@ -149,7 +165,11 @@ def command_at(script: Sequence[Segment], t: float) -> tuple[float, float, float
     for seg in script:
         if t < start + seg.length_s:
             f = (t - start) / seg.length_s if seg.length_s > 0.0 else 1.0
-            return seg.vx0 + f * (seg.vx1 - seg.vx0), 0.0, seg.wz
+            return (
+                seg.vx0 + f * (seg.vx1 - seg.vx0),
+                seg.vy0 + f * (seg.vy1 - seg.vy0),
+                seg.wz,
+            )
         start += seg.length_s
     return 0.0, 0.0, 0.0
 

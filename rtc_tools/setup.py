@@ -58,6 +58,7 @@ setup(
             "estimator_metrics = rtc_tools.analysis.estimator_metrics:main",
             "walk_eval = rtc_tools.analysis.walk_eval:main",
             "model_match = rtc_tools.validation.model_match:main",
+            "perturb_mjcf = rtc_tools.validation.perturb_mjcf:main",
             "joint_command_gui = rtc_tools.gui.joint_command_gui:main",
         ],
     },

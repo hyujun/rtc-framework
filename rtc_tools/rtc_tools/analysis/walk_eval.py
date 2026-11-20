@@ -26,7 +26,8 @@ Tiers
 Run metrics (:data:`METRICS`)
     Every window is placed by the log's own command columns and the command
     script (:data:`walk_metrics.COMMAND_SCRIPTS`), so nothing here holds a robot
-    name or a command value: "walking straight" is ``cmd_vx`` at ≥ 90 % of the
+    name or a command value: "walking straight" is the planar command, along
+    the script's own direction (forward, backward or sideways), at ≥ 90 % of the
     script's forward speed with no yaw command, a transition is the command
     crossing half its script value.
 
@@ -108,6 +109,7 @@ TRUTH_BASE_BIT = 0  # truth_mask bit of the base lane; bit 1 + c is contact c
 STRAIGHT_FRACTION = 0.9
 YAW_ZERO = 0.01  # [rad/s] |cmd_wz| below this is "no yaw command"
 CROSS_FRACTION = 0.5
+CMD_ALONG = "cmd_along"  # not a log column: Run.cmd_along
 SPEED_LEAD_S = 1.0
 SPEED_FAULT_MARGIN_S = 0.5
 SPEED_MIN_WINDOW_S = 2.0
@@ -200,8 +202,30 @@ class Run:
         return float(np.median(np.diff(self.t)))
 
     @cached_property
+    def _fastest(self) -> tuple[float, float]:
+        """(v_x, v_y) of the script's fastest planar command (a segment end)."""
+        ends = [(s.vx0, s.vy0) for s in self.script] + [(s.vx1, s.vy1) for s in self.script]
+        return max(ends, key=lambda v: math.hypot(*v))
+
+    @cached_property
     def v_cmd(self) -> float:
-        return max(max(s.vx0, s.vx1) for s in self.script)
+        """The script's planar speed [m/s]: forward, backward or sideways alike."""
+        return math.hypot(*self._fastest)
+
+    @cached_property
+    def direction(self) -> tuple[float, float]:
+        """Unit vector of the script's planar command on the heading-aligned axes."""
+        return (
+            (self._fastest[0] / self.v_cmd, self._fastest[1] / self.v_cmd)
+            if self.v_cmd
+            else (1.0, 0.0)
+        )
+
+    @cached_property
+    def cmd_along(self) -> np.ndarray:
+        """The planar command along the script's direction, per row [m/s]."""
+        cx, cy = self.direction
+        return self.log.column("cmd_vx") * cx + self.log.column("cmd_vy") * cy
 
     @cached_property
     def wz_cmd(self) -> float:
@@ -254,9 +278,9 @@ class Run:
 
     @cached_property
     def crossings(self) -> dict[str, float | None]:
-        """The command transitions: the yaw command up / down, the forward command down."""
+        """The command transitions: the yaw command up / down, the planar command down."""
         t = self.t
-        wz, vx = self.log.column("cmd_wz"), self.log.column("cmd_vx")
+        wz, vx = self.log.column("cmd_wz"), self.cmd_along
         out: dict[str, float | None] = {"turn_start": None, "turn_end": None, "stop": None}
         if self.wz_cmd > 0.0:
             level = CROSS_FRACTION * self.wz_cmd
@@ -275,7 +299,7 @@ class Run:
         """[first, last] row of the first straight-walking stretch of the command."""
         if self.v_cmd <= 0.0:
             return None  # a script with no forward speed has no straight stretch
-        ok = (self.log.column("cmd_vx") >= STRAIGHT_FRACTION * self.v_cmd) & (
+        ok = (self.cmd_along >= STRAIGHT_FRACTION * self.v_cmd) & (
             np.abs(self.log.column("cmd_wz")) <= YAW_ZERO
         )
         if not ok.any():
@@ -302,7 +326,7 @@ class Run:
         turn in place).
         """
         if self.v_cmd > 0.0:
-            rows = self.log.column("cmd_vx") >= STRAIGHT_FRACTION * self.v_cmd
+            rows = self.cmd_along >= STRAIGHT_FRACTION * self.v_cmd
         else:
             rows = np.abs(self.log.column("cmd_wz")) >= STRAIGHT_FRACTION * self.wz_cmd
         rows[self.end + 1 :] = False
@@ -393,7 +417,7 @@ def command_rate(run: Run, column: str, t_cross: float | None) -> float | None:
     """Largest change of the command over RATE_WINDOW_S within ±RATE_SPAN_S of a transition."""
     if t_cross is None:
         return None
-    t, x = run.t, run.log.column(column)
+    t, x = run.t, (run.cmd_along if column == CMD_ALONG else run.log.column(column))
     n = int(round(RATE_WINDOW_S / run.dt))
     a = int(np.searchsorted(t, t_cross - RATE_SPAN_S))
     b = min(len(x) - n, int(np.searchsorted(t, t_cross + RATE_SPAN_S)))
@@ -406,16 +430,23 @@ def _rate(event: str, column: str) -> Callable[[Run, str], float | None]:
     return lambda run, _tier: command_rate(run, column, run.crossings[event])
 
 
+def _commanded(run: Run) -> np.ndarray:
+    """Rows on which the script commands motion (above 1 % of its speeds)."""
+    command = np.abs(run.cmd_along) + np.abs(run.log.column("cmd_wz"))
+    return command > 0.01 * (run.v_cmd + run.wz_cmd)
+
+
 def _yaw(base: Table) -> np.ndarray:
     return wm.yaw(base["qx"], base["qy"], base["qz"], base["qw"])
 
 
 def planar_motion(run: Run, tier: str) -> tuple[float, float, float, float] | None:
-    """(forward [m], lateral [m], window [s], mean command [m/s]) over the speed window.
+    """(along [m], across [m], window [s], mean command [m/s]) over the speed window.
 
-    Displacement row to row, resolved on the heading of the earlier row, over
-    the rows that have a base (a truth lane can skip rows; the step across the
-    gap still counts).
+    Displacement row to row, resolved on the heading of the earlier row and
+    then on the script's command direction (forward for a forward walk, so
+    "along" is the forward advance there), over the rows that have a base (a
+    truth lane can skip rows; the step across the gap still counts).
     """
     base = run.log.base(tier)
     if run.speed_window is None or run.lift is None:
@@ -426,10 +457,13 @@ def planar_motion(run: Run, tier: str) -> tuple[float, float, float, float] | No
         return None
     psi = _yaw(base)[rows[:-1]]
     dx, dy = np.diff(base["px"][rows]), np.diff(base["py"][rows])
-    forward = float(np.sum(dx * np.cos(psi) + dy * np.sin(psi)))
-    lateral = float(np.sum(-dx * np.sin(psi) + dy * np.cos(psi)))
+    ahead = dx * np.cos(psi) + dy * np.sin(psi)
+    left = -dx * np.sin(psi) + dy * np.cos(psi)
+    cx, cy = run.direction
+    forward = float(np.sum(ahead * cx + left * cy))
+    lateral = float(np.sum(left * cx - ahead * cy))
     span = float(run.t[rows[-1]] - run.t[rows[0]])
-    return forward, lateral, span, float(np.mean(run.log.column("cmd_vx")[rows]))
+    return forward, lateral, span, float(np.mean(run.cmd_along[rows]))
 
 
 def _v_mps(run: Run, tier: str) -> float | None:
@@ -494,8 +528,7 @@ def truth_normal_force(run: Run) -> np.ndarray:
 def _weight(run: Run, _tier: str) -> float | None:
     """The standing load [N]: the summed normal force over the stand rows before the command."""
     fz = truth_normal_force(run)
-    command = np.abs(run.log.column("cmd_vx")) + np.abs(run.log.column("cmd_wz"))
-    moving = np.flatnonzero(command > 0.01 * (run.v_cmd + run.wz_cmd))
+    moving = np.flatnonzero(_commanded(run))
     before = np.arange(len(run.t)) < (moving[0] if moving.size else len(run.t))
     rows = before & (run.log.column("ref_source") == wm.REF_SOURCE_STAND)
     rows &= np.isfinite(fz).all(axis=1)
@@ -583,7 +616,7 @@ METRICS: dict[str, Metric] = {
     "single_support_s": Metric(_PLAN, "s", _single_support),
     "rate_turn_start": Metric(_PLAN, "rad/s^2", _rate("turn_start", "cmd_wz")),
     "rate_turn_end": Metric(_PLAN, "rad/s^2", _rate("turn_end", "cmd_wz")),
-    "rate_stop": Metric(_PLAN, "m/s^2", _rate("stop", "cmd_vx")),
+    "rate_stop": Metric(_PLAN, "m/s^2", _rate("stop", CMD_ALONG)),
     "withheld_rate": Metric(_PLAN, "fraction", _withheld_rate),
     "deadline_rate": Metric(_PLAN, "fraction", _deadline_rate),
     "plan_holds": Metric(_PLAN, "count", _increase("plan_holds")),
@@ -806,7 +839,7 @@ def overlay_ok(note: Mapping, want: str | None) -> bool:
 
 # The columns every window and count is placed by: a cell of these that did not
 # parse would otherwise read as "no contact", "no fault" or "no command".
-PLACING_COLUMNS = ("t_relative_s", "contact_mask", "fault_cause", "cmd_vx", "cmd_wz")
+PLACING_COLUMNS = ("t_relative_s", "contact_mask", "fault_cause", "cmd_vx", "cmd_vy", "cmd_wz")
 
 
 def log_readable(run: Run) -> bool:
@@ -825,8 +858,7 @@ def log_spans_script(run: Run) -> bool:
     """
     if not log_readable(run):
         return False
-    command = np.abs(run.log.column("cmd_vx")) + np.abs(run.log.column("cmd_wz"))
-    moving = np.flatnonzero(command > 0.01 * (run.v_cmd + run.wz_cmd))
+    moving = np.flatnonzero(_commanded(run))
     if not moving.size:
         return False
     return bool(run.t[-1] - run.t[moving[0]] >= wm.script_length(run.script[:-1]))
@@ -869,7 +901,11 @@ def run_validity(
         checks["single_support"] = support is not None and lo <= support <= hi
     rates = {
         event: command_rate(run, column, run.crossings[event])
-        for event, column in (("turn_start", "cmd_wz"), ("turn_end", "cmd_wz"), ("stop", "cmd_vx"))
+        for event, column in (
+            ("turn_start", "cmd_wz"),
+            ("turn_end", "cmd_wz"),
+            ("stop", CMD_ALONG),
+        )
     }
     if spec.command_rate is not None:
         checks["command_shape"] = all(
@@ -964,7 +1000,9 @@ def evaluate_batch(root: Path, spec: Mapping) -> dict:
     """Every arm of a batch (module docstring); `spec` is the batch's registration.
 
     ``spec``: ``script`` (a :data:`walk_metrics.COMMAND_SCRIPTS` name), ``tier``,
-    ``arms`` ({name: {runs: glob under `root`, overlay: suffix | sha256 | null}}),
+    ``arms`` ({name: {runs: glob under `root`, overlay: suffix | sha256 | null,
+    validity: fields that replace the batch's for this arm — how a deliberately
+    perturbed plant declares the model difference it runs with}}),
     ``control`` (an arm name), ``validity`` (:class:`ValiditySpec` fields),
     ``min_valid`` and ``j_terms`` (a :data:`J_TERMS` subset, default all).
     """
@@ -974,6 +1012,11 @@ def evaluate_batch(root: Path, spec: Mapping) -> dict:
     arms: dict[str, dict] = {}
     for name, arm in spec["arms"].items():
         runs = []
+        arm_vspec = (
+            validity_spec({**(spec.get("validity") or {}), **arm["validity"]})
+            if arm.get("validity")
+            else vspec
+        )
         for run_dir in sorted(root.glob(arm["runs"])):
             note_path = run_dir / "run.json"
             if not note_path.is_file():
@@ -982,7 +1025,7 @@ def evaluate_batch(root: Path, spec: Mapping) -> dict:
             try:
                 note = json.loads(note_path.read_text())
                 run = Run(load_run(run_dir / CONTROLLER_DIR), script)
-                validity = run_validity(run, run_dir, note, vspec, arm.get("overlay"))
+                validity = run_validity(run, run_dir, note, arm_vspec, arm.get("overlay"))
                 values, refused = evaluate_available(run)
             except Exception as exc:  # one unreadable run must not take the batch with it
                 runs.append(
