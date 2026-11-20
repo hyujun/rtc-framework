@@ -150,36 +150,24 @@ void LocomotionController::InitModels() {
   if (!body_tree) {
     Fail("the system model declares no `urdf.tree_models." + cfg_.model.body_group + "`");
   }
-  body_joint_names_ = loco::JointOrder(*body_tree);
-  const std::set<std::string> body_set(body_joint_names_.begin(), body_joint_names_.end());
-  std::vector<pinocchio::JointIndex> lock;
-  for (const auto& name : full_joint_order_) {
-    if (body_set.count(name) == 0) {
-      lock.push_back(full_model_->getJointId(name));
-    }
+  loco::BodyModel body;
+  try {
+    body = loco::BuildBodyModel(*full_model_, *body_tree);
+  } catch (const std::invalid_argument& e) {
+    Fail(e.what());
   }
-  if (lock.empty() != cfg_.model.hand_groups.empty()) {
-    Fail(lock.empty() ? "model.hand_groups names hands but the model has no joint off the body"
-                      : "the model has joints off the body tree but model.hand_groups is empty");
+  if (body.locked == cfg_.model.hand_groups.empty()) {
+    Fail(body.locked ? "the model has joints off the body tree but model.hand_groups is empty"
+                     : "model.hand_groups names hands but the model has no joint off the body");
   }
-  reduced_model_ = std::make_shared<const pinocchio::Model>(
-      pinocchio::buildReducedModel(*full_model_, lock, pinocchio::neutral(*full_model_)));
-  if (loco::JointOrder(*reduced_model_) != body_joint_names_) {
-    Fail("the dynamics model (hands locked) does not have the body tree's joint order");
-  }
+  reduced_model_ = body.reduced;
+  body_joint_names_ = std::move(body.joint_names);
   if (body_joint_names_.size() > kLocomotionMaxBodyJoints) {
     Fail("the body has " + std::to_string(body_joint_names_.size()) + " joints, more than " +
          std::to_string(kLocomotionMaxBodyJoints));
   }
   nb_ = body_joint_names_.size();
-  std::map<std::string, int> full_index;
-  for (std::size_t a = 0; a < full_joint_order_.size(); ++a) {
-    full_index[full_joint_order_[a]] = static_cast<int>(a);
-  }
-  reduced_to_full_.clear();
-  for (const auto& name : body_joint_names_) {
-    reduced_to_full_.push_back(full_index.at(name));
-  }
+  reduced_to_full_ = std::move(body.reduced_to_full);
 
   rtc::tsid::LocomotionModelSpec spec;
   contact_names_.clear();

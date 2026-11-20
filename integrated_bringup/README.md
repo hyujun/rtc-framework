@@ -296,6 +296,10 @@ ros2 run integrated_bringup catch_population_trials --config <catch_population.y
 
 sim · 공 추정기 · 컨트롤러 전환을 먼저 해 둬야 한다. 전체 순서, 투척 목록 JSON 형식, 러너 · 모집단 · 평가 도구 (`tools/`) 의 인자와 결과 읽기는 [포구 sim 시행 실행 안내](../docs/catching-sim-trials.md) 에 있다.
 
+### 상태 추정기 재생 (`estimator_replay`)
+
+`ros2 run integrated_bringup estimator_replay --session <세션> --out replay.csv [--overlay <yaml>]...` — 세션 로그로 inekf 상태 source 를 offline 으로 다시 돌린다 (truth run 포함). 지표는 `ros2 run rtc_tools estimator_metrics`. 계약은 [locomotion-controller.md](docs/locomotion-controller.md#평가-도구-toolsstanding_eval).
+
 ### GUI 도구
 
 #### demo_controller_gui

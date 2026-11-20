@@ -10,6 +10,7 @@
 #pragma once
 
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
+#include "integrated_bringup/support/profile_params.hpp"
 #include "p1b_surrogate_models.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 
@@ -40,19 +41,7 @@ inline std::string ShippedProfilesDir() {
 #endif
 }
 
-/// Lays `src` onto `dst` key by key — a map merges, anything else replaces —
-/// the way the CM's parameter files overlay one another.
-inline void MergeParamsInto(YAML::Node& dst, const YAML::Node& src) {
-  for (auto it = src.begin(); it != src.end(); ++it) {
-    const auto key = it->first.as<std::string>();
-    YAML::Node slot = dst[key];
-    if (it->second.IsMap() && slot.IsDefined() && slot.IsMap()) {
-      MergeParamsInto(slot, it->second);
-    } else {
-      dst[key] = YAML::Clone(it->second);
-    }
-  }
-}
+using integrated_bringup::MergeParamsInto;  // the profile files' layering (support/)
 
 /// The RT node's parameters of a shipped sim bring-up: `_base.yaml` then
 /// `sim.yaml`, merged as the launch hands them to the CM. A profile may split
@@ -61,17 +50,13 @@ inline void MergeParamsInto(YAML::Node& dst, const YAML::Node& src) {
 /// file that has a block would drop the other half.
 inline YAML::Node ShippedSimParams(const std::string& profile) {
   const std::string base = ShippedProfilesDir() + "/" + profile + "/";
-  YAML::Node merged(YAML::NodeType::Map);
+  std::vector<std::string> files;
   for (const char* file : {"_base.yaml", "sim.yaml"}) {
-    if (!std::filesystem::exists(base + file)) {
-      continue;
-    }
-    const YAML::Node params = YAML::LoadFile(base + file)["/**"]["ros__parameters"];
-    if (params && params.IsMap()) {
-      MergeParamsInto(merged, params);
+    if (std::filesystem::exists(base + file)) {
+      files.push_back(base + file);
     }
   }
-  return merged;
+  return LoadProfileParams(files);
 }
 
 /// Device configs built FROM the shipped YAML for the two groups the
@@ -140,34 +125,8 @@ inline rtc_urdf_bridge::ModelConfig ShippedModelConfig(const std::string& profil
                      urdf["path"].as<std::string>(),
                      extended ? urdf["closure_path"].as<std::string>() : std::string());
   const std::string share = ament_index_cpp::get_package_share_directory("robot_descriptions");
-  rtc_urdf_bridge::ModelConfig cfg;
-  cfg.urdf_path = share + "/" + files.urdf_rel;
-  cfg.root_joint_type = urdf["root_joint_type"].as<std::string>("fixed");
-  if (extended) {
-    cfg.closure_yaml_path = share + "/" + files.closure_rel;
-  }
-  // Document order: controllers take the FIRST sub-model as the arm.
-  for (auto it = urdf["sub_models"].begin(); it != urdf["sub_models"].end(); ++it) {
-    cfg.sub_models.push_back({it->first.as<std::string>(),
-                              it->second["root_link"].as<std::string>(),
-                              it->second["tip_link"].as<std::string>()});
-  }
-  for (auto it = urdf["tree_models"].begin(); it != urdf["tree_models"].end(); ++it) {
-    cfg.tree_models.push_back({it->first.as<std::string>(),
-                               it->second["root_link"].as<std::string>(),
-                               it->second["tip_links"].as<std::vector<std::string>>()});
-  }
-  for (auto it = urdf["extra_frames"].begin(); it != urdf["extra_frames"].end(); ++it) {
-    rtc_urdf_bridge::ExtraFrameConfig frame;
-    frame.name = it->first.as<std::string>();
-    frame.parent = it->second["parent"].as<std::string>();
-    const auto xyz = it->second["xyz"].as<std::vector<double>>();
-    const auto rpy = it->second["rpy"].as<std::vector<double>>(std::vector<double>(3, 0.0));
-    frame.xyz = Eigen::Vector3d(xyz.at(0), xyz.at(1), xyz.at(2));
-    frame.rpy = Eigen::Vector3d(rpy.at(0), rpy.at(1), rpy.at(2));
-    frame.provisional = it->second["provisional"].as<bool>(true);
-    cfg.extra_frames.push_back(frame);
-  }
+  rtc_urdf_bridge::ModelConfig cfg = ModelConfigFromUrdfParams(
+      urdf, share + "/" + files.urdf_rel, extended ? share + "/" + files.closure_rel : "");
   return cfg;
 }
 
