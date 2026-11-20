@@ -1,23 +1,21 @@
 // locomotion_controller.mpc.kinodynamic weights through a sim overlay (g1_loco): the overlay
 // files tools weight_overlay (rtc_tools) writes — fixtures in test/data/weight_overlay/, kept equal
 // to the generator's output by rtc_tools test_weight_overlay.py — are loaded as a ROS params file,
-// their parameters are written over the controller's YAML tree the way
-// ApplyControllerParamOverrides does, and the tree goes through rtc_mpc's kinodynamic OCP config
+// their parameters are written over the controller's YAML tree by
+// ApplyControllerParamOverrides, and the tree goes through rtc_mpc's kinodynamic OCP config
 // loader. Two claims:
 //   - an overlay that writes EVERY weight leaf at its theta = 0 value (the shipped number, as a
 //     float) yields a config equal, bit for bit, to the shipped YAML's, for every weight vector;
 //   - an overlay with one group at theta != 0 yields shipped × 10^theta on exactly that group's
 //     entries and the shipped value everywhere else.
 //
-// WHAT IS NOT COVERED. ApplyControllerParamOverrides itself (rtc_controller_manager
-// src/rt_controller_node_params.cpp) sits in an anonymous namespace there and no header declares
-// it, so this test cannot call it; ApplyOverlay() below repeats its pass 2 (list_parameters under
-// `<controller>.`, dotted path split, scalar / double-array write). The ROS side is real — the
-// params-file parse and typing (a YAML float is a double, a list of floats a double array), the
-// parameter names — and so is the loader; a change to the real function's pass 2 or its refusal
-// pass (CheckOverridePaths) is NOT seen here. No ROS node is spun up beyond a parameter holder.
+// The write is the controller manager's own: rtc::ApplyControllerParamOverrides on a lifecycle
+// node that read the overlay as its params file — the parameter typing (a YAML float is a double,
+// a list of floats a double array), the parameter names, the path judgement and the write are the
+// node's, and so is the loader. No ROS node is spun up beyond that parameter holder.
 #include "integrated_bringup/controllers/locomotion/humanoid_model_config.hpp"
 #include "rtc_controller_manager/controller_config_loader.hpp"
+#include "rtc_controller_manager/controller_param_overrides.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/ocp/kinodynamic_ocp_config.hpp"
 #include "shipped_catching_bringup_fixture.hpp"
@@ -36,6 +34,7 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
@@ -72,26 +71,9 @@ bool BitEqual(const Eigen::Ref<const Eigen::VectorXd>& a,
          std::memcmp(a.data(), b.data(), sizeof(double) * static_cast<std::size_t>(a.size())) == 0;
 }
 
-std::vector<std::string> SplitDots(const std::string& s) {
-  std::vector<std::string> out;
-  std::size_t start = 0;
-  for (std::size_t pos = s.find('.'); pos != std::string::npos; pos = s.find('.', start)) {
-    if (pos > start) {
-      out.push_back(s.substr(start, pos - start));
-    }
-    start = pos + 1;
-  }
-  if (start < s.size()) {
-    out.push_back(s.substr(start));
-  }
-  return out;
-}
-
-// The overlay file as the ROS parameters its node would receive, written into @p root (the
-// controller's YAML tree) as ApplyControllerParamOverrides's pass 2 does: `.`-separated name
-// below `<controller>.`, walked with Node::reset (a value copy through operator= would splice
-// the child over the root), double / double-array leaves. Returns the number of leaves written;
-// any other parameter type is a failure here (the weight overlay writes only those two).
+// The overlay file as the ROS parameters its node receives, written into @p root (the
+// controller's YAML tree) by the controller manager's own override function. Returns the number
+// of leaves the overlay names under the controller.
 std::size_t ApplyOverlay(YAML::Node root, const std::string& overlay_path) {
   auto context = std::make_shared<rclcpp::Context>();
   context->init(0, nullptr);
@@ -103,36 +85,21 @@ std::size_t ApplyOverlay(YAML::Node root, const std::string& overlay_path) {
   options.start_parameter_event_publisher(false);
   std::size_t written = 0;
   {
-    rclcpp::Node node(kNodeName, options);
-
+    rclcpp_lifecycle::LifecycleNode node(kNodeName, options);
+    // The overlay's leaves, counted and typed before the write (the weight overlay writes only
+    // doubles and double arrays: an int where the controller reads a double is a wrong overlay).
     const std::string prefix = std::string(kController) + ".";
-    const auto listed = node.list_parameters({kController}, 20);
-    for (const auto& pname : listed.names) {
+    for (const auto& pname : node.list_parameters({kController}, 20).names) {
       if (pname.rfind(prefix, 0) != 0) {
         continue;
       }
-      const auto parts = SplitDots(pname.substr(prefix.size()));
-      EXPECT_FALSE(parts.empty());
-      YAML::Node parent(root);
-      for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
-        parent.reset(parent[parts[i]]);
-      }
-      const rclcpp::Parameter p = node.get_parameter(pname);
-      if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
-        parent[parts.back()] = p.as_double();
-      } else if (p.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY) {
-        YAML::Node arr(YAML::NodeType::Sequence);
-        for (double v : p.as_double_array()) {
-          arr.push_back(v);
-        }
-        parent[parts.back()] = arr;
-      } else {
-        ADD_FAILURE() << pname << " is not a double or a double array: the YAML scalar type of the "
-                      << "overlay is wrong (an int where the controller reads a double)";
-        continue;
-      }
+      const auto type = node.get_parameter(pname).get_type();
+      EXPECT_TRUE(type == rclcpp::ParameterType::PARAMETER_DOUBLE ||
+                  type == rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY)
+          << pname << " is not a double or a double array";
       ++written;
     }
+    rtc::ApplyControllerParamOverrides(node, root, kController);
   }
   context->shutdown("test done");
   return written;

@@ -2,6 +2,7 @@
 // ──────────────────────────────────────────
 #include "rtc_controller_interface/controller_registry.hpp"
 #include "rtc_controller_manager/controller_config_loader.hpp"
+#include "rtc_controller_manager/controller_param_overrides.hpp"
 #include "rtc_controller_manager/rt_controller_node.hpp"
 #include <rtc_base/logging/session_dir.hpp>
 #include <rtc_urdf_bridge/closure_yaml_loader.hpp>
@@ -361,6 +362,10 @@ void WarnOverridesWithoutConfigFile(const rclcpp::Logger& logger, const std::str
               QuotedList(names, kMaxListed, names.size()).c_str());
 }
 
+}  // namespace
+
+namespace rtc {
+
 // Walk ROS parameter names under `<config_key>.` and apply each as a nested
 // write into @p ctrl_node, treating `.` as the YAML path separator.
 //
@@ -409,7 +414,7 @@ void ApplyControllerParamOverrides(rclcpp_lifecycle::LifecycleNode& node, YAML::
   }
 }
 
-}  // namespace
+}  // namespace rtc
 
 // ── Initialisation helpers
 // ────────────────────────────────────────────────────
@@ -961,7 +966,7 @@ bool RtControllerNode::DeclareAndLoadParameters() {
       // The file plus its `include:` fragments, composed BEFORE the overrides
       // so an override reaches a fragment's key like any other.
       ctrl_node = rtc::LoadControllerConfig(yaml_path, entry.config_key);
-      ApplyControllerParamOverrides(*this, ctrl_node, entry.config_key);
+      rtc::ApplyControllerParamOverrides(*this, ctrl_node, entry.config_key);
     } catch (const YAML::BadFile& e) {
       // No config file for this controller/variant — run on defaults.
       // BadFile must be caught before std::exception: YAML::Exception derives
