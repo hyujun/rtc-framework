@@ -117,6 +117,8 @@ ros2 service call /sim/set_external_wrench rtc_msgs/srv/SetExternalWrench "{clea
 - 없는 body 와 `world` 는 `accepted=false` + 사유로 거부된다.
 - `JointState.effort` 에는 이 외력이 들어가지 않는다 — 관측기가 미지의 외란 토크로 보아야 하기 때문이다.
 
+`external_wrench_report.topic` 을 주면 (기본 빈 값 = 끔) `external_wrench_report.body` 에 지금 걸려 있는 wrench 를 `geometry_msgs/WrenchStamped` 로 발행한다 — `external_wrench_report.rate_hz` (기본 50) 주기 + 서비스 호출 직후 한 번. 값은 simulator 에서 되읽으므로 `/sim/reset` 이 외력을 지우면 한 주기 안에 0 이 나간다. world 축 · 요청의 점 기준이고 `header.frame_id` 가 body 이름이다. 다른 body 에 건 wrench 는 보고에 나오지 않는다 (경고 로그). body 를 찾지 못하면 configure 가 실패한다.
+
 계약의 SSoT 는 [SetExternalWrench.srv](../rtc_msgs/srv/SetExternalWrench.srv) 주석, 측정 근거는 [sim-rationale.md](../docs/reference/sim-rationale.md#외력-주입-simset_external_wrench).
 
 ### 제어 모드 자동 전환

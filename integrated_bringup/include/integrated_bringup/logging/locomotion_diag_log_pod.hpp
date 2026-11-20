@@ -164,11 +164,11 @@ struct LocomotionDiagLogPod {
   /// it leads the sampled plan's contact_mask.
   std::int32_t gait_latest{-1};
   std::array<double, 3> ref_base_v{};  ///< the plan's base linear velocity, base frame; NaN = none
-  /// Bit c: contact c's lane group is fresh by its backend's own flag (inference_enable).
+  /// Bit c: contact c's lane group is fresh by its backend's own flag
+  /// (inference_enable). The force itself is not in this record: on the shipped
+  /// profiles that lane is a simulator's sole sensor, so its values are in the
+  /// truth log (truth_grf_<c>_*), not in a file a robot also writes.
   std::uint32_t meas_contact_valid{0};
-  /// The measured contact force's z per contact, in the sensor's frame (a
-  /// supporting sole reads negative); NaN when its bit above is clear.
-  std::array<double, kMaxContacts> meas_fz{};
   /// Refused plans in stand / walk that gave way to the plan followed
   /// before them, total.
   std::uint64_t plan_holds{0};
@@ -254,9 +254,6 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
   }
   os << ",cmd_vx,cmd_vy,cmd_wz,cmd_h,cmd_valid,gait_latest,ref_base_vx,ref_base_vy,ref_base_vz,"
         "meas_contact_valid";
-  for (std::size_t c = 0; c < cols.contacts; ++c) {
-    os << ",meas_fz_" << contact_names[c];
-  }
   os << ",plan_holds,sample_plan_id,sample_converged,sample_iterations,sample_prim_inf,"
         "sample_prim_head,sample_prim_node,sample_dual_inf,sample_mask,sample_progress,"
         "sample_a_joint_max,sample_a_joint_idx,sample_check";
@@ -345,9 +342,6 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
     os << ',' << x;
   }
   os << ',' << p.meas_contact_valid;
-  for (std::size_t c = 0; c < cols.contacts; ++c) {
-    os << ',' << p.meas_fz[c];
-  }
   const auto& s = p.sample;
   os << ',' << p.plan_holds << ',' << s.plan_id << ',' << (s.converged ? 1 : 0) << ','
      << s.iterations << ',' << s.prim_inf << ',' << s.prim_head << ',' << s.prim_node << ','

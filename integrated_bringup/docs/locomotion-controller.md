@@ -126,13 +126,13 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
   - 재생용 raw IMU: `imu_gx … imu_az` (primary site 의 원 표본, 무효여도 그대로; site 가 없으면 0)
   - 접촉별: `est_mode_<c>` · `est_reason_<c>` · `est_update_<c>` · `est_evidence_<c>` · `est_speed_<c>` · `est_m2_<c>`
   - 공분산 대각: `est_p_<i>` (15 + 3·접촉 수, 오차 순서 φ · v · p · d · b_g · b_a)
-- `meas_contact_valid` · `meas_fz_<contact>` — 본체 군 inference lane 의 group c (접촉 순서) 의 fz (센서 frame, 지지하는 발은 음수). bit c 는 backend 자신의 신선도 판정 (`inference_enable` — sim 은 연속 누락 tick 수) 이고, 0 이면 (그 group 이 stale, group 수 ≠ 접촉 수, `sensor_layout.inference_values_per_group` < 4) NaN — backend 가 stale 로 본 유지값은 기록하지 않는다. 수신 나이 (`inference_recv_steady_ns`) 는 보지 않는다. lane 의 소스 순서는 profile 이 접촉 순서로 적는다 (`sim.yaml` 의 `fingertip_wrench_topics`).
+- `meas_contact_valid` — bit c 는 본체 군 inference lane 의 group c (접촉 순서) 에 대한 backend 자신의 신선도 판정 (`inference_enable` — sim 은 연속 누락 tick 수) 이다. group 이 stale 이거나 group 수 ≠ 접촉 수거나 `sensor_layout.inference_values_per_group` < 4 면 0. 수신 나이 (`inference_recv_steady_ns`) 는 보지 않는다. 그 lane 의 힘 값은 이 파일에 없다 — 출하 profile 에서 그 lane 은 sim 의 발바닥 센서라 참값 파일 (`truth_grf_<c>_*`) 에 있다. lane 의 소스 순서는 profile 이 접촉 순서로 적는다 (`sim.yaml` 의 `fingertip_wrench_topics`).
 
 ### Log tiers
 
 실기에서도 얻는 값과 sim 에서만 얻는 참값은 **다른 파일**이다.
 
-- **R tier** — `locomotion_diag.csv` (위). 예외는 `meas_fz_*` 하나다: G1 · b7 에는 발 F/T 가 없어 실기에서는 NaN 인 sim 전용 열이지만, 이름 · 자리는 그대로 둔다. 끝에 붙인 열 (기존 열은 `test_locomotion_diag_golden` 이 고정한다):
+- **R tier** — `locomotion_diag.csv` (위). sim 에서만 얻는 값은 이 파일에 없다. 끝에 붙인 열 (기존 열은 `test_locomotion_diag_golden` 이 고정한다):
   - `state_source` — 0 = truth lane 복사, 1 = 추정.
   - `wrench_des_<c>_{fx,fy,fz,tx,ty,tz}` — 그 tick 에 WBC QP 가 받은 접촉 wrench 목표 (`lambda_des`: stand · walk 는 plan 의 MPC wrench, idle 은 지렛대 규칙). world 축 · contact frame 원점 · 바닥→발. QP 가 돌지 않은 tick (waiting · E-STOP · 이미 latch 된 fault · degraded hold) 은 NaN — QP 가 돌고 실패한 tick 은 받은 목표를 남긴다. 점 접촉 (dim 3) 의 모멘트도 NaN.
   - `servo_kp_<j>` · `servo_kd_<j>` — `tau_servo_<j>` 의 두 항 kp (q_cmd − q) 와 −kd q̇ (합은 반올림 차이까지 `tau_servo`). damping tick 의 kp 항은 0.
@@ -145,8 +145,9 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
   - 행은 참값 lane 이 하나라도 신선한 tick 에만 쓰고 (`truth_mask` bit 0 = base, bit 1 + c = 접촉 c), 파일은 첫 행에서 열린다 (`rtc::LogOpen::kOnFirstRow`) — 참값 lane 이 없는 run (실기) 에는 파일이 없다. 0 으로 채운 열은 없고, 신선하지 않은 lane 은 NaN 이다.
   - 신선도: base 는 `IsBaseFresh`, 접촉은 `IsSensorGroupFresh` (backend 판정 + 수신 나이), 둘 다 `estimator.body_max_age_ms`. 나이 (`truth_base_age_us` · `truth_age_<c>_us`, −1 = 수신 없음) 와 sequence 는 늘 쓴다.
   - `truth_base_*` — base lane 의 **raw** 값 (quaternion 을 정규화하지 않는다; R 의 `base_q*` 는 상태 source 의 정규화 사본이고 inekf 에서는 추정값이다). twist 는 base LOCAL.
-  - `truth_grf_<c>_*` — 몸통 군 접촉 lane 의 wrench 를 **바닥→발** 로 뒤집은 값 (두 열이 다 쓰인 tick 에서 `truth_grf_<c>_fz` = −`meas_fz_<c>` — diag 는 backend 판정만, T 는 나이도 본다), sole sensor site 축 · site 원점 모멘트. 모멘트는 몸통 군 `sensor_layout.has_native_moment` (sim.yaml) 가 없으면 NaN.
+  - `truth_grf_<c>_*` — 몸통 군 접촉 lane 의 wrench 를 **바닥→발** 로 뒤집은 값 (diag 의 `meas_contact_valid` 는 backend 판정만, T 의 bit 는 나이도 본다), sole sensor site 축 · site 원점 모멘트. 모멘트는 몸통 군 `sensor_layout.has_native_moment` (sim.yaml) 가 없으면 NaN.
   - `truth_cop_<c>_x/y` — site 축의 CoP (x = −τ_y / f_z, y = τ_x / f_z). f_z 가 체중의 3 % 이하면 NaN.
+  - `truth_ext_{fx,fy,fz,tx,ty,tz}` · `truth_ext_age_us` — sim 이 로봇의 한 body 에 걸고 있다고 보고한 외력 wrench (push). 컨트롤러의 `external_wrench.topic` 이 빈 값 (출하) 이면 구독도 이 열들도 없다. world 축 · 요청이 준 점 기준 · 환경이 로봇에 주는 방향, 받은 값 그대로다. `truth_mask` 의 bit 5 (접촉 bit 들 위, 접촉 수와 무관한 자리) 는 마지막 보고가 `external_wrench.max_age_ms` 보다 젊을 때 선다 — 걸린 힘이 없으면 0 과 bit 1, 아는 것이 없으면 NaN 과 bit 0 이다. 제어 법칙은 이 값을 읽지 않는다. 발행 쪽은 `rtc_mujoco_sim` 의 `external_wrench_report.*` (body 하나, 50 Hz + 서비스 호출 즉시). 적용점 (body 좌표) 은 보고에 없으므로 시나리오를 돌린 쪽이 기록한다.
   - 몸통 군 접촉 lane 을 참값으로 보는 근거는 "G1 · b7 실기에는 발 F/T 가 없다" 는 규칙이다 — 실기 발 센서가 생기면 이 분류를 다시 정한다.
 
 ## 평가 도구 (`tools/standing_eval/`)

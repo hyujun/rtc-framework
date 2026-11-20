@@ -131,6 +131,27 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     sim_status_pub_ =
         create_publisher<std_msgs::msg::Float64MultiArray>("/sim/status", rclcpp::QoS(1));
 
+    // The external wrench report. A report that cannot name its body, or has
+    // no rate, is refused rather than left silent: its reader would log
+    // "nothing known" for a whole run and the run would look like one without
+    // a push.
+    ext_report_body_id_ = -1;
+    if (!ext_report_topic_.empty()) {
+      ext_report_body_id_ = sim_->FindBodyId(ext_report_body_.c_str());
+      if (ext_report_body_id_ <= 0 || !std::isfinite(ext_report_rate_hz_) ||
+          ext_report_rate_hz_ <= 0.0) {
+        RCLCPP_ERROR(get_logger(),
+                     "[MuJoCoSimulatorNode] external_wrench_report: body '%s' is not a movable "
+                     "body of the model, or rate_hz %.3f is not finite and > 0",
+                     ext_report_body_.c_str(), ext_report_rate_hz_);
+        return CallbackReturn::FAILURE;
+      }
+      // ARCH-6: depth 1 — a latest-wins report.
+      ext_report_pub_ = create_publisher<geometry_msgs::msg::WrenchStamped>(
+          ext_report_topic_, rclcpp::QoS(rclcpp::KeepLast(1)));
+      ext_report_msg_.header.frame_id = ext_report_body_;
+    }
+
     set_external_wrench_srv_ = create_service<rtc_msgs::srv::SetExternalWrench>(
         "/sim/set_external_wrench",
         [this](const std::shared_ptr<rtc_msgs::srv::SetExternalWrench::Request> req,
@@ -213,6 +234,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     // Cancel all timers
     if (status_timer_)
       status_timer_->cancel();
+    if (ext_report_timer_)
+      ext_report_timer_->cancel();
     if (clock_lane_timer_)
       clock_lane_timer_->cancel();
     if (ball_contact_timer_)
@@ -241,6 +264,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   /// Release all resources (reverse order of on_configure).
   CallbackReturn on_cleanup(const rclcpp_lifecycle::State& /*state*/) override {
     status_timer_.reset();
+    ext_report_timer_.reset();
     for (auto& h : group_handles_) {
       h.fake_timer.reset();
       h.cmd_sub.reset();
@@ -256,6 +280,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     object_state_pub_.reset();
     object_state_msg_.transforms.clear();
     sim_status_pub_.reset();
+    ext_report_pub_.reset();
     set_external_wrench_srv_.reset();
     launch_ball_srv_.reset();
     launch_ball_at_srv_.reset();
@@ -281,6 +306,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     RCLCPP_ERROR(get_logger(), "[MuJoCoSimulatorNode] Error — attempting recovery");
     if (status_timer_)
       status_timer_->cancel();
+    if (ext_report_timer_)
+      ext_report_timer_->cancel();
     if (clock_lane_timer_)
       clock_lane_timer_->cancel();
     if (ball_contact_timer_)
@@ -294,6 +321,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     }
 
     status_timer_.reset();
+    ext_report_timer_.reset();
     for (auto& h : group_handles_) {
       h.fake_timer.reset();
       h.cmd_sub.reset();
@@ -309,6 +337,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     object_state_pub_.reset();
     object_state_msg_.transforms.clear();
     sim_status_pub_.reset();
+    ext_report_pub_.reset();
     set_external_wrench_srv_.reset();
     launch_ball_srv_.reset();
     launch_ball_at_srv_.reset();
@@ -376,6 +405,11 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
     // Per-step clock phase lane. See SimClockSample for why this
     // exists rather than a sim-time stamp on the ball truth topic.
+    // The staged external wrench of one body, published for a controller's
+    // truth log (empty topic = off). See PublishExternalWrenchReport.
+    declare_parameter("external_wrench_report.topic", std::string(""));
+    declare_parameter("external_wrench_report.body", std::string(""));
+    declare_parameter("external_wrench_report.rate_hz", 50.0);
     declare_parameter("clock_lane.enabled", false);
     declare_parameter("clock_lane.csv_path", std::string(""));
     declare_parameter("clock_lane.drain_rate_hz", 20.0);
@@ -508,6 +542,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                    "[MuJoCoSimulatorNode] clock_lane.drain_rate_hz must be finite and > 0");
       clock_lane_enabled_ = false;
     }
+
+    ext_report_topic_ = get_parameter("external_wrench_report.topic").as_string();
+    ext_report_body_ = get_parameter("external_wrench_report.body").as_string();
+    ext_report_rate_hz_ = get_parameter("external_wrench_report.rate_hz").as_double();
 
     ball_contact_lane_enabled_ = get_parameter("ball_contact_lane.enabled").as_bool();
     ball_contact_csv_path_ = get_parameter("ball_contact_lane.csv_path").as_string();
@@ -1226,6 +1264,13 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
     status_timer_ = create_wall_timer(1s, [this]() { PublishSimStatus(); });
 
+    if (ext_report_pub_) {
+      const auto period = std::chrono::duration<double>(1.0 / ext_report_rate_hz_);
+      ext_report_timer_ =
+          create_wall_timer(std::chrono::duration_cast<std::chrono::nanoseconds>(period),
+                            [this]() { PublishExternalWrenchReport(); });
+    }
+
     if (clock_lane_enabled_) {
       const auto period = std::chrono::duration<double>(1.0 / clock_lane_drain_rate_hz_);
       clock_lane_timer_ =
@@ -1393,6 +1438,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
     if (req->clear) {
       sim_->ClearExternalForce();
+      PublishExternalWrenchReport();
       res->accepted = true;
       res->message = "cleared all staged external wrenches";
       RCLCPP_INFO(get_logger(), "[SetExternalWrench] cleared all staged wrenches");
@@ -1421,6 +1467,14 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
       return;
     }
 
+    // The report follows the change at once; its timer only keeps it fresh.
+    PublishExternalWrenchReport();
+    if (ext_report_pub_ && body_id != ext_report_body_id_) {
+      RCLCPP_WARN(get_logger(),
+                  "[SetExternalWrench] '%s' is not the reported body ('%s'): %s does not show "
+                  "this wrench",
+                  req->body_name.c_str(), ext_report_body_.c_str(), ext_report_topic_.c_str());
+    }
     res->accepted = true;
     res->message = "staged on '" + req->body_name + "' (body id " + std::to_string(body_id) + ")";
     RCLCPP_INFO(get_logger(),
@@ -1428,6 +1482,31 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                 "t=[%.3f %.3f %.3f] N.m at body-local point [%.4f %.4f %.4f] m",
                 req->body_name.c_str(), body_id, wrench[0], wrench[1], wrench[2], wrench[3],
                 wrench[4], wrench[5], point[0], point[1], point[2]);
+  }
+
+  // The wrench staged on the reported body, read back from the simulator (so
+  // a scene reset, which drops every staged wrench, shows as zero within one
+  // period without anyone telling this node). World axes, about the request's
+  // point; header.frame_id = the body. Called from the report timer and from
+  // the service callback — both on this node's default (mutually exclusive)
+  // callback group.
+  void PublishExternalWrenchReport() {
+    if (!ext_report_pub_ || !ext_report_pub_->is_activated() || !sim_) {
+      return;
+    }
+    std::array<double, 6> wrench{};
+    std::array<double, 3> point{};
+    if (!sim_->GetExternalWrench(ext_report_body_id_, wrench, point)) {
+      return;
+    }
+    ext_report_msg_.header.stamp = now();
+    ext_report_msg_.wrench.force.x = wrench[0];
+    ext_report_msg_.wrench.force.y = wrench[1];
+    ext_report_msg_.wrench.force.z = wrench[2];
+    ext_report_msg_.wrench.torque.x = wrench[3];
+    ext_report_msg_.wrench.torque.y = wrench[4];
+    ext_report_msg_.wrench.torque.z = wrench[5];
+    ext_report_pub_->publish(ext_report_msg_);
   }
 
   void LaunchBallCallback(const std::shared_ptr<rtc_msgs::srv::LaunchBall::Request> req,
@@ -1732,6 +1811,16 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
 
   rclcpp::TimerBase::SharedPtr status_timer_;
+
+  // External wrench report (external_wrench_report.*; empty topic = off).
+  std::string ext_report_topic_;
+  std::string ext_report_body_;
+  double ext_report_rate_hz_{50.0};
+  int ext_report_body_id_{-1};
+  rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::WrenchStamped>::SharedPtr
+      ext_report_pub_;
+  rclcpp::TimerBase::SharedPtr ext_report_timer_;
+  geometry_msgs::msg::WrenchStamped ext_report_msg_;
   rclcpp::TimerBase::SharedPtr clock_lane_timer_;
   rclcpp::TimerBase::SharedPtr ball_contact_timer_;
   std::ofstream ball_contact_csv_;

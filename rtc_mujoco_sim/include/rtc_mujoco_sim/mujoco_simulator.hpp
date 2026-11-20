@@ -1214,6 +1214,13 @@ class MuJoCoSimulator {
   /// Drop every staged wrench in the scene. A single body's load is removed by
   /// staging a zero wrench on it instead.
   void ClearExternalForce() noexcept;
+
+  /// The wrench staged on `body_id` right now, as it was requested: world
+  /// axes, about `point_body` (body-local). All zero when nothing is staged —
+  /// after a clear or a scene reset as well. False (outputs untouched) for a
+  /// body SetExternalWrenchAtPoint refuses. Any thread.
+  [[nodiscard]] bool GetExternalWrench(int body_id, std::array<double, 6>& wrench_world,
+                                       std::array<double, 3>& point_body) const noexcept;
   void UpdatePerturb(const mjvPerturb& pert) noexcept;
   void ClearPerturb() noexcept;
 

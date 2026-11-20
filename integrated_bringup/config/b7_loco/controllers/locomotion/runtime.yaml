@@ -45,6 +45,15 @@ locomotion_controller:
     body_max_age_ms: 10.0
     hand_max_age_ms: 50.0
 
+  # The wrench a simulator reports it is applying to the robot (geometry_msgs/
+  # WrenchStamped — rtc_mujoco_sim external_wrench_report), for the truth log's
+  # truth_ext_* columns only. An empty topic is the lane off; a push scenario
+  # names the topic in its overlay. max_age_ms: how long a report counts as
+  # current after it arrived [ms].
+  external_wrench:
+    topic: ""
+    max_age_ms: 100.0
+
   # Device slots, in this order: model.body_group, then model.hand_groups. The
   # joint_goal lanes are the ones the other controllers of the profile use;
   # this controller takes no goal (the reference is latched, the hands are

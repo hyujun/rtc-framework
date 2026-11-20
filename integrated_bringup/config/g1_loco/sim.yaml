@@ -49,7 +49,7 @@
           # the site origin. Sign: foot-on-floor, i.e. a standing foot reads a
           # negative fz.
           #
-          # The locomotion controller logs it (locomotion_diag.csv meas_fz_*:
+          # The locomotion controller logs it (locomotion_truth.csv truth_grf_*:
           # contact c reads slot c, so this list is in model.contacts order);
           # nothing controls on it. demo_joint_controller reads fingertip data
           # from the hand group only, and the stance recorder

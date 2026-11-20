@@ -50,6 +50,11 @@ struct LocomotionControllerTestAccess {
 
   static void OnJoy(LocomotionController& c, const sensor_msgs::msg::Joy& m) { c.OnJoyCommand(m); }
 
+  static void OnExternalWrench(LocomotionController& c,
+                               const geometry_msgs::msg::WrenchStamped& m) {
+    c.OnExternalWrench(m);
+  }
+
   static RawVelocityCommandSample RawCommand(const LocomotionController& c) {
     return c.raw_command_.Load();
   }

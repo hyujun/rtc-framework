@@ -162,6 +162,14 @@
 //
 // The velocity command (mpc.enabled, and `velocity_command: {topic}` present):
 //   velocity_command: {topic: <name>}   # geometry_msgs/Twist; absent = no command path
+// The external wrench lane (truth log only — nothing in the control law reads it):
+//   external_wrench: {topic: <name>, max_age_ms: <ms>}   # absent or topic "" = no lane
+// geometry_msgs/WrenchStamped, the wrench a simulator applies to the robot
+// (rtc_mujoco_sim `external_wrench_report`). The subscription (depth 1, the
+// node's default callback group) stores the message with the steady time it
+// arrived; the tick copies the latest into the truth log's truth_ext_* block,
+// fresh while younger than max_age_ms. Subscribed with or without the MPC.
+//
 // linear.x / linear.y / angular.z = v_x / v_y / yaw rate, linear.z = the base
 // height RATE (rtc_mpc command_filter.hpp). The subscription (depth 1, the
 // node's default callback group) only stores the message with the steady time
@@ -198,6 +206,7 @@
 #include "integrated_bringup/controllers/locomotion/joy_command.hpp"
 #include "integrated_bringup/controllers/locomotion/locomotion_status.hpp"
 #include "integrated_bringup/controllers/locomotion/measured_state_source.hpp"
+#include "integrated_bringup/controllers/locomotion/truth_log.hpp"
 #include "integrated_bringup/logging/device_state_log_pod.hpp"
 #include "integrated_bringup/logging/joint_feedforward_log_pod.hpp"
 #include "integrated_bringup/logging/locomotion_diag_log_pod.hpp"
@@ -228,6 +237,7 @@
 #pragma GCC diagnostic pop
 
 #include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <rclcpp/clock.hpp>
 #include <rclcpp/logger.hpp>
 #include <rclcpp/subscription.hpp>
@@ -289,6 +299,8 @@ struct LocomotionControllerConfig {
   /// `velocity_command.type`: false = geometry_msgs/Twist (the default), true = sensor_msgs/Joy.
   bool velocity_command_joy{false};
   locomotion::JoyCommandMapping velocity_command_joy_map{};  ///< `velocity_command.joy` (type joy)
+  std::string external_wrench_topic;       ///< `external_wrench.topic`; empty = no such lane
+  double external_wrench_max_age_ms{0.0};  ///< `external_wrench.max_age_ms`, > 0 with a topic
 };
 
 /// The command timer's output with its source (one SeqLock: never torn apart).
@@ -331,10 +343,11 @@ static_assert(std::is_trivially_copyable_v<LocomotionCommandLogSample>,
               "LocomotionCommandLogSample travels through a triple buffer");
 
 /// @throws std::invalid_argument naming the key on a missing / unknown key of
-///         `pd_feedforward`, `fault`, `fault.pose_guard`, `mpc` or `velocity_command`, a
-///         gain that is negative or not finite, a `base_tilt_rad` outside (0, π/2] or not
-///         finite, a `command_type` other than pd_feedforward, an empty command topic, or
-///         a model / estimator section its own parser refuses.
+///         `pd_feedforward`, `fault`, `fault.pose_guard`, `mpc`, `velocity_command` or
+///         `external_wrench`, a gain that is negative or not finite, a `base_tilt_rad`
+///         outside (0, π/2] or not finite, a `command_type` other than pd_feedforward, an
+///         empty command topic, an external wrench age that is not finite and > 0, or a
+///         model / estimator section its own parser refuses.
 [[nodiscard]] LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg);
 
 class LocomotionController final : public rtc::RTControllerInterface {
@@ -431,6 +444,11 @@ class LocomotionController final : public rtc::RTControllerInterface {
     return velocity_sub_ != nullptr || joy_sub_ != nullptr;
   }
 
+  /// True when the external wrench lane has a subscription (`external_wrench.topic`).
+  [[nodiscard]] bool ExternalWrenchSubscribed() const noexcept {
+    return external_wrench_sub_ != nullptr;
+  }
+
   /// The command filter's last output (what the phase manager was last given).
   [[nodiscard]] rtc::mpc::FilteredCommand LastCommand() const noexcept {
     return command_out_.Load().cmd;
@@ -474,6 +492,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   // callback (Store only), the timer (the filter's one writer).
   void OnVelocityCommand(const geometry_msgs::msg::Twist& msg) noexcept;
   void OnJoyCommand(const sensor_msgs::msg::Joy& msg) noexcept;
+  /// The external wrench subscription callback (off the RT thread; the lane's
+  /// one writer): the message with the steady time it arrived.
+  void OnExternalWrench(const geometry_msgs::msg::WrenchStamped& msg) noexcept;
   /// The sample before any message (and after an activation): stale, at rest,
   /// tagged with the configured input.
   [[nodiscard]] RawVelocityCommandSample RestCommandSample() const noexcept;
@@ -662,6 +683,12 @@ class LocomotionController final : public rtc::RTControllerInterface {
   rtc::SeqLock<LocomotionCommandOut> command_out_;  ///< timer → publish thread, tests
   /// timer → RT tick (the diagnostic log): one producer (PushCommand), one consumer (FillLogs).
   rtc::mpc::TripleBuffer<LocomotionCommandLogSample> command_log_;
+  /// The wrench a simulator reports it applies to the robot (the truth log's
+  /// truth_ext_* block): subscription callback → RT tick. A triple buffer, not
+  /// a SeqLock — the tick must not wait on a writer of lower priority.
+  rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr external_wrench_sub_;
+  rtc::mpc::TripleBuffer<locomotion::ExternalWrenchSample> external_wrench_;
+  std::uint64_t external_wrench_count_{0};  ///< the callback's own message count
   /// MPC thread → RT tick (the diagnostic log): the thread's last solve attempt
   /// (SetSolveRecordSink; reset to SolveRecord{} before each thread starts).
   rtc::mpc::TripleBuffer<rtc::mpc::SolveRecord> mpc_solve_record_;

@@ -26,14 +26,24 @@
 //   - The sign is FLIPPED from the lane's (which is the force the foot applies
 //     to the floor): these columns are the wrench the floor applies to the
 //     foot, the sign of the controller's contact forces — a standing foot has
-//     fz > 0. truth_grf_<c>_fz is therefore exactly −meas_fz_<c> of the diag on a tick where both
-//     are written (the diag takes the backend's verdict alone, this one its age too).
+//     fz > 0. (The diag's meas_contact_valid bit c is the backend's verdict on the same
+//     group alone; this file's bit also asks for its age.)
 //   - The moment columns are NaN unless the group's sensor_layout declares
 //     has_native_moment (otherwise the lane's slots 4..6 are not a moment).
 //   - CoP, in the site's x / y axes relative to its origin, from the floor-on-
 //     foot wrench with the site plane z = 0: x = −τ_y / f_z, y = τ_x / f_z.
 //     NaN without a moment or while f_z <= cop_min_fz (a fraction of the
 //     robot's weight — the ratio is undefined near lift-off).
+//
+// The external wrench block (truth_ext_*), present only when the controller is
+// given a topic for it (`external_wrench.topic`): the wrench a simulator
+// reports it is applying to one body — a push. World axes, about the point the
+// request named, the environment's wrench ON the robot [N, N·m], as received.
+// Its bit (kExternalBit) is set while the last message is younger than
+// `external_wrench.max_age_ms`; otherwise the six values are NaN. The age
+// (−1: never received) is written either way. A column is "what was applied",
+// so a tick where the simulator applies nothing reads 0 with the bit set, and
+// a tick where nothing is known reads NaN with the bit clear.
 #ifndef INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_TRUTH_LOG_POD_HPP_
 #define INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_TRUTH_LOG_POD_HPP_
 
@@ -56,6 +66,9 @@ inline constexpr std::string_view kLocomotionTruthLogInstance = "locomotion_trut
 struct LocomotionTruthLogPod {
   static constexpr std::size_t kMaxContacts = 4;
   static constexpr std::uint32_t kBaseBit = 1U;  ///< contact c is bit 1 + c
+  /// The external wrench lane: the bit above every contact's, whatever the
+  /// contact count, so a reader needs no contact count to find it.
+  static constexpr std::uint32_t kExternalBit = 1U << (1 + kMaxContacts);
 
   double t_relative_s{0.0};
   std::uint64_t tick{0};
@@ -75,6 +88,10 @@ struct LocomotionTruthLogPod {
   std::array<double, kMaxContacts * 2> cop{};  ///< site x, y [m]
   std::array<double, kMaxContacts> contact_age_us{};
   std::array<std::uint64_t, kMaxContacts> contact_seq{};
+
+  // External wrench lane — NaN unless kExternalBit. The age is written either way.
+  std::array<double, 6> ext_wrench{};  ///< on the robot [f; τ], world axes [N, N·m]
+  double ext_age_us{-1.0};
 };
 
 static_assert(std::is_trivially_copyable_v<LocomotionTruthLogPod>,
@@ -84,11 +101,12 @@ static_assert(std::is_trivially_copyable_v<LocomotionTruthLogPod>,
 /// by both writers.
 struct LocomotionTruthLogColumns {
   std::size_t contacts{0};
+  bool external_wrench{false};  ///< the truth_ext_* block is written
 };
 
 [[nodiscard]] inline LocomotionTruthLogColumns LocomotionTruthLogColumnsFor(
-    const std::vector<std::string>& contact_names) {
-  return {std::min(contact_names.size(), LocomotionTruthLogPod::kMaxContacts)};
+    const std::vector<std::string>& contact_names, bool external_wrench = false) {
+  return {std::min(contact_names.size(), LocomotionTruthLogPod::kMaxContacts), external_wrench};
 }
 
 /// Emit the CSV header. The logger appends '\n'.
@@ -108,6 +126,10 @@ inline void WriteLocomotionTruthLogHeader(std::ostream& os,
     }
     os << ",truth_cop_" << n << "_x,truth_cop_" << n << "_y,truth_age_" << n << "_us,truth_seq_"
        << n;
+  }
+  if (cols.external_wrench) {
+    os << ",truth_ext_fx,truth_ext_fy,truth_ext_fz,truth_ext_tx,truth_ext_ty,truth_ext_tz,"
+          "truth_ext_age_us";
   }
 }
 
@@ -133,6 +155,12 @@ inline void WriteLocomotionTruthLogRow(std::ostream& os, const LocomotionTruthLo
     }
     os << ',' << p.cop[c * 2] << ',' << p.cop[c * 2 + 1] << ',' << p.contact_age_us[c] << ','
        << p.contact_seq[c];
+  }
+  if (cols.external_wrench) {
+    for (double x : p.ext_wrench) {
+      os << ',' << x;
+    }
+    os << ',' << p.ext_age_us;
   }
 }
 

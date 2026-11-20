@@ -2,6 +2,7 @@
 #include "integrated_bringup/controllers/locomotion/truth_log.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 
@@ -76,6 +77,23 @@ void FillLocomotionTruthLog(const rtc::DeviceState& body, const TruthLogInputs& 
         cop[0] = -w[4] / w[2];
         cop[1] = w[3] / w[2];
       }
+    }
+  }
+
+  // ── external wrench lane ─────────────────────────────────────────────────
+  pod.ext_wrench.fill(kNaN);
+  pod.ext_age_us = -1.0;
+  if (in.external != nullptr && in.external->sequence != 0) {
+    const std::int64_t age_ns = in.now_steady_ns - in.external->recv_steady_ns;
+    // A message stamped after this tick's `now` (the callback ran in between) is age 0.
+    pod.ext_age_us = AgeUs(std::max<std::int64_t>(age_ns, 0));
+    bool finite = true;
+    for (double x : in.external->wrench) {
+      finite = finite && std::isfinite(x);
+    }
+    if (finite && age_ns <= in.external_max_age_ns) {
+      pod.ext_wrench = in.external->wrench;
+      pod.truth_mask |= LocomotionTruthLogPod::kExternalBit;
     }
   }
 }

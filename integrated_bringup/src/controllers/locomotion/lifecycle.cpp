@@ -44,6 +44,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
         .locomotion_diag_joint_names = body_joint_names_,
         .locomotion_truth_enabled = true,
         .locomotion_truth_contact_names = contact_names_,
+        .locomotion_truth_external_wrench = !cfg_.external_wrench_topic.empty(),
     };
     ctx.state_logs[groups[0] + "_state"] = {body_joint_names_, {}};
     for (std::size_t h = 0; h < hand_joint_names_.size(); ++h) {
@@ -107,6 +108,24 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
       RCLCPP_INFO(logger_, "[locomotion] velocity command: %s (%s, %.0f Hz filter)", topic.c_str(),
                   cfg_.velocity_command_joy ? "Joy" : "Twist",
                   command_filter_.config().sample_rate_hz);
+    }
+    // The external wrench lane (truth log only): with or without the MPC.
+    // The reset below writes the buffer from this thread. That is sound because configure runs
+    // on the one single-threaded executor that also runs the subscription callback, and before
+    // the RT loop exists; a multi-threaded executor here would need a lock.
+    external_wrench_sub_.reset();
+    external_wrench_count_ = 0;
+    external_wrench_.StartWrite() = locomotion::ExternalWrenchSample{};
+    external_wrench_.FinishWrite();
+    if (!cfg_.external_wrench_topic.empty() && node) {
+      // ARCH-6: depth 1 — a latest-wins lane; reliability as the node's default.
+      external_wrench_sub_ = node->create_subscription<geometry_msgs::msg::WrenchStamped>(
+          cfg_.external_wrench_topic, rclcpp::QoS(rclcpp::KeepLast(1)),
+          [this](geometry_msgs::msg::WrenchStamped::ConstSharedPtr msg) {
+            OnExternalWrench(*msg);
+          });
+      RCLCPP_INFO(logger_, "[locomotion] external wrench (truth log): %s, fresh for %.0f ms",
+                  cfg_.external_wrench_topic.c_str(), cfg_.external_wrench_max_age_ms);
     }
     // After the subscription: the rest sample is tagged joy only with a Joy
     // subscription (status and diag log agree on "no input" otherwise).
@@ -222,6 +241,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_cleanup(
     const rclcpp_lifecycle::State& prev) noexcept {
   velocity_sub_.reset();
   joy_sub_.reset();
+  external_wrench_sub_.reset();
   StopMpcThread();
   ResetOwnedTopics(owned_topics_);
   log_drain_timer_.reset();
