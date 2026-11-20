@@ -167,7 +167,7 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
   - `--joint-sigma σ [--joint-seed n]` 은 source 가 읽는 관절 위치에 seed 고정 white noise N(0, σ²) 를 더한다 (sim 의 encoder 는 정확하다). truth 접촉 속도는 기록된 관절로 계산한다. 기본 0 은 bit 동일이고, 값은 sidecar 에 남는다. 그 재생의 NIS 는 보고만 한다.
   - 지표는 `rtc_tools` `estimator_metrics` 가 계산한다.
   - `g1_loco` 의 `estimator.inekf` noise 값은 이 재생으로 맞춘 것이다. `imu.accel_sigma` 와 `core.contact_noise_density` 는 sim 이 넣는 noise 가 아니라 기록된 보행에서 상태 공분산이 참값 오차와 맞도록 고른 값이다 (근거는 `runtime.yaml` 의 주석).
-    - sim 의 가속도계는 제어 tick 마다 순간값 한 표본이라, 보행 중에는 넣은 noise 보다 훨씬 큰 적분 오차를 낸다.
+    - 맞춘 녹음의 sim 은 IMU 의 step 평균을 낸다 (`imu_rate_export: tick_mean`). 순간값 export (`sample`) 의 녹음이면 가속도계 오차가 보행 중 주입 noise 의 수십 배라 같은 값이 맞지 않는다.
     - 값을 바꿀 때는 `--overlay` 로 같은 세션들을 다시 재생해 truth run 의 NEES 를 본다. 정지에서는 이 값이 보수적이다 (NEES 가 1 보다 작다).
 
 dev PC 의 보행 평가는 출하 MPC 값 그대로 (overlay 없이) 2 thread · rtf 0.7 로 돈다. 출하 online 예산 (6 / AL 1, 70 ms 주기) 은 dev PC 2 thread 에서 solve p99 가 주기 안에 들고, 0.7 은 `walk_gate.py --probe` 로 고른 값이다 (그 R 과 그보다 작은 R 이 모두 나이 기준을 통과). 서 있기 평가는 rtf 1 로도 돈다. plan 나이는 sim 시간으로 재므로 rtf < 1 에서는 같은 wall 지연이 R 배로 작게 보인다 — 실시간 여유는 rtf 1 run 으로 본다. 이 PC 보다 느린 PC 나 1 thread 에서 solve 가 70 ms (wall) 를 넘으면 그 solve 는 withheld 되고, 그것이 `max_policy_age_s` 를 넘게 이어지면 plan 이 끊긴다. 그때는 `solver.publish_deadline_ms: 0.0` overlay (repo 밖) 를 주고 rtf 를 다시 고른다:

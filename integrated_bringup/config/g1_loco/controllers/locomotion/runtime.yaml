@@ -49,24 +49,27 @@ locomotion_controller:
     inekf:
       imu_frame: "imu_in_pelvis"      # the pelvis site's axes; on the root joint
       # The gyro and the two bias walks are the simulator's IMU noise
-      # (mujoco_simulator.yaml). accel_sigma is not: the accelerometer is one
-      # instantaneous sample per control tick, and against the true velocity
-      # increments that sample's error while walking is about 0.5 m/s^2 per
-      # tick (white from 2 ms to 200 ms), 50 times the injected 1e-2. With 1e-2
-      # the filter put contact innovations into the accel bias and the tilt,
-      # then into the yaw gyro bias. 0.35 is the value fitted on recorded walks
-      # (state covariance against the truth); standing it is conservative.
+      # (mujoco_simulator.yaml), whose gyro and accelerometer export the mean
+      # of each step's motion (imu_rate_export: tick_mean). accel_sigma and
+      # contact_noise_density are fitted together on recorded walks (state
+      # covariance against the truth; walking, turning in place and walking
+      # with turns, three IMU noise seeds): 5e-2 is 5 times the injected
+      # accelerometer noise. The export's own error is the injected noise
+      # (measured against the truth), so the excess stands for what the
+      # filter's model leaves out while walking. Many (accel, contact) pairs
+      # fit about as well along one ridge; this one was the registered rule's.
+      # Standing it is conservative.
       imu:
         sample_period_s: 0.002        # = 1 / control_rate
         gyro_sigma: 5.0e-4            # per sample [rad/s]
-        accel_sigma: 0.35             # per sample [m/s^2] (fitted, see above)
+        accel_sigma: 5.0e-2           # per sample [m/s^2] (fitted, see above)
         gyro_bias_walk: 1.0e-5        # [rad/s^2/sqrt(Hz)]
         accel_bias_walk: 1.0e-4       # [m/s^3/sqrt(Hz)]
       core:
         gravity: 9.81
-        # A stance sole's frame origin moves 2e-3 ... 5e-3 m/sqrt(s) while
+        # A stance sole's frame origin moves about 4e-3 m/sqrt(s) while
         # walking (rolling, creep); fitted together with accel_sigma.
-        contact_noise_density: 2.0e-3     # anchor random walk [m/sqrt(s)]
+        contact_noise_density: 1.0e-3     # anchor random walk [m/sqrt(s)]
         joint_position_sigma: 1.0e-3      # encoder noise in a contact update [rad]
         kinematic_sigma: 2.0e-3           # contact point model error [m]
         contact_gate_chi2: 16.27          # chi2(3), 99.9 %
