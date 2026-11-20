@@ -1,0 +1,43 @@
+# Group definition for tools weight_overlay (rtc_tools): the weight leaves of
+# config/g1_loco/controllers/locomotion/mpc.yaml, grouped by what they weigh.
+# state_weights and terminal_weights of one quantity share a group, so they
+# scale together. With the overlays beside it (generated with --gauge
+# joint_acceleration; the thetas are in the file names: all_keys_theta0 is
+# --write-all, m0p5 / p0p5 are -0.5 / +0.5) it is the fixture of
+# test_locomotion_mpc_weight_overlay.cpp; rtc_tools test_weight_overlay.py fails
+# when the overlays differ from what the generator writes now.
+node: integrated_rt_controller
+controller: locomotion_controller
+root: mpc.kinodynamic
+groups:
+  base_position:
+    - state_weights.base_position
+    - terminal_weights.base_position
+  base_orientation:
+    - state_weights.base_orientation
+    - terminal_weights.base_orientation
+  joint_position:
+    - {map: state_weights.joints, keys: all}
+    - {map: terminal_weights.joints, keys: all}
+  base_linear_velocity:
+    - state_weights.base_linear_velocity
+    - terminal_weights.base_linear_velocity
+  base_angular_velocity:
+    - state_weights.base_angular_velocity
+    - terminal_weights.base_angular_velocity
+  joint_velocity:
+    - {map: state_weights.joint_velocities, keys: all}
+    - {map: terminal_weights.joint_velocities, keys: all}
+  contact_force:
+    - input_weights.contact_force
+  contact_moment:
+    - input_weights.contact_moment
+  joint_acceleration:
+    - {map: input_weights.joint_accelerations, keys: all}
+  contact_tracking:
+    - contact_tracking.position
+    - contact_tracking.orientation
+    - contact_tracking.linear_velocity
+    - contact_tracking.angular_velocity
+    - contact_tracking.linear_acceleration
+    - contact_tracking.angular_acceleration

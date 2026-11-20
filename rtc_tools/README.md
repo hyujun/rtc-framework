@@ -5,7 +5,7 @@ RTC 로그 시각화, 포구 sim 평가 도구, MJCF/URDF 변환·비교, launch
 ## 개요
 
 - 제어 로그 CSV 를 그리고 (`plot_rtc_log`), 동적 포구 sim 의 시행을 오프라인으로 평가하며 (`catching_*` · `catch_*`), MJCF/URDF 를 변환·비교하고, 손 관절을 슬라이더로 명령한다 (`joint_command_gui`).
-- 실행 파일은 `setup.py` 의 `console_scripts` 35 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
+- 실행 파일은 `setup.py` 의 `console_scripts` 40 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
 - `launch/` 와 `utils/` 의 모듈은 다른 패키지의 launch 파일과 도구가 import 한다 (아래 [launch 헬퍼](#launch-헬퍼와-utils-모듈)).
 - 분석 CLI 의 판정 규칙은 [catching-analysis-rules.md](../docs/catching-analysis-rules.md), 열의 뜻은 각 도구의 머리 docstring 이 갖는다. 이 README 는 실행 방법만 둔다.
 - 컨트롤러 데모 GUI 는 이 패키지에 없다 (손 관절 명령 GUI `joint_command_gui` 만 있다): [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py).
@@ -53,6 +53,7 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 | `run_stance_metrics` | 부동 베이스 로봇의 정지 지표 recorder (sim sensor 토픽 → CSV + JSON) | 아래 절 |
 | `analyze_stance_metrics` | 그 CSV 를 다시 판정 (`--settle` · `--z-ref` 바꿔 재계산) | `analyze_stance_metrics stance.csv --z-ref 0.764431` |
 | `plot_locomotion_diag` | locomotion 세션 (`locomotion_diag.csv` · `joint_ff.csv`) 의 그림 7 장 + JSON 요약 | 아래 절 |
+| `weight_overlay` | shipped MPC 가중치의 group 을 `10**theta` 배 한 sim overlay + `.meta.json` 을 쓰고, params overlay 여럿을 병합 (규칙은 모듈 docstring) | `weight_overlay --shipped mpc.yaml --groups g.yaml --gauge G --theta A=0.5 --out o.yaml` |
 | `estimator_metrics` | `estimator_replay` 재생 CSV 의 open-loop 추정기 지표 + K run 일관성 판정 (정의는 모듈 docstring) | `estimator_metrics replay.csv [--compare-online]` |
 | `walk_eval` | 보행 run 묶음의 tier 선언 지표 (`_truth` · `_est`, 없는 tier 는 거부) · run 유효성 · arm 통계 · 순위 비용 (정의는 모듈 docstring) | `walk_eval <batch> --spec spec.yaml --out eval.json` |
 | `model_match` | 제어 URDF 와 sim MJCF 가 같은 몸인지: 총질량 · CoM · 합성 관성의 차 (pinocchio · mujoco 필요) | `model_match robot.urdf.xacro scene.xml` |

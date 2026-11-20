@@ -2603,6 +2603,33 @@ if(BUILD_TESTING)
   # held to the installed profile by this test.
   rtc_mpc_add_test_includes(test_locomotion_mpc_config)
 
+  # The weight overlays tools weight_overlay (rtc_tools) writes — fixtures in
+  # test/data/weight_overlay/ — through the ROS params-file parse, the override
+  # write and rtc_mpc's kinodynamic OCP loader: every key at theta = 0 loads
+  # the shipped config bit for bit; one group at theta != 0 moves only itself.
+  ament_add_gtest(test_locomotion_mpc_weight_overlay test/test_locomotion_mpc_weight_overlay.cpp
+    TIMEOUT 120
+  )
+  target_include_directories(test_locomotion_mpc_weight_overlay PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_locomotion_mpc_weight_overlay PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+    RTC_WEIGHT_OVERLAY_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data/weight_overlay")
+  target_link_libraries(test_locomotion_mpc_weight_overlay
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_mpc_weight_overlay
+    ament_index_cpp
+    rclcpp
+    rtc_controller_manager
+    rtc_mpc
+    rtc_urdf_bridge
+    pinocchio
+    Eigen3
+  )
+  rtc_mpc_add_test_includes(test_locomotion_mpc_weight_overlay)
+
   # g1_loco body joint order: CM tree model == device rosters == MJCF actuators
   # (W1-F03 WG-1), through the same comparison ValidateDevices refuses with.
   find_package(tinyxml2_vendor QUIET)

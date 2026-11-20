@@ -38,6 +38,7 @@ ros2 service call /rtc_cm/switch_controller rtc_msgs/srv/SwitchController \
 | `device_backend_registry.hpp` | type_tag 레지스트리 · `RTC_REGISTER_DEVICE_BACKEND` |
 | `device_state_cache.hpp` | `DeviceStateCache` POD (backend SeqLock payload) |
 | `controller_config_loader.hpp` | `rtc::LoadControllerConfig` — 컨트롤러 YAML + `include:` 합성 |
+| `controller_param_overrides.hpp` | `rtc::ApplyControllerParamOverrides` — `<config_key>.<path>` ROS 파라미터를 컨트롤러 YAML 트리에 덮어쓴다 (노드가 configure 때 부르는 그 함수; overlay 를 같은 경로로 검증하는 test 용으로 선언) |
 | `controller_timing_profiler.hpp` | 락-프리 `Compute()` 타이밍 통계 |
 
 ### 서비스 (`/rtc_cm/...`)

@@ -54,6 +54,7 @@ setup(
             "run_stance_metrics = rtc_tools.analysis.stance_metrics_recorder:main",
             "analyze_stance_metrics = rtc_tools.analysis.stance_metrics:main",
             "plot_locomotion_diag = rtc_tools.analysis.locomotion_diag:main",
+            "weight_overlay = rtc_tools.analysis.weight_overlay:main",
             "estimator_metrics = rtc_tools.analysis.estimator_metrics:main",
             "walk_eval = rtc_tools.analysis.walk_eval:main",
             "model_match = rtc_tools.validation.model_match:main",

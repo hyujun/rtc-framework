@@ -1,0 +1,15 @@
+integrated_rt_controller:
+  ros__parameters:
+    locomotion_controller:
+      mpc:
+        kinodynamic:
+          state_weights:
+            base_orientation:
+            - 63.24555320336759
+            - 63.24555320336759
+            - 0.0
+          terminal_weights:
+            base_orientation:
+            - 63.24555320336759
+            - 63.24555320336759
+            - 0.0
