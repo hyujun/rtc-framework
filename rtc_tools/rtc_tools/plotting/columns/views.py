@@ -187,3 +187,50 @@ def has_goal_counter_activity(df):
     if GROUP_GOAL_REJECTS in df.columns:
         counters.append(GROUP_GOAL_REJECTS)
     return any(df[c].max() > 0 for c in counters)
+
+
+# ── locomotion logs (locomotion_diag.csv / locomotion_truth.csv) ───────────
+
+
+def has_all_columns(*names):
+    """Gate factory: every named column is in the frame."""
+
+    def _gate(df, _names=names):
+        return all(n in df.columns for n in _names)
+
+    return _gate
+
+
+def _has_named_block(df, prefix, suffix):
+    return any(
+        c.startswith(prefix) and c.endswith(suffix) and len(c) > len(prefix) + len(suffix)
+        for c in df.columns
+    )
+
+
+def has_locomotion_contacts(df):
+    """The diag log names at least one contact (`lambda_<c>_fz`)."""
+    return "t_relative_s" in df.columns and _has_named_block(df, "lambda_", "_fz")
+
+
+def has_locomotion_joints(df):
+    """The diag log names at least one servo joint (`tau_servo_<j>`)."""
+    return "t_relative_s" in df.columns and _has_named_block(df, "tau_servo_", "")
+
+
+def has_truth_contacts(df):
+    """The truth log names at least one contact (`truth_grf_<c>_fz`)."""
+    return "t_relative_s" in df.columns and _has_named_block(df, "truth_grf_", "_fz")
+
+
+def has_truth_moments(df):
+    """Content gate: some contact carries a finite moment.
+
+    A sensor without a native moment logs NaN in all three columns, and the
+    figure would be empty axes.
+    """
+    return any(
+        df[c].notna().any()
+        for c in df.columns
+        if c.startswith("truth_grf_") and c.endswith(("_tx", "_ty", "_tz"))
+    )

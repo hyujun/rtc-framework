@@ -18,13 +18,19 @@ controller-specific plot is one row; nothing in main() needs to change.
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from rtc_tools.analysis.locomotion_diag import MARGINS
 from rtc_tools.plotting import plotters, zoom_dialog
 from rtc_tools.plotting.columns import (
+    has_all_columns,
     has_force_only_fingertips,
     has_goal_counter_activity,
+    has_locomotion_contacts,
+    has_locomotion_joints,
     has_motor,
     has_payload_estimate,
     has_task_goal,
+    has_truth_contacts,
+    has_truth_moments,
     has_wbc_accel,
     has_wbc_fingertip_force,
     has_wbc_task_traj,
@@ -267,6 +273,107 @@ PIPELINES: dict[str, list[PlotEntry]] = {
         PlotEntry("joint_ff_tracking", plotters.plot_joint_ff_tracking),
         PlotEntry("joint_ff_torque", plotters.plot_joint_ff_torque),
         PlotEntry("joint_ff_status", plotters.plot_joint_ff_status),
+    ],
+    # Whole-body locomotion controller. Entry names are the PNG stems of
+    # `plot_locomotion_diag` (analysis/locomotion_diag.FIGURE_FILES), and the
+    # figures are the same functions. `03_joint_torque` is not here: it needs
+    # joint_ff.csv / the state CSV, which a one-CSV pipeline does not have.
+    "locomotion_diag": [
+        PlotEntry(
+            "01_base_pose",
+            plotters.plot_locomotion_base,
+            available=has_all_columns(
+                "t_relative_s",
+                "base_px",
+                "base_py",
+                "base_pz",
+                "base_qx",
+                "base_qy",
+                "source_status",
+            ),
+        ),
+        PlotEntry(
+            "02_contact_forces",
+            plotters.plot_locomotion_contacts,
+            available=has_locomotion_contacts,
+        ),
+        PlotEntry(
+            "04_servo_tracking",
+            plotters.plot_locomotion_servo_tracking,
+            available=has_locomotion_joints,
+        ),
+        PlotEntry(
+            "05_qp_timeline",
+            plotters.plot_locomotion_qp,
+            available=has_all_columns(
+                "t_relative_s",
+                "qp_status",
+                "qp_iterations",
+                "solve_time_us",
+                "wbc_tick_us",
+                "tau_valid",
+            ),
+        ),
+        PlotEntry(
+            "06_margins",
+            plotters.plot_locomotion_margins,
+            available=has_all_columns("t_relative_s", "margins_stale", *MARGINS),
+        ),
+        PlotEntry(
+            "07_mode_timeline",
+            plotters.plot_locomotion_modes,
+            available=has_all_columns(
+                "t_relative_s", "mode", "fault_cause", "health", "source_status"
+            ),
+        ),
+    ],
+    # Contacts are read off the `truth_grf_<c>_fz` header; the moment figure is
+    # gated on content (a sensor without a native moment logs NaN throughout).
+    "locomotion_truth": [
+        PlotEntry(
+            "truth_base_pose",
+            plotters.plot_truth_base_pose_auto,
+            available=has_all_columns(
+                "t_relative_s",
+                "truth_base_px",
+                "truth_base_py",
+                "truth_base_pz",
+                "truth_base_qx",
+                "truth_base_qy",
+                "truth_base_qz",
+                "truth_base_qw",
+            ),
+        ),
+        PlotEntry(
+            "truth_base_twist",
+            plotters.plot_truth_base_twist_auto,
+            available=has_all_columns(
+                "t_relative_s",
+                "truth_base_vx",
+                "truth_base_vy",
+                "truth_base_vz",
+                "truth_base_wx",
+                "truth_base_wy",
+                "truth_base_wz",
+            ),
+        ),
+        PlotEntry("truth_grf", plotters.plot_truth_grf_auto, available=has_truth_contacts),
+        PlotEntry(
+            "truth_grm",
+            plotters.plot_truth_grm_auto,
+            available=lambda df: has_truth_contacts(df) and has_truth_moments(df),
+        ),
+        PlotEntry("truth_cop", plotters.plot_truth_cop_auto, available=has_truth_contacts),
+        PlotEntry(
+            "truth_ages",
+            plotters.plot_truth_ages_auto,
+            available=has_all_columns("t_relative_s", "truth_base_age_us"),
+        ),
+        PlotEntry(
+            "truth_mask",
+            plotters.plot_truth_mask_auto,
+            available=has_all_columns("t_relative_s", "truth_mask"),
+        ),
     ],
     "cm_timing": list(_TIMING_PLOTS),
     "mpc_timing": list(_TIMING_PLOTS),

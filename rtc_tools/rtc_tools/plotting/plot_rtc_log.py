@@ -24,6 +24,8 @@ CSV 컬럼 카테고리:
   - planner_events.csv                 → dynamic-catching planner per-wake search record
   - dualarm_diag.csv                   → multi-frame CLIK per-tick diagnostics
   - joint_ff.csv                       → gravity-feedforward joint record (q / q_ref / g / tau_ff)
+  - locomotion_diag.csv                → locomotion controller per-tick diagnostics
+  - locomotion_truth.csv               → locomotion controller simulator ground truth
 
 이 파일은 thin orchestration layer다 — actual implementations live in:
   - io/         CSV load, log-type detect, save-dir resolve
@@ -67,7 +69,8 @@ def main():
         help="Path to *_state_log.csv, *_sensor_log.csv, cm_timing_log*.csv, "
         "mpc_timing_log*.csv, or a controller-owned diagnostics CSV "
         "(wbc_diag / grasp_diag / pull_estimator / momentum_observer / compliance_diag / "
-        "catching_diag / planner_events / dualarm_diag / joint_ff)",
+        "catching_diag / planner_events / dualarm_diag / joint_ff / "
+        "locomotion_diag / locomotion_truth)",
     )
     parser.add_argument(
         "--save-dir",
@@ -176,7 +179,8 @@ def main():
             "cm_timing_log*.csv, mpc_timing_log*.csv, or a controller-owned "
             "diagnostics CSV (wbc_diag.csv, grasp_diag.csv, "
             "pull_estimator.csv, momentum_observer.csv, compliance_diag.csv, "
-            "catching_diag.csv, planner_events.csv, dualarm_diag.csv, joint_ff.csv)"
+            "catching_diag.csv, planner_events.csv, dualarm_diag.csv, joint_ff.csv, "
+            "locomotion_diag.csv, locomotion_truth.csv)"
         )
         sys.exit(1)
 
