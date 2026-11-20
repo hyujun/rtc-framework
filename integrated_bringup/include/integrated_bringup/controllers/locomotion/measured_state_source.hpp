@@ -21,9 +21,10 @@
 // the leg kinematics. Which one runs is `estimator.source`, fixed at configure.
 // Both run on the RT tick: Update() is noexcept and allocation-free. Each tick
 // the caller hands the source a SourceTickInput (the contact prior it knows);
-// a source that estimates also fills `estimator` (estimator_telemetry.hpp),
-// truth leaves it zero. `state_epoch` is written on every Update, valid or
-// not, and changes only when the source restarts its state (Reset(), or an
+// every source records the estimator's inputs in `estimator`
+// (estimator_telemetry.hpp — RecordEstimatorInputs), and one that estimates
+// fills the rest of it, which truth leaves at its defaults. `state_epoch` is written on every
+// Update, valid or not, and changes only when the source restarts its state (Reset(), or an
 // estimator's own reset): a consumer that compares it tick to tick sees every
 // discontinuity of the base.
 //
@@ -125,7 +126,7 @@ struct MeasuredRobotState {
   StateSourceKind kind{StateSourceKind::kTruth};
   StateSourceStatus status{StateSourceStatus::kBodyUnreadable};
   bool valid{false};
-  EstimatorTelemetry estimator{};  ///< zero from a source that estimates nothing
+  EstimatorTelemetry estimator{};  ///< the inputs from every source, the rest from an estimator
 };
 
 /// @brief What the caller knows on this tick that a source may use.
@@ -245,9 +246,39 @@ void BeginMeasuredState(const DeviceIndices& indices, StateSourceKind kind, uint
                                               int64_t body_max_age_ns, int64_t hand_max_age_ns,
                                               HeldHands& held, MeasuredRobotState& out) noexcept;
 
+/// @brief One IMU site of the body device as a tick reads it.
+struct ImuSiteRead {
+  bool present{false};  ///< the body device and the site are in the state
+  /// present, flagged valid by its producer, a receipt, all six values finite
+  bool valid{false};
+  uint64_t sequence{0};
+  int64_t recv_steady_ns{0};
+  std::array<double, 6> sample{};  ///< gyro, accel (site frame); zero when not present
+};
+
+/// @brief Read IMU site `site` of the body device — the one reading every source
+///        shares, so what an estimator steps on and what a log records agree.
+///        A site outside [0, num_imu_sites) or an absent body device reads as not
+///        present. RT-safe.
+[[nodiscard]] ImuSiteRead ReadImuSite(const rtc::ControllerState& state,
+                                      const DeviceIndices& indices, int site) noexcept;
+
+/// @brief Record this tick's estimator inputs into `tel` (estimator_telemetry.hpp,
+///        the "(input)" fields): the sample, its validity, age and sequence, the
+///        joint / IMU skew (when the sample is valid), and the prior masked to
+///        `contact_bits`. Every source calls it alike — the inputs of a run are
+///        logged whichever source drove it. RT-safe.
+/// @param joint_recv_steady_ns  the body joint lane's receipt (ReadJointLanes'
+///                              stamp_steady_ns, before any other lane is folded in)
+void RecordEstimatorInputs(const ImuSiteRead& imu, int64_t joint_recv_steady_ns,
+                           int64_t now_steady_ns, uint32_t planned_mask, uint32_t contact_bits,
+                           EstimatorTelemetry& tel) noexcept;
+
 /// @brief The simulator's ground truth: the body group's joint and floating-base
 ///        lanes and the hand groups' joint lanes, copied. Contacts are all closed
-///        (a stance prior) and every external wrench is kUnknown.
+///        (a stance prior) and every external wrench is kUnknown. It estimates
+///        nothing, but records the estimator's inputs (RecordEstimatorInputs, from
+///        `imu_site`) so a truth-driven run can be replayed through an estimator.
 class TruthStateSource final : public MeasuredStateSource {
  public:
   struct Params {
@@ -255,13 +286,15 @@ class TruthStateSource final : public MeasuredStateSource {
     int64_t hand_max_age_ns{0};  ///< > 0
     int num_contacts{0};         ///< [0, kMaxStateContacts]
     uint32_t model_epoch{0};
+    int imu_site{-1};  ///< the primary IMU site's index in DeviceState::imu; −1 = none
   };
 
-  /// @throws std::invalid_argument on a non-positive age or a contact count out of range.
+  /// @throws std::invalid_argument on a non-positive age, a contact count out of
+  ///         range, or an IMU site outside [−1, rtc::kMaxImuSites).
   explicit TruthStateSource(const Params& params);
 
   void Reset() noexcept override;
-  /// `tick` is not read: truth knows no prior.
+  /// `tick` only reaches the recorded inputs: truth knows no prior.
   [[nodiscard]] bool Update(const rtc::ControllerState& state, const DeviceIndices& indices,
                             const SourceTickInput& tick, int64_t now_steady_ns,
                             MeasuredRobotState& out) noexcept override;

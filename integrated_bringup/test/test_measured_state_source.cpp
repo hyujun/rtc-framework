@@ -184,6 +184,13 @@ TEST(TruthStateSource, RefusesBadParams) {
   p = MakeParams();
   p.num_contacts = integrated_bringup::locomotion::kMaxStateContacts + 1;
   EXPECT_THROW(TruthStateSource{p}, std::invalid_argument);
+  p = MakeParams();
+  p.imu_site = -2;
+  EXPECT_THROW(TruthStateSource{p}, std::invalid_argument);
+  p.imu_site = rtc::kMaxImuSites;
+  EXPECT_THROW(TruthStateSource{p}, std::invalid_argument);
+  p.imu_site = rtc::kMaxImuSites - 1;
+  EXPECT_NO_THROW(TruthStateSource{p});
 }
 
 TEST(TruthStateSource, CopiesTheFullStateThroughTheLayoutMap) {

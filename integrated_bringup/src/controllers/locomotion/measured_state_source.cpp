@@ -287,6 +287,41 @@ JointLaneVerdict ReadJointLanes(const rtc::ControllerState& state, const DeviceI
   return verdict;
 }
 
+ImuSiteRead ReadImuSite(const rtc::ControllerState& state, const DeviceIndices& indices,
+                        int site) noexcept {
+  ImuSiteRead read;
+  const int body = indices.body.device;
+  if (body < 0 || body >= state.num_devices || body >= rtc::ControllerState::kMaxDevices) {
+    return read;
+  }
+  const auto& dev = state.devices[static_cast<std::size_t>(body)];
+  if (site < 0 || site >= rtc::kMaxImuSites || site >= dev.num_imu_sites) {
+    return read;
+  }
+  const auto s = static_cast<std::size_t>(site);
+  read.present = true;
+  bool finite = true;
+  for (std::size_t i = 0; i < 6; ++i) {
+    read.sample[i] = dev.imu[s][i];
+    finite = finite && std::isfinite(read.sample[i]);
+  }
+  read.sequence = dev.imu_sequence[s];
+  read.recv_steady_ns = dev.imu_recv_steady_ns[s];
+  read.valid = dev.imu_valid[s] && read.recv_steady_ns > 0 && finite;
+  return read;
+}
+
+void RecordEstimatorInputs(const ImuSiteRead& imu, int64_t joint_recv_steady_ns,
+                           int64_t now_steady_ns, uint32_t planned_mask, uint32_t contact_bits,
+                           EstimatorTelemetry& tel) noexcept {
+  tel.imu = imu.sample;
+  tel.imu_valid = imu.valid;
+  tel.imu_sequence = imu.sequence;
+  tel.imu_age_ns = imu.present ? LaneAgeNs(imu.recv_steady_ns, now_steady_ns) : -1;
+  tel.skew_ns = imu.valid ? joint_recv_steady_ns - imu.recv_steady_ns : 0;
+  tel.planned_mask = planned_mask & contact_bits;
+}
+
 TruthStateSource::TruthStateSource(const Params& params) : params_(params) {
   if (params_.body_max_age_ns <= 0 || params_.hand_max_age_ns <= 0) {
     throw std::invalid_argument("TruthStateSource: the age limits must be positive");
@@ -296,6 +331,10 @@ TruthStateSource::TruthStateSource(const Params& params) : params_(params) {
                                 std::to_string(params_.num_contacts) + " is outside [0, " +
                                 std::to_string(kMaxStateContacts) + "]");
   }
+  if (params_.imu_site < -1 || params_.imu_site >= rtc::kMaxImuSites) {
+    throw std::invalid_argument("TruthStateSource: IMU site " + std::to_string(params_.imu_site) +
+                                " is outside [-1, " + std::to_string(rtc::kMaxImuSites) + ")");
+  }
 }
 
 void TruthStateSource::Reset() noexcept {
@@ -304,7 +343,7 @@ void TruthStateSource::Reset() noexcept {
 }
 
 bool TruthStateSource::Update(const rtc::ControllerState& state, const DeviceIndices& indices,
-                              const SourceTickInput& /*tick*/, int64_t now_steady_ns,
+                              const SourceTickInput& tick, int64_t now_steady_ns,
                               MeasuredRobotState& out) noexcept {
   // A lane that fails this tick reads as the neutral state (zero joints, the
   // identity base), never as whatever the caller's buffer held.
@@ -316,6 +355,9 @@ bool TruthStateSource::Update(const rtc::ControllerState& state, const DeviceInd
 
   const JointLaneVerdict joints = ReadJointLanes(
       state, indices, now_steady_ns, params_.body_max_age_ns, params_.hand_max_age_ns, held_, out);
+  // The estimator's inputs, recorded only (truth steps on none of them).
+  RecordEstimatorInputs(ReadImuSite(state, indices, params_.imu_site), out.stamp_steady_ns,
+                        now_steady_ns, tick.planned_mask, out.contact_mask, out.estimator);
   bool base_missing = !joints.body_present;
   bool base_stale = false;
   bool base_invalid = false;

@@ -4,7 +4,9 @@
 // joint, and what walking is judged against (the command, the gait, the plan's
 // base velocity, the measured contact normal forces), the plan sampled this
 // tick before the plausibility check (a refused one too), and the state
-// estimator's own record (estimator_telemetry.hpp; zero under the truth source). The joint lanes
+// estimator's record (estimator_telemetry.hpp: its inputs under every source —
+// what an offline replay steps on — and its own state, at the defaults under the
+// truth source). The joint lanes
 // the generic joint log already carries (measured q, the position target, gravity, feedforward) are
 // in JointFeedforwardLog, written by the same tick with the same `tick` column for the join.
 #ifndef INTEGRATED_BRINGUP_LOGGING_LOCOMOTION_DIAG_LOG_POD_HPP_
@@ -196,6 +198,8 @@ struct LocomotionDiagLogPod {
   // from "the input went silent" (stale) in a joy run.
   std::uint8_t cmd_input{0};    ///< 0 twist, 1 joy
   std::int8_t cmd_deadman{-1};  ///< joy: 1 held / 0 released / −1 unreadable; twist: −1
+  // ── Appended: the rest of the estimator's inputs, from `estimator` above
+  // (est_imu_valid, est_imu_age_us — no field of their own).
 };
 
 static_assert(locomotion::kMaxEstimatorSlots == LocomotionDiagLogPod::kMaxContacts,
@@ -283,6 +287,7 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
         "mpc_last_initial,mpc_last_cold,mpc_last_prim_inf,mpc_last_consumed_prim,"
         "mpc_last_compute_us,mpc_last_state_seq,mpc_last_state_epoch,mpc_last_plan_id";
   os << ",cmd_input,cmd_deadman";
+  os << ",est_imu_valid,est_imu_age_us";
 }
 
 inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogPod& p,
@@ -389,6 +394,9 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
      << (m.cold_start ? 1 : 0) << ',' << m.prim_inf << ',' << m.consumed_prim << ',' << m.compute_us
      << ',' << m.state_sequence << ',' << m.state_epoch << ',' << m.plan_id;
   os << ',' << static_cast<unsigned>(p.cmd_input) << ',' << static_cast<int>(p.cmd_deadman);
+  // Age in µs; −1 (never received / no site) stays −1, not −0.001.
+  os << ',' << (e.imu_valid ? 1 : 0) << ','
+     << (e.imu_age_ns < 0 ? -1.0 : static_cast<double>(e.imu_age_ns) * 1e-3);
 }
 
 }  // namespace integrated_bringup

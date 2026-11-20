@@ -46,6 +46,8 @@ class LocomotionEstimatorTest : public LocomotionControllerTest {
   }
 
   Cause LastCause() const { return static_cast<Cause>(ctrl_->LastDiag().fault_cause); }
+
+  void ExpectTheLastTicksMask(const YAML::Node& cfg);
 };
 
 // ── start ───────────────────────────────────────────────────────────────────
@@ -175,11 +177,36 @@ TEST_F(LocomotionEstimatorTest, TheTruthSourceNeverChangesItsEpochAfterTheActiva
   BringUp();
   TickFor(10);
   const std::uint32_t epoch = Measured().state_epoch;
-  SkipImuSamples();  // truth reads no IMU
+  SkipImuSamples();  // truth steps on no IMU (it only records it)
   TickFor(10);
   EXPECT_EQ(epoch, Measured().state_epoch);
   EXPECT_EQ(Mode::kNominal, LastMode());
   EXPECT_EQ(0U, ctrl_->LastDiag().estimator.reset_count);
+}
+
+// A truth-driven run logs the estimator's inputs for an offline replay: the
+// primary site's sample, sequence and receipt, and the prior the tick held.
+TEST_F(LocomotionEstimatorTest, TheTruthSourceRecordsThePrimaryImuInTheDiagnostic) {
+  BringUp();
+  const YAML::Node imu = cfg_["model"]["imu"];
+  ASSERT_EQ(imu["primary_site"].as<std::string>(), imu["sites"][0].as<std::string>());
+  auto& body = state_.devices[kBody];
+  body.imu[0] = {0.01, -0.02, 0.03, 0.1, -0.2, 9.8};
+  TickFor(3);
+  const auto& e = ctrl_->LastDiag().estimator;
+  EXPECT_EQ(0U, ctrl_->LastDiag().state_source);
+  for (std::size_t i = 0; i < 6; ++i) {
+    EXPECT_TRUE(BitsEqual(body.imu[0][i], e.imu[i])) << i;
+  }
+  EXPECT_TRUE(e.imu_valid);
+  EXPECT_EQ(body.imu_sequence[0], e.imu_sequence);
+  EXPECT_GE(e.imu_age_ns, 0);
+  EXPECT_EQ(0b11U, e.planned_mask) << "all contacts after activation";
+  EXPECT_FALSE(e.initialized);
+  body.imu_valid[0] = false;
+  TickFor(1);
+  EXPECT_FALSE(ctrl_->LastDiag().estimator.imu_valid);
+  EXPECT_EQ(Mode::kNominal, LastMode()) << "truth does not need the IMU";
 }
 
 // ── same state to the WBC and the MPC ───────────────────────────────────────
@@ -253,8 +280,10 @@ TEST_F(LocomotionEstimatorTest, TheWbcAndTheMpcGetTheSameStateBitForBit) {
   RecordProperty("snapshots_compared", static_cast<int>(compared));
 }
 
-TEST_F(LocomotionEstimatorTest, TheSourceIsGivenTheLastTicksContactMask) {
-  Configure(InekfConfig(true));
+// Either source records the prior it was given — the last tick's mask, not
+// this tick's (a truth-driven replay steps on the same timing as online).
+void LocomotionEstimatorTest::ExpectTheLastTicksMask(const YAML::Node& cfg) {
+  Configure(cfg);
   StandingStub* stub = SpawnStandingStub(*ctrl_);
   ASSERT_NE(nullptr, stub);
   Activate();
@@ -277,6 +306,14 @@ TEST_F(LocomotionEstimatorTest, TheSourceIsGivenTheLastTicksContactMask) {
     previous = d.contact_mask;
   }
   EXPECT_GE(changes, 1) << "the plan's mask reached the controller";
+}
+
+TEST_F(LocomotionEstimatorTest, TheSourceIsGivenTheLastTicksContactMask) {
+  ExpectTheLastTicksMask(InekfConfig(true));
+}
+
+TEST_F(LocomotionEstimatorTest, TheTruthSourceRecordsTheLastTicksContactMask) {
+  ExpectTheLastTicksMask(MpcConfig());
 }
 
 // ── telemetry under the E-STOP and the fault ────────────────────────────────

@@ -102,10 +102,6 @@ int TicksOf(double d, double period) {
   return std::max(1, static_cast<int>(std::min(n, 1e9)));
 }
 
-bool Finite3(const double* x) noexcept {
-  return std::isfinite(x[0]) && std::isfinite(x[1]) && std::isfinite(x[2]);
-}
-
 }  // namespace
 
 // ── estimator.inekf ─────────────────────────────────────────────────────────
@@ -430,35 +426,18 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
   EstimatorTelemetry& tel = telemetry_;
   tel.periods = -1;
   tel.step_status = 0;
-  tel.skew_ns = 0;
-  tel.imu = {};
-  const uint32_t planned = tick.planned_mask & slot_mask_;
-  tel.planned_mask = planned;
 
-  // ── the primary IMU site ──────────────────────────────────────────────────
-  bool imu_missing = true;
+  // ── the primary IMU site (the reading every source records alike) ─────────
+  const ImuSiteRead imu = ReadImuSite(state, indices, params_.imu_site);
+  RecordEstimatorInputs(imu, out.stamp_steady_ns, now_steady_ns, tick.planned_mask, slot_mask_,
+                        tel);
+  const uint32_t planned = tel.planned_mask;
+  const uint64_t sequence = imu.sequence;
+  const int64_t imu_recv = imu.recv_steady_ns;
+  const Eigen::Vector3d gyro(imu.sample[0], imu.sample[1], imu.sample[2]);
+  const Eigen::Vector3d accel(imu.sample[3], imu.sample[4], imu.sample[5]);
+  bool imu_missing = !imu.valid;
   bool regressed = false;
-  uint64_t sequence = 0;
-  int64_t imu_recv = 0;
-  Eigen::Vector3d gyro = Eigen::Vector3d::Zero();
-  Eigen::Vector3d accel = Eigen::Vector3d::Zero();
-  if (joints.body_present) {
-    const auto& dev = state.devices[static_cast<std::size_t>(indices.body.device)];
-    const auto s = static_cast<std::size_t>(params_.imu_site);
-    if (params_.imu_site < dev.num_imu_sites) {
-      const auto& sample = dev.imu[s];
-      for (std::size_t i = 0; i < 6; ++i) {
-        tel.imu[i] = sample[i];
-      }
-      imu_recv = dev.imu_recv_steady_ns[s];
-      sequence = dev.imu_sequence[s];
-      imu_missing =
-          !dev.imu_valid[s] || imu_recv <= 0 || !Finite3(&sample[0]) || !Finite3(&sample[3]);
-      gyro = Eigen::Vector3d(sample[0], sample[1], sample[2]);
-      accel = Eigen::Vector3d(sample[3], sample[4], sample[5]);
-    }
-  }
-  tel.imu_sequence = sequence;
   if (!imu_missing && have_sequence_ && sequence < last_sequence_) {
     regressed = true;
     imu_missing = true;
@@ -468,7 +447,6 @@ bool InekfStateSource::Update(const rtc::ControllerState& state, const DeviceInd
   bool skew_invalid = false;
   bool kinematics_ok = joints_ok && !joints.body_stale;
   if (!imu_missing) {  // an IMU sample implies the body device
-    tel.skew_ns = out.stamp_steady_ns - imu_recv;
     const int64_t skew = tel.skew_ns < 0 ? -tel.skew_ns : tel.skew_ns;
     kinematics_ok = kinematics_ok && skew <= skew_ns_;
     skew_invalid = skew > skew_invalid_ns_;

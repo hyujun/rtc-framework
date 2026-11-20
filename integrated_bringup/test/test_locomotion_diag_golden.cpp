@@ -12,7 +12,8 @@
 //
 // Re-record (only when an existing column's contract really changes, as its
 // own commit with the reason): RTC_RECORD_DIAG_GOLDEN=1 ctest -R
-// test_locomotion_diag_golden (writes the file next to this test's data).
+// test_locomotion_diag_golden (writes the file next to this test's data,
+// keeping the golden's column set — a re-record does not pin appended columns).
 #include "csv_log_fixture.hpp"
 #include "integrated_bringup/logging/locomotion_diag_log_pod.hpp"
 #include "locomotion_controller_rig.hpp"
@@ -118,8 +119,25 @@ TEST_F(LocomotionDiagGolden, ExistingColumnsMatchTheGolden) {
 
   const fs::path golden = LOCO_DIAG_GOLDEN;
   if (std::getenv("RTC_RECORD_DIAG_GOLDEN") != nullptr) {
-    fs::copy_file(diag, golden, fs::copy_options::overwrite_existing);
-    GTEST_SKIP() << "recorded " << golden;
+    // A re-record renews the golden columns' values and keeps their set: the
+    // columns appended since stay out (some of them are wall time).
+    const std::vector<std::string> keep =
+        fs::exists(golden) ? integrated_bringup::testfx::ReadCsv(golden).header : got.header;
+    std::ofstream os(golden, std::ios::trunc);
+    const auto write = [&os, &keep](const std::vector<std::string>& header,
+                                    const std::vector<std::string>& cells) {
+      for (std::size_t i = 0; i < keep.size(); ++i) {
+        const std::size_t at = integrated_bringup::testfx::ColumnIndex(header, keep[i]);
+        ASSERT_LT(at, cells.size()) << "golden column " << keep[i] << " is gone";
+        os << (i == 0 ? "" : ",") << cells[at];
+      }
+      os << '\n';
+    };
+    write(got.header, got.header);
+    for (const auto& row : got.rows) {
+      write(got.header, row);
+    }
+    GTEST_SKIP() << "recorded " << golden << " (" << keep.size() << " columns)";
   }
   const auto want = integrated_bringup::testfx::ReadCsv(golden);
   ASSERT_EQ(want.rows.size(), got.rows.size()) << golden;

@@ -113,13 +113,17 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
 - `ref_base_vx/y/z` — 표본 plan 의 base 선속도 (base frame, plan 이 없으면 NaN).
 - `plan_holds` — 걸려서 앞에 따르던 plan 에 자리를 내준 plan 수 (누적).
 - `sample_*` — 그 tick 에 표본한 plan, **타당성 판정 전** (걸린 plan 도 남는다; `plan_id` 는 따른 plan 이라 다를 수 있다): `sample_plan_id` (0 = 표본 없음) · `sample_converged` · `sample_iterations` · `sample_prim_inf` · `sample_dual_inf` · `sample_prim_head` (앞 node 3 개의 잔차 max) · `sample_prim_node` (잔차가 가장 큰 node) · `sample_mask` · `sample_progress` · `sample_a_joint_max` · `sample_a_joint_idx` (body 관절 \|a_ref\| 의 max 와 그 관절, body 순서) · `sample_check` (걸린 검사 번호, 0 = 통과 또는 검사 안 함).
-- `est_*` · `imu_*` — 상태 source 의 telemetry 다 (`controllers/locomotion/estimator_telemetry.hpp`; truth 에서는 0). 열은 다음과 같다.
+- `est_*` · `imu_*` — 상태 source 의 telemetry 다 (`controllers/locomotion/estimator_telemetry.hpp`). 두 부분으로 나뉜다.
+  - **입력 열**: `imu_*` · `est_imu_sequence` · `est_skew_us` · `est_planned_mask` · 끝에 붙인 `est_imu_valid` · `est_imu_age_us` (아래 Log tiers). 두 source 가 같은 읽기 (`ReadImuSite` · `RecordEstimatorInputs`) 로 채운다. 그래서 truth 로 돌린 run 도 offline 재생이 된다.
+  - **나머지**: 추정기 자신의 기록이다. truth 에서는 기본값이다.
+
+  열은 다음과 같다.
   - 시작 · reset: `est_initialized` · `est_reset_reason` (1 요청 · 2 공백 · 3 불일치 · 4 거부 · 5 gating · 6 접촉 없음) · `est_reset_count`
-  - cadence: `est_imu_sequence` · `est_periods` (k; 0 = hold, −1 = step 없음) · `est_skew_us` · `est_hold_ticks`
+  - cadence: `est_imu_sequence` · `est_periods` (k; 0 = hold, −1 = step 없음) · `est_skew_us` (관절 수신 − IMU 수신, IMU 표본이 유효할 때만, 아니면 0) · `est_hold_ticks`
   - step 결과: `est_step_status` · `est_core_status` · `est_report_valid`
-  - 접촉 mask: `est_planned_mask` · `est_mask` (stance · unknown 인 접촉)
+  - 접촉 mask: `est_planned_mask` (그 tick 의 prior, 모델 접촉 bit 만) · `est_mask` (stance · unknown 인 접촉)
   - 계수기: `est_no_anchor_ticks` · `est_gated_ticks` · `est_refused_ticks` · `est_unobservable`
-  - 재생용 raw IMU: `imu_gx … imu_az`
+  - 재생용 raw IMU: `imu_gx … imu_az` (primary site 의 원 표본, 무효여도 그대로; site 가 없으면 0)
   - 접촉별: `est_mode_<c>` · `est_reason_<c>` · `est_update_<c>` · `est_evidence_<c>` · `est_speed_<c>` · `est_m2_<c>`
   - 공분산 대각: `est_p_<i>` (15 + 3·접촉 수, 오차 순서 φ · v · p · d · b_g · b_a)
 - `meas_contact_valid` · `meas_fz_<contact>` — 본체 군 inference lane 의 group c (접촉 순서) 의 fz (센서 frame, 지지하는 발은 음수). bit c 는 backend 자신의 신선도 판정 (`inference_enable` — sim 은 연속 누락 tick 수) 이고, 0 이면 (그 group 이 stale, group 수 ≠ 접촉 수, `sensor_layout.inference_values_per_group` < 4) NaN — backend 가 stale 로 본 유지값은 기록하지 않는다. 수신 나이 (`inference_recv_steady_ns`) 는 보지 않는다. lane 의 소스 순서는 profile 이 접촉 순서로 적는다 (`sim.yaml` 의 `fingertip_wrench_topics`).
@@ -133,6 +137,10 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
   - `wrench_des_<c>_{fx,fy,fz,tx,ty,tz}` — 그 tick 에 WBC QP 가 받은 접촉 wrench 목표 (`lambda_des`: stand · walk 는 plan 의 MPC wrench, idle 은 지렛대 규칙). world 축 · contact frame 원점 · 바닥→발. QP 가 돌지 않은 tick (waiting · E-STOP · 이미 latch 된 fault · degraded hold) 은 NaN — QP 가 돌고 실패한 tick 은 받은 목표를 남긴다. 점 접촉 (dim 3) 의 모멘트도 NaN.
   - `servo_kp_<j>` · `servo_kd_<j>` — `tau_servo_<j>` 의 두 항 kp (q_cmd − q) 와 −kd q̇ (합은 반올림 차이까지 `tau_servo`). damping tick 의 kp 항은 0.
   - `mpc_last_*` — MPC thread 가 마지막으로 끝낸 solve 시도 (`rtc_mpc` `thread/solve_record.hpp`): `seq` (이 thread run 의 기록 수, 0 = 없음) · `outcome` (−1 없음 · 0 published · 1 withheld · 2 deadline · 3 cold withheld · 4 failed) · `err` · `iterations` · `converged` · `initial` · `cold` · `prim_inf` · `consumed_prim` (publish 규칙이 보는 소비 구간 잔차) · `compute_us` · `state_seq` · `state_epoch` · `plan_id` (published 일 때). WBC 가 따르는 plan (`plan_id` · `sample_*`) 보다 새로울 수 있다. 두 시도가 한 tick 사이에 끝날 수 있어 `seq` 는 건너뛸 수 있다. 재활성화 (thread 는 pause 됐다 이어진다) 직후에는 새 시도가 끝날 때까지 앞 활성화의 마지막 기록이 남는다 — `state_epoch` · `plan_id` 로 가른다.
+  - `est_imu_valid` · `est_imu_age_us` — 재생 입력의 나머지 (위 `est_*` 의 입력 열).
+    - `est_imu_valid`: site 가 있고 producer 가 유효로 표시했고 수신 stamp 가 있고 6 값이 유한하면 1 이다. sequence 역행은 추정기 자신의 판정이라 여기에 들어가지 않는다.
+    - `est_imu_age_us`: now − 수신이다. `now` 뒤에 찍힌 수신은 0, 받은 적 없거나 site 가 없으면 −1 이다.
+    - 재생은 IMU 수신 = now − `est_imu_age_us` 와 관절 수신 = IMU 수신 + `est_skew_us` 로 lane 시각을 되살린다. truth 의 `source_age_us` 는 base 시각과 섞여 있어 이 용도로 쓸 수 없다.
 - **T tier** — `locomotion_truth.csv` (`LocomotionTruthLog`, 열 계약은 `logging/locomotion_truth_log_pod.hpp`, 채움은 `controllers/locomotion/truth_log.hpp`). 같은 tick 에 쓰고 `tick` 열로 잇는다.
   - 행은 참값 lane 이 하나라도 신선한 tick 에만 쓰고 (`truth_mask` bit 0 = base, bit 1 + c = 접촉 c), 파일은 첫 행에서 열린다 (`rtc::LogOpen::kOnFirstRow`) — 참값 lane 이 없는 run (실기) 에는 파일이 없다. 0 으로 채운 열은 없고, 신선하지 않은 lane 은 NaN 이다.
   - 신선도: base 는 `IsBaseFresh`, 접촉은 `IsSensorGroupFresh` (backend 판정 + 수신 나이), 둘 다 `estimator.body_max_age_ms`. 나이 (`truth_base_age_us` · `truth_age_<c>_us`, −1 = 수신 없음) 와 sequence 는 늘 쓴다.

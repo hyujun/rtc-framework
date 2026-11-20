@@ -1008,6 +1008,12 @@ TEST(LocomotionDiagLog, TheHeaderAndARowHaveTheSameColumns) {
   EXPECT_NE(header.str().find(",cmd_vx,cmd_vy,cmd_wz,cmd_h,cmd_valid,gait_latest,ref_base_vx,"
                               "ref_base_vy,ref_base_vz,meas_contact_valid,meas_fz_a,meas_fz_b"),
             std::string::npos);
+  // The replay inputs appended last; an empty pod reads "no sample, never received".
+  const std::string tail = ",cmd_input,cmd_deadman,est_imu_valid,est_imu_age_us";
+  ASSERT_GE(header.str().size(), tail.size());
+  EXPECT_EQ(header.str().substr(header.str().size() - tail.size()), tail);
+  const std::string row_tail = ",0,-1";
+  EXPECT_EQ(row.str().substr(row.str().size() - row_tail.size()), row_tail);
 }
 
 // The measured contact force: group c of the body's inference lane, fz at
