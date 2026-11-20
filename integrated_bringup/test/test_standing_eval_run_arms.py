@@ -212,6 +212,7 @@ def _args(**over):
         "estop_at": 8.0,
         "run_out": None,
         "twist_proc": None,
+        "script": "walk",
     }
     base.update(over)
     return type("Args", (), base)()
@@ -520,6 +521,20 @@ def test_the_walk_script_starts_the_command_marks_the_stop_window_and_waits_for_
     assert args.twist_proc is None
     started = run_arms.read_events(tmp_path / "twist.log")[0]
     assert started["argv"][:2] == ["--topic", "/locomotion_controller/g1/cmd_vel"]
+    assert started["argv"][-2:] == ["--script", "walk"]
+
+
+@pytest.mark.parametrize("script", ["turn", "curve", "turn_slow", "curve_slow"])
+def test_the_walk_script_passes_its_command_script_and_keeps_the_run_length(
+    script, monkeypatch, tmp_path
+):
+    _fake_twist(tmp_path, monkeypatch)
+    args = _args(run_out=tmp_path, rtf=0.1, script=script)
+    clock = FakeClock()
+    assert run_arms.run_events("walk", args, {}, clock, t0=100.0)
+    assert run_arms.read_events(tmp_path / "twist.log")[0]["argv"][-2:] == ["--script", script]
+    assert clock.sleeps == pytest.approx([230.0, 30.0])
+    assert run_arms.script_duration("walk", args) == pytest.approx(26.0)
 
 
 def test_the_walk_estop_script_stops_the_command_after_the_hold(monkeypatch, tmp_path):

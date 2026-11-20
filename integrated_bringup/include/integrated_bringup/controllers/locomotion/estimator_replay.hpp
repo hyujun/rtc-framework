@@ -39,6 +39,7 @@
 #include <memory>
 #include <optional>
 #include <ostream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -101,6 +102,11 @@ struct ReplayTruth {
 bool RebuildState(const ReplayInput& in, int imu_site, int64_t now_ns,
                   rtc::ControllerState& state) noexcept;
 
+/// @brief Add one draw of white noise N(0, σ²) from `rng` to each of the
+///        tick's joint positions — `q[0 .. num_joints)` and nothing else.
+///        σ = 0 draws nothing and leaves `in` bit for bit.
+void AddJointNoise(ReplayInput& in, double sigma, std::mt19937_64& rng);
+
 /// @brief What a replay was set up with.
 struct ReplaySetup {
   InekfStateSource::Params params;                ///< imu_site, ages, the inekf config
@@ -108,13 +114,20 @@ struct ReplaySetup {
   std::vector<std::string> contact_names;         ///< model.contacts order
   std::vector<std::string> contact_frames;
   std::vector<std::string> roster;  ///< the logged body joints, column order
+  /// Encoder noise the sim does not record: each Step adds N(0, σ²) to the
+  /// joint positions the source reads (AddJointNoise, from a stream seeded
+  /// with `joint_noise_seed` at construction). The truth contact velocities
+  /// use the recorded joints. 0 = the recorded input bit for bit. [rad]
+  double joint_noise_sigma{0.0};
+  uint64_t joint_noise_seed{1};
 };
 
 /// @brief Steps the inekf source through recorded ticks (header).
 class EstimatorReplay {
  public:
   /// @throws std::invalid_argument when a roster joint is not a model joint, a
-  ///         model joint is not logged, or the source refuses its setup.
+  ///         model joint is not logged, joint_noise_sigma is negative or not
+  ///         finite, or the source refuses its setup.
   explicit EstimatorReplay(const ReplaySetup& setup);
   ~EstimatorReplay();
   EstimatorReplay(const EstimatorReplay&) = delete;
@@ -157,6 +170,8 @@ class EstimatorReplay {
   MeasuredRobotState out_{};
   bool joint_exact_{false};
   bool started_{false};  ///< a tick has been stepped (the first one resets)
+  std::mt19937_64 joint_rng_;
+  ReplayInput noisy_{};  ///< the source's input when joint_noise_sigma > 0
   int64_t period_ns_{0};
   Eigen::Matrix3d R_BI_{Eigen::Matrix3d::Identity()};
   Eigen::Vector3d p_BI_{Eigen::Vector3d::Zero()};

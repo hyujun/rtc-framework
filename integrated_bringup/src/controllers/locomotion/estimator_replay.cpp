@@ -24,6 +24,7 @@
 #include <map>
 #include <numeric>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -96,6 +97,10 @@ EstimatorReplay::EstimatorReplay(const ReplaySetup& setup) : setup_(setup) {
   if (!setup_.model) {
     throw std::invalid_argument("estimator replay: no model");
   }
+  if (!std::isfinite(setup_.joint_noise_sigma) || setup_.joint_noise_sigma < 0.0) {
+    throw std::invalid_argument("estimator replay: joint_noise_sigma must be finite and >= 0");
+  }
+  joint_rng_.seed(setup_.joint_noise_seed);
   const pinocchio::Model& model = *setup_.model;
   const std::vector<std::string> order = JointOrder(model);
   // The truth FK writes q = [p, q_xyzw, joints], v = [v, ω, joints].
@@ -132,6 +137,18 @@ EstimatorReplay::EstimatorReplay(const ReplaySetup& setup) : setup_(setup) {
 
 EstimatorReplay::~EstimatorReplay() = default;
 
+void AddJointNoise(ReplayInput& in, double sigma, std::mt19937_64& rng) {
+  if (!(sigma > 0.0)) {
+    return;
+  }
+  std::normal_distribution<double> n(0.0, sigma);
+  const std::size_t nj =
+      std::min(static_cast<std::size_t>(std::max(in.num_joints, 0)), kMaxStateJoints);
+  for (std::size_t j = 0; j < nj; ++j) {
+    in.q[j] += n(rng);
+  }
+}
+
 const MeasuredRobotState& EstimatorReplay::Step(const ReplayInput& in, const ReplayTruth* truth) {
   // The activation's Reset(); the first tick of a log stands for one too (the
   // source the controller built was reset when it was activated).
@@ -140,7 +157,13 @@ const MeasuredRobotState& EstimatorReplay::Step(const ReplayInput& in, const Rep
     started_ = true;
   }
   const int64_t now = kReplayEpochNs + static_cast<int64_t>(in.tick) * period_ns_;
-  joint_exact_ = RebuildState(in, setup_.params.imu_site, now, state_);
+  const ReplayInput* source_in = &in;
+  if (setup_.joint_noise_sigma > 0.0) {
+    noisy_ = in;
+    AddJointNoise(noisy_, setup_.joint_noise_sigma, joint_rng_);
+    source_in = &noisy_;
+  }
+  joint_exact_ = RebuildState(*source_in, setup_.params.imu_site, now, state_);
   static_cast<void>(source_->Update(state_, indices_, SourceTickInput{in.planned_mask}, now, out_));
   TruthVelocities(in, truth);
   return out_;

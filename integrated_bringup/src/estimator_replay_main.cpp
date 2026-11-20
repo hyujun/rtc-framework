@@ -3,7 +3,7 @@
 //
 //   ros2 run integrated_bringup estimator_replay --session <dir> --out <replay.csv>
 //       [--profile g1_loco] [--config-dir <dir>] [--overlay <yaml>]... [--run <n>|all]
-//       [--no-truth]
+//       [--no-truth] [--joint-sigma <rad> [--joint-seed <n>]]
 //
 // <dir> holds locomotion_diag.csv and joint_ff.csv (a session's
 // controllers/locomotion_controller/, or the session root above it);
@@ -15,7 +15,10 @@
 // overlay file (integrated_rt_controller: ros__parameters: <key>: …) or the
 // section itself — so an A/B runs one input through two configs. Writes the
 // replay CSV (17 significant digits) and <out>.json (counts, extrinsic,
-// contact names, Update() wall time — reported, not judged).
+// contact names, Update() wall time — reported, not judged). --joint-sigma adds
+// seeded white noise to the joint positions the source reads (the truth
+// contact velocities keep the recorded ones; default 0 = the recorded values
+// bit for bit), named in the sidecar — the sim records exact encoders.
 #include "integrated_bringup/controllers/locomotion/estimator_replay.hpp"
 #include "integrated_bringup/controllers/locomotion/humanoid_model_config.hpp"
 #include "integrated_bringup/controllers/locomotion/measured_state_source.hpp"
@@ -39,7 +42,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cerrno>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -65,16 +72,19 @@ struct Args {
   std::vector<std::string> overlays;
   bool truth{true};
   int run{loco::kLastRun};
+  double joint_sigma{0.0};
+  uint64_t joint_seed{1};
 };
 
 void Usage() {
   std::cerr
       << "usage: estimator_replay --session <dir> --out <replay.csv> [--profile <name>]\n"
          "                        [--config-dir <dir>] [--overlay <yaml>]... [--run <n>|all]\n"
-         "                        [--no-truth]\n";
+         "                        [--no-truth] [--joint-sigma <rad> [--joint-seed <n>]]\n";
 }
 
 bool Parse(int argc, char** argv, Args& a) {
+  bool seed_given = false;
   for (int i = 1; i < argc; ++i) {
     const std::string k = argv[i];
     const auto value = [&](std::string& dst) {
@@ -104,11 +114,28 @@ bool Parse(int argc, char** argv, Args& a) {
       }
     } else if (k == "--no-truth") {
       a.truth = false;
+    } else if (k == "--joint-sigma" && value(v)) {
+      char* end = nullptr;
+      a.joint_sigma = std::strtod(v.c_str(), &end);
+      if (v.empty() || *end != '\0' || !std::isfinite(a.joint_sigma) || a.joint_sigma < 0.0) {
+        return false;
+      }
+    } else if (k == "--joint-seed" && value(v)) {
+      char* end = nullptr;
+      errno = 0;
+      const unsigned long long n = std::strtoull(v.c_str(), &end, 10);  // NOLINT(runtime/int)
+      if (v.empty() || std::isdigit(static_cast<unsigned char>(v[0])) == 0 || *end != '\0' ||
+          errno == ERANGE) {
+        return false;
+      }
+      a.joint_seed = static_cast<uint64_t>(n);
+      seed_given = true;
     } else {
       return false;
     }
   }
-  return !a.session.empty() && !a.out.empty();
+  // A seed without a sigma would name a noise that is not there.
+  return !a.session.empty() && !a.out.empty() && !(seed_given && a.joint_sigma == 0.0);
 }
 
 std::string ShareFile(const std::string& package, const std::string& rel) {
@@ -238,6 +265,8 @@ int Run(const Args& a) {
       loco::LoadReplayLog(diag.string(), joint_ff.string(), with_truth ? truth.string() : "",
                           setup.contact_names, a.run);
   setup.roster = log.roster;
+  setup.joint_noise_sigma = a.joint_sigma;
+  setup.joint_noise_seed = a.joint_seed;
   loco::EstimatorReplay replay(setup);
 
   // ── replay ────────────────────────────────────────────────────────────────
@@ -274,6 +303,8 @@ int Run(const Args& a) {
      << "  \"overlays\": ";
   JsonStrings(js, a.overlays);
   js << ",\n  \"truth\": " << (with_truth ? "true" : "false") << ",\n"
+     << "  \"joint_sigma\": " << a.joint_sigma << ",\n"
+     << "  \"joint_seed\": " << a.joint_seed << ",\n"
      << "  \"rows\": " << log.ticks.size() << ",\n"
      << "  \"diag_rows\": " << log.diag_rows << ",\n"
      << "  \"unmatched_rows\": " << log.unmatched << ",\n"

@@ -31,9 +31,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -47,6 +49,7 @@ using loco::EstimatorTelemetry;
 using loco::InekfStateSource;
 using loco::MeasuredRobotState;
 using loco::ReplayInput;
+using loco::ReplayTruth;
 using rtc::testing::BitsEqual;
 
 constexpr int64_t kT = 2'000'000;  // the shipped control period [ns]
@@ -292,6 +295,42 @@ void WriteLogs(const fs::path& dir, bool second_joint_run) {
   run(5, second_joint_run);
 }
 
+TEST(AddJointNoise, NoisesTheJointPositionsOnlyWithSigmaAndDrawsNothingAtZero) {
+  ReplayInput clean;
+  clean.tick = 9;
+  clean.num_joints = 3;
+  for (std::size_t j = 0; j < 5; ++j) {
+    clean.q[j] = 0.1 * static_cast<double>(j);
+    clean.qd[j] = 0.2;
+  }
+  clean.imu[0] = 0.3;
+  std::mt19937_64 rng(11);
+  double sum2 = 0.0;
+  constexpr int kTicks = 4000;
+  for (int k = 0; k < kTicks; ++k) {
+    ReplayInput in = clean;
+    loco::AddJointNoise(in, 1e-3, rng);
+    for (std::size_t j = 0; j < 5; ++j) {
+      ASSERT_EQ(in.qd[j], clean.qd[j]) << "velocities stay";
+      if (j >= 3) {
+        ASSERT_EQ(in.q[j], clean.q[j]) << "past num_joints stays";
+      } else {
+        sum2 += (in.q[j] - clean.q[j]) * (in.q[j] - clean.q[j]);
+      }
+    }
+    ASSERT_EQ(in.imu, clean.imu);
+    ASSERT_EQ(in.tick, clean.tick);
+  }
+  EXPECT_NEAR(std::sqrt(sum2 / (3.0 * kTicks)), 1e-3, 5e-5);
+
+  std::mt19937_64 a(5);
+  std::mt19937_64 b(5);
+  ReplayInput zero = clean;
+  loco::AddJointNoise(zero, 0.0, a);
+  EXPECT_EQ(0, std::memcmp(zero.q.data(), clean.q.data(), sizeof(clean.q)));
+  EXPECT_EQ(a(), b()) << "σ = 0 draws nothing";
+}
+
 TEST(LoadReplayLog, JoinsTheLogsPerRunAndCountsWhatIsMissing) {
   const fs::path dir = fs::path(::testing::TempDir()) / "replay_log_runs";
   fs::create_directories(dir);
@@ -449,6 +488,44 @@ TEST_F(EstimatorReplayTest, TheReplayOfTheRecordedInputsIsTheOnlineSourceBitForB
     for (std::size_t i = 0; i < 7; ++i) {
       ASSERT_TRUE(BitsEqual(a[t].q[i], b[t].q[i])) << t;
     }
+  }
+
+  // Joint noise (WD-333) reaches the source's input only: the truth contact
+  // velocity is the recorded joints', bit for bit; the estimate moves; the
+  // same seed replays the same estimate.
+  ReplayTruth truth;
+  truth.base_valid = true;
+  truth.base_q = {0.0, 0.0, 0.75, 0.0, 0.0, 0.0, 1.0};
+  truth.base_v = {0.1, -0.05, 0.0, 0.0, 0.0, 0.2};
+  auto noisy_setup = setup;
+  noisy_setup.joint_noise_sigma = 1e-3;
+  noisy_setup.joint_noise_seed = 3;
+  EstimatorReplay clean(setup);
+  EstimatorReplay noisy(noisy_setup);
+  EstimatorReplay again(noisy_setup);
+  bool moved = false;
+  for (const auto& in : inputs) {
+    const MeasuredRobotState c = clean.Step(in, &truth);
+    const MeasuredRobotState n = noisy.Step(in, &truth);
+    const MeasuredRobotState r = again.Step(in, &truth);
+    for (std::size_t k = 0; k < 2; ++k) {
+      for (std::size_t i = 0; i < 3; ++i) {
+        ASSERT_TRUE(
+            BitsEqual(clean.truth_contact_velocity()[k][i], noisy.truth_contact_velocity()[k][i]))
+            << in.tick;
+      }
+    }
+    for (std::size_t i = 0; i < 7; ++i) {
+      ASSERT_TRUE(BitsEqual(n.q[i], r.q[i])) << in.tick;
+      moved = moved || !BitsEqual(n.q[i], c.q[i]);
+    }
+  }
+  EXPECT_TRUE(std::isfinite(clean.truth_contact_velocity()[0][0])) << "the truth path ran";
+  EXPECT_TRUE(moved) << "the noise never reached the estimate";
+  for (const double bad : {-1e-3, std::nan("")}) {
+    auto bad_setup = setup;
+    bad_setup.joint_noise_sigma = bad;
+    EXPECT_THROW(EstimatorReplay{bad_setup}, std::invalid_argument) << bad;
   }
 }
 
