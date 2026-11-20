@@ -11,7 +11,8 @@ run does. ``--probe`` instead reports what fixes the dev-PC real-time factor
 standing, the plan age p99.
 
 Sources per run: the controller's ``locomotion_diag.csv`` (walking numbers:
-rtc_tools.analysis.walk_metrics), the recorder's ``stance.json`` (a fall
+rtc_tools.analysis.walk_metrics) and its ``locomotion_truth.csv`` (the contact
+checks: without it they have no value and fail), the recorder's ``stance.json`` (a fall
 anywhere) and its stop / hold window in ``run.json`` (slip, tilt, drift,
 time to fall), ``launch.log`` (the CM's refused outputs, the controller's
 cumulative MPC counter line). Performance is reported, not judged (the
@@ -34,6 +35,7 @@ import yaml
 from rtc_tools.analysis import locomotion_diag as ld, stance_metrics as sm, walk_metrics as wm
 
 DIAG = Path("session") / "controllers" / "locomotion_controller" / "locomotion_diag.csv"
+TRUTH = DIAG.with_name("locomotion_truth.csv")
 TIMING = Path("session") / "timing" / "mpc_timing_log.csv"
 
 # ── The limits (fixed before the runs) ─────────────────────────────────────
@@ -151,6 +153,14 @@ def load_diag(run: Path) -> tuple[list[str], dict]:
     return ld.read_table(run / DIAG)
 
 
+def load_truth(run: Path, diag: dict) -> dict | None:
+    """The session's truth file on the diag rows; None when the run has none."""
+    path = run / TRUTH
+    if not path.is_file():
+        return None
+    return ld.align_on_tick(diag["tick"], ld.read_table(path)[1])
+
+
 def height_vs_plan(diag: dict, t0: float, t1: float) -> float | None:
     win = wm.in_window(diag["t_relative_s"], t0, t1) & (diag["ref_source"] == wm.REF_SOURCE_STAND)
     d = np.abs(diag["base_pz"][win] - diag["ref_base_pz"][win])
@@ -207,7 +217,9 @@ def judge_walk(
 ) -> dict:
     note = json.loads((run / "run.json").read_text())
     header, diag = load_diag(run)
-    s = wm.walk_summary(header, diag, gaits, WALK_GAIT, walk_period_s=walk_period_s)
+    s = wm.walk_summary(
+        header, diag, gaits, WALK_GAIT, walk_period_s=walk_period_s, truth=load_truth(run, diag)
+    )
     if "error" in s:
         return {
             "run": run.name,
@@ -219,8 +231,8 @@ def judge_walk(
         json.loads((run / "stance.json").read_text()) if (run / "stance.json").is_file() else {}
     )
     stop = note.get("windows", {}).get("stop", {})
-    # A log without the contact lane has no contacts / events numbers: their
-    # checks then read None and fail.
+    # A run without a truth file (a real robot, a log older than that file) has
+    # no contact numbers: their checks then read None and fail.
     c, g, tr, dr = (s[k] for k in ("counters", "gait", "tracking", "drift"))
     ct, ev = s.get("contacts", {}), s.get("events", {})
     # The stop window as the publisher scheduled it (run_arms marks the same span).

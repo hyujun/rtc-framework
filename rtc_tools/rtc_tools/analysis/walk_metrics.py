@@ -21,9 +21,16 @@ The columns read: ``t_relative_s``, ``tick``, ``mode``, ``fault_latched``,
 the ``margin_*`` columns with ``margins_stale``, ``base_p*``, ``base_q*``,
 ``base_v*``, ``base_w*``, ``com_x``, ``com_y``, ``ref_source``,
 ``plausibility_rejects``, ``contact_mask``, ``policy_age_us``, ``wbc_tick_us``,
-``cmd_vx``, ``cmd_vy``, ``cmd_wz``, ``cmd_valid``, ``gait_latest``,
-``ref_base_v{x,y,z}``, ``meas_contact_valid`` and ``meas_fz_<contact>`` (contact
-order = the bits of ``contact_mask``, read from the header).
+``cmd_vx``, ``cmd_vy``, ``cmd_wz``, ``cmd_valid``, ``gait_latest`` and
+``ref_base_v{x,y,z}``; the contact names are the header's ``lambda_<contact>_fz``
+block (contact order = the bits of ``contact_mask``).
+
+The contact checks compare the planned contacts with the force the ground
+really applied, which only a simulator knows: they read the session's truth
+file (``locomotion_truth.csv``: ``truth_mask`` and ``truth_grf_<contact>_fz``),
+joined to the diag rows on ``tick``. A session without one — a real robot, or a
+log older than that file — gets no contact numbers, and says so, rather than
+numbers from somewhere else.
 
 Pure Python plus numpy: no ROS, no robot constant (the weight is the run's own
 standing load, the gait order is the caller's).
@@ -43,6 +50,7 @@ from rtc_tools.analysis.locomotion_diag import (
     MARGINS,
     MODE_NAMES,
     REFERENCE_SOURCE_NAMES,
+    block_names,
 )
 
 Table = dict[str, np.ndarray]
@@ -258,8 +266,8 @@ def in_window(t: np.ndarray, t0: float, t1: float) -> np.ndarray:
 
 
 def contact_names(header: Sequence[str]) -> list[str]:
-    """The ``meas_fz_<c>`` block's names, in column order (= contact order)."""
-    return [h[len("meas_fz_") :] for h in header if h.startswith("meas_fz_")]
+    """The ``lambda_<c>_fz`` block's names, in column order (= contact order)."""
+    return block_names(header, "lambda_", "_fz")
 
 
 def mask_bits(mask: np.ndarray, n: int) -> np.ndarray:
@@ -415,6 +423,7 @@ def walk_summary(
     script: Sequence[Segment] = WALK_SCRIPT,
     *,
     walk_period_s: float,
+    truth: Table | None = None,
     settle_hold_s: float = 1.0,
     settle_speed: float = 0.05,
     settle_yaw_rate: float = 0.05,
@@ -429,7 +438,14 @@ def walk_summary(
     `walk_period_s` is the walk gait's cycle [s] (its last switching time): the
     tracking and heading windows are whole cycles of it (:func:`window_lengths`),
     so the step's own velocity and yaw-rate swing averages out of them.
+    `truth` is the session's truth file on the diag rows
+    (``locomotion_diag.align_on_tick``); without it ``contacts`` holds an
+    ``error`` instead of numbers.
     """
+    names = contact_names(header)
+    nc = len(names)
+    if nc == 0:
+        return {"error": "the log names no contact (no lambda_<contact>_fz column)"}
     vx_window_s, yaw_window_s, heading_ref_s = window_lengths(walk_period_s)
     misfit = windows_fit(walk_period_s, script)
     if misfit is not None:
@@ -581,21 +597,23 @@ def walk_summary(
         "filter_delay_s": seg.e - (seg.a + out["script_length_nominal_s"]),
     }
 
-    # Contacts: the planned mask's edges against the measured normal force.
-    names = contact_names(header)
-    nc = len(names)
+    # Contacts: the planned mask's edges against the true normal force.
     out["contacts"] = {"names": names}
-    if nc:
-        bits = mask_bits(diag["contact_mask"], nc)
-        normal_n = np.stack([-diag[f"meas_fz_{c}"] for c in names], axis=1)
-        valid = mask_bits(diag["meas_contact_valid"], nc)
+    bits = mask_bits(diag["contact_mask"], nc)
+    planned_edges = [edges(bits[run, c], t[run]) for c in range(nc)]
+    out["steps_completed"] = steps(bits, t, b0, d1)
+    if truth is None:
+        out["contacts"]["error"] = "no truth file: the contact checks need the true contact force"
+    else:
+        # Ground → foot, on the contact frame's normal.
+        normal_n = np.stack([truth[f"truth_grf_{c}_fz"] for c in names], axis=1)
+        valid = mask_bits(truth["truth_mask"], nc + 1)[:, 1:]  # bit 0 is the base lane
         normal_n = np.where(valid, normal_n, math.nan)
         stand_rows = (diag["ref_source"] == REF_SOURCE_STAND) & (t < seg.a) & valid.all(axis=1)
         weight = _mean(normal_n[stand_rows].sum(axis=1)) if stand_rows.any() else math.nan
         dts: list[float] = []
         missed = extra = 0
         slot_fail = single = 0
-        planned_edges = [edges(bits[run, c], t[run]) for c in range(nc)]
         for c in range(nc):
             planned = planned_edges[c]
             meas_state = measured_contact(
@@ -640,27 +658,26 @@ def walk_summary(
                 else 0.0,
             }
         )
-        out["steps_completed"] = steps(bits, t, b0, d1)
 
-        # Event continuity: the rows within ±event_window_s of a planned edge.
-        near = np.zeros(len(t), dtype=bool)
-        for planned in planned_edges:
-            for te, _ in planned:
-                near |= np.abs(t - te) <= event_window_s + 1e-12
-        stale = _bad(diag["margins_stale"] < 0.5)
-        solved = ~np.isnan(diag["eom_residual_inf"])
-        judged = near & ~stale & solved
-        worst_margin = {m: _min(diag[m][judged]) for m in MARGINS}
-        out["events"] = {
-            "rows": int(near.sum()),
-            "excluded_rows": int((near & ~judged).sum()),
-            "eom_residual_inf_max": _max(diag["eom_residual_inf"][judged]),
-            "margin_min": worst_margin,
-            "tau_invalid_rows": int((near & _bad(diag["tau_valid"] > 0.5)).sum()),
-        }
+    # Event continuity: the rows within ±event_window_s of a planned edge.
+    near = np.zeros(len(t), dtype=bool)
+    for planned in planned_edges:
+        for te, _ in planned:
+            near |= np.abs(t - te) <= event_window_s + 1e-12
+    stale = _bad(diag["margins_stale"] < 0.5)
+    solved = ~np.isnan(diag["eom_residual_inf"])
+    judged = near & ~stale & solved
+    worst_margin = {m: _min(diag[m][judged]) for m in MARGINS}
+    out["events"] = {
+        "rows": int(near.sum()),
+        "excluded_rows": int((near & ~judged).sum()),
+        "eom_residual_inf_max": _max(diag["eom_residual_inf"][judged]),
+        "margin_min": worst_margin,
+        "tau_invalid_rows": int((near & _bad(diag["tau_valid"] > 0.5)).sum()),
+    }
 
     # Reported, not judged.
-    first_swing = np.flatnonzero(run & (bits.sum(axis=1) < nc)) if nc else np.zeros(0, int)
+    first_swing = np.flatnonzero(run & (bits.sum(axis=1) < nc))
     com_adv = None
     if first_swing.size:
         ia, isw = int(np.searchsorted(t, seg.a)), int(first_swing[0])
