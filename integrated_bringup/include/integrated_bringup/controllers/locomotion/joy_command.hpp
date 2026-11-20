@@ -5,9 +5,10 @@
 //
 // The standard gamepad layout below is a COPY of rtc_teleop_input's
 // config/standard_gamepad.yaml (the SDL GameController order that joy's
-// game_controller_node publishes). The copy keeps the controller free of a
-// runtime dependency on that package's install; test_locomotion_joy_command
-// compares it with the installed file, name by name.
+// game_controller_node publishes). The controller does not read that file at
+// configure (no lookup into another package's install on the RT host's
+// configure path); test_locomotion_joy_command compares the copy with the
+// installed file, name by name.
 //
 //   velocity_command:
 //     type: joy                 # twist (the default when absent) | joy
@@ -19,6 +20,8 @@
 //       height_rate: <axis name>  # optional: ḣ = clamp(axis, ±1) × command.hdot_max
 //       deadman: <button name>  # the command is zero unless this button reads exactly 1
 //
+// A trigger (triggerleft / triggerright) rests at 0 and reads down to −1, so
+// mapped to a command it moves one way only — a stick axis is the usual choice.
 // Every axis named once; names from the layout (an axis where a button goes, or
 // the reverse, is refused). A message is turned into all-zero axes when the
 // deadman is not exactly 1 (released), and also — counted as a reject — when a
@@ -88,8 +91,10 @@ struct JoyCommandScale {
 /// One Joy message as a command.
 struct JoyCommandResult {
   rtc::mpc::RawVelocityCommand twist{};  ///< all zero unless pressed and readable
-  bool deadman{false};                   ///< the deadman button read exactly 1
-  bool rejected{false};                  ///< too short, or a mapped axis non-finite
+  /// 1 the deadman read exactly 1, 0 it read anything else, −1 the message
+  /// has no such button (rejected before it was read).
+  std::int8_t deadman{-1};
+  bool rejected{false};  ///< too short, or a mapped axis non-finite
 };
 
 /// The command one message asks for (rules in the file comment).

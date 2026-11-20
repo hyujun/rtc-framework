@@ -49,7 +49,7 @@ JoyCommandResult JoyToCommand(const JoyCommandMapping& map, const JoyCommandScal
     r.rejected = true;
     return r;
   }
-  r.deadman = buttons[d] == 1;
+  r.deadman = buttons[d] == 1 ? 1 : 0;
   double x = 0.0;
   double y = 0.0;
   double wz = 0.0;
@@ -59,7 +59,7 @@ JoyCommandResult JoyToCommand(const JoyCommandMapping& map, const JoyCommandScal
     r.rejected = true;
     return r;
   }
-  if (!r.deadman) {
+  if (r.deadman != 1) {
     return r;
   }
   r.twist.linear_x = x * scale.linear_x;

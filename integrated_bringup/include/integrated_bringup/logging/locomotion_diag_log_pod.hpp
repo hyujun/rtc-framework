@@ -195,7 +195,7 @@ struct LocomotionDiagLogPod {
   // LocomotionCommandSource) — tells "the operator let go" (deadman 0, fresh)
   // from "the input went silent" (stale) in a joy run.
   std::uint8_t cmd_input{0};    ///< 0 twist, 1 joy
-  std::int8_t cmd_deadman{-1};  ///< joy: 1 held / 0 released; twist: −1
+  std::int8_t cmd_deadman{-1};  ///< joy: 1 held / 0 released / −1 unreadable; twist: −1
 };
 
 static_assert(locomotion::kMaxEstimatorSlots == LocomotionDiagLogPod::kMaxContacts,

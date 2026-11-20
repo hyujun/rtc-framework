@@ -80,9 +80,6 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
     // The velocity command: a subscription only with a consumer (the plan).
     velocity_sub_.reset();
     joy_sub_.reset();
-    raw_command_.Store(RestCommandSample());
-    command_out_.Store(
-        LocomotionCommandOut{rtc::mpc::FilteredCommand{}, RestCommandSample().source});
     const std::string& topic = cfg_.velocity_command_topic;
     if (topic.empty()) {
       // no command path
@@ -111,6 +108,11 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
       RCLCPP_INFO(logger_, "[locomotion] velocity command: %s (Twist, %.0f Hz filter)",
                   topic.c_str(), command_filter_.config().sample_rate_hz);
     }
+    // After the subscription: the rest sample is tagged joy only with a Joy
+    // subscription (status and diag log agree on "no input" otherwise).
+    raw_command_.Store(RestCommandSample());
+    command_out_.Store(
+        LocomotionCommandOut{rtc::mpc::FilteredCommand{}, RestCommandSample().source});
 
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
@@ -217,6 +219,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_deactivate(
 rtc::RTControllerInterface::CallbackReturn LocomotionController::on_cleanup(
     const rclcpp_lifecycle::State& prev) noexcept {
   velocity_sub_.reset();
+  joy_sub_.reset();
   StopMpcThread();
   ResetOwnedTopics(owned_topics_);
   log_drain_timer_.reset();

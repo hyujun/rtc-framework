@@ -42,7 +42,7 @@ void LocomotionController::OnJoyCommand(const sensor_msgs::msg::Joy& msg) noexce
   RawVelocityCommandSample sample{};
   sample.twist = r.twist;
   sample.source.input = 1;
-  sample.source.deadman = r.deadman ? 1 : 0;
+  sample.source.deadman = r.deadman;
   sample.source.joy_rejects = prev.source.joy_rejects + (r.rejected ? 1U : 0U);
   sample.recv_steady_ns = SteadyNowNs();
   sample.sequence = prev.sequence + 1;
@@ -51,7 +51,7 @@ void LocomotionController::OnJoyCommand(const sensor_msgs::msg::Joy& msg) noexce
 
 RawVelocityCommandSample LocomotionController::RestCommandSample() const noexcept {
   RawVelocityCommandSample rest{};
-  if (cfg_.velocity_command_joy) {
+  if (joy_sub_ != nullptr) {
     rest.source.input = 1;
     rest.source.deadman = 0;
   }

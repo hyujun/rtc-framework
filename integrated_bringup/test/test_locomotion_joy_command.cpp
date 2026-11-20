@@ -92,7 +92,7 @@ TEST(JoyToCommand, MapsTheAxesBitForBit) {
   for (std::size_t i = 0; i < cases.size(); ++i) {
     SCOPED_TRACE(i);
     const auto r = Convert(cases[i].axes, Buttons(1));
-    EXPECT_TRUE(r.deadman);
+    EXPECT_EQ(r.deadman, 1);
     EXPECT_FALSE(r.rejected) << "an unmapped non-finite axis is not read";
     ExpectCommand(r, cases[i].vx, cases[i].vy, cases[i].wz);
   }
@@ -111,7 +111,7 @@ TEST(JoyToCommand, TheDeadmanMustReadExactlyOne) {
   for (const int v : {0, 2, -1}) {
     SCOPED_TRACE(v);
     const auto r = Convert({0.5F, 1.0F, 1.0F, 0, 0, 0}, Buttons(v));
-    EXPECT_FALSE(r.deadman);
+    EXPECT_EQ(r.deadman, 0);
     EXPECT_FALSE(r.rejected) << "released is a readable stop";
     ExpectAllZero(r);
   }
@@ -124,6 +124,7 @@ TEST(JoyToCommand, AnUnreadableMessageIsZeroAndRejected) {
     ExpectAllZero(r);
   };
   expect_rejected(Convert(axes, Buttons(1, 9)), "buttons shorter than the deadman index");
+  EXPECT_EQ(Convert(axes, Buttons(1, 9)).deadman, -1) << "not read: neither held nor released";
   expect_rejected(Convert(axes, {}), "no buttons");
   expect_rejected(Convert({0.5F, 1.0F}, Buttons(1)), "axes shorter than a mapped index");
   expect_rejected(Convert({}, Buttons(1)), "no axes");

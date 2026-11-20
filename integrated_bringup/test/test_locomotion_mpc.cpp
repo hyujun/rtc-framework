@@ -1341,7 +1341,7 @@ TEST_F(LocomotionJoyCommandTest, TheJoyCallbackStoresEveryMessageWithItsReceiveT
 
   const std::vector<Case> cases{
       {Joy(0.25F, 1), 0.5, 1, 0}, {Joy(0.25F, 0), 0.0, 0, 0}, {Joy(0.25F, 2), 0.0, 0, 0},
-      {nan_axis, 0.0, 1, 1},      {too_short, 0.0, 0, 1},
+      {nan_axis, 0.0, 1, 1},      {too_short, 0.0, -1, 1},
   };
   for (const std::int32_t stamp_sec : {0, 3600, -3600}) {
     for (std::size_t i = 0; i < cases.size(); ++i) {
@@ -1376,6 +1376,17 @@ TEST_F(LocomotionJoyCommandTest, OnlyTheConfiguredSubscriptionExists) {
   EXPECT_EQ(ctrl_->LastCommandSource().deadman, 0);
 }
 
+TEST_F(LocomotionJoyCommandTest, ACleanupReleasesTheJoySubscription) {
+  BringUpSpinning(JoyMpcConfig());
+  ASSERT_TRUE(
+      SpinUntil([this] { return helper_->count_subscribers(kJoyTopic) == 1U; }, 2000ms, nullptr));
+  Deactivate();
+  ASSERT_EQ(ctrl_->on_cleanup(rclcpp_lifecycle::State{}), CallbackReturn::SUCCESS);
+  EXPECT_FALSE(ctrl_->VelocityCommandSubscribed());
+  EXPECT_TRUE(
+      SpinUntil([this] { return helper_->count_subscribers(kJoyTopic) == 0U; }, 2000ms, nullptr));
+}
+
 TEST_F(LocomotionJoyCommandTest, TheTwistModeHasNoJoySubscription) {
   BringUpSpinning();
   SpinFor(200ms);
@@ -1394,6 +1405,8 @@ TEST_F(LocomotionJoyCommandTest, WithoutAnMpcNothingIsSubscribed) {
   EXPECT_FALSE(ctrl_->VelocityCommandSubscribed());
   EXPECT_EQ(helper_->count_subscribers(kJoyTopic), 0U);
   EXPECT_EQ(helper_->count_subscribers(kTwistTopic), 0U);
+  EXPECT_EQ(ctrl_->LastCommandSource().input, 0U) << "no Joy subscription: not tagged joy";
+  EXPECT_EQ(ctrl_->LastCommandSource().deadman, -1);
 }
 
 TEST_F(LocomotionJoyCommandTest, AJoyReachesTheFilterAndThePlanner) {
