@@ -158,7 +158,8 @@ udp_hand_driver <-- rtc_communication, rtc_inference, rtc_base, rtc_msgs
 robot_descriptions (data-only, no code deps)
 integrated_bringup <-- rtc_controller_manager, rtc_controller_interface, rtc_controllers,
                  rtc_tsid, rtc_mpc, rtc_base, rtc_msgs, rtc_math, rtc_urdf_bridge
-                 + <exec_depend> udp_hand_driver, robot_descriptions, rtc_tools, repo_scripts
+                 + <exec_depend> udp_hand_driver, robot_descriptions, rtc_tools, repo_scripts,
+                   rtc_teleop_input
 rtc_tools (analysis tools, top of stack) <-- <exec_depend> rtc_msgs, pinocchio, xacro,
                  rtc_controllers (exec 전용 — rtc_controllers 는 rtc_tools 를 의존하지 않는다)
 rtc_teleop_input (operator input tool, top of stack) <-- <exec_depend> rtc_msgs, joy
