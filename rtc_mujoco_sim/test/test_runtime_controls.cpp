@@ -101,6 +101,39 @@ TEST_F(RuntimeControls, ExternalForceOnInvalidBodyIsRejected) {
   sim_->ClearExternalForce();  // no crash
 }
 
+// The staged wrench reads back as it was requested (world axes, the point
+// body-local), is zero when nothing is staged, and a clear returns it to zero
+// — what the node's external wrench report publishes.
+TEST_F(RuntimeControls, TheStagedExternalWrenchReadsBack) {
+  std::array<double, 6> wrench{};
+  std::array<double, 3> point{};
+  wrench.fill(9.0);
+  ASSERT_TRUE(sim_->GetExternalWrench(1, wrench, point));
+  for (double x : wrench) {
+    EXPECT_EQ(x, 0.0);
+  }
+  const std::array<double, 6> staged = {40.0, -12.5, 3.25, 0.5, -0.25, 1.75};
+  ASSERT_TRUE(sim_->SetExternalWrenchAtPoint(1, {0.1, -0.2, 0.3}, staged));
+  ASSERT_TRUE(sim_->GetExternalWrench(1, wrench, point));
+  EXPECT_EQ(wrench, staged);
+  EXPECT_EQ(point, (std::array<double, 3>{0.1, -0.2, 0.3}));
+  // Stepping applies it (re-referenced to the CoM) and leaves the request as it was.
+  sim_->StepForTest();
+  ASSERT_TRUE(sim_->GetExternalWrench(1, wrench, point));
+  EXPECT_EQ(wrench, staged);
+  sim_->ClearExternalForce();
+  ASSERT_TRUE(sim_->GetExternalWrench(1, wrench, point));
+  for (double x : wrench) {
+    EXPECT_EQ(x, 0.0);
+  }
+  // The bodies a request is refused on have nothing to read.
+  wrench.fill(9.0);
+  EXPECT_FALSE(sim_->GetExternalWrench(0, wrench, point));
+  EXPECT_FALSE(sim_->GetExternalWrench(-1, wrench, point));
+  EXPECT_FALSE(sim_->GetExternalWrench(9999, wrench, point));
+  EXPECT_EQ(wrench[0], 9.0) << "outputs untouched on refusal";
+}
+
 TEST_F(RuntimeControls, CommandModeFlagRoundtrip) {
   sim_->SetControlMode(0, true);
   EXPECT_TRUE(sim_->IsInTorqueMode(0));

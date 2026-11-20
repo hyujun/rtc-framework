@@ -2427,6 +2427,23 @@ void MuJoCoSimulator::ClearExternalForce() noexcept {
   ext_xfrc_dirty_ = false;
 }
 
+bool MuJoCoSimulator::GetExternalWrench(int body_id, std::array<double, 6>& wrench_world,
+                                        std::array<double, 3>& point_body) const noexcept {
+  if (!model_ || body_id <= 0 || body_id >= model_->nbody) {
+    return false;
+  }
+  std::lock_guard lock(pert_mutex_);
+  const std::size_t w_off = static_cast<std::size_t>(body_id) * 6;
+  const std::size_t p_off = static_cast<std::size_t>(body_id) * 3;
+  for (std::size_t i = 0; i < 6; ++i) {
+    wrench_world[i] = ext_xfrc_[w_off + i];
+  }
+  for (std::size_t i = 0; i < 3; ++i) {
+    point_body[i] = ext_point_[p_off + i];
+  }
+  return true;
+}
+
 void MuJoCoSimulator::UpdatePerturb(const mjvPerturb& pert) noexcept {
   std::lock_guard lock(pert_mutex_);
   shared_pert_ = pert;
