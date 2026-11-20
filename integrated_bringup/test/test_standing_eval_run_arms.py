@@ -705,3 +705,75 @@ def test_the_checkout_state_is_a_commit_and_a_flag():
     state = run_arms.git_state()
     assert len(state["commit"]) == 40 and isinstance(state["dirty"], bool)
     assert run_arms.git_state(Path("/"))["commit"] is None
+
+
+# ── scenarios ─────────────────────────────────────────────────────────────
+
+
+def test_an_arm_named_once_keeps_its_overlay_as_given(tmp_path):
+    out = run_arms.arm_overlays(["walk"], ["walk=mpc_riccati"], None, tmp_path, "g1_loco")
+    assert out == {"walk": "mpc_riccati"}
+    assert not list(tmp_path.iterdir())  # nothing merged, nothing written
+    with pytest.raises(ValueError, match="ARM=NAME"):
+        run_arms.arm_overlays(["walk"], ["walk"], None, tmp_path, "g1_loco")
+
+
+def test_several_overlays_of_one_arm_are_merged(tmp_path):
+    cand = tmp_path / "cand.yaml"
+    cand.write_text(
+        "integrated_rt_controller:\n  ros__parameters:\n    locomotion_controller:\n"
+        "      mpc:\n        max_policy_age_s: 0.35\n"
+    )
+    out = run_arms.arm_overlays(
+        ["walk"], [f"walk={cand}", "walk=mpc_riccati"], None, tmp_path / "o", "g1_loco"
+    )
+    merged = yaml.safe_load(Path(out["walk"]).read_text())
+    mpc = merged["integrated_rt_controller"]["ros__parameters"]["locomotion_controller"]["mpc"]
+    assert mpc == {"max_policy_age_s": 0.35, "riccati": {"enabled": True}}
+    cand.write_text(
+        "integrated_rt_controller:\n  ros__parameters:\n    locomotion_controller:\n"
+        "      mpc:\n        riccati:\n          enabled: false\n"
+    )
+    with pytest.raises(ValueError, match="riccati"):
+        run_arms.arm_overlays(
+            ["walk"], [f"walk={cand}", "walk=mpc_riccati"], None, tmp_path / "o", "g1_loco"
+        )
+
+
+def test_friction_is_a_piece_of_every_arms_overlay(tmp_path):
+    out = run_arms.arm_overlays(["mpc", "walk"], ["walk=mpc_riccati"], 0.4, tmp_path, "g1_loco")
+    alone = yaml.safe_load(Path(out["mpc"]).read_text())  # the friction piece by itself
+    override = alone["mujoco_simulator"]["ros__parameters"]["solver"]["contact_override"]
+    assert override == {"enable": True, "o_friction": [0.4, 0.4, 0.005, 0.0001, 0.0001]}
+    both = yaml.safe_load(Path(out["walk"]).read_text())
+    assert both["mujoco_simulator"]["ros__parameters"]["solver"]["contact_override"] == override
+    assert "integrated_rt_controller" in both
+    with pytest.raises(ValueError, match="friction"):
+        run_arms.arm_overlays(["walk"], [], 0.0, tmp_path, "g1_loco")
+
+
+def test_the_push_reaches_the_command_script_as_given():
+    import argparse
+
+    none = argparse.Namespace(push=None, push_body=None)
+    assert run_arms.push_arguments(none) == []
+    args = argparse.Namespace(push=[6.0, 0.2, 40.0, 0.0, 0.0], push_body="pelvis")
+    assert run_arms.push_arguments(args) == [
+        "--push", "6.0", "0.2", "40.0", "0.0", "0.0", "--push-body", "pelvis",
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--push", "6", "0.2", "40", "0", "0"],  # no body
+        ["--push", "15.9", "0.2", "40", "0", "0", "--push-body", "pelvis"],  # runs into the stop
+        ["--push", "6", "0", "40", "0", "0", "--push-body", "pelvis"],  # no duration
+        ["--friction", "-1"],
+    ],
+)
+def test_a_scenario_that_cannot_run_is_refused_before_the_first_run(tmp_path, extra):
+    base = ["--out", str(tmp_path), "--arms", "walk", "--logging-root", str(tmp_path)]
+    with pytest.raises(SystemExit):
+        run_arms.main(base + extra)
+    assert not (tmp_path / "walk_0").exists()

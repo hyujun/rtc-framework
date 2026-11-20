@@ -432,6 +432,75 @@ def read_events(path: Path) -> list[dict]:
     return out
 
 
+def push_arguments(args: argparse.Namespace) -> list[str]:
+    """The command script's push arguments (``--push``); none without a push."""
+    push = getattr(args, "push", None)  # absent on a caller that never parsed --push
+    if push is None:
+        return []
+    return ["--push", *(str(x) for x in push), "--push-body", args.push_body]
+
+
+def friction_overlay(mu: float, sim_node: str) -> dict:
+    """A params overlay setting the scene's sliding friction to `mu` for every contact.
+
+    The simulator's contact override replaces each contact's parameters with
+    one set; the others are written at the simulator's defaults (MuJoCo's own),
+    so on a scene that does not set them only the sliding friction changes.
+    """
+    return {
+        sim_node: {
+            "ros__parameters": {
+                "solver": {
+                    "contact_override": {
+                        "enable": True,
+                        "o_friction": [float(mu), float(mu), 0.005, 0.0001, 0.0001],
+                    }
+                }
+            }
+        }
+    }
+
+
+def arm_overlays(
+    arms: list[str], given: list[str], friction: float | None, merge_dir: Path, profile: str,
+    sim_node: str = "mujoco_simulator",
+) -> dict[str, str]:  # fmt: skip
+    """{arm: its one overlay} from the ``--overlay ARM=…`` list and ``--friction``.
+
+    An arm named once keeps that value as given. An arm with several pieces
+    (named more than once, or once plus the friction piece) gets them merged
+    into ``<merge_dir>/<arm>.yaml`` — a launch takes one overlay.
+    """
+    pieces: dict[str, list[str]] = {}
+    for item in given:
+        arm, _, value = item.partition("=")
+        if not value:
+            raise ValueError(f"--overlay {item}: expected ARM=NAME-or-PATH")
+        pieces.setdefault(arm, []).append(value)
+    if friction is not None:
+        if not (friction > 0.0):
+            raise ValueError(f"--friction must be > 0, got {friction}")
+        merge_dir.mkdir(parents=True, exist_ok=True)
+        path = merge_dir / "friction.yaml"
+        path.write_text(yaml.safe_dump(friction_overlay(friction, sim_node)))
+        for arm in arms:
+            pieces.setdefault(arm, []).append(str(path))
+    out: dict[str, str] = {}
+    for arm, values in pieces.items():
+        if len(values) == 1:
+            out[arm] = values[0]
+            continue
+        from integrated_bringup.sim_overlay import resolve_sim_overlay
+
+        merged = merge_dir / f"{arm}.yaml"
+        try:
+            merge_overlay_files([Path(resolve_sim_overlay(v, profile)) for v in values], merged)
+        except (WeightOverlayError, RuntimeError) as e:
+            raise ValueError(f"--overlay {arm}: {e}") from e
+        out[arm] = str(merged)
+    return out
+
+
 def _twist_start(args: argparse.Namespace) -> tuple[bool, dict, str]:
     """Start the command script; ok once it reports its start (the subscriber matched)."""
     log_path = args.run_out / "twist.log"
@@ -446,6 +515,7 @@ def _twist_start(args: argparse.Namespace) -> tuple[bool, dict, str]:
                 str(args.rtf or 1.0),
                 "--script",
                 args.script,
+                *push_arguments(args),
             ],
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -772,6 +842,17 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
         "stop_window": args.stop_window,
         "source": args.source,
         "script": args.script,
+        # The disturbances the run was given (None = none), for the judge.
+        "scenario": {
+            "push": None
+            if args.push is None
+            else dict(
+                zip(("t_s", "duration_s", "fx", "fy", "fz"), args.push, strict=True),
+                body=args.push_body,
+                point=[0.0, 0.0, 0.0],
+            ),
+            "friction": args.friction,
+        },
     }
     args.run_out = out
     args.twist_proc = None
@@ -924,7 +1005,23 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         metavar="ARM=OVERLAY",
-        help="the arm's sim_overlay (a shipped name or a path), replacing its own",
+        help="the arm's sim_overlay (a shipped name or a path), replacing its own; "
+        "repeat it for one arm to merge several into one file",
+    )
+    p.add_argument(
+        "--push",
+        type=float,
+        nargs=5,
+        metavar=("T", "DUR", "FX", "FY", "FZ"),
+        help="walk arms: one push at T sim seconds into the command script, for DUR sim "
+        "seconds, a world-axis force [N] at the origin of --push-body",
+    )
+    p.add_argument("--push-body", help="the simulated body --push acts on (as the scene names it)")
+    p.add_argument(
+        "--friction",
+        type=float,
+        help="the scene's sliding friction for every contact (the simulator's contact "
+        "override, merged into each arm's overlay)",
     )
     p.add_argument(
         "--launch-arg",
@@ -1012,8 +1109,16 @@ def main(argv: list[str] | None = None) -> int:
         p.error(f"--estop-at must be in (0, {walking_s}) s — inside the walking part")
     if args.mpc_threads is not None:
         check_mpc_threads(p, args.mpc_threads, args.launch)
-    args.overlay = dict(o.split("=", 1) for o in args.overlay)
+    if args.push is not None:
+        t_push, dur = args.push[0], args.push[1]
+        if not args.push_body:
+            p.error("--push needs --push-body")
+        if not (t_push >= 0.0 and dur > 0.0 and t_push + dur <= walking_s):
+            p.error(f"--push: T and T + DUR must be inside the walking part [0, {walking_s}] s")
     try:
+        args.overlay = arm_overlays(
+            args.arms, args.overlay, args.friction, args.out / "overlays", args.profile
+        )
         args.overlay = source_overlays(
             args.arms,
             args.mpc_layout,
