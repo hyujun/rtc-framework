@@ -13,6 +13,8 @@
 #include "locomotion_mpc_stub.hpp"
 #include "rtc_controllers/testing/alloc_gate.hpp"
 
+#include <sensor_msgs/msg/joy.hpp>
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -233,6 +235,47 @@ TEST_F(LocomotionAlloc, TheTruthLogPathAllocatesNothing) {
     ASSERT_NE(ctrl_->LastTruthLog().truth_mask, 0U);
   }
   EXPECT_EQ(worst, 0U);
+}
+
+// velocity_command.type joy: the tick under the Joy configuration, and the Joy
+// subscription callback itself (the mapping is a fixed table from configure;
+// the message is built before the gate, as the executor hands it over).
+TEST_F(LocomotionAlloc, TheJoyCommandPathAllocatesNothing) {
+  YAML::Node cfg = MpcConfig();
+  SetJoyCommand(cfg);
+  Configure(cfg, rclcpp::NodeOptions{}, "test_locomotion_joy_alloc");
+  ASSERT_TRUE(ctrl_->VelocityCommandSubscribed());
+  StandingStub* const s = SpawnStandingStub(*ctrl_);
+  ASSERT_NE(s, nullptr);
+  Activate();
+  MakeStanding();
+  ASSERT_TRUE(TickUntil(
+      [this] { return ctrl_->Source() == LocomotionController::ReferenceSource::kStand; }));
+  sensor_msgs::msg::Joy pressed;
+  pressed.axes.assign(6, 0.0F);
+  pressed.buttons.assign(21, 0);
+  pressed.axes[1] = 0.25F;
+  pressed.buttons[9] = 1;
+  sensor_msgs::msg::Joy unreadable = pressed;
+  unreadable.axes[1] = std::nanf("");
+  sensor_msgs::msg::Joy short_one;
+  short_one.axes.assign(2, 0.0F);
+  std::size_t worst_callback = 0;
+  std::size_t worst_tick = 0;
+  for (int k = 0; k < 30; ++k) {
+    const auto& msg = k % 3 == 0 ? pressed : (k % 3 == 1 ? unreadable : short_one);
+    {
+      rtc::testing::ScopedAllocGate gate;
+      integrated_bringup::LocomotionControllerTestAccess::OnJoy(*ctrl_, msg);
+      worst_callback = std::max(worst_callback, gate.count());
+    }
+    worst_tick = std::max(worst_tick, GatedTick(false));
+  }
+  EXPECT_GT(
+      integrated_bringup::LocomotionControllerTestAccess::RawCommand(*ctrl_).source.joy_rejects,
+      0U);
+  EXPECT_EQ(worst_callback, 0U);
+  EXPECT_EQ(worst_tick, 0U);
 }
 
 TEST(LocomotionAllocGate, PositiveControlTheGateIsArmed) {

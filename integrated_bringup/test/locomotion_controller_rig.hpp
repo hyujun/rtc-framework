@@ -102,6 +102,17 @@ inline std::vector<double> StandPose() {
 }
 
 // `base` spoiled by `spoil` is refused by the config parser (`what` names the case).
+// `velocity_command` as the shipped g1_loco joy overlay sets it (type joy on
+// g1/joy, left stick v_x / v_y, right stick X yaw, LB deadman).
+inline void SetJoyCommand(YAML::Node& cfg) {
+  cfg["velocity_command"]["topic"] = "g1/joy";
+  cfg["velocity_command"]["type"] = "joy";
+  cfg["velocity_command"]["joy"]["linear_x"] = "lefty";
+  cfg["velocity_command"]["joy"]["linear_y"] = "leftx";
+  cfg["velocity_command"]["joy"]["angular_z"] = "rightx";
+  cfg["velocity_command"]["joy"]["deadman"] = "leftshoulder";
+}
+
 inline void ExpectRefused(const YAML::Node& base, const std::function<void(YAML::Node&)>& spoil,
                           const char* what) {
   YAML::Node cfg = YAML::Clone(base);

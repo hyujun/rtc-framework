@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <span>
 
 namespace integrated_bringup {
 
@@ -28,14 +29,44 @@ void LocomotionController::OnVelocityCommand(const geometry_msgs::msg::Twist& ms
   raw_command_.Store(sample);
 }
 
+// The Joy subscription callback (`velocity_command.type: joy`, instead of the
+// Twist one): the message as a command (joy_command.hpp — zero unless the
+// deadman reads 1 and the mapped axes are readable), stored the same way.
+// Every message refreshes the receive time, a zero one too: a released
+// deadman is a fresh "stop", not silence.
+void LocomotionController::OnJoyCommand(const sensor_msgs::msg::Joy& msg) noexcept {
+  const RawVelocityCommandSample prev = raw_command_.Load();  // this callback is the writer
+  const locomotion::JoyCommandResult r = locomotion::JoyToCommand(
+      cfg_.velocity_command_joy_map, joy_scale_, std::span<const float>(msg.axes),
+      std::span<const std::int32_t>(msg.buttons));
+  RawVelocityCommandSample sample{};
+  sample.twist = r.twist;
+  sample.source.input = 1;
+  sample.source.deadman = r.deadman;
+  sample.source.joy_rejects = prev.source.joy_rejects + (r.rejected ? 1U : 0U);
+  sample.recv_steady_ns = SteadyNowNs();
+  sample.sequence = prev.sequence + 1;
+  raw_command_.Store(sample);
+}
+
+RawVelocityCommandSample LocomotionController::RestCommandSample() const noexcept {
+  RawVelocityCommandSample rest{};
+  if (joy_sub_ != nullptr) {
+    rest.source.input = 1;
+    rest.source.deadman = 0;
+  }
+  return rest;
+}
+
 // The one writer of the phase manager's command slot (and of the publish
 // thread's copy, and of the diagnostic log's): the timer, and
 // StartCommandTimer on the same executor thread before the timer exists.
-void LocomotionController::PushCommand(const mpc::FilteredCommand& cmd) noexcept {
+void LocomotionController::PushCommand(const mpc::FilteredCommand& cmd,
+                                       const LocomotionCommandSource& source) noexcept {
   if (phase_ != nullptr) {
     phase_->SetCommand(cmd);
   }
-  command_out_.Store(cmd);
+  command_out_.Store(LocomotionCommandOut{cmd, source});
   LocomotionCommandLogSample& log = command_log_.StartWrite();
   log.v_x = cmd.v_x;
   log.v_y = cmd.v_y;
@@ -43,6 +74,8 @@ void LocomotionController::PushCommand(const mpc::FilteredCommand& cmd) noexcept
   log.base_height = cmd.base_height;
   log.fresh = cmd.valid && cmd.fresh;
   log.gait = phase_ != nullptr ? static_cast<std::int32_t>(phase_->CurrentPhaseId()) : -1;
+  log.input = source.input;
+  log.deadman = source.deadman;
   command_log_.FinishWrite();
 }
 
@@ -63,11 +96,11 @@ void LocomotionController::StepCommand() noexcept {
                          "planner keeps the previous command");
     return;
   }
-  PushCommand(out);
+  PushCommand(out, raw.source);
 }
 
 void LocomotionController::StartCommandTimer() noexcept {
-  if (command_timer_ || !node_ || !velocity_sub_) {
+  if (command_timer_ || !node_ || !VelocityCommandSubscribed()) {
     return;
   }
   // A fresh start with the robot: the height back to the stance height, no
@@ -78,8 +111,9 @@ void LocomotionController::StartCommandTimer() noexcept {
   static_cast<void>(command_filter_.Reset(cfg.base_height));
   // A message from the last session is not a command for this one (the
   // callback runs on this thread too, so this is the slot's one writer now).
-  raw_command_.Store(RawVelocityCommandSample{});
-  PushCommand(command_filter_.output());
+  const RawVelocityCommandSample rest = RestCommandSample();
+  raw_command_.Store(rest);
+  PushCommand(command_filter_.output(), rest.source);
   const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(1.0 / cfg.sample_rate_hz));
   command_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
@@ -107,7 +141,8 @@ void LocomotionController::StoreMpcCounters() noexcept {
 
 void LocomotionController::PublishNonRtSnapshot(const rtc::PublishSnapshot& snap) noexcept {
   PublishOwnedTopicsFromSnapshot(snap, owned_topics_);
-  PublishLocomotionStatus(owned_topics_, status_lock_.Load(), mpc_enabled_, command_out_.Load(),
+  const LocomotionCommandOut out = command_out_.Load();
+  PublishLocomotionStatus(owned_topics_, status_lock_.Load(), mpc_enabled_, out.cmd, out.source,
                           mpc_counters_.Load());
 }
 

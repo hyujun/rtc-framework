@@ -1,0 +1,28 @@
+# sim overlay — locomotion_controller's velocity command from a gamepad (sensor_msgs/Joy)
+#
+#   ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true command_input:=joy
+#   ros2 launch rtc_teleop_input teleop_input.launch.py joy_topic:=/locomotion_controller/g1/joy \
+#       controller_name:=locomotion_controller   # input:=pad for a real pad
+#
+# command_input:=joy applies this file right after the enable_mpc mapping and
+# before any sim_overlay:=, so a user overlay still wins. It replaces the
+# Twist path (runtime.yaml velocity_command) with a Joy in the standard gamepad
+# layout (rtc_teleop_input config/standard_gamepad.yaml): left stick up = +v_x,
+# left = +v_y, right stick left = +yaw rate, each axis × command.v_max; the
+# command is zero unless LB (leftshoulder) is held. The base height is not
+# mapped. Schema: controllers/locomotion/joy_command.hpp.
+#
+# The controller YAML has no `type` / `joy` keys (a `joy:` map under type twist
+# is refused), so at configure the controller manager WARNs, one line per key,
+# that these override paths are not in the YAML — expected for this overlay.
+integrated_rt_controller:
+  ros__parameters:
+    locomotion_controller:
+      velocity_command:
+        type: "joy"
+        topic: "g1/joy"
+        joy:
+          linear_x: "lefty"
+          linear_y: "leftx"
+          angular_z: "rightx"
+          deadman: "leftshoulder"

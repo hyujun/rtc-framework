@@ -23,6 +23,9 @@ Usage:
   # This profile ships none, so pass a path.
   ros2 launch integrated_bringup sim_g1_loco.launch.py sim_overlay:=/path/to/overlay.yaml
 
+  # Velocity command from a gamepad (sensor_msgs/Joy on /locomotion_controller/g1/joy)
+  ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true command_input:=joy
+
   # MPC on a 2-thread solve: the worker profile seats the second thread
   ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true layout_profile:=mpc_par_sim mpc_threads:=2
 
@@ -46,6 +49,9 @@ controller holds the latched pose. A `sim_overlay:=` file applies after it, so
 an overlay can turn the MPC off again under the MPC layout. `layout_profile`
 names the profile instead (a worker profile seats a pooled solve) and
 `mpc_threads` sets the solver's thread count, checked against that profile.
+`command_input` (twist, the default | joy) picks the velocity command's
+message: joy adds the shipped `sim_overlays/joy_command.yaml` after the
+enable_mpc mapping and before `sim_overlay:=`.
 
 The robot model (URDF + MJCF) is `robot_descriptions`' public G1 with the
 synthetic hand of `robots/p1b_surrogate` — no private package is needed.
@@ -71,6 +77,11 @@ from launch_ros.events.lifecycle import ChangeState
 from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
+from integrated_bringup.command_input import (
+    COMMAND_INPUTS,
+    command_input_overlay,
+    controller_param_layers,
+)
 from integrated_bringup.sim_lanes import sim_lane_overrides, sim_lanes_argument_description
 from integrated_bringup.sim_overlay import (
     resolve_sim_overlay,
@@ -182,12 +193,14 @@ def launch_setup(context, *args, **kwargs):
     # runs its MPC (an empty value defers to its YAML). The latter goes before
     # the overlay, which may override it.
     enable_mpc = LaunchConfiguration("enable_mpc").perform(context)
-    ctrl_params = [base_config, ctrl_config, sim_config]
-    mpc_enabled = shield.mpc_enabled_choice(enable_mpc)
-    if mpc_enabled is not None:
-        ctrl_params.append({"locomotion_controller.mpc.enabled": mpc_enabled})
-    if sim_overlay is not None:
-        ctrl_params.append(sim_overlay)
+    ctrl_params = controller_param_layers(
+        base_config,
+        ctrl_config,
+        sim_config,
+        shield.mpc_enabled_choice(enable_mpc),
+        command_input_overlay(LaunchConfiguration("command_input").perform(context), PROFILE),
+        sim_overlay,
+    )
     ctrl_overrides = {}
 
     # Same number the launch pruned with: the RT node prunes this tree again in
@@ -536,6 +549,18 @@ def generate_launch_description():
         ),
     )
 
+    command_input_arg = DeclareLaunchArgument(
+        "command_input",
+        default_value="twist",
+        choices=list(COMMAND_INPUTS),
+        description=(
+            "locomotion_controller's velocity command: twist (geometry_msgs/Twist on "
+            "<controller>/g1/cmd_vel, the default) or joy (sensor_msgs/Joy on "
+            "<controller>/g1/joy, the standard gamepad layout — rtc_teleop_input "
+            "publishes it)."
+        ),
+    )
+
     mpc_threads_arg = DeclareLaunchArgument(
         "mpc_threads",
         default_value="",
@@ -606,6 +631,7 @@ def generate_launch_description():
             use_cpu_affinity_arg,
             initial_controller_arg,
             enable_mpc_arg,
+            command_input_arg,
             layout_profile_arg,
             mpc_threads_arg,
             enable_tracing_arg,

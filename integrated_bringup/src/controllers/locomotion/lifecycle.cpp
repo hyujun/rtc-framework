@@ -79,8 +79,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
 
     // The velocity command: a subscription only with a consumer (the plan).
     velocity_sub_.reset();
-    raw_command_.Store(RawVelocityCommandSample{});
-    command_out_.Store(rtc::mpc::FilteredCommand{});
+    joy_sub_.reset();
     const std::string& topic = cfg_.velocity_command_topic;
     if (topic.empty()) {
       // no command path
@@ -92,12 +91,27 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
     } else {
       // ARCH-6: depth 1 — a latest-wins lane; reliability as the node's default.
       rclcpp::QoS qos(rclcpp::KeepLast(1));
-      velocity_sub_ = node->create_subscription<geometry_msgs::msg::Twist>(
-          topic, qos,
-          [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) { OnVelocityCommand(*msg); });
-      RCLCPP_INFO(logger_, "[locomotion] velocity command: %s (Twist, %.0f Hz filter)",
-                  topic.c_str(), command_filter_.config().sample_rate_hz);
+      if (cfg_.velocity_command_joy) {
+        // Full deflection = the filter's own bounds (u_max = [v_max…, hdot_max]),
+        // fixed here: the callback only multiplies.
+        const auto& u_max = command_filter_.config().u_max;
+        joy_scale_ = {u_max[0], u_max[1], u_max[2], u_max[3]};
+        joy_sub_ = node->create_subscription<sensor_msgs::msg::Joy>(
+            topic, qos, [this](sensor_msgs::msg::Joy::ConstSharedPtr msg) { OnJoyCommand(*msg); });
+      } else {
+        velocity_sub_ = node->create_subscription<geometry_msgs::msg::Twist>(
+            topic, qos,
+            [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) { OnVelocityCommand(*msg); });
+      }
+      RCLCPP_INFO(logger_, "[locomotion] velocity command: %s (%s, %.0f Hz filter)", topic.c_str(),
+                  cfg_.velocity_command_joy ? "Joy" : "Twist",
+                  command_filter_.config().sample_rate_hz);
     }
+    // After the subscription: the rest sample is tagged joy only with a Joy
+    // subscription (status and diag log agree on "no input" otherwise).
+    raw_command_.Store(RestCommandSample());
+    command_out_.Store(
+        LocomotionCommandOut{rtc::mpc::FilteredCommand{}, RestCommandSample().source});
 
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
@@ -204,6 +218,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_deactivate(
 rtc::RTControllerInterface::CallbackReturn LocomotionController::on_cleanup(
     const rclcpp_lifecycle::State& prev) noexcept {
   velocity_sub_.reset();
+  joy_sub_.reset();
   StopMpcThread();
   ResetOwnedTopics(owned_topics_);
   log_drain_timer_.reset();

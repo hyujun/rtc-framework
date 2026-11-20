@@ -41,6 +41,16 @@ struct LocomotionMpcCounters {
 static_assert(std::is_trivially_copyable_v<LocomotionMpcCounters>,
               "LocomotionMpcCounters travels through a SeqLock");
 
+/// Which velocity command input the filter's sample came from.
+struct LocomotionCommandSource {
+  std::uint8_t input{0};         ///< 0 geometry_msgs/Twist, 1 sensor_msgs/Joy
+  std::int8_t deadman{-1};       ///< Joy: the deadman read 1 / not; Twist: −1
+  std::uint64_t joy_rejects{0};  ///< Joy messages zeroed as unreadable, since the activation
+};
+
+static_assert(std::is_trivially_copyable_v<LocomotionCommandSource>,
+              "LocomotionCommandSource travels through a SeqLock");
+
 /// The message's values, in order. kCount is the array size, not a key.
 enum class LocomotionStatusKey : std::uint8_t {
   kSource = 0,  ///< idle / stand / walk / fault
@@ -78,6 +88,10 @@ enum class LocomotionStatusKey : std::uint8_t {
   kEstimatorResets,       ///< the estimator's resets since configure (0 under truth)
   kEstimatorResetReason,  ///< the last one's EstimatorResetReason code
   kEstimatorContactMask,  ///< contacts the estimator holds in stance or unknown
+  // ── Appended: the command's input (LocomotionCommandSource) ──
+  kCmdInput,       ///< 0 twist, 1 joy
+  kCmdDeadman,     ///< joy: 1 held / 0 released; twist: −1
+  kCmdJoyRejects,  ///< Joy messages zeroed as unreadable (too short, a mapped axis non-finite)
   kCount,
 };
 
@@ -104,6 +118,13 @@ inline constexpr std::size_t kLocomotionStatusValueChars = 32;
 /// NUL-terminated; a longer value is cut. `cmd` is the command filter's last
 /// output (all zero without a command path). policy_age_ms is −1 while no plan
 /// is followed (plan_id 0).
+void FormatLocomotionStatusValue(LocomotionStatusKey key, const LocomotionDiagLogPod& d,
+                                 const rtc::mpc::FilteredCommand& cmd,
+                                 const LocomotionCommandSource& source,
+                                 const LocomotionMpcCounters& counters, char* buf,
+                                 std::size_t size) noexcept;
+
+/// The same with a Twist source (LocomotionCommandSource{}).
 void FormatLocomotionStatusValue(LocomotionStatusKey key, const LocomotionDiagLogPod& d,
                                  const rtc::mpc::FilteredCommand& cmd,
                                  const LocomotionMpcCounters& counters, char* buf,

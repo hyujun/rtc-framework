@@ -191,6 +191,11 @@ struct LocomotionDiagLogPod {
   /// thread/solve_record.hpp) — seq 0 / outcome −1 without one or without an
   /// MPC. Not the plan the WBC follows (plan_id / sample_*), which can be older.
   rtc::mpc::SolveRecord mpc_last{};
+  // ── Appended: the velocity command's input (locomotion_status.hpp
+  // LocomotionCommandSource) — tells "the operator let go" (deadman 0, fresh)
+  // from "the input went silent" (stale) in a joy run.
+  std::uint8_t cmd_input{0};    ///< 0 twist, 1 joy
+  std::int8_t cmd_deadman{-1};  ///< joy: 1 held / 0 released / −1 unreadable; twist: −1
 };
 
 static_assert(locomotion::kMaxEstimatorSlots == LocomotionDiagLogPod::kMaxContacts,
@@ -277,6 +282,7 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
   os << ",mpc_last_seq,mpc_last_outcome,mpc_last_err,mpc_last_iterations,mpc_last_converged,"
         "mpc_last_initial,mpc_last_cold,mpc_last_prim_inf,mpc_last_consumed_prim,"
         "mpc_last_compute_us,mpc_last_state_seq,mpc_last_state_epoch,mpc_last_plan_id";
+  os << ",cmd_input,cmd_deadman";
 }
 
 inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogPod& p,
@@ -382,6 +388,7 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
      << ',' << (m.converged ? 1 : 0) << ',' << (m.initial_solve ? 1 : 0) << ','
      << (m.cold_start ? 1 : 0) << ',' << m.prim_inf << ',' << m.consumed_prim << ',' << m.compute_us
      << ',' << m.state_sequence << ',' << m.state_epoch << ',' << m.plan_id;
+  os << ',' << static_cast<unsigned>(p.cmd_input) << ',' << static_cast<int>(p.cmd_deadman);
 }
 
 }  // namespace integrated_bringup

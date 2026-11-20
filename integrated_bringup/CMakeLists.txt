@@ -87,6 +87,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/locomotion/parameters.cpp
   src/controllers/locomotion/mpc_reference.cpp
   src/controllers/locomotion/command.cpp
+  src/controllers/locomotion/joy_command.cpp
   src/controllers/locomotion/locomotion_status.cpp
   src/controllers/locomotion/truth_log.cpp
   # Learned-policy binding. Its law half lives in rtc_controllers/inference
@@ -2444,6 +2445,41 @@ if(BUILD_TESTING)
 
   # Its RT tick on every path under the global operator-new gate. Own binary:
   # alloc_gate.hpp replaces operator new (one TU per binary).
+  # velocity_command.type joy: the Joy mapping bit for bit, the zero rules, the
+  # config refusals, the layout copy against rtc_teleop_input's installed table,
+  # the shipped joy overlay. Pure (no node); the package's domain all the same,
+  # as the rig header it includes can open one.
+  ament_add_gtest(test_locomotion_joy_command test/test_locomotion_joy_command.cpp
+    TIMEOUT 120
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_locomotion_joy_command PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_compile_definitions(test_locomotion_joy_command PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_joy_command
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_joy_command
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    geometry_msgs
+    sensor_msgs
+    diagnostic_msgs
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_mpc
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   ament_add_gtest(test_locomotion_controller_alloc test/test_locomotion_controller_alloc.cpp
     TIMEOUT 300
     ENV ROS_DOMAIN_ID=52
@@ -2566,6 +2602,8 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_shipped_sim_param_declared
     test/test_shipped_sim_param_declared.py)
   ament_add_pytest_test(test_launch_shield_wiring test/test_launch_shield_wiring.py)
+  # command_input:= (sim_g1_loco): the controller parameter layers, the joy overlay's place.
+  ament_add_pytest_test(test_command_input test/test_command_input.py)
   ament_add_pytest_test(test_launch_hand_affinity_wiring
     test/test_launch_hand_affinity_wiring.py)
   # Every topic udp_hand_node declares is set to /<robot>/... in each overlay: a
@@ -2720,6 +2758,7 @@ if(BUILD_TESTING)
     test_locomotion_controller
     test_locomotion_controller_alloc
     test_locomotion_mpc
+    test_locomotion_joy_command
     test_locomotion_fault
     test_loco_estop_on_clear
     test_inekf_state_source
