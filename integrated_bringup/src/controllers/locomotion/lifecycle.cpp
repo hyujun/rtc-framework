@@ -110,6 +110,9 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
                   command_filter_.config().sample_rate_hz);
     }
     // The external wrench lane (truth log only): with or without the MPC.
+    // The reset below writes the buffer from this thread. That is sound because configure runs
+    // on the one single-threaded executor that also runs the subscription callback, and before
+    // the RT loop exists; a multi-threaded executor here would need a lock.
     external_wrench_sub_.reset();
     external_wrench_count_ = 0;
     external_wrench_.StartWrite() = locomotion::ExternalWrenchSample{};
