@@ -1,0 +1,193 @@
+integrated_rt_controller:
+  ros__parameters:
+    locomotion_controller:
+      mpc:
+        kinodynamic:
+          state_weights:
+            base_position:
+            - 0.0
+            - 0.0
+            - 10.0
+            base_orientation:
+            - 20.0
+            - 20.0
+            - 0.0
+            joints:
+              left_hip_pitch_joint: 0.05
+              left_hip_roll_joint: 0.2
+              left_hip_yaw_joint: 0.2
+              left_knee_joint: 0.1
+              left_ankle_pitch_joint: 0.1
+              left_ankle_roll_joint: 0.1
+              right_hip_pitch_joint: 0.05
+              right_hip_roll_joint: 0.2
+              right_hip_yaw_joint: 0.2
+              right_knee_joint: 0.1
+              right_ankle_pitch_joint: 0.1
+              right_ankle_roll_joint: 0.1
+              waist_yaw_joint: 2.0
+              waist_roll_joint: 2.0
+              waist_pitch_joint: 2.0
+              left_shoulder_pitch_joint: 0.4
+              left_shoulder_roll_joint: 2.0
+              left_shoulder_yaw_joint: 0.4
+              left_elbow_joint: 0.4
+              right_shoulder_pitch_joint: 0.4
+              right_shoulder_roll_joint: 2.0
+              right_shoulder_yaw_joint: 0.4
+              right_elbow_joint: 0.4
+            base_linear_velocity:
+            - 3.0
+            - 3.0
+            - 3.0
+            base_angular_velocity:
+            - 3.0
+            - 3.0
+            - 3.0
+            joint_velocities:
+              left_hip_pitch_joint: 0.001
+              left_hip_roll_joint: 0.001
+              left_hip_yaw_joint: 0.001
+              left_knee_joint: 0.001
+              left_ankle_pitch_joint: 0.001
+              left_ankle_roll_joint: 0.001
+              right_hip_pitch_joint: 0.001
+              right_hip_roll_joint: 0.001
+              right_hip_yaw_joint: 0.001
+              right_knee_joint: 0.001
+              right_ankle_pitch_joint: 0.001
+              right_ankle_roll_joint: 0.001
+              waist_yaw_joint: 0.2
+              waist_roll_joint: 0.2
+              waist_pitch_joint: 0.2
+              left_shoulder_pitch_joint: 0.02
+              left_shoulder_roll_joint: 0.02
+              left_shoulder_yaw_joint: 0.02
+              left_elbow_joint: 0.02
+              right_shoulder_pitch_joint: 0.02
+              right_shoulder_roll_joint: 0.02
+              right_shoulder_yaw_joint: 0.02
+              right_elbow_joint: 0.02
+          terminal_weights:
+            base_position:
+            - 0.0
+            - 0.0
+            - 10.0
+            base_orientation:
+            - 20.0
+            - 20.0
+            - 0.0
+            joints:
+              left_hip_pitch_joint: 0.05
+              left_hip_roll_joint: 0.1
+              left_hip_yaw_joint: 0.1
+              left_knee_joint: 0.1
+              left_ankle_pitch_joint: 0.1
+              left_ankle_roll_joint: 0.1
+              right_hip_pitch_joint: 0.05
+              right_hip_roll_joint: 0.1
+              right_hip_yaw_joint: 0.1
+              right_knee_joint: 0.1
+              right_ankle_pitch_joint: 0.1
+              right_ankle_roll_joint: 0.1
+              waist_yaw_joint: 2.0
+              waist_roll_joint: 2.0
+              waist_pitch_joint: 2.0
+              left_shoulder_pitch_joint: 0.4
+              left_shoulder_roll_joint: 2.0
+              left_shoulder_yaw_joint: 0.4
+              left_elbow_joint: 0.4
+              right_shoulder_pitch_joint: 0.4
+              right_shoulder_roll_joint: 2.0
+              right_shoulder_yaw_joint: 0.4
+              right_elbow_joint: 0.4
+            base_linear_velocity:
+            - 3.0
+            - 3.0
+            - 3.0
+            base_angular_velocity:
+            - 3.0
+            - 3.0
+            - 3.0
+            joint_velocities:
+              left_hip_pitch_joint: 0.001
+              left_hip_roll_joint: 0.001
+              left_hip_yaw_joint: 0.001
+              left_knee_joint: 0.001
+              left_ankle_pitch_joint: 0.001
+              left_ankle_roll_joint: 0.001
+              right_hip_pitch_joint: 0.001
+              right_hip_roll_joint: 0.001
+              right_hip_yaw_joint: 0.001
+              right_knee_joint: 0.001
+              right_ankle_pitch_joint: 0.001
+              right_ankle_roll_joint: 0.001
+              waist_yaw_joint: 0.2
+              waist_roll_joint: 0.2
+              waist_pitch_joint: 0.2
+              left_shoulder_pitch_joint: 0.02
+              left_shoulder_roll_joint: 0.02
+              left_shoulder_yaw_joint: 0.02
+              left_elbow_joint: 0.02
+              right_shoulder_pitch_joint: 0.02
+              right_shoulder_roll_joint: 0.02
+              right_shoulder_yaw_joint: 0.02
+              right_elbow_joint: 0.02
+          input_weights:
+            contact_force:
+            - 3.0e-06
+            - 3.0e-06
+            - 1.0e-06
+            contact_moment:
+            - 1.0e-05
+            - 1.0e-05
+            - 0.0001
+            joint_accelerations:
+              left_hip_pitch_joint: 5.0e-06
+              left_hip_roll_joint: 5.0e-06
+              left_hip_yaw_joint: 5.0e-06
+              left_knee_joint: 5.0e-06
+              left_ankle_pitch_joint: 5.0e-06
+              left_ankle_roll_joint: 5.0e-06
+              right_hip_pitch_joint: 5.0e-06
+              right_hip_roll_joint: 5.0e-06
+              right_hip_yaw_joint: 5.0e-06
+              right_knee_joint: 5.0e-06
+              right_ankle_pitch_joint: 5.0e-06
+              right_ankle_roll_joint: 5.0e-06
+              waist_yaw_joint: 5.0e-06
+              waist_roll_joint: 5.0e-06
+              waist_pitch_joint: 5.0e-06
+              left_shoulder_pitch_joint: 5.0e-06
+              left_shoulder_roll_joint: 5.0e-06
+              left_shoulder_yaw_joint: 5.0e-06
+              left_elbow_joint: 5.0e-06
+              right_shoulder_pitch_joint: 5.0e-06
+              right_shoulder_roll_joint: 5.0e-06
+              right_shoulder_yaw_joint: 5.0e-06
+              right_elbow_joint: 5.0e-06
+          contact_tracking:
+            position:
+            - 0.0
+            - 0.0
+            - 0.0
+            orientation:
+            - 10000.0
+            - 10000.0
+            - 0.0
+            linear_velocity:
+            - 5.0
+            - 5.0
+            - 0.0
+            angular_velocity:
+            - 2.0
+            - 2.0
+            - 2.0
+            linear_acceleration:
+            - 0.01
+            - 0.01
+            - 0.01
+            angular_acceleration:
+            - 0.01
+            - 0.01
+            - 0.01
