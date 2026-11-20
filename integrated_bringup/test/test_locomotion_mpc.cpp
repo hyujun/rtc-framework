@@ -1006,8 +1006,10 @@ TEST(LocomotionDiagLog, TheHeaderAndARowHaveTheSameColumns) {
   EXPECT_EQ(count(header.str()), count(row.str()));
   EXPECT_NE(header.str().find(",ref_source,plan_id,policy_age_us,"), std::string::npos);
   EXPECT_NE(header.str().find(",cmd_vx,cmd_vy,cmd_wz,cmd_h,cmd_valid,gait_latest,ref_base_vx,"
-                              "ref_base_vy,ref_base_vz,meas_contact_valid,meas_fz_a,meas_fz_b"),
+                              "ref_base_vy,ref_base_vz,meas_contact_valid,plan_holds,"),
             std::string::npos);
+  // The lane's force is simulator truth: it is in the truth log, not here.
+  EXPECT_EQ(header.str().find("meas_fz"), std::string::npos);
   // The replay inputs appended last; an empty pod reads "no sample, never received".
   const std::string tail = ",cmd_input,cmd_deadman,est_imu_valid,est_imu_age_us";
   ASSERT_GE(header.str().size(), tail.size());
@@ -1043,35 +1045,29 @@ class LocomotionContactForceLogTest : public LocomotionControllerTest {
   }
 };
 
-TEST_F(LocomotionContactForceLogTest, AFreshGroupIsLoggedAndAStaleOneIsNaN) {
+TEST_F(LocomotionContactForceLogTest, AFreshGroupSetsItsBitAndAStaleOneClearsIt) {
   BringUpWithLane(7);
   SetLane(2, 7);
   TickFor(1);
   const auto& d = ctrl_->LastDiag();
   EXPECT_EQ(d.meas_contact_valid, 0b11U);
-  EXPECT_EQ(d.meas_fz[0], -150.0);
-  EXPECT_EQ(d.meas_fz[1], -151.0);
   state_.devices[kBody].inference_enable[1] = false;  // the value is held, the flag drops
   TickFor(1);
   EXPECT_EQ(ctrl_->LastDiag().meas_contact_valid, 0b01U);
-  EXPECT_EQ(ctrl_->LastDiag().meas_fz[0], -150.0);
-  EXPECT_TRUE(std::isnan(ctrl_->LastDiag().meas_fz[1])) << "a held value is not a sample";
 }
 
-TEST_F(LocomotionContactForceLogTest, ALaneThatDoesNotFitTheContactsIsNaN) {
+TEST_F(LocomotionContactForceLogTest, ALaneThatDoesNotFitTheContactsHasNoBit) {
   BringUpWithLane(7);
   SetLane(3, 7);  // a group count other than the model's two contacts
   TickFor(1);
   EXPECT_EQ(ctrl_->LastDiag().meas_contact_valid, 0U);
-  EXPECT_TRUE(std::isnan(ctrl_->LastDiag().meas_fz[0]));
 }
 
-TEST_F(LocomotionContactForceLogTest, ALaneTooNarrowForAForceIsNaN) {
+TEST_F(LocomotionContactForceLogTest, ALaneTooNarrowForAForceHasNoBit) {
   BringUpWithLane(3);
   SetLane(2, 3);
   TickFor(1);
   EXPECT_EQ(ctrl_->LastDiag().meas_contact_valid, 0U);
-  EXPECT_TRUE(std::isnan(ctrl_->LastDiag().meas_fz[1]));
 }
 
 TEST_F(LocomotionContactForceLogTest, NoSensorLayoutIsNoLane) {
@@ -1079,7 +1075,6 @@ TEST_F(LocomotionContactForceLogTest, NoSensorLayoutIsNoLane) {
   SetLane(2, 7);
   TickFor(1);
   EXPECT_EQ(ctrl_->LastDiag().meas_contact_valid, 0U);
-  EXPECT_TRUE(std::isnan(ctrl_->LastDiag().meas_fz[0]));
 }
 
 // ── R-tier columns (locomotion-controller.md "Log tiers") ──────────────────

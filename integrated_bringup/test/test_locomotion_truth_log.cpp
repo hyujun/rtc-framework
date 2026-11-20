@@ -10,15 +10,21 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <map>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -247,6 +253,121 @@ TEST(LocomotionTruthLog, NoTruthLanesIsAnEmptyMask) {
   EXPECT_EQ(pod.truth_mask, 0U);
   EXPECT_DOUBLE_EQ(pod.base_age_us, -1.0);
   EXPECT_DOUBLE_EQ(pod.contact_age_us[0], -1.0);
+}
+
+// ── the external wrench lane ───────────────────────────────────────────────
+
+loco::ExternalWrenchSample Push(std::int64_t age_ns = 1'000'000) {
+  loco::ExternalWrenchSample s;
+  s.wrench = {40.0, -12.5, 3.25, 0.5, -0.25, 1.75};
+  s.recv_steady_ns = kNow - age_ns;
+  s.sequence = 3;
+  return s;
+}
+
+loco::TruthLogInputs InputsWith(const loco::ExternalWrenchSample* sample) {
+  loco::TruthLogInputs in = Inputs();
+  in.external = sample;
+  in.external_max_age_ns = 20'000'000;  // 20 ms
+  return in;
+}
+
+// D2: a fresh report is the received wrench, bit for bit, under its own bit.
+TEST(LocomotionTruthLog, AFreshExternalWrenchIsTheReceivedOne) {
+  const rtc::DeviceState d = Lanes();
+  const loco::ExternalWrenchSample s = Push();
+  LocomotionTruthLogPod pod{};
+  loco::FillLocomotionTruthLog(d, InputsWith(&s), pod);
+  EXPECT_NE(pod.truth_mask & LocomotionTruthLogPod::kExternalBit, 0U);
+  for (std::size_t k = 0; k < 6; ++k) {
+    EXPECT_TRUE(SameBits(pod.ext_wrench[k], s.wrench[k])) << k;
+  }
+  EXPECT_DOUBLE_EQ(pod.ext_age_us, 1000.0);
+  // The other lanes are what they are without it.
+  LocomotionTruthLogPod plain{};
+  loco::FillLocomotionTruthLog(d, Inputs(), plain);
+  EXPECT_EQ(pod.truth_mask & ~LocomotionTruthLogPod::kExternalBit, plain.truth_mask);
+  EXPECT_EQ(LocomotionTruthLogPod::kExternalBit & 0x1FU, 0U) << "clear of the base and contacts";
+}
+
+// D2: a zero wrench is a report too — "nothing applied" is not "nothing known".
+TEST(LocomotionTruthLog, AZeroExternalWrenchIsFreshAndZero) {
+  loco::ExternalWrenchSample s = Push();
+  s.wrench.fill(0.0);
+  LocomotionTruthLogPod pod{};
+  loco::FillLocomotionTruthLog(rtc::DeviceState{}, InputsWith(&s), pod);
+  EXPECT_EQ(pod.truth_mask, LocomotionTruthLogPod::kExternalBit);
+  for (double x : pod.ext_wrench) {
+    EXPECT_EQ(x, 0.0);
+  }
+}
+
+// D2: no lane, no message yet, a stale or a non-finite report — NaN, bit off.
+TEST(LocomotionTruthLog, AnExternalWrenchThatIsNotKnownIsNaNWithItsBitOff) {
+  const rtc::DeviceState d = Lanes();
+  const auto expect_off = [&d](const loco::ExternalWrenchSample* s, double age_us,
+                               const char* what) {
+    LocomotionTruthLogPod pod{};
+    pod.ext_wrench.fill(7.0);  // a held value must not survive
+    loco::FillLocomotionTruthLog(d, InputsWith(s), pod);
+    EXPECT_EQ(pod.truth_mask & LocomotionTruthLogPod::kExternalBit, 0U) << what;
+    for (double x : pod.ext_wrench) {
+      EXPECT_TRUE(std::isnan(x)) << what;
+    }
+    EXPECT_DOUBLE_EQ(pod.ext_age_us, age_us) << what;
+  };
+  expect_off(nullptr, -1.0, "no lane");
+  loco::ExternalWrenchSample none = Push();
+  none.sequence = 0;
+  expect_off(&none, -1.0, "no message yet");
+  const loco::ExternalWrenchSample stale = Push(20'000'001);
+  expect_off(&stale, 20000.001, "stale");
+  loco::ExternalWrenchSample bad = Push();
+  bad.wrench[4] = std::numeric_limits<double>::infinity();
+  expect_off(&bad, 1000.0, "non-finite");
+  // At the bound it is still fresh; stamped after `now` it is age 0.
+  const loco::ExternalWrenchSample edge = Push(20'000'000);
+  const loco::ExternalWrenchSample ahead = Push(-5'000);
+  for (const auto* s : {&edge, &ahead}) {
+    LocomotionTruthLogPod pod{};
+    loco::FillLocomotionTruthLog(d, InputsWith(s), pod);
+    EXPECT_NE(pod.truth_mask & LocomotionTruthLogPod::kExternalBit, 0U);
+  }
+  LocomotionTruthLogPod pod{};
+  loco::FillLocomotionTruthLog(d, InputsWith(&ahead), pod);
+  EXPECT_DOUBLE_EQ(pod.ext_age_us, 0.0);
+}
+
+// D1 / D2: the block's columns exist only when asked for, after every other.
+TEST(LocomotionTruthLog, TheExternalColumnsAreAddedOnlyOnRequest) {
+  const std::vector<std::string> names = {"left", "right"};
+  const auto header = [&names](bool external) {
+    std::ostringstream os;
+    integrated_bringup::WriteLocomotionTruthLogHeader(
+        os, names, integrated_bringup::LocomotionTruthLogColumnsFor(names, external));
+    return os.str();
+  };
+  const auto row = [&names](bool external) {
+    LocomotionTruthLogPod pod{};
+    pod.ext_wrench = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+    pod.ext_age_us = 250.0;
+    std::ostringstream os;
+    integrated_bringup::WriteLocomotionTruthLogRow(
+        os, pod, integrated_bringup::LocomotionTruthLogColumnsFor(names, external));
+    return os.str();
+  };
+  const std::string plain = header(false);
+  EXPECT_EQ(header(true), plain +
+                              ",truth_ext_fx,truth_ext_fy,truth_ext_fz,truth_ext_tx,"
+                              "truth_ext_ty,truth_ext_tz,truth_ext_age_us");
+  EXPECT_EQ(plain.find("truth_ext"), std::string::npos);
+  EXPECT_EQ(header(false), [&names] {
+    std::ostringstream os;
+    integrated_bringup::WriteLocomotionTruthLogHeader(
+        os, names, integrated_bringup::LocomotionTruthLogColumnsFor(names));
+    return os.str();
+  }()) << "the default is the header without the block";
+  EXPECT_EQ(row(true), row(false) + ",1,2,3,4,5,6,250");
 }
 
 // Contacts past the model's count are NaN and unclaimed.
@@ -500,9 +621,9 @@ TEST_F(LocomotionTruthLogRigTest, UnderTheEstimatorTheTruthBaseIsNotTheDiagBase)
   EXPECT_LT(std::abs(ctrl_->LastDiag().base_p[0]), 0.1);
 }
 
-// T4: the contact block is the negated lane — fz exactly −meas_fz — with the
-// moment of the shipped moment lane.
-TEST_F(LocomotionTruthLogRigTest, TheTruthWrenchIsTheNegatedLaneAndMeasFz) {
+// T4: the contact block is the negated lane, with the moment of the shipped
+// moment lane; the diag's bits name the same groups.
+TEST_F(LocomotionTruthLogRigTest, TheTruthWrenchIsTheNegatedLane) {
   BringUpShipped();
   StampContacts(NowNs());
   last_out_ = Tick();
@@ -511,7 +632,7 @@ TEST_F(LocomotionTruthLogRigTest, TheTruthWrenchIsTheNegatedLaneAndMeasFz) {
   const auto& lane = state_.devices[kBody].inference_data;
   ASSERT_EQ(t.truth_mask, 0b111U);
   for (std::size_t c = 0; c < 2; ++c) {
-    EXPECT_TRUE(SameBits(t.grf[c * 6 + 2], -r.meas_fz[c])) << c;
+    EXPECT_NE(r.meas_contact_valid & (1U << c), 0U) << c;
     for (std::size_t k = 0; k < 6; ++k) {
       EXPECT_TRUE(SameBits(t.grf[c * 6 + k], -static_cast<double>(lane[c * 7 + 1 + k])))
           << c << ' ' << k;
@@ -644,6 +765,142 @@ TEST_F(LocomotionTruthLogRigTest, TheTruthLogChangesNoOutput) {
     }
   }
   ASSERT_EQ(ctrl_off->on_deactivate(rclcpp_lifecycle::State{}), CallbackReturn::SUCCESS);
+}
+
+// ── the external wrench lane on the controller ────────────────────────────
+
+geometry_msgs::msg::WrenchStamped PushMessage(double fx) {
+  geometry_msgs::msg::WrenchStamped m;
+  m.wrench.force.x = fx;
+  m.wrench.force.y = -12.5;
+  m.wrench.force.z = 3.25;
+  m.wrench.torque.x = 0.5;
+  m.wrench.torque.y = -0.25;
+  m.wrench.torque.z = 1.75;
+  return m;
+}
+
+YAML::Node ExternalWrenchConfig(double max_age_ms = 50.0) {
+  YAML::Node cfg = YAML::Clone(ShippedConfig());
+  cfg["external_wrench"]["topic"] = "sim/external_wrench";
+  cfg["external_wrench"]["max_age_ms"] = max_age_ms;
+  return cfg;
+}
+
+// The section's shape: both keys, a topic that may be empty, a finite age > 0.
+TEST(LocomotionExternalWrenchConfig, BadShapesAreRefused) {
+  const auto parsed =
+      integrated_bringup::ParseLocomotionControllerConfig(ExternalWrenchConfig(40.0));
+  EXPECT_EQ(parsed.external_wrench_topic, "sim/external_wrench");
+  EXPECT_DOUBLE_EQ(parsed.external_wrench_max_age_ms, 40.0);
+  YAML::Node absent = YAML::Clone(ShippedConfig());
+  absent.remove("external_wrench");
+  EXPECT_TRUE(
+      integrated_bringup::ParseLocomotionControllerConfig(absent).external_wrench_topic.empty());
+  const auto refused = [](const std::function<void(YAML::Node&)>& spoil, const char* what) {
+    YAML::Node cfg = ExternalWrenchConfig();
+    spoil(cfg);
+    EXPECT_THROW(static_cast<void>(integrated_bringup::ParseLocomotionControllerConfig(cfg)),
+                 std::invalid_argument)
+        << what;
+  };
+  refused([](YAML::Node& c) { c["external_wrench"].remove("max_age_ms"); }, "no age");
+  refused([](YAML::Node& c) { c["external_wrench"].remove("topic"); }, "no topic");
+  refused([](YAML::Node& c) { c["external_wrench"]["max_age_ms"] = 0.0; }, "zero age");
+  refused([](YAML::Node& c) { c["external_wrench"]["max_age_ms"] = -5.0; }, "negative age");
+  refused([](YAML::Node& c) { c["external_wrench"]["max_age_ms"] = ".inf"; }, "infinite age");
+  refused([](YAML::Node& c) { c["external_wrench"]["max_age_ms"] = "soon"; }, "not a number");
+  refused([](YAML::Node& c) { c["external_wrench"]["body"] = "pelvis"; }, "unknown key");
+  refused([](YAML::Node& c) { c["external_wrench"]["topic"] = YAML::Node(YAML::NodeType::Map); },
+          "a topic that is not a name");
+}
+
+// D1: the shipped configuration has the lane off — no subscription, no bit,
+// and (TheFileHoldsTheRecordUnderItsColumnNames) the header it always had.
+TEST_F(LocomotionTruthLogRigTest, TheShippedConfigurationHasNoExternalWrenchLane) {
+  ASSERT_TRUE(ShippedConfig()["external_wrench"]) << "an overlay can only replace a shipped key";
+  EXPECT_EQ(ShippedConfig()["external_wrench"]["topic"].as<std::string>(), "");
+  BringUpShipped();
+  EXPECT_FALSE(ctrl_->ExternalWrenchSubscribed());
+  // A callback that somehow ran would still not reach the log.
+  LocomotionControllerTestAccess::OnExternalWrench(*ctrl_, PushMessage(40.0));
+  for (int k = 0; k < 5; ++k) {
+    last_out_ = Tick();
+    EXPECT_EQ(ctrl_->LastTruthLog().truth_mask & LocomotionTruthLogPod::kExternalBit, 0U);
+  }
+  Drain();
+  const auto csv = fx::ReadCsv(Path(integrated_bringup::kLocomotionTruthLogInstance));
+  for (const auto& name : csv.header) {
+    EXPECT_EQ(name.rfind("truth_ext", 0), std::string::npos) << name;
+  }
+}
+
+// D2: with a topic, the tick after a message logs it; the next message
+// replaces it; with no message for longer than the bound the bit goes off.
+TEST_F(LocomotionTruthLogRigTest, TheExternalWrenchReachesTheTruthLog) {
+  BringUpShipped(ExternalWrenchConfig(50.0));
+  ASSERT_TRUE(ctrl_->ExternalWrenchSubscribed());
+  last_out_ = Tick();
+  EXPECT_EQ(ctrl_->LastTruthLog().truth_mask & LocomotionTruthLogPod::kExternalBit, 0U)
+      << "nothing received yet";
+  EXPECT_DOUBLE_EQ(ctrl_->LastTruthLog().ext_age_us, -1.0);
+  for (const double fx : {40.0, 0.0, -17.5}) {
+    const auto msg = PushMessage(fx);
+    LocomotionControllerTestAccess::OnExternalWrench(*ctrl_, msg);
+    last_out_ = Tick();
+    const LocomotionTruthLogPod t = ctrl_->LastTruthLog();
+    ASSERT_NE(t.truth_mask & LocomotionTruthLogPod::kExternalBit, 0U) << fx;
+    const std::array<double, 6> want = {msg.wrench.force.x,  msg.wrench.force.y,
+                                        msg.wrench.force.z,  msg.wrench.torque.x,
+                                        msg.wrench.torque.y, msg.wrench.torque.z};
+    for (std::size_t k = 0; k < 6; ++k) {
+      EXPECT_TRUE(SameBits(t.ext_wrench[k], want[k])) << fx << ' ' << k;
+    }
+    EXPECT_GE(t.ext_age_us, 0.0);
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  last_out_ = Tick();
+  const LocomotionTruthLogPod stale = ctrl_->LastTruthLog();
+  EXPECT_EQ(stale.truth_mask & LocomotionTruthLogPod::kExternalBit, 0U);
+  EXPECT_TRUE(std::isnan(stale.ext_wrench[0]));
+  EXPECT_GE(stale.ext_age_us, 50e3);
+  // The file carries the block under its names.
+  Drain();
+  const auto csv = fx::ReadCsv(Path(integrated_bringup::kLocomotionTruthLogInstance));
+  ASSERT_GE(csv.header.size(), 7U);
+  EXPECT_EQ(csv.header[csv.header.size() - 7], "truth_ext_fx");
+  EXPECT_EQ(csv.header.back(), "truth_ext_age_us");
+}
+
+// D1: the lane feeds the log and nothing else — the same ticks with pushes
+// reported and with the lane off give the same output, bit for bit.
+TEST_F(LocomotionTruthLogRigTest, TheExternalWrenchChangesNoOutput) {
+  const YAML::Node on_cfg = ExternalWrenchConfig();
+  auto node_off = std::make_shared<rclcpp_lifecycle::LifecycleNode>(
+      "test_locomotion_ext_off", "", rclcpp::NodeOptions{}.use_global_arguments(false));
+  auto ctrl_off = MakeController();
+  const YAML::Node off = ShippedConfig();
+  ASSERT_EQ(ctrl_off->PreConfigure(node_off, off), CallbackReturn::SUCCESS);
+  ctrl_off->SetDeviceNameConfigs(ShippedLaneDevices(off));
+  ASSERT_EQ(ctrl_off->on_configure(rclcpp_lifecycle::State{}, node_off, off),
+            CallbackReturn::SUCCESS);
+  BringUpShipped(on_cfg);
+  ASSERT_EQ(ctrl_off->on_activate(rclcpp_lifecycle::State{}), CallbackReturn::SUCCESS);
+  for (int k = 0; k < kTicks; ++k) {
+    if (k % 7 == 0) {
+      LocomotionControllerTestAccess::OnExternalWrench(*ctrl_, PushMessage(0.5 * k));
+    }
+    const int64_t now = NowNs();
+    state_.iteration += 1;
+    state_.devices[kBody].joint_recv_steady_ns = now;
+    state_.devices[kBody].base_recv_steady_ns = now;
+    state_.devices[kHand].joint_recv_steady_ns = now;
+    StampImu(now);
+    const rtc::ControllerOutput on = ctrl_->Compute(state_);
+    const rtc::ControllerOutput no = ctrl_off->Compute(state_);
+    ASSERT_TRUE(SameOutput(on, no)) << "tick " << k;
+  }
+  EXPECT_NE(ctrl_->LastTruthLog().truth_mask & LocomotionTruthLogPod::kExternalBit, 0U);
 }
 
 }  // namespace

@@ -237,6 +237,37 @@ TEST_F(LocomotionAlloc, TheTruthLogPathAllocatesNothing) {
   EXPECT_EQ(worst, 0U);
 }
 
+// The external wrench lane: the subscription callback (the message is built
+// before the gate, as the executor hands it over) and the tick that copies it
+// into the truth log.
+TEST_F(LocomotionAlloc, TheExternalWrenchPathAllocatesNothing) {
+  YAML::Node cfg = YAML::Clone(ShippedConfig());
+  cfg["external_wrench"]["topic"] = "sim/external_wrench";
+  ConfigureWithDevices(cfg, ShippedLaneDevices(cfg), rclcpp::NodeOptions{},
+                       "test_locomotion_ext_alloc");
+  ASSERT_TRUE(ctrl_->ExternalWrenchSubscribed());
+  Activate();
+  MakeStanding();
+  geometry_msgs::msg::WrenchStamped msg;
+  msg.wrench.force.x = 40.0;
+  integrated_bringup::LocomotionControllerTestAccess::OnExternalWrench(*ctrl_, msg);
+  Tick();  // warm outside the gate
+  Tick();
+  std::size_t worst = 0;
+  for (int k = 0; k < 40; ++k) {
+    {
+      rtc::testing::ScopedAllocGate gate;
+      integrated_bringup::LocomotionControllerTestAccess::OnExternalWrench(*ctrl_, msg);
+      worst = std::max(worst, gate.count());
+    }
+    worst = std::max(worst, GatedTick(false));
+    ASSERT_NE(
+        ctrl_->LastTruthLog().truth_mask & integrated_bringup::LocomotionTruthLogPod::kExternalBit,
+        0U);
+  }
+  EXPECT_EQ(worst, 0U);
+}
+
 // velocity_command.type joy: the tick under the Joy configuration, and the Joy
 // subscription callback itself (the mapping is a fixed table from configure;
 // the message is built before the gate, as the executor hands it over).
