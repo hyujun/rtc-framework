@@ -139,6 +139,13 @@ void RtControllerNode::ExposeTopicParameters() {
             result.reason = "estop_on_clear is read-only after initialisation";
             return result;
           }
+          // Same for the logging switches: the session files open (or not) at
+          // configure, so a later set would change nothing it claims to.
+          if (p.get_name() == "enable_logging" || p.get_name() == "enable_timing_log") {
+            result.successful = false;
+            result.reason = p.get_name() + " is read-only after initialisation";
+            return result;
+          }
         }
         result.successful = true;
         return result;

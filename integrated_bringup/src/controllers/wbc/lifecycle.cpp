@@ -203,6 +203,7 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_configure(
     ctx.momentum_observer_enabled = momentum_wiring_.enabled();
     ctx.momentum_observer_joint_names = primary_joint_names_;
 
+    ctx.session_logging_enabled = SessionLoggingEnabled();
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       ResetLogState();  // roll back channels registered before the missing one (#238)
@@ -387,10 +388,14 @@ RTControllerInterface::CallbackReturn DemoWbcController::on_activate(
   // deactivate must NOT re-Open the CSV (refused while it is still open, #932)
   // or re-register the timer (executor churn).
   if (mpc_enabled_ && !mpc_timing_initialized_) {
-    if (!mpc_timing_logger_.Open()) {
-      RCLCPP_WARN(logger_, "MpcTimingLogger::Open() failed — MPC timing CSV disabled");
-    } else {
-      RCLCPP_INFO(logger_, "MPC tick-timing CSV: %s", mpc_timing_logger_.Path().c_str());
+    // Not with session logging off (the manager's enable_logging); Log() on a
+    // closed logger is a no-op.
+    if (SessionLoggingEnabled()) {
+      if (!mpc_timing_logger_.Open()) {
+        RCLCPP_WARN(logger_, "MpcTimingLogger::Open() failed — MPC timing CSV disabled");
+      } else {
+        RCLCPP_INFO(logger_, "MPC tick-timing CSV: %s", mpc_timing_logger_.Path().c_str());
+      }
     }
     auto node = get_lifecycle_node();
     if (node && mpc_timing_cb_group_) {

@@ -606,6 +606,22 @@ class RTControllerInterface {
     return (control_rate_ > 0.0) ? (1.0 / control_rate_) : kDefaultControlDtSec;
   }
 
+  /// @brief Session logging switch — the manager's `enable_logging`.
+  ///
+  /// Called by the manager before PreConfigure on every configure (controllers
+  /// are rebuilt per configure, so the value never outlives one bring-up).
+  /// false asks the controller to open nothing under the session directory: no
+  /// `logs:` channel and no file of its own (timing, event or candidate
+  /// records). The base cannot enforce it — the log set is the subclass's — so
+  /// a subclass passes it to its registration and gates the files it opens
+  /// itself. Default true, so a controller driven without the manager (unit
+  /// tests) keeps its logs.
+  /// @param enabled the manager's `enable_logging`
+  void SetSessionLoggingEnabled(bool enabled) noexcept { session_logging_enabled_ = enabled; }
+
+  /// @return the value SetSessionLoggingEnabled() last set (true by default)
+  [[nodiscard]] bool SessionLoggingEnabled() const noexcept { return session_logging_enabled_; }
+
  protected:
   RTControllerInterface();
 
@@ -806,6 +822,7 @@ class RTControllerInterface {
   // PreConfigure. The framework supports the full kMin..kMaxControlRateHz
   // range — never hard-code 500 Hz here or in derived classes.
   double control_rate_{kDefaultControlRateHz};
+  bool session_logging_enabled_{true};
 
   // Controller-owned LifecycleNode injected by RtControllerNode in
   // on_configure.  Subclasses use `node_->create_subscription(...)` etc. for

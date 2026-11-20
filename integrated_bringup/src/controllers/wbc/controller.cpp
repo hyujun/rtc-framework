@@ -1,5 +1,6 @@
 #include "integrated_bringup/controllers/demo_wbc_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/model_config_lookup.hpp"
 #include "integrated_bringup/support/mpc_pool_wait.hpp"
@@ -1032,29 +1033,14 @@ void DemoWbcController::LoadConfig(const YAML::Node& cfg) {
   ConfigureMpc(cfg);
 
   // ── Phase C: parse `logs:` section ──────────────────────────────────────
-  parsed_log_entries_.clear();
-  if (cfg["logs"]) {
-    if (!cfg["logs"].IsSequence()) {
-      throw std::runtime_error("DemoWbcController: 'logs' must be a sequence");
-    }
-    for (const auto& entry : cfg["logs"]) {
-      if (!entry.IsMap() || !entry["msg_type"]) {
-        throw std::runtime_error("DemoWbcController: each `logs` entry needs `msg_type`");
-      }
-      ParsedLogEntry e;
-      e.msg_type = entry["msg_type"].as<std::string>();
-      if (entry["instance"]) {
-        e.instance = entry["instance"].as<std::string>();
-      }
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != "rtc_msgs/DeviceSensorLog" &&
-          e.msg_type != "integrated_bringup/DeviceWbcLog" &&
-          e.msg_type != "integrated_bringup/WbcDiagLog" &&
-          e.msg_type != integrated_bringup::kPullEstimatorLogMsgType &&
-          e.msg_type != integrated_bringup::kMomentumObserverLogMsgType) {
-        throw std::runtime_error("DemoWbcController: unknown msg_type in `logs`: " + e.msg_type);
-      }
-      parsed_log_entries_.push_back(std::move(e));
-    }
+  if (const std::string reason = ParseLogEntries(
+          cfg,
+          {"rtc_msgs/DeviceStateLog", "rtc_msgs/DeviceSensorLog", "integrated_bringup/DeviceWbcLog",
+           "integrated_bringup/WbcDiagLog", integrated_bringup::kPullEstimatorLogMsgType,
+           integrated_bringup::kMomentumObserverLogMsgType},
+          parsed_log_entries_);
+      !reason.empty()) {
+    throw std::runtime_error("DemoWbcController: " + reason);
   }
 }
 
@@ -1400,7 +1386,7 @@ void DemoWbcController::OnDeviceConfigsSet() {
   try {
     BuildMomentumObserverWiring(momentum_params_, arm_model_, primary_joint_names_,
                                 /*device_index=*/0, momentum_wiring_);
-    LogMomentumObserverWiring(logger_, momentum_wiring_, momentum_params_);
+    LogMomentumObserverWiring(logger_, momentum_wiring_, momentum_params_, SessionLoggingEnabled());
   } catch (const std::exception& e) {
     momentum_config_error_ = e.what();
     RCLCPP_ERROR(logger_, "momentum_observer configuration failed: %s",

@@ -78,7 +78,6 @@ class CmConfigPipelineTest : public RclcppSuiteTest {
     auto node = std::make_shared<RtControllerNode>("test_cm_config_pipeline_node");
     node->declare_parameter("enable_logging", false);
     node->declare_parameter("enable_timing_log", false);
-    node->declare_parameter("enable_device_log", false);
     node->declare_parameter("control_rate", 200.0);
     node->declare_parameter("config_variant", std::string("test_fixtures"));
     return node;
@@ -669,7 +668,6 @@ std::shared_ptr<RtControllerNode> MakeTimingLogNode() {
   auto node = std::make_shared<RtControllerNode>("test_cm_config_pipeline_node");
   node->declare_parameter("enable_logging", true);
   node->declare_parameter("enable_timing_log", true);
-  node->declare_parameter("enable_device_log", false);
   node->declare_parameter("control_rate", 200.0);
   node->declare_parameter("config_variant", std::string("test_fixtures"));
   return node;
@@ -714,6 +712,57 @@ TEST_F(CmConfigPipelineTest, TimingCsvsReopenAcrossReconfigure) {
   EXPECT_EQ(rows_before + 2, rows) << "one row per configure cycle";
 }
 
+// enable_logging reaches every controller before PreConfigure's LoadConfig, and
+// again on a re-configure (a fresh controller each time). false is what keeps
+// the controllers' session files shut (#1126), so both values are pinned.
+TEST_F(CmConfigPipelineTest, EnableLoggingReachesTheControllerBeforePreConfigure) {
+  auto off = MakeNode();  // enable_logging false
+  DeclareArmDevice(*off);
+  ASSERT_EQ(CallbackReturn::SUCCESS, off->on_configure(StateUnconfigured()));
+  EXPECT_EQ(0, PipelineTestController::captured_session_logging_at_load_config);
+  EXPECT_EQ(CallbackReturn::SUCCESS, off->on_cleanup(StateInactive()));
+
+  auto on = MakeTimingLogNode();  // enable_logging true
+  DeclareArmDevice(*on);
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    PipelineTestController::ResetCaptured();
+    ASSERT_EQ(CallbackReturn::SUCCESS, on->on_configure(StateUnconfigured())) << "cycle " << cycle;
+    EXPECT_EQ(1, PipelineTestController::captured_session_logging_at_load_config)
+        << "cycle " << cycle;
+    ASSERT_EQ(CallbackReturn::SUCCESS, on->on_cleanup(StateInactive())) << "cycle " << cycle;
+  }
+}
+
+// The two switches act at configure only, so a runtime set is refused rather
+// than accepted and silently ignored.
+TEST_F(CmConfigPipelineTest, LoggingSwitchesAreReadOnlyAfterConfigure) {
+  auto node = MakeTimingLogNode();
+  DeclareArmDevice(*node);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("enable_logging", false)).successful);
+  EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("enable_timing_log", false)).successful);
+  EXPECT_TRUE(node->get_parameter("enable_logging").as_bool());
+  EXPECT_TRUE(node->get_parameter("enable_timing_log").as_bool());
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// enable_device_log was removed: the manager no longer declares it, and a
+// field YAML that still carries it configures (with a warning) instead of
+// being refused.
+TEST_F(CmConfigPipelineTest, RemovedEnableDeviceLogIsNotDeclaredAndALeftoverConfigures) {
+  auto fresh = MakeNode();
+  DeclareArmDevice(*fresh);
+  ASSERT_EQ(CallbackReturn::SUCCESS, fresh->on_configure(StateUnconfigured()));
+  EXPECT_FALSE(fresh->has_parameter("enable_device_log"));
+  EXPECT_EQ(CallbackReturn::SUCCESS, fresh->on_cleanup(StateInactive()));
+
+  auto leftover = MakeNode();
+  leftover->declare_parameter("enable_device_log", true);
+  DeclareArmDevice(*leftover);
+  EXPECT_EQ(CallbackReturn::SUCCESS, leftover->on_configure(StateUnconfigured()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, leftover->on_cleanup(StateInactive()));
+}
+
 // Every test binary of this package writes its session into a private temp
 // dir. CM's enable_logging defaults to true, and a configure then writes
 // timing CSVs into the resolved session and runs retention on its parent —
@@ -733,7 +782,6 @@ TEST_F(CmConfigPipelineTest, ConfigureWritesIntoThisBinarysPrivateSession) {
   auto node = std::make_shared<RtControllerNode>("test_cm_config_pipeline_node");
   node->declare_parameter("control_rate", 200.0);
   node->declare_parameter("config_variant", std::string("test_fixtures"));
-  node->declare_parameter("enable_device_log", false);
   DeclareArmDevice(*node);
 
   ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));

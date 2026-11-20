@@ -57,7 +57,6 @@ class DrainLaneTeardownTest : public RclcppSuiteTest {
     auto node = std::make_shared<RtControllerNode>("test_drain_lane_teardown_node");
     node->declare_parameter("enable_logging", false);
     node->declare_parameter("enable_timing_log", false);
-    node->declare_parameter("enable_device_log", false);
     node->declare_parameter("control_rate", 200.0);
     node->declare_parameter("config_variant", std::string("test_fixtures"));
     node->declare_parameter("devices.arm.joint_state_names",

@@ -253,8 +253,10 @@ void BuildMomentumObserverWiring(const MomentumObserverParams& params,
 /// string). The observer path is otherwise completely silent, so a wiring that
 /// stayed disabled by design would be indistinguishable at runtime from one
 /// that is running but never validating.
+/// `session_logging` is the controller's SessionLoggingEnabled(): off, the
+/// line says no CSV is written whatever the wiring.
 void LogMomentumObserverWiring(const rclcpp::Logger& logger, const MomentumObserverWiring& w,
-                               const MomentumObserverParams& params);
+                               const MomentumObserverParams& params, bool session_logging);
 
 /// Push one observer log row from the wiring's current residual (#135 Layer 1b).
 /// RT. Fill one channel row from the wiring's CURRENT state.

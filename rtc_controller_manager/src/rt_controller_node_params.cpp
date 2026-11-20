@@ -534,6 +534,16 @@ bool RtControllerNode::DeclareAndLoadParameters() {
                  "'log_dir' override — refusing to configure");
     return false;
   }
+  // enable_device_log is gone (its per-device CSV went with the CM DataLogger):
+  // controllers log per device through their own `logs:` channels. Unlike
+  // log_dir a leftover key moves nothing, so it is reported, not refused — a
+  // field YAML from before the removal still brings the robot up.
+  if (has_parameter("enable_device_log")) {
+    RCLCPP_WARN(get_logger(),
+                "'enable_device_log' was removed and has no effect — per-device "
+                "CSVs are the controllers' `logs:` channels, and enable_logging: "
+                "false turns them off. Drop the key from the YAML");
+  }
 
   // RT loop rate. Framework supports kMin..kMaxControlRateHz; 500 Hz is the
   // declare_parameter default only — robot bringups should set this in YAML
@@ -545,7 +555,6 @@ bool RtControllerNode::DeclareAndLoadParameters() {
   safe_declare("enable_logging", rclcpp::ParameterValue(true));
   safe_declare("max_log_sessions", rclcpp::ParameterValue(10));
   safe_declare("enable_timing_log", rclcpp::ParameterValue(true));
-  safe_declare("enable_device_log", rclcpp::ParameterValue(true));
   safe_declare("enable_estop", rclcpp::ParameterValue(true));
   safe_declare("init_timeout_sec", rclcpp::ParameterValue(5.0));
   // Default empty: robot bringup yaml must specify which controller to start.
@@ -911,6 +920,10 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     // the configured rate (kMaxControlRateHz is 5000) and fails the whole
     // configure. Pass 2 still re-sends it, harmlessly, next to the device configs.
     ctrl->SetControlRate(control_rate_);
+    // Same reasoning for the logging switch: on_configure opens the controller's
+    // session files, and PreConfigure's LoadConfig may already decide on them.
+    // A fresh controller per configure, so every configure hands it over.
+    ctrl->SetSessionLoggingEnabled(enable_logging_);
 
     // Load YAML for this controller.
     //

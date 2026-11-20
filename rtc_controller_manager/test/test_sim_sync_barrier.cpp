@@ -106,7 +106,6 @@ class SimSyncBarrierTest : public ::testing::Test {
     auto node = std::make_shared<RtControllerNode>("test_sim_sync_barrier_node");
     node->declare_parameter("enable_logging", false);
     node->declare_parameter("enable_timing_log", false);
-    node->declare_parameter("enable_device_log", false);
     node->declare_parameter("control_rate", 500.0);
     node->declare_parameter("config_variant", std::string("test_fixtures"));
     node->declare_parameter("initial_controller", std::string(TwoDeviceTestController::kName));

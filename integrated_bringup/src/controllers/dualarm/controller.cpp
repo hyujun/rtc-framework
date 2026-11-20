@@ -6,6 +6,7 @@
 
 #include "integrated_bringup/controllers/demo_dualarm_controller.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/demo_shared_config.hpp"
 #include "integrated_bringup/support/hand_fk_wiring.hpp"
 #include "integrated_bringup/support/model_config_lookup.hpp"
@@ -319,26 +320,10 @@ void DemoDualArmController::LoadConfig(const YAML::Node& cfg) {
   cfg_loaded_ = false;
   cfg_ = ParseDualArmConfig(cfg);
 
-  parsed_log_entries_.clear();
-  if (cfg["logs"]) {
-    if (!cfg["logs"].IsSequence()) {
-      Fail("'logs' must be a sequence");
-    }
-    for (const auto& entry : cfg["logs"]) {
-      if (!entry.IsMap() || !entry["msg_type"]) {
-        Fail("each `logs` entry needs `msg_type`");
-      }
-      ParsedLogEntry e;
-      e.msg_type = entry["msg_type"].as<std::string>();
-      if (entry["instance"]) {
-        e.instance = entry["instance"].as<std::string>();
-      }
-      // Closed set: a typo is a hard failure at parse time.
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != kDualArmDiagLogMsgType) {
-        Fail("unknown msg_type in `logs`: " + e.msg_type);
-      }
-      parsed_log_entries_.push_back(std::move(e));
-    }
+  if (const std::string reason = ParseLogEntries(
+          cfg, {"rtc_msgs/DeviceStateLog", kDualArmDiagLogMsgType}, parsed_log_entries_);
+      !reason.empty()) {
+    Fail(reason);
   }
   // One body and at most one hand (#637) — the same bound on_configure passes
   // to CreateOwnedTopics, checked here too so the parse names the key.

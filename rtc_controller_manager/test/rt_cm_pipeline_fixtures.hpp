@@ -70,6 +70,11 @@ class PipelineTestController : public RTControllerInterface {
   // configs that are legal at the configured rate. -1 = LoadConfig never ran.
   static inline double captured_dt_at_load_config{-1.0};
 
+  // SessionLoggingEnabled() as observed inside that same first LoadConfig —
+  // the manager's enable_logging must reach the controller before it decides
+  // on any session file. -1 = LoadConfig never ran, 0 = false, 1 = true.
+  static inline int captured_session_logging_at_load_config{-1};
+
   // `rt_layout_profile` as this controller's OWN node saw it at on_configure —
   // the node a controller reads it from. "<absent>" = not declared there.
   static inline std::string captured_layout_profile{};
@@ -204,6 +209,7 @@ class PipelineTestController : public RTControllerInterface {
     captured_count = -1;
     captured_deep_b = -1.0;
     captured_dt_at_load_config = -1.0;
+    captured_session_logging_at_load_config = -1;
     captured_layout_profile.clear();
     captured_vals.clear();
     captured_tags.clear();
@@ -275,6 +281,9 @@ class PipelineTestController : public RTControllerInterface {
     // the observation with a value that cannot distinguish the two orderings.
     if (captured_dt_at_load_config < 0.0) {
       captured_dt_at_load_config = GetDefaultDt();
+    }
+    if (captured_session_logging_at_load_config < 0) {
+      captured_session_logging_at_load_config = SessionLoggingEnabled() ? 1 : 0;
     }
     if (!cfg) {
       return;

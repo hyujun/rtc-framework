@@ -49,6 +49,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
     for (std::size_t h = 0; h < hand_joint_names_.size(); ++h) {
       ctx.state_logs[groups[h + 1] + "_state"] = {hand_joint_names_[h], {}};
     }
+    ctx.session_logging_enabled = SessionLoggingEnabled();
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       ResetLogState();
@@ -173,7 +174,9 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
       mpc_timing_timer_ = node_->create_wall_timer(
           std::chrono::seconds(1), [this]() { LogMpcTick(); }, mpc_timing_cb_group_);
     }
-    if (!mpc_timing_logger_.IsOpen()) {
+    // Not with session logging off (the manager's enable_logging); Log() on a
+    // closed logger is a no-op.
+    if (SessionLoggingEnabled() && !mpc_timing_logger_.IsOpen()) {
       if (mpc_timing_logger_.Open()) {
         RCLCPP_INFO(logger_, "[locomotion] MPC tick-timing CSV: %s",
                     mpc_timing_logger_.Path().c_str());

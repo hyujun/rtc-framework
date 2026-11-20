@@ -214,6 +214,7 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
         .momentum_observer_enabled = momentum_wiring_.enabled(),
         .momentum_observer_joint_names = primary_joint_names_,
     };
+    ctx.session_logging_enabled = SessionLoggingEnabled();
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       ResetLogState();  // roll back channels registered before the missing one (#238)
@@ -237,7 +238,8 @@ RTControllerInterface::CallbackReturn DemoComplianceController::on_configure(
     task_diag_log_handle_ = std::move(reg.handles.task_diag);
     grasp_diag_log_handle_ = std::move(reg.handles.grasp_diag);
     compliance_diag_log_handle_ = std::move(reg.handles.compliance_diag);
-    LogGraspDiagWiring(logger_, grasp_controller_ != nullptr, ctx.grasp_diag_finger_names);
+    LogGraspDiagWiring(logger_, grasp_controller_ != nullptr, ctx.grasp_diag_finger_names,
+                       ctx.session_logging_enabled);
     if (!log_set_.empty() && node_) {
       log_drain_cb_group_ =
           node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

@@ -1,6 +1,7 @@
 #include "integrated_bringup/controllers/demo_catching_controller.hpp"
 #include "integrated_bringup/logging/pod_fill.hpp"
 #include "integrated_bringup/support/bringup_logging.hpp"
+#include "integrated_bringup/support/controller_log_registration.hpp"
 #include "rtc_base/tracing/trace_scope.hpp"
 #include "rtc_base/utils/clamp_commands.hpp"
 #include "rtc_controller_interface/device_readability.hpp"
@@ -266,29 +267,10 @@ void DemoCatchingController::LoadConfig(const YAML::Node& cfg) {
           : rtc::catching::CatchPoseIkConfig{};
 
   // ── logs: (Phase C) ─────────────────────────────────────────────────────
-  parsed_log_entries_.clear();
-  if (const YAML::Node logs = cfg["logs"]; logs) {
-    if (!logs.IsSequence()) {
-      throw std::runtime_error("DemoCatchingController: 'logs' must be a sequence");
-    }
-    for (const auto& entry : logs) {
-      if (!entry.IsMap() || !entry["msg_type"]) {
-        throw std::runtime_error("DemoCatchingController: each `logs` entry needs `msg_type`");
-      }
-      ParsedLogEntry e;
-      e.msg_type = entry["msg_type"].as<std::string>();
-      if (entry["instance"]) {
-        e.instance = entry["instance"].as<std::string>();
-      }
-      // Closed set: two channel types — the per-device state logs and the
-      // per-tick record. A typo is a hard fail at parse time rather
-      // than a CSV that never appears.
-      if (e.msg_type != "rtc_msgs/DeviceStateLog" && e.msg_type != kCatchingDiagLogMsgType) {
-        throw std::runtime_error("DemoCatchingController: unknown msg_type in `logs`: " +
-                                 e.msg_type);
-      }
-      parsed_log_entries_.push_back(std::move(e));
-    }
+  if (const std::string reason = ParseLogEntries(
+          cfg, {"rtc_msgs/DeviceStateLog", kCatchingDiagLogMsgType}, parsed_log_entries_);
+      !reason.empty()) {
+    throw std::runtime_error("DemoCatchingController: " + reason);
   }
 }
 

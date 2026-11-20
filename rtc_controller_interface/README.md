@@ -178,6 +178,7 @@ off-RT ingress → RT drain marshal 은 이 패키지 소유다. 큐는 depth 4 
 | `SetSystemModelConfig(cfg)` → `OnSystemModelConfigSet()` | CM 이 인스턴스 생성 직후 `LoadConfig` 전에 주입. `GetSystemModelConfig()` 는 미설정이면 `nullptr` |
 | `SetSharedModelBuilder(b)` · `GetSharedModelBuilder()` | CM 이 한 번 빌드한 `PinocchioModelBuilder` 공유. 없으면 컨트롤러가 직접 빌드로 폴백 |
 | `SetControlRate(hz)` · `GetDefaultDt()` | 제어 주기. `GetDefaultDt()` 는 `1/control_rate_`, rate 가 0 이하면 fallback 상수 |
+| `SetSessionLoggingEnabled(bool)` · `SessionLoggingEnabled()` | 관리자의 `enable_logging`. `false` 면 세션 파일을 열지 않는다 |
 | `GetTopicConfig()` · `ParseTopicConfig(node)` | 토픽 라우팅 조회 / YAML `topics:` 파싱 (protected static) |
 
 ### ControllerRegistry

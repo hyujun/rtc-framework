@@ -354,7 +354,8 @@ latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `Devi
 | `device_timeout_names` | string[] | `[]` | 그룹별 timeout 을 줄 대상 이름 (감시 대상은 설정된 모든 그룹) |
 | `device_timeout_values` | double[] | `[]` | 각 그룹의 state 타임아웃 (ms) |
 | `device_timeout_default_ms` | double | `1000.0` | 위 목록에 없는 그룹의 timeout (ms) |
-| `enable_logging` · `enable_timing_log` · `enable_device_log` | bool | `true` | CSV 로깅 전체 · 타이밍 · 디바이스별 |
+| `enable_logging` | bool | `true` | `false` 면 CM 도 controller 도 세션 파일을 열지 않는다 ([로그 끄기](../integrated_bringup/docs/controller-logs.md#로그-끄기)). read-only |
+| `enable_timing_log` | bool | `true` | CM timing CSV 2개. read-only. 제거된 `enable_device_log` 는 WARN 만 낸다 |
 | `max_log_sessions` | int | `10` | 로그 세션 보관 수. bringup launch 도 같은 트리를 정리하므로 launch 가 이 값을 자기 인자의 default 로 읽는다 — YAML 이 SSoT 이고 CLI `max_log_sessions:=N` 은 양쪽을 함께 움직인다 |
 | `use_sim_time_sync` | bool | `false` | MuJoCo lock-step — RT tick 을 sim step 완료로 깨운다 |
 | `sim_sync_timeout_sec` | double | `5.0` | step 이 이 시간 안에 완성되지 않으면 `sim_sync_timeout` E-STOP |

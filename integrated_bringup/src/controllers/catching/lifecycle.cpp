@@ -1594,6 +1594,7 @@ RTControllerInterface::CallbackReturn DemoCatchingController::on_configure(
     ctx.catching_diag_enabled = true;
     ctx.catching_diag_arm_joint_names = arm_joint_names_;
     ctx.catching_diag_tip_names = hand_sensor_names_;
+    ctx.session_logging_enabled = SessionLoggingEnabled();
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       ResetLogState();
@@ -3033,7 +3034,8 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
 
   // Timing CSV + 1 Hz drain, one-shot per controller lifetime (a re-activation
   // must not truncate the file or re-register the timer).
-  if (!planner_timing_logger_.IsOpen()) {
+  // Session logging off (the manager's enable_logging): none of the three files.
+  if (SessionLoggingEnabled() && !planner_timing_logger_.IsOpen()) {
     try {
       const auto timing_dir = rtc::TimingDir(rtc::ResolveSessionDir());
       std::error_code ec;
@@ -3046,7 +3048,7 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
       RCLCPP_WARN(logger_, "planner timing CSV disabled: %s", e.what());
     }
   }
-  if (!planner_events_file_.is_open()) {
+  if (SessionLoggingEnabled() && !planner_events_file_.is_open()) {
     try {
       // The tick record's directory (log_set_'s key), so the two files of
       // one session sit side by side.
@@ -3063,7 +3065,7 @@ void DemoCatchingController::SpawnPlannerThreadIfNeeded() noexcept {
       RCLCPP_WARN(logger_, "planner_events.csv disabled: %s", e.what());
     }
   }
-  if (!nlp_candidates_file_.is_open()) {
+  if (SessionLoggingEnabled() && !nlp_candidates_file_.is_open()) {
     try {
       const auto dir = rtc::ResolveSessionDir() / "controllers" / kCatchingLogKey;
       std::error_code ec;

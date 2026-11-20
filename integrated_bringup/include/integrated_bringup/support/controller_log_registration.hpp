@@ -44,11 +44,15 @@
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
 
+#include <yaml-cpp/yaml.h>
+
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -100,6 +104,13 @@ inline void DrainControllerLogs(rtc::ControllerLogSet& log_set, const rclcpp::Lo
 struct LogRegistrationContext {
   rclcpp::Logger logger;
   rtc::ControllerLogSet& log_set;
+
+  // The manager's `enable_logging` (RTControllerInterface::SessionLoggingEnabled).
+  // false registers nothing and opens nothing — the entries are still checked
+  // for their instance, so a YAML error is one whichever way the switch is.
+  // Unbound handles are the result, and their Push() is a no-op. Set it from
+  // the controller (`ctx.session_logging_enabled = SessionLoggingEnabled();`).
+  bool session_logging_enabled{true};
 
   // Map: DeviceStateLog instance string → (joint_names, motor_names) used by
   // the header writer. Entry omitted → that instance is not registered, even
@@ -289,7 +300,14 @@ inline void PushGraspDiagLog(rtc::LogHandle<GraspDiagLogPod>& handle,
 // a missing grasp_diag.csv otherwise reads as a logging bug, which is the
 // failure mode `pull_estimator_wiring.cpp` already had to fix once (#234 P-20).
 inline void LogGraspDiagWiring(const rclcpp::Logger& logger, bool has_controller,
-                               const std::vector<std::string>& finger_names) {
+                               const std::vector<std::string>& finger_names,
+                               bool session_logging = true) {
+  if (!session_logging) {
+    RCLCPP_INFO(logger,
+                "[grasp_diag] session logging is off (enable_logging: false) — no "
+                "grasp_diag.csv.");
+    return;
+  }
   if (!has_controller || finger_names.empty()) {
     RCLCPP_INFO(logger, "[grasp_diag] disabled — %s. No grasp_diag.csv will be written.",
                 !has_controller ? "no 'force_pi_grasp' block in demo_shared.yaml"
@@ -307,6 +325,68 @@ inline void LogGraspDiagWiring(const rclcpp::Logger& logger, bool has_controller
               "[grasp_diag] enabled — grasp_diag.csv, %zu finger column set(s): %s. Ticks not "
               "driven by the Force-PI law are logged as valid=0 rows.",
               finger_names.size(), names.c_str());
+}
+
+// ── `logs:` section parse (shared by every controller's LoadConfig) ─────────
+
+/// @brief Parse a controller's `logs:` section into `out` (cleared first).
+///
+/// Absent or null (`logs:` with nothing under it) is no entries: a list emptied
+/// in the field by deleting its items means "no logs", not a typo. Refused: a
+/// section that is not a sequence, an entry without `msg_type`, a non-string
+/// `msg_type` / `instance`, a type outside `accepted` (a typo is a refusal at
+/// parse time, not a CSV that never appears). A refusal leaves `out` empty.
+///
+/// @param cfg the controller's YAML node (the `logs` key is read from it)
+/// @param accepted the controller's closed set of channel types
+/// @param out parsed entries; EntryT is duck-typed (`msg_type`, `instance`)
+/// @return why the section was refused, empty when accepted. The caller turns
+///   it into its own error (Fail(), std::runtime_error, ...), so each
+///   controller keeps its error shape.
+template <typename EntryT>
+[[nodiscard]] std::string ParseLogEntries(const YAML::Node& cfg,
+                                          std::initializer_list<std::string_view> accepted,
+                                          std::vector<EntryT>& out) {
+  out.clear();
+  const YAML::Node logs = cfg["logs"];
+  if (!logs || logs.IsNull()) {
+    return {};
+  }
+  if (!logs.IsSequence()) {
+    return "'logs' must be a sequence";
+  }
+  for (const auto& entry : logs) {
+    if (!entry.IsMap() || !entry["msg_type"]) {
+      out.clear();
+      return "each `logs` entry needs `msg_type`";
+    }
+    // Checked here rather than left to as<std::string>(), whose throw would
+    // carry neither the controller's name nor its error type.
+    if (!entry["msg_type"].IsScalar() || (entry["instance"] && !entry["instance"].IsScalar())) {
+      out.clear();
+      return "`msg_type` and `instance` of a `logs` entry must be strings";
+    }
+    EntryT e;
+    e.msg_type = entry["msg_type"].template as<std::string>();
+    if (entry["instance"]) {
+      e.instance = entry["instance"].template as<std::string>();
+    }
+    bool known = false;
+    for (const auto type : accepted) {
+      known = known || e.msg_type == type;
+    }
+    if (!known) {
+      std::string reason = "unknown msg_type in `logs`: " + e.msg_type + " (accepted:";
+      for (const auto type : accepted) {
+        reason += " ";
+        reason += type;
+      }
+      out.clear();
+      return reason + ")";
+    }
+    out.push_back(std::move(e));
+  }
+  return {};
 }
 
 // ── Returned handles (caller assigns to its own typed members) ─────────────
@@ -373,6 +453,11 @@ template <typename ParsedLogEntryT>
                    entry.msg_type.c_str());
       result.status = LogRegistrationStatus::kMissingInstance;
       return result;
+    }
+    // Switched off, not failed: no channel and so no "failed to register"
+    // warning per entry.
+    if (!ctx.session_logging_enabled) {
+      continue;
     }
 
     if (entry.msg_type == "rtc_msgs/DeviceStateLog") {

@@ -54,6 +54,7 @@ rtc::RTControllerInterface::CallbackReturn HandJointController::on_configure(
         .joint_ff_enabled = true,
         .joint_ff_joint_names = joint_names_,
     };
+    ctx.session_logging_enabled = SessionLoggingEnabled();
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       ResetLogState();

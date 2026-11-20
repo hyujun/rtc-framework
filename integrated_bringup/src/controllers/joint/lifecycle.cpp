@@ -195,6 +195,7 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
         .momentum_observer_enabled = momentum_wiring_.enabled(),
         .momentum_observer_joint_names = primary_joint_names_,
     };
+    ctx.session_logging_enabled = SessionLoggingEnabled();
     auto reg = RegisterControllerLogs(parsed_log_entries_, ctx);
     if (reg.status == LogRegistrationStatus::kMissingInstance) {
       ResetLogState();  // roll back channels registered before the missing one (#238)
@@ -220,7 +221,8 @@ RTControllerInterface::CallbackReturn DemoJointController::on_configure(
     pull_estimator_log_handle_ = std::move(reg.handles.pull_estimator);
     momentum_observer_log_handle_ = std::move(reg.handles.momentum_observer);
     grasp_diag_log_handle_ = std::move(reg.handles.grasp_diag);
-    LogGraspDiagWiring(logger_, grasp_controller_ != nullptr, ctx.grasp_diag_finger_names);
+    LogGraspDiagWiring(logger_, grasp_controller_ != nullptr, ctx.grasp_diag_finger_names,
+                       ctx.session_logging_enabled);
 
     // Drain timer on a non-RT callback group (10 Hz). Single-threaded —
     // executor's MutuallyExclusive group is sufficient.
