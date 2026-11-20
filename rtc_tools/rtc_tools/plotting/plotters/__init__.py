@@ -40,6 +40,23 @@ from .joint_ff import (
     plot_joint_ff_tracking,
     print_joint_ff_statistics,
 )
+from .locomotion_diag import (
+    plot_locomotion_base,
+    plot_locomotion_contacts,
+    plot_locomotion_margins,
+    plot_locomotion_modes,
+    plot_locomotion_qp,
+    plot_locomotion_servo_tracking,
+)
+from .locomotion_truth import (
+    plot_truth_ages_auto,
+    plot_truth_base_pose_auto,
+    plot_truth_base_twist_auto,
+    plot_truth_cop_auto,
+    plot_truth_grf_auto,
+    plot_truth_grm_auto,
+    plot_truth_mask_auto,
+)
 from .momentum import (
     plot_momentum_observer,
     plot_momentum_payload,
@@ -136,6 +153,20 @@ __all__ = [
     "plot_joint_ff_torque",
     "plot_joint_ff_tracking",
     "print_joint_ff_statistics",
+    # locomotion controller (locomotion_diag.csv / locomotion_truth.csv)
+    "plot_locomotion_base",
+    "plot_locomotion_contacts",
+    "plot_locomotion_margins",
+    "plot_locomotion_modes",
+    "plot_locomotion_qp",
+    "plot_locomotion_servo_tracking",
+    "plot_truth_ages_auto",
+    "plot_truth_base_pose_auto",
+    "plot_truth_base_twist_auto",
+    "plot_truth_cop_auto",
+    "plot_truth_grf_auto",
+    "plot_truth_grm_auto",
+    "plot_truth_mask_auto",
     # momentum observer (#135 Layer 1b / 2A, #455 Layer 2B)
     "plot_momentum_observer",
     "plot_momentum_payload",

@@ -45,6 +45,10 @@ are different, so only elapsed time is comparable).
 Non-finite values are never dropped silently: the JSON summary counts them per
 series (``n_nonfinite``) and leaves them out of the percentiles.
 
+The figures are drawn by :mod:`rtc_tools.plotting.plotters.locomotion_diag`, the
+same functions ``plot_rtc_log locomotion_diag.csv`` calls; this module owns the
+loading, the derived series, the summary and the CLI.
+
 Pure Python plus numpy and matplotlib: no ROS.
 """
 
@@ -406,203 +410,6 @@ def _mpc_summary(diag: Table) -> dict:
     }
 
 
-# ── figures ────────────────────────────────────────────────────────────────
-
-
-def _grid(n: int, ncols: int = 2):
-    import matplotlib.pyplot as plt
-
-    nrows = max(1, math.ceil(n / ncols))
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(6.5 * ncols, 2.4 * nrows + 1), sharex=True, squeeze=False
-    )
-    return fig, axes.ravel()
-
-
-def _note(fig, text: str) -> None:
-    fig.text(0.5, 0.5, text, ha="center", va="center")
-
-
-def _save(fig, path: Path) -> None:
-    import matplotlib.pyplot as plt
-
-    fig.tight_layout()
-    fig.savefig(path, dpi=110)
-    plt.close(fig)
-
-
-def plot_base(sess: Session, z_ref: float | None, path: Path) -> None:
-    import matplotlib.pyplot as plt
-
-    t = sess.diag["t_relative_s"]
-    base = base_series(sess.diag, z_ref)
-    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
-    label = "height - z_ref [m]" if z_ref is not None else "height - first sample [m]"
-    axes[0].plot(t, base["base_height_dev_m"])
-    axes[0].set_ylabel(label)
-    axes[1].plot(t, base["base_xy_drift_m"])
-    axes[1].set_ylabel("xy drift [m]")
-    axes[2].plot(t, base["base_tilt_rad"])
-    axes[2].set_ylabel("tilt [rad]")
-    axes[2].set_xlabel("t [s]")
-    for ax in axes:
-        ax.grid(alpha=0.3)
-    fig.suptitle("Base pose")
-    _save(fig, path)
-
-
-def plot_contacts(sess: Session, stance: list | None, path: Path) -> None:
-    import matplotlib.pyplot as plt
-
-    t = sess.diag["t_relative_s"]
-    nrows = 2 if stance else 1
-    fig, axes = plt.subplots(nrows, 1, figsize=(10, 4 * nrows), sharex=True, squeeze=False)
-    ax = axes[0, 0]
-    for c in sess.diag_names.contacts:
-        ax.plot(t, sess.diag[f"lambda_{c}_fz"], label=f"QP {c}")
-    if stance:
-        ts = np.array([s.t for s in stance]) - stance[0].t + t[0]
-        for i in range(len(stance[0].loads)):
-            ax.plot(ts, [s.loads[i] for s in stance], "--", label=f"recorded foot{i}")
-        slip_ax = axes[1, 0]
-        for i in range(len(stance[0].feet)):
-            xy = np.array([s.feet[i][:2] for s in stance])
-            slip_ax.plot(ts, foot_slip(xy), label=f"foot{i}")
-        slip_ax.set_ylabel("foot xy slip [m]")
-        slip_ax.legend(fontsize=8)
-        slip_ax.grid(alpha=0.3)
-    ax.set_ylabel("normal force [N]")
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
-    axes[-1, 0].set_xlabel("t [s]")
-    fig.suptitle("Contact normal forces")
-    _save(fig, path)
-
-
-def plot_joint_torque(sess: Session, limits: dict[str, float] | None, path: Path) -> None:
-    if sess.ff is None:
-        fig, _ = _grid(1)
-        _note(fig, f"{JOINT_FF_FILE} not found")
-        _save(fig, path)
-        return
-    t = sess.diag["t_relative_s"]
-    fig, axes = _grid(len(sess.ff_joints))
-    for ax, j in zip(axes, sess.ff_joints, strict=False):
-        ax.plot(t, sess.ff[f"tau_ff_{j}"], label="tau_ff")
-        if j in sess.effort:
-            ax.plot(t, sess.effort[j], label="measured effort", alpha=0.8)
-        if limits and j in limits:
-            ax.axhline(limits[j], color="r", ls=":", lw=1, label="+/- max_torque")
-            ax.axhline(-limits[j], color="r", ls=":", lw=1)
-        ax.set_title(j, fontsize=9)
-        ax.set_ylabel("[N m]")
-        ax.grid(alpha=0.3)
-    axes[0].legend(fontsize=7)
-    fig.suptitle("Joint torque: feedforward vs measured")
-    _save(fig, path)
-
-
-def plot_servo_tracking(sess: Session, path: Path) -> None:
-    import matplotlib.pyplot as plt
-
-    t = sess.diag["t_relative_s"]
-    joints = sess.diag_names.joints
-    fig, axes = plt.subplots(
-        max(1, len(joints)),
-        2,
-        figsize=(13, 2.2 * max(1, len(joints)) + 1),
-        sharex=True,
-        squeeze=False,
-    )
-    for row, j in zip(axes, joints, strict=False):
-        if sess.ff is not None and f"q_ref_{j}" in sess.ff and f"q_{j}" in sess.ff:
-            row[0].plot(t, sess.ff[f"q_ref_{j}"] - sess.ff[f"q_{j}"])
-        row[0].set_ylabel(f"{j}\nq_ref - q [rad]", fontsize=8)
-        row[1].plot(t, sess.diag[f"tau_servo_{j}"])
-        row[1].set_ylabel("tau_servo [N m]", fontsize=8)
-        for ax in row:
-            ax.grid(alpha=0.3)
-    if sess.ff is None:
-        fig.text(0.25, 0.97, f"{JOINT_FF_FILE} not found", ha="center")
-    axes[-1, 0].set_xlabel("t [s]")
-    axes[-1, 1].set_xlabel("t [s]")
-    fig.suptitle("Servo tracking error and servo torque")
-    _save(fig, path)
-
-
-def plot_qp(sess: Session, path: Path) -> None:
-    import matplotlib.pyplot as plt
-
-    t = sess.diag["t_relative_s"]
-    d = sess.diag
-    fig, axes = plt.subplots(5, 1, figsize=(10, 10), sharex=True)
-    axes[0].step(t, d["qp_status"], where="post")
-    axes[0].set_ylabel("qp_status")
-    axes[1].step(t, d["qp_iterations"], where="post")
-    axes[1].set_ylabel("qp_iterations")
-    axes[2].plot(t, d["solve_time_us"])
-    axes[2].set_ylabel("solve_time_us")
-    axes[3].plot(t, d["wbc_tick_us"])
-    axes[3].set_ylabel("wbc_tick_us")
-    axes[4].step(t, d["tau_valid"], where="post")
-    axes[4].set_ylabel("tau_valid")
-    axes[4].set_xlabel("t [s]")
-    for ax in axes:
-        ax.grid(alpha=0.3)
-    fig.suptitle("QP timeline")
-    _save(fig, path)
-
-
-def plot_margins(sess: Session, path: Path) -> None:
-    import matplotlib.pyplot as plt
-
-    t = sess.diag["t_relative_s"]
-    stale = sess.diag["margins_stale"] > 0.5
-    fig, axes = plt.subplots(len(MARGINS), 1, figsize=(10, 2.2 * len(MARGINS) + 1), sharex=True)
-    for ax, m, live in zip(axes, MARGINS, margin_series(sess.diag).values(), strict=True):
-        ax.plot(t, live)
-        ax.axhline(0.0, color="r", lw=1)
-        ax.fill_between(
-            t,
-            0,
-            1,
-            where=stale,
-            transform=ax.get_xaxis_transform(),
-            color="grey",
-            alpha=0.25,
-            lw=0,
-        )
-        ax.set_ylabel(m, fontsize=8)
-        ax.grid(alpha=0.3)
-    axes[-1].set_xlabel("t [s]  (grey = stale rows)")
-    fig.suptitle("Margins (positive = inside)")
-    _save(fig, path)
-
-
-def plot_modes(sess: Session, path: Path) -> None:
-    import matplotlib.pyplot as plt
-
-    t = sess.diag["t_relative_s"]
-    specs = (
-        ("mode", MODE_NAMES),
-        ("fault_cause", FAULT_CAUSE_NAMES),
-        ("health", HEALTH_NAMES),
-        ("source_status", SOURCE_STATUS_NAMES),
-    )
-    if "ref_source" in sess.diag:
-        specs = (*specs, ("ref_source", REFERENCE_SOURCE_NAMES))
-    fig, axes = plt.subplots(len(specs), 1, figsize=(10, 8), sharex=True)
-    for ax, (col, names) in zip(axes, specs, strict=True):
-        ax.step(t, sess.diag[col], where="post")
-        ax.set_yticks(range(len(names)))
-        ax.set_yticklabels(names, fontsize=8)
-        ax.set_ylabel(col, fontsize=8)
-        ax.grid(alpha=0.3)
-    axes[-1].set_xlabel("t [s]")
-    fig.suptitle("Mode, fault cause, health, source status (and reference source)")
-    _save(fig, path)
-
-
 # ── entry point ────────────────────────────────────────────────────────────
 
 
@@ -628,6 +435,8 @@ def main(argv: list[str] | None = None) -> int:
     import matplotlib
 
     matplotlib.use("Agg")
+    # After the backend is chosen: the plotter module imports pyplot at once.
+    from rtc_tools.plotting.plotters import locomotion_diag as figures
 
     try:
         sess = load_session(args.session_dir, args.group, args.t0, args.t1)
@@ -647,13 +456,13 @@ def main(argv: list[str] | None = None) -> int:
 
     out = args.out or args.session_dir / "plots" / "locomotion_diag"
     out.mkdir(parents=True, exist_ok=True)
-    plot_base(sess, args.z_ref, out / FIGURE_FILES[0])
-    plot_contacts(sess, stance, out / FIGURE_FILES[1])
-    plot_joint_torque(sess, limits, out / FIGURE_FILES[2])
-    plot_servo_tracking(sess, out / FIGURE_FILES[3])
-    plot_qp(sess, out / FIGURE_FILES[4])
-    plot_margins(sess, out / FIGURE_FILES[5])
-    plot_modes(sess, out / FIGURE_FILES[6])
+    figures.plot_base(sess, args.z_ref, out / FIGURE_FILES[0])
+    figures.plot_contacts(sess, stance, out / FIGURE_FILES[1])
+    figures.plot_joint_torque(sess, limits, out / FIGURE_FILES[2])
+    figures.plot_servo_tracking(sess, out / FIGURE_FILES[3])
+    figures.plot_qp(sess, out / FIGURE_FILES[4])
+    figures.plot_margins(sess, out / FIGURE_FILES[5])
+    figures.plot_modes(sess, out / FIGURE_FILES[6])
 
     summary = summarize(sess.diag, args.z_ref)
     summary["contacts"] = sess.diag_names.contacts

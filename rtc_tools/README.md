@@ -95,6 +95,7 @@ ros2 run rtc_tools plot_rtc_log momentum_observer.csv --stats
 ros2 run rtc_tools plot_rtc_log planner_events.csv
 ros2 run rtc_tools plot_rtc_log dualarm_diag.csv
 ros2 run rtc_tools plot_rtc_log joint_ff.csv
+ros2 run rtc_tools plot_rtc_log locomotion_diag.csv     # locomotion_truth.csv 도 같다
 # 같은 분에 재기동해 한 파일에 런이 둘 이상이면 (기본: 마지막 런) 특정 런 선택
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --run-id 260808143052
 # 창 없이 PNG 만 저장
@@ -123,6 +124,8 @@ ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all      # 모든 figur
 | `planner_events.csv` | planner_events (계획기 wake 당 한 행 — 지문 열 `n_in_window` + `rank_error_budget`) |
 | `dualarm_diag.csv` | dualarm_diag (다중 frame CLIK tick 레코드 — 지문 열 `clik_ran` + `<task>_err_lin`) |
 | `joint_ff.csv` | joint_ff (중력 feedforward 관절 레코드 q · q_ref · g · tau_ff — 지문 열 `ff_enabled` + `tau_ff_<joint>`; `mode` 열이 있으면 비-tracking 구간 음영 · drift 통계) |
+| `locomotion_diag.csv` | locomotion_diag (보행 컨트롤러 tick 진단 — 지문 열 `wbc_tick_us` + `fault_cause`; 그림은 `plot_locomotion_diag` 와 같은 함수) |
+| `locomotion_truth.csv` | locomotion_truth (sim 참값 — 지문 열 `truth_mask` + `truth_base_*`; base 자세 · twist, 접촉별 반력 · CoP, lane 나이, mask; 접촉 이름은 헤더에서) |
 
 진단 CSV 를 읽는 규칙은 [catching-analysis-rules.md](../docs/catching-analysis-rules.md#plot_rtc_log) 에 있다.
 
@@ -307,6 +310,8 @@ plot_locomotion_diag <session> [--stance-csv F] [--base-yaml _base.yaml --group 
 ```
 
 그림: base 높이·drift·기울기 / 접촉 법선력 / 관절 `tau_ff`·effort·`max_torque` / `q_ref − q`·`tau_servo` / QP 타임라인 / margin / mode·fault·health·source. JSON: 계열별 p50·p99·min·max (비유한 값은 개수만 세고 제외), mode 별 행 수, fault latch, `pose_guard_refused_rows` (자세 가드가 거부한 행 수; 열이 없는 옛 로그는 null), 최대 tick 간격; MPC 열이 있으면 reference 출처별 행 수 · stand 비율 · `time_to_stand_s` · policy age 분포 · stand 중 plan 의 base z 평균.
+
+`plot_rtc_log locomotion_diag.csv` 는 같은 그림 함수로 CSV 한 장만 그린다 — `joint_ff.csv` · state CSV · stance · YAML 이 필요한 `03_joint_torque` 는 빠지고 JSON · `--t0/--t1/--z-ref` 는 `plot_locomotion_diag` 만 갖는다. `locomotion_truth.csv` 는 `plot_rtc_log` 만 그린다.
 
 ### hand_canfd_gate
 

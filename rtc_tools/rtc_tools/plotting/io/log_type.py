@@ -21,6 +21,10 @@ def detect_log_type(filepath):
                                          plotting; hand_udp_timing_log*.csv
                                          is the pre-F08 name, #905)
 
+    Locomotion controller (fixed instance stems, also fingerprinted by column):
+      locomotion_diag.csv  → locomotion_diag
+      locomotion_truth.csv → locomotion_truth
+
     Phase C controller-owned CSVs live under
     <session>/controllers/<config_key>/<instance>.csv. The instance
     stems do not encode their type, so we use the parent directory as
@@ -33,7 +37,15 @@ def detect_log_type(filepath):
     # diagnostics file has a fixed `wbc_diag` stem; the WBC arm/hand state
     # files reuse the generic `<dev>_state` stem, so they fall through to the
     # column fallback (which keys on the WBC-only `accel_*` columns).
-    if stem == "wbc_diag" or stem.endswith("wbc_diag"):
+    if stem == "locomotion_diag" or stem.endswith("locomotion_diag"):
+        # Whole-body locomotion controller per-tick record (fixed instance
+        # stem), written by locomotion_controller.
+        return "locomotion_diag"
+    elif stem == "locomotion_truth" or stem.endswith("locomotion_truth"):
+        # Simulator ground truth written beside it, only when a truth lane was
+        # valid (fixed instance stem).
+        return "locomotion_truth"
+    elif stem == "wbc_diag" or stem.endswith("wbc_diag"):
         return "wbc_diag"
     elif stem == "grasp_diag" or stem.endswith("grasp_diag"):
         # Per-tick Force-PI servo + stiffness-estimator diagnostics (#428) —
@@ -100,6 +112,17 @@ def detect_log_type_by_columns(columns):
     on the filename to pick the cm/mpc pipeline if needed.
     """
     cols = set(columns)
+    # Locomotion controller logs. Both MUST precede the wbc_diag branch below:
+    # locomotion_diag.csv carries `solve_time_us` and `lambda_<c>_fx` columns
+    # too, so it would be classified as a WBC diagnostics file and plotted with
+    # the wrong pipeline. `wbc_tick_us` + `fault_cause` is the discriminating
+    # pair (neither is emitted by another pod). The truth file's `truth_mask`
+    # + a `truth_base_` column likewise; its `truth_` prefix keeps it clear of
+    # every other fingerprint.
+    if "wbc_tick_us" in cols and "fault_cause" in cols:
+        return "locomotion_diag"
+    if "truth_mask" in cols and any(c.startswith("truth_base_") for c in cols):
+        return "locomotion_truth"
     # WBC diagnostics: per-tick TSID/QP solver telemetry (single wbc_diag.csv).
     # Distinct from timing CSVs (`solve_time_us`, not `t_*_us`).
     if "solve_time_us" in cols and (
