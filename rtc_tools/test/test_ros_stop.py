@@ -77,6 +77,31 @@ def test_a_signal_inside_the_block_sets_the_flag_and_raises_nothing(sig):
     assert signal.getsignal(sig) is before, "the previous handler is back after the block"
 
 
+def test_the_flag_counts_interrupts_and_marks_other_signals():
+    # A loop that ends at a cycle boundary on the first Ctrl-C and at once on
+    # the second, or on the terminal going away, reads these two.
+    flag = ros_stop.StopFlag()
+    flag(signal.SIGINT, None)
+    assert (flag.requested, flag.interrupts, flag.terminated) == (True, 1, False)
+    flag(signal.SIGINT, None)
+    flag(signal.SIGHUP, None)
+    assert (flag.interrupts, flag.terminated) == (2, True)
+    plain = ros_stop.StopFlag()
+    plain()
+    assert (plain.requested, plain.interrupts) == (True, 1)
+
+
+def test_the_routed_signals_can_include_sighup():
+    flag = ros_stop.StopFlag()
+    before = signal.getsignal(signal.SIGHUP)
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    with ros_stop.stop_handlers(flag, signals=signals):
+        assert signal.getsignal(signal.SIGHUP) is flag
+        _send_to_self(signal.SIGHUP, flag)
+        assert flag.terminated and flag.interrupts == 0
+    assert signal.getsignal(signal.SIGHUP) is before
+
+
 def test_the_previous_handlers_come_back_even_when_the_block_raises():
     flag = ros_stop.StopFlag()
     before = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}

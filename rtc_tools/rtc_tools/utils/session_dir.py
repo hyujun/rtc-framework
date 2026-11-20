@@ -69,10 +69,11 @@ def is_session_dir_name(name: str) -> bool:
     return bool(_SESSION_PATTERN.match(name))
 
 
-def resolve_logging_root() -> str:
-    """활성 colcon 워크스페이스의 ``logging_data`` 루트 경로를 결정합니다.
+def workspace_logging_root() -> str | None:
+    """``resolve_logging_root`` 의 1·2 단 — 워크스페이스가 정하는 루트, 없으면 None.
 
-    C++ ``rtc::ResolveLoggingRoot()`` 와 동일한 3단 체인.
+    마지막 폴백 (``$PWD/logging_data``) 은 터미널이 어디 있느냐일 뿐이라, 거기서
+    *읽는* 도구 (demo_controller_sequence 의 preset · sequence 파일) 는 이것을 쓴다.
     """
     # 1) COLCON_PREFIX_PATH 첫 entry 의 parent
     prefix_env = os.environ.get("COLCON_PREFIX_PATH", "")
@@ -90,9 +91,16 @@ def resolve_logging_root() -> str:
         if parent == cur:
             break
         cur = parent
+    return None
 
+
+def resolve_logging_root() -> str:
+    """활성 colcon 워크스페이스의 ``logging_data`` 루트 경로를 결정합니다.
+
+    C++ ``rtc::ResolveLoggingRoot()`` 와 동일한 3단 체인.
+    """
     # 3) 최종 폴백
-    return os.path.join(os.getcwd(), "logging_data")
+    return workspace_logging_root() or os.path.join(os.getcwd(), "logging_data")
 
 
 def _ensure_session_subdirs(session_dir: str) -> None:

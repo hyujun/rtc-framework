@@ -26,19 +26,33 @@ from contextlib import contextmanager
 
 
 class StopFlag:
-    """Set by the signal handlers (it is one), read by the spin loop."""
+    """Set by the signal handlers (it is one), read by the spin loop.
+
+    ``requested`` is any stop. A loop that tells a first Ctrl-C from a second
+    one, or Ctrl-C from the end of the terminal, reads ``interrupts`` (SIGINT
+    count; a call without a signal counts as one) and ``terminated`` (any
+    other signal routed here: SIGTERM, SIGHUP).
+    """
 
     def __init__(self) -> None:
         self.requested = False
+        self.interrupts = 0
+        self.terminated = False
 
-    def __call__(self, *_: object) -> None:
+    def __call__(self, signum: object = None, *_: object) -> None:
         self.requested = True
+        if signum is None or signum == signal.SIGINT:
+            self.interrupts += 1
+        else:
+            self.terminated = True
 
 
 @contextmanager
-def stop_handlers(flag: StopFlag) -> Iterator[StopFlag]:
-    """Route SIGINT and SIGTERM to `flag` inside the block; the previous handlers return after it."""
-    previous = {s: signal.signal(s, flag) for s in (signal.SIGINT, signal.SIGTERM)}
+def stop_handlers(
+    flag: StopFlag, signals: tuple[int, ...] = (signal.SIGINT, signal.SIGTERM)
+) -> Iterator[StopFlag]:
+    """Route `signals` (SIGINT and SIGTERM by default) to `flag` inside the block; the previous handlers return after it."""
+    previous = {s: signal.signal(s, flag) for s in signals}
     try:
         yield flag
     finally:

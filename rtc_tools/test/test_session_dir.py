@@ -22,6 +22,7 @@ from rtc_tools.utils.session_dir import (
     get_session_dir,
     list_session_dirs,
     resolve_logging_root,
+    workspace_logging_root,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -131,6 +132,21 @@ def test_logging_root_final_fallback_is_cwd(tmp_path, chdir):
     chdir(bare)
 
     assert resolve_logging_root() == str(bare / "logging_data")
+
+
+def test_workspace_logging_root_has_no_cwd_fallback(tmp_path, chdir):
+    # A reader (demo_controller_sequence) must not take wherever the terminal
+    # is for the workspace: outside one there is no root at all.
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    chdir(bare)
+    assert workspace_logging_root() is None
+
+    ws = tmp_path / "ws"
+    (ws / "install").mkdir(parents=True)
+    (ws / "src").mkdir()
+    chdir(ws / "src")
+    assert workspace_logging_root() == str(ws / "logging_data") == resolve_logging_root()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

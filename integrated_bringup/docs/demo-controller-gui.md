@@ -73,6 +73,8 @@ Preset 패널의 `Toggle Close` / `Open` 콤보에 고른 두 preset 을 키 하
 
 ## Sequence 탭 (손 posture 순차 실행)
 
+같은 파일을 GUI 없이 몇 시간씩 반복하는 것은 [demo_controller_sequence](demo-controller-sequence.md) (p2 · p2_left) 다.
+
 저장된 preset 을 목록에 담아 **손 목표만** 차례로 보냅니다. 팔은 명령하지 않습니다: preset 에 적힌 `controller` 와 `robot_target` 은 쓰지 않고, 컨트롤러 전환도 하지 않습니다. 목표는 재생을 시작한 시점의 active controller 로 갑니다.
 
 - **목록**: `Preset` 콤보에서 고르고 `Add` (선택한 행 뒤, 선택이 없으면 끝) · `Update` (선택한 행을 편집 칸 값으로) · `Remove` · `Up` · `Down`. 같은 preset 을 여러 번 넣을 수 있습니다. 목록과 허용오차는 preset 파일 옆 `demo_gui_sequences_<scope>.json` 에 저장됩니다 (프로파일당 목록 하나).

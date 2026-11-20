@@ -234,6 +234,7 @@ class SequenceRunner:
         self._tolerance_rad = math.radians(DEFAULT_TOLERANCE_DEG)
         self._since = 0.0  # when the current state was entered
         self._expected_s = 0.0
+        self._stop_at_cycle_end = False
 
     # ── Control ──────────────────────────────────────────────────────────────
 
@@ -260,12 +261,20 @@ class SequenceRunner:
         self._tolerance_rad = math.radians(clamp_tolerance(tolerance_deg))
         self.mode, self.index, self.cycle = mode, 0, 0
         self.result, self.aborted = "", False
+        self._stop_at_cycle_end = False
         self.state = READY
         return ""
 
     def stop(self, reason: str = "stopped by the operator") -> None:
         if self.running:
             self._end(f"{reason} at {self._where()}", aborted=False)
+
+    def stop_at_cycle_end(self) -> None:
+        """End the run when the pass in progress completes (its last step
+        reached and its dwell over) instead of starting the next one; not an
+        abort. ``stop`` remains the immediate end."""
+        if self.running:
+            self._stop_at_cycle_end = True
 
     def awaiting(self, token: int) -> bool:
         """Is the send identified by ``token`` still wanted?"""
@@ -397,6 +406,10 @@ class SequenceRunner:
         if self.mode == MODE_ONCE:
             self.index = len(self._steps) - 1
             self._end(f"done — {len(self._steps)} steps played once", aborted=False)
+            return False
+        if self._stop_at_cycle_end:
+            self.index = len(self._steps) - 1
+            self._end(f"stopped at the end of cycle {self.cycle}", aborted=False)
             return False
         self.index = 0
         self.state = READY
