@@ -32,6 +32,19 @@ from rtc_teleop_input.teleop_view import RosBridge, TeleopWindow
 VIEW_RATE_HZ = 30.0
 
 
+def quit_on_signals(app: QApplication) -> None:
+    """SIGINT and SIGTERM close the window, so ``main``'s teardown runs.
+
+    rclpy's own handlers stay uninstalled (``SignalHandlerOptions.NO``): they
+    shut the context down and leave the Qt loop running with a dead node — the
+    window never closes. Python runs this handler when it next gets control (a
+    timer tick); the quit is posted through a zero timer because a ``quit``
+    before ``exec_`` has started is dropped.
+    """
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, lambda *_: QTimer.singleShot(0, app.quit))
+
+
 def start_timers(node, window) -> tuple[QTimer, QTimer]:
     """The publish tick and the redraw, both on the GUI thread."""
     publish_timer = QTimer()
@@ -45,13 +58,9 @@ def start_timers(node, window) -> tuple[QTimer, QTimer]:
 
 
 def main(args=None) -> int:
-    # rclpy's own handlers would shut the context down under a running Qt
-    # loop; SIGINT and SIGTERM close the window instead. The handler runs
-    # when Python next gets control, at the latest on the next publish tick.
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     app = QApplication(sys.argv)
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(signum, lambda *_: app.quit())
+    quit_on_signals(app)
     bridge = RosBridge()
     node = None
     try:
