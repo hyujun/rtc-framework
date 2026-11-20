@@ -29,6 +29,7 @@ from PyQt5.QtWidgets import (
 )
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -1630,13 +1631,26 @@ class ROSNode(Node):
         self.get_logger().info(f"Published hand pose: {hand_pose}")
 
 
+def quit_on_signals(app: QApplication) -> None:
+    """SIGINT and SIGTERM close the window, so ``main``'s teardown runs.
+
+    rclpy's own handlers stay uninstalled (``SignalHandlerOptions.NO``): they
+    shut the context down and leave the Qt loop running with a dead node — the
+    window never closes. Python runs this handler when it next gets control (a
+    timer tick); the quit is posted through a zero timer because a ``quit``
+    before ``exec_`` has started is dropped.
+    """
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, lambda *_: QTimer.singleShot(0, app.quit))
+
+
 def main(args=None):
-    rclpy.init(args=args)
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(CATPPUCCIN_STYLESHEET)
-    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    quit_on_signals(app)
 
     gui = MotionEditor()
     gui.show()

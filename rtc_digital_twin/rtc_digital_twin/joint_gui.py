@@ -45,6 +45,7 @@ from python_qt_binding.QtWidgets import (
     QWidget,
 )
 from rclpy.node import Node
+from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import JointState
 
 from rtc_digital_twin.urdf_parser import JointMeta, UrdfParser
@@ -55,6 +56,19 @@ _SLIDER_RANGE = 10000
 # Default limits for continuous joints (degrees)
 _CONTINUOUS_MIN_DEG = -360.0
 _CONTINUOUS_MAX_DEG = 360.0
+
+
+def quit_on_signals(app: QApplication) -> None:
+    """SIGINT and SIGTERM close the window, so ``main``'s teardown runs.
+
+    rclpy's own handlers stay uninstalled (``SignalHandlerOptions.NO``): they
+    shut the context down and leave the Qt loop running with a dead node — the
+    window never closes. Python runs this handler when it next gets control (a
+    timer tick); the quit is posted through a zero timer because a ``quit``
+    before ``exec_`` has started is dropped.
+    """
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, lambda *_: QTimer.singleShot(0, app.quit))
 
 
 class JointWidget(QWidget):
@@ -318,14 +332,12 @@ class JointGuiNode(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-
-    # Allow Ctrl+C to work
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
 
     node = JointGuiNode()
 
     app = QApplication(sys.argv)
+    quit_on_signals(app)
     window = JointGuiWindow(node.joint_metas)
     node.set_window(window)
     window.show()
@@ -339,8 +351,6 @@ def main(args=None):
 
     try:
         app.exec_()
-    except KeyboardInterrupt:
-        node.get_logger().info("Shutting down (KeyboardInterrupt)")
     finally:
         node.get_logger().info("Joint GUI shutting down")
         node.destroy_node()

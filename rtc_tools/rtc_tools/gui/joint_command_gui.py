@@ -32,6 +32,7 @@ import time
 import rclpy
 from python_qt_binding.QtCore import Qt, QTimer
 from python_qt_binding.QtWidgets import QApplication
+from rclpy.signals import SignalHandlerOptions
 
 from rtc_tools.gui.joint_command_model import ConfigError
 from rtc_tools.gui.joint_command_ros import CommandLoop, JointCommandNode, SpinThread
@@ -41,9 +42,21 @@ from rtc_tools.gui.joint_command_view import MainWindow
 VIEW_RATE_HZ = 10.0
 
 
+def quit_on_signals(app: QApplication) -> None:
+    """SIGINT and SIGTERM close the window, so ``main``'s teardown runs.
+
+    rclpy's own handlers stay uninstalled (``SignalHandlerOptions.NO``): they
+    shut the context down and leave the Qt loop running with a dead node — the
+    window never closes. Python runs this handler when it next gets control (a
+    timer tick); the quit is posted through a zero timer because a ``quit``
+    before ``exec_`` has started is dropped.
+    """
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, lambda *_: QTimer.singleShot(0, app.quit))
+
+
 def main(args=None) -> int:
-    rclpy.init(args=args)
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
     try:
         node = JointCommandNode()
     except ConfigError as exc:
@@ -54,6 +67,7 @@ def main(args=None) -> int:
     spin = SpinThread(node)
     loop = CommandLoop(node)
     app = QApplication(sys.argv)
+    quit_on_signals(app)
     topics = {t.label: t.state_topic for t in node.candidates}
     window = MainWindow(
         "Joint command GUI",
