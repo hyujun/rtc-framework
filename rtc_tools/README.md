@@ -5,7 +5,7 @@ RTC 로그 시각화, 포구 sim 평가 도구, MJCF/URDF 변환·비교, launch
 ## 개요
 
 - 제어 로그 CSV 를 그리고 (`plot_rtc_log`), 동적 포구 sim 의 시행을 오프라인으로 평가하며 (`catching_*` · `catch_*`), MJCF/URDF 를 변환·비교하고, 손 관절을 슬라이더로 명령한다 (`joint_command_gui`).
-- 실행 파일은 `setup.py` 의 `console_scripts` 40 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
+- 실행 파일은 `setup.py` 의 `console_scripts` 41 개이고 `ros2 run rtc_tools <명령>` 으로 부른다. 여기 없는 모듈은 `python3 -m` 으로 부른다.
 - `launch/` 와 `utils/` 의 모듈은 다른 패키지의 launch 파일과 도구가 import 한다 (아래 [launch 헬퍼](#launch-헬퍼와-utils-모듈)).
 - 분석 CLI 의 판정 규칙은 [catching-analysis-rules.md](../docs/catching-analysis-rules.md), 열의 뜻은 각 도구의 머리 docstring 이 갖는다. 이 README 는 실행 방법만 둔다.
 - 컨트롤러 데모 GUI 는 이 패키지에 없다 (손 관절 명령 GUI `joint_command_gui` 만 있다): [integrated_bringup/scripts/demo_controller_gui.py](../integrated_bringup/scripts/demo_controller_gui.py).
@@ -57,6 +57,7 @@ ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.
 | `estimator_metrics` | `estimator_replay` 재생 CSV 의 open-loop 추정기 지표 + K run 일관성 판정 (정의는 모듈 docstring) | `estimator_metrics replay.csv [--compare-online]` |
 | `walk_eval` | 보행 run 묶음의 tier 선언 지표 (`_truth` · `_est`, 없는 tier 는 거부) · run 유효성 · arm 통계 · 순위 비용 (정의는 모듈 docstring) | `walk_eval <batch> --spec spec.yaml --out eval.json` |
 | `model_match` | 제어 URDF 와 sim MJCF 가 같은 몸인지: 총질량 · CoM · 합성 관성의 차 (pinocchio · mujoco 필요) | `model_match robot.urdf.xacro scene.xml` |
+| `perturb_mjcf` | MJCF 사본에서 지정한 body 의 질량 · 관성만 같은 배율로 바꾼다 (강건성 run 의 섭동 plant — 구조는 그대로) | `perturb_mjcf scene.xml scene_heavy.xml --scale torso_link=1.1` |
 | `analyze_hand_canfd_gate` | CAN FD 손 실기 run 의 G-3 게이트 판정 (D55) | `analyze_hand_canfd_gate <session> g3.log --node-log node.log` |
 | `analyze_hand_gravity_ff` | 손 중력 feedforward A/B/A run (`joint_ff.csv`) 의 PASS / FAIL 판정 | `analyze_hand_gravity_ff <session> --json-out ff.json` |
 | `joint_command_gui` | 손 관절 슬라이더 명령 GUI (`joint_state_publisher_gui` 류) | 아래 절 |

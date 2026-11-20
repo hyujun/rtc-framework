@@ -1,0 +1,21 @@
+# sim overlay — the push scenario's truth lane (g1_loco)
+#
+#   run_arms.py --arms walk --overlay walk=push_report --push T DUR FX FY FZ --push-body pelvis
+#
+# The simulator reports the wrench staged on the pelvis (rtc_mujoco_sim
+# external_wrench_report: 50 Hz, and at once after each /sim/set_external_wrench
+# call) and the locomotion controller logs it in locomotion_truth.csv as
+# truth_ext_* (controllers/locomotion/runtime.yaml external_wrench). Without
+# this overlay a push still acts on the robot; the log just does not show when.
+# The body here is the one a push must name to be seen: a wrench staged on
+# another body is not in the report (the simulator warns).
+mujoco_simulator:
+  ros__parameters:
+    external_wrench_report:
+      topic: "/sim/external_wrench"
+      body: "pelvis"
+integrated_rt_controller:
+  ros__parameters:
+    locomotion_controller:
+      external_wrench:
+        topic: "/sim/external_wrench"
