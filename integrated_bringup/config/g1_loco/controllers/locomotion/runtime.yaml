@@ -3,7 +3,8 @@
 # A fragment of ../locomotion_controller.yaml (its `include:` list). Schema and
 # checks: integrated_bringup controllers/locomotion_controller.hpp (every key of
 # pd_feedforward, fault and fault.pose_guard is required, an unknown key is refused;
-# velocity_command is optional) and controllers/locomotion/measured_state_source.hpp
+# velocity_command and external_wrench are optional) and
+# controllers/locomotion/measured_state_source.hpp
 # (estimator.*).
 locomotion_controller:
   command_type: "pd_feedforward"   # the only accepted value
@@ -113,6 +114,17 @@ locomotion_controller:
   # and the MPC stands in place.
   velocity_command:
     topic: "g1/cmd_vel"
+
+  # The wrench a simulator reports it is applying to the robot (geometry_msgs/
+  # WrenchStamped — rtc_mujoco_sim external_wrench_report), for the truth log's
+  # truth_ext_* columns only; nothing in the control law reads it. An empty
+  # topic is the lane off: no subscription, no columns. A push scenario names
+  # the topic in its overlay (the key has to exist here for an overlay to
+  # replace it). max_age_ms: the report counts as current for this long after
+  # it arrived [ms] — five periods of the simulator's 50 Hz report.
+  external_wrench:
+    topic: ""
+    max_age_ms: 100.0
 
   # Device slots, in this order: model.body_group, then model.hand_groups. The
   # joint_goal lanes are the ones the other controllers of the profile use;

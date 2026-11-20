@@ -248,6 +248,7 @@ struct LogRegistrationContext {
   // The T tier (LocomotionTruthLog): opens its file on the first row.
   bool locomotion_truth_enabled{false};
   std::vector<std::string> locomotion_truth_contact_names{};
+  bool locomotion_truth_external_wrench{false};  ///< the truth_ext_* block
 };
 
 // ⚠ Two separate hazards, two separate fixes — keep both (#428).
@@ -785,7 +786,8 @@ template <typename ParsedLogEntryT>
         continue;
       }
       const auto contact_names = ctx.locomotion_truth_contact_names;
-      const auto cols = integrated_bringup::LocomotionTruthLogColumnsFor(contact_names);
+      const auto cols = integrated_bringup::LocomotionTruthLogColumnsFor(
+          contact_names, ctx.locomotion_truth_external_wrench);
       auto handle = ctx.log_set.RegisterLog<integrated_bringup::LocomotionTruthLogPod>(
           entry.instance,
           [contact_names, cols](std::ostream& os) {

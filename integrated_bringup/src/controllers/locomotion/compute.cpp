@@ -551,7 +551,7 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   for (std::size_t i = 0; i < 3; ++i) {
     d.ref_base_v[i] = plan ? wbc_ref_.v_ref[i] : kNaN;
   }
-  // Contact c is group c of the body's inference lane: fz is value 3 of the group.
+  // Contact c is group c of the body's inference lane (a force needs 4 values a group).
   const std::size_t nc = std::min(contact_frames_full_.size(), LocomotionDiagLogPod::kMaxContacts);
   const auto stride = static_cast<std::size_t>(std::max(contact_force_stride_, 0));
   const bool lane = stride >= 4 && dev.num_inference_groups == static_cast<int>(nc);
@@ -559,7 +559,6 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   for (std::size_t c = 0; c < nc; ++c) {
     const std::size_t at = c * stride + 3;
     const bool fresh = lane && at < dev.inference_data.size() && dev.inference_enable[c];
-    d.meas_fz[c] = fresh ? static_cast<double>(dev.inference_data[at]) : kNaN;
     if (fresh) {
       d.meas_contact_valid |= 1U << static_cast<std::uint32_t>(c);
     }
@@ -632,6 +631,11 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   in.stride = contact_force_stride_;
   in.moment = contact_moment_lane_;
   in.cop_min_fz = loco::kTruthCopMinWeightFraction * weight_;
+  if (external_wrench_sub_ != nullptr) {
+    static_cast<void>(external_wrench_.TryAcquireLatest());
+    in.external = &external_wrench_.Current();
+    in.external_max_age_ns = static_cast<int64_t>(cfg_.external_wrench_max_age_ms * 1e6);
+  }
   loco::FillLocomotionTruthLog(dev, in, t);
   if (truth_log_handle_ && t.truth_mask != 0) {
     truth_log_handle_.Push(t);

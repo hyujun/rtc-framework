@@ -217,6 +217,32 @@ LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg
       Refuse(where + ".joy", "only with type joy (the type is twist)");
     }
   }
+  // `external_wrench:` — the simulator's applied-wrench report for the truth
+  // log. Both keys required: an age bound nobody chose would decide which
+  // ticks read as "nothing applied" and which as "unknown". An empty topic is
+  // the lane switched off — the shipped value, there so that a launch overlay
+  // (which can only replace a key the file has) can name one.
+  if (cfg["external_wrench"]) {
+    const std::string where = root + ".external_wrench";
+    const YAML::Node ew = cfg["external_wrench"];
+    CheckKeys(ew, where, {"topic", "max_age_ms"}, {"topic", "max_age_ms"});
+    const YAML::Node t = ew["topic"];
+    if (!t.IsScalar()) {
+      Refuse(where + ".topic", "expected a topic name (empty = off), got " + Spelling(t));
+    }
+    out.external_wrench_topic = t.Scalar();
+    double age = 0.0;
+    try {
+      age = ew["max_age_ms"].as<double>();
+    } catch (const YAML::Exception&) {
+      Refuse(where + ".max_age_ms", "expected a number, got " + Spelling(ew["max_age_ms"]));
+    }
+    if (!std::isfinite(age) || age <= 0.0) {
+      Refuse(where + ".max_age_ms",
+             "expected a finite value > 0, got " + Spelling(ew["max_age_ms"]));
+    }
+    out.external_wrench_max_age_ms = age;
+  }
   return out;
 }
 

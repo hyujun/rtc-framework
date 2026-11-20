@@ -29,6 +29,17 @@ void LocomotionController::OnVelocityCommand(const geometry_msgs::msg::Twist& ms
   raw_command_.Store(sample);
 }
 
+// The external wrench subscription callback: the lane's one writer (the node's
+// default callback group is mutually exclusive, so never two at once).
+void LocomotionController::OnExternalWrench(const geometry_msgs::msg::WrenchStamped& msg) noexcept {
+  locomotion::ExternalWrenchSample& sample = external_wrench_.StartWrite();
+  sample.wrench = {msg.wrench.force.x,  msg.wrench.force.y,  msg.wrench.force.z,
+                   msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z};
+  sample.recv_steady_ns = SteadyNowNs();
+  sample.sequence = ++external_wrench_count_;
+  external_wrench_.FinishWrite();
+}
+
 // The Joy subscription callback (`velocity_command.type: joy`, instead of the
 // Twist one): the message as a command (joy_command.hpp — zero unless the
 // deadman reads 1 and the mapped axes are readable), stored the same way.
