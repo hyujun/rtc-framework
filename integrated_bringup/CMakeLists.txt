@@ -81,6 +81,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/controllers/locomotion/humanoid_model_config.cpp
   src/controllers/locomotion/measured_state_source.cpp
   src/controllers/locomotion/inekf_state_source.cpp
+  src/controllers/locomotion/estimator_replay.cpp
   src/controllers/locomotion/controller.cpp
   src/controllers/locomotion/compute.cpp
   src/controllers/locomotion/lifecycle.cpp
@@ -120,6 +121,7 @@ add_library(${PROJECT_NAME}_demo_controllers STATIC
   src/support/hand_fk_wiring.cpp
   src/support/wbc_reduced_dynamics_provider.cpp
   src/support/owned_topics.cpp
+  src/support/profile_params.cpp
   src/support/task_target_frames.cpp
   src/support/virtual_tcp_params.cpp
   src/backends/mujoco_native_backend.cpp
@@ -191,6 +193,24 @@ ament_target_dependencies(integrated_rt_controller
   rtc_controllers
 )
 
+# ── estimator_replay: the inekf state source replayed offline from a run's logs
+# (controllers/locomotion/estimator_replay.hpp). No controller registration is
+# needed, so the library is linked normally.
+add_executable(estimator_replay
+  src/estimator_replay_main.cpp
+)
+target_link_libraries(estimator_replay
+  ${PROJECT_NAME}_demo_controllers
+  yaml-cpp
+)
+ament_target_dependencies(estimator_replay
+  ament_index_cpp
+  rtc_controller_manager
+  rtc_controllers
+  rtc_urdf_bridge
+  pinocchio
+)
+
 # ── Install headers ───────────────────────────────────────────────────────────
 install(
   DIRECTORY include/
@@ -207,7 +227,7 @@ install(
 )
 
 # ── Install executable ────────────────────────────────────────────────────────
-install(TARGETS integrated_rt_controller
+install(TARGETS integrated_rt_controller estimator_replay
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -2204,6 +2224,35 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # The estimator replay: the logged inputs rebuilt into the state the source
+  # read (in-process bit equality with the online source), the rig's own CSV
+  # replayed, the shared body model and profile parameters.
+  ament_add_gtest(test_estimator_replay test/test_estimator_replay.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_estimator_replay PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_compile_definitions(test_estimator_replay PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_estimator_replay
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_estimator_replay
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+  )
+
   # The inekf state source on the installed g1_loco model: start, cadence,
   # skew, reset policy, kinematics / output oracles, determinism, its YAML.
   ament_add_gtest(test_inekf_state_source test/test_inekf_state_source.cpp
@@ -2779,6 +2828,7 @@ if(BUILD_TESTING)
     test_locomotion_truth_log
     test_locomotion_diag_golden
     test_demo_sequence_ros
+    test_estimator_replay
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99
