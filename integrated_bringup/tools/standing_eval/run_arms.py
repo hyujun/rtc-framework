@@ -73,8 +73,9 @@ second that a fast one would. ``max_rtf`` is a ceiling: check the sim reached
 it (the CM's timing lines report sim seconds per wall interval).
 
 ``--source inekf`` runs every arm on the estimated base (sim_overlay:=
-estimator_inekf); an arm that already runs with an overlay is refused up front
-(one overlay per launch). run.json records the source.
+estimator_inekf); an arm that already runs with an overlay gets the two merged
+into one file under ``<out>/overlays/`` (one overlay per launch; two that set
+one key to different values are refused up front). run.json records the source.
 
 Each run's recorder CSV / JSON and the controller log session land in
 ``<out>/<arm>_<k>/``. Run it under ``repo_scripts/scripts/with_verify_hold.sh``
@@ -100,6 +101,7 @@ from pathlib import Path
 import yaml
 
 from rtc_tools.analysis import stance_metrics as sm, walk_metrics as wm
+from rtc_tools.analysis.weight_overlay import WeightOverlayError, merge_overlay_files
 from rtc_tools.launch.cpu_shield import mpc_solver_threads
 from rtc_tools.validation.model_match import model_match
 
@@ -133,20 +135,42 @@ def default_overlay(arm: str, mpc_layout: bool) -> str | None:
 
 
 def source_overlays(
-    arms: list[str], mpc_layout: bool, overlays: dict[str, str], source: str
+    arms: list[str],
+    mpc_layout: bool,
+    overlays: dict[str, str],
+    source: str,
+    merge_dir: Path | None = None,
+    profile: str = "",
 ) -> dict[str, str]:
     """`overlays` with the state source's overlay on every arm (``--source``).
 
     truth is the shipped source: nothing changes. inekf runs each arm with
-    sim_overlay:=estimator_inekf; an arm that already has an overlay (its own
-    or a given one) cannot take a second, so that is refused.
+    sim_overlay:=estimator_inekf. A launch takes one overlay, so an arm that
+    already has one (its own or a given one) gets the two merged into
+    ``<merge_dir>/<arm>_inekf.yaml`` (rtc_tools weight_overlay: a leaf the two
+    set to different values is an error; the components and their hashes go to
+    the file's ``.meta.json``).
     """
     out = dict(overlays)
     for arm in arms if source == "inekf" else ():
         own = overlays.get(arm, default_overlay(arm, mpc_layout))
-        if own:
-            raise ValueError(f"--source {source}: arm {arm} already runs with sim_overlay {own}")
-        out[arm] = INEKF_OVERLAY
+        if not own:
+            out[arm] = INEKF_OVERLAY
+            continue
+        if merge_dir is None:
+            raise ValueError(
+                f"--source {source}: arm {arm} runs with sim_overlay {own}; no merge dir"
+            )
+        from integrated_bringup.sim_overlay import resolve_sim_overlay
+
+        merged = merge_dir / f"{arm}_{source}.yaml"
+        try:
+            merge_overlay_files(
+                [Path(resolve_sim_overlay(o, profile)) for o in (own, INEKF_OVERLAY)], merged
+            )
+        except (WeightOverlayError, RuntimeError) as e:
+            raise ValueError(f"--source {source}: arm {arm}: {e}") from e
+        out[arm] = str(merged)
     return out
 
 
@@ -990,7 +1014,14 @@ def main(argv: list[str] | None = None) -> int:
         check_mpc_threads(p, args.mpc_threads, args.launch)
     args.overlay = dict(o.split("=", 1) for o in args.overlay)
     try:
-        args.overlay = source_overlays(args.arms, args.mpc_layout, args.overlay, args.source)
+        args.overlay = source_overlays(
+            args.arms,
+            args.mpc_layout,
+            args.overlay,
+            args.source,
+            args.out / "overlays",
+            args.profile,
+        )
     except ValueError as e:
         p.error(str(e))
     notes = []
