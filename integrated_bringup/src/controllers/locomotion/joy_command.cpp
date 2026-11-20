@@ -1,6 +1,8 @@
 // See joy_command.hpp.
 #include "integrated_bringup/controllers/locomotion/joy_command.hpp"
 
+#include "rtc_controllers/params/yaml_read.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -70,63 +72,45 @@ JoyCommandResult JoyToCommand(const JoyCommandMapping& map, const JoyCommandScal
 }
 
 JoyCommandMapping ParseJoyCommandMapping(const YAML::Node& joy, const std::string& where) {
+  using rtc::params::FindMissingKey;
+  using rtc::params::FindUnknownKey;
+  using rtc::params::Spelling;
   if (!joy.IsMap()) {
-    Refuse(where, "expected a map");
+    Refuse(where, "expected a map, got " + Spelling(joy));
   }
-  static constexpr std::array<std::string_view, 5> kKeys{"linear_x", "linear_y", "angular_z",
-                                                         "height_rate", "deadman"};
-  for (const auto& kv : joy) {
-    const auto key = kv.first.as<std::string>();
-    if (std::find(kKeys.begin(), kKeys.end(), key) == kKeys.end()) {
-      Refuse(where, "unknown key '" + key + "'");
-    }
+  if (const auto unknown =
+          FindUnknownKey(joy, {"linear_x", "linear_y", "angular_z", "height_rate", "deadman"})) {
+    Refuse(where, "unknown key '" + *unknown + "'");
   }
-  const auto name = [&](const char* key, bool required) -> std::string {
+  if (const auto missing = FindMissingKey(joy, {"linear_x", "linear_y", "angular_z", "deadman"})) {
+    Refuse(where, "required key '" + *missing + "' is missing");
+  }
+  // A layout name's index in `names`; an absent optional key is −1.
+  const auto index = [&](const char* key, const auto& names, const char* kind) -> int {
     const YAML::Node n = joy[key];
     if (!n) {
-      if (required) {
-        Refuse(where, std::string("required key '") + key + "' is missing");
-      }
-      return {};
-    }
-    if (!n.IsScalar()) {
-      Refuse(where + "." + key, "expected a layout name");
-    }
-    return n.Scalar();
-  };
-  const auto axis = [&](const char* key, bool required) -> int {
-    const std::string n = name(key, required);
-    if (n.empty()) {
-      if (required) {
-        Refuse(where + "." + key, "expected an axis name, got an empty one");
-      }
       return -1;
     }
-    const int i = IndexOf(kStandardGamepadAxes, n);
+    const int i = n.IsScalar() ? IndexOf(names, n.Scalar()) : -1;
     if (i < 0) {
-      Refuse(where + "." + key, "'" + n + "' is not an axis of the standard gamepad layout");
+      Refuse(where + "." + key, "expected " + std::string(kind) +
+                                    " of the standard gamepad layout, got " + Spelling(n));
     }
     return i;
   };
   JoyCommandMapping m{};
-  m.linear_x = axis("linear_x", true);
-  m.linear_y = axis("linear_y", true);
-  m.angular_z = axis("angular_z", true);
-  m.height_rate = axis("height_rate", false);
-  const std::string deadman = name("deadman", true);
-  m.deadman = IndexOf(kStandardGamepadButtons, deadman);
-  if (m.deadman < 0) {
-    Refuse(where + ".deadman", "'" + deadman + "' is not a button of the standard gamepad layout");
-  }
-  const std::array<int, 4> mapped{m.linear_x, m.linear_y, m.angular_z, m.height_rate};
-  for (std::size_t i = 0; i < mapped.size(); ++i) {
-    for (std::size_t j = i + 1; j < mapped.size(); ++j) {
-      if (mapped[i] >= 0 && mapped[i] == mapped[j]) {
-        Refuse(where, "axis '" +
-                          std::string(kStandardGamepadAxes[static_cast<std::size_t>(mapped[i])]) +
-                          "' is mapped twice");
-      }
+  m.linear_x = index("linear_x", kStandardGamepadAxes, "an axis");
+  m.linear_y = index("linear_y", kStandardGamepadAxes, "an axis");
+  m.angular_z = index("angular_z", kStandardGamepadAxes, "an axis");
+  m.height_rate = index("height_rate", kStandardGamepadAxes, "an axis");
+  m.deadman = index("deadman", kStandardGamepadButtons, "a button");
+  unsigned used = 0;
+  for (const int axis : {m.linear_x, m.linear_y, m.angular_z, m.height_rate}) {
+    if (axis >= 0 && (used & (1U << axis)) != 0) {
+      Refuse(where, "axis '" + std::string(kStandardGamepadAxes[static_cast<std::size_t>(axis)]) +
+                        "' is mapped twice");
     }
+    used |= axis >= 0 ? 1U << axis : 0U;
   }
   return m;
 }

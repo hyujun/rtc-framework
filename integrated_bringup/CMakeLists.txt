@@ -2447,9 +2447,11 @@ if(BUILD_TESTING)
   # alloc_gate.hpp replaces operator new (one TU per binary).
   # velocity_command.type joy: the Joy mapping bit for bit, the zero rules, the
   # config refusals, the layout copy against rtc_teleop_input's installed table,
-  # the shipped joy overlay. Pure (no node), so no ROS domain.
+  # the shipped joy overlay. Pure (no node); the package's domain all the same,
+  # as the rig header it includes can open one.
   ament_add_gtest(test_locomotion_joy_command test/test_locomotion_joy_command.cpp
     TIMEOUT 120
+    ENV ROS_DOMAIN_ID=52
   )
   target_include_directories(test_locomotion_joy_command PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/test"
@@ -2756,6 +2758,7 @@ if(BUILD_TESTING)
     test_locomotion_controller
     test_locomotion_controller_alloc
     test_locomotion_mpc
+    test_locomotion_joy_command
     test_locomotion_fault
     test_loco_estop_on_clear
     test_inekf_state_source

@@ -88,25 +88,24 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
                   "[locomotion] velocity_command.topic '%s' is not subscribed: no MPC in this "
                   "configuration (mpc.enabled false or `mpc:` absent)",
                   topic.c_str());
-    } else if (cfg_.velocity_command_joy) {
-      // Full deflection = the filter's own bounds (u_max = [v_max…, hdot_max]),
-      // fixed here: the callback only multiplies.
-      const auto& u_max = command_filter_.config().u_max;
-      joy_scale_ = {u_max[0], u_max[1], u_max[2], u_max[3]};
-      // ARCH-6: depth 1, as the Twist lane below.
-      rclcpp::QoS qos(rclcpp::KeepLast(1));
-      joy_sub_ = node->create_subscription<sensor_msgs::msg::Joy>(
-          topic, qos, [this](sensor_msgs::msg::Joy::ConstSharedPtr msg) { OnJoyCommand(*msg); });
-      RCLCPP_INFO(logger_, "[locomotion] velocity command: %s (Joy, %.0f Hz filter)", topic.c_str(),
-                  command_filter_.config().sample_rate_hz);
     } else {
       // ARCH-6: depth 1 — a latest-wins lane; reliability as the node's default.
       rclcpp::QoS qos(rclcpp::KeepLast(1));
-      velocity_sub_ = node->create_subscription<geometry_msgs::msg::Twist>(
-          topic, qos,
-          [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) { OnVelocityCommand(*msg); });
-      RCLCPP_INFO(logger_, "[locomotion] velocity command: %s (Twist, %.0f Hz filter)",
-                  topic.c_str(), command_filter_.config().sample_rate_hz);
+      if (cfg_.velocity_command_joy) {
+        // Full deflection = the filter's own bounds (u_max = [v_max…, hdot_max]),
+        // fixed here: the callback only multiplies.
+        const auto& u_max = command_filter_.config().u_max;
+        joy_scale_ = {u_max[0], u_max[1], u_max[2], u_max[3]};
+        joy_sub_ = node->create_subscription<sensor_msgs::msg::Joy>(
+            topic, qos, [this](sensor_msgs::msg::Joy::ConstSharedPtr msg) { OnJoyCommand(*msg); });
+      } else {
+        velocity_sub_ = node->create_subscription<geometry_msgs::msg::Twist>(
+            topic, qos,
+            [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) { OnVelocityCommand(*msg); });
+      }
+      RCLCPP_INFO(logger_, "[locomotion] velocity command: %s (%s, %.0f Hz filter)", topic.c_str(),
+                  cfg_.velocity_command_joy ? "Joy" : "Twist",
+                  command_filter_.config().sample_rate_hz);
     }
     // After the subscription: the rest sample is tagged joy only with a Joy
     // subscription (status and diag log agree on "no input" otherwise).

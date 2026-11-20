@@ -242,12 +242,7 @@ TEST_F(LocomotionAlloc, TheTruthLogPathAllocatesNothing) {
 // the message is built before the gate, as the executor hands it over).
 TEST_F(LocomotionAlloc, TheJoyCommandPathAllocatesNothing) {
   YAML::Node cfg = MpcConfig();
-  cfg["velocity_command"]["topic"] = "g1/joy";
-  cfg["velocity_command"]["type"] = "joy";
-  cfg["velocity_command"]["joy"]["linear_x"] = "lefty";
-  cfg["velocity_command"]["joy"]["linear_y"] = "leftx";
-  cfg["velocity_command"]["joy"]["angular_z"] = "rightx";
-  cfg["velocity_command"]["joy"]["deadman"] = "leftshoulder";
+  SetJoyCommand(cfg);
   Configure(cfg, rclcpp::NodeOptions{}, "test_locomotion_joy_alloc");
   ASSERT_TRUE(ctrl_->VelocityCommandSubscribed());
   StandingStub* const s = SpawnStandingStub(*ctrl_);

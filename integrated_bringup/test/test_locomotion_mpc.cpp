@@ -1280,12 +1280,7 @@ class LocomotionJoyCommandTest : public LocomotionCommandTest {
 
   static YAML::Node JoyMpcConfig() {
     YAML::Node cfg = MpcConfig();
-    cfg["velocity_command"]["topic"] = "g1/joy";
-    cfg["velocity_command"]["type"] = "joy";
-    cfg["velocity_command"]["joy"]["linear_x"] = "lefty";
-    cfg["velocity_command"]["joy"]["linear_y"] = "leftx";
-    cfg["velocity_command"]["joy"]["angular_z"] = "rightx";
-    cfg["velocity_command"]["joy"]["deadman"] = "leftshoulder";
+    SetJoyCommand(cfg);
     return cfg;
   }
 

@@ -142,14 +142,7 @@ TEST(JoyToCommand, AnUnreadableMessageIsZeroAndRejected) {
 
 YAML::Node JoyConfig() {
   YAML::Node cfg = YAML::Clone(loco_rig::ShippedConfig());
-  cfg["velocity_command"]["topic"] = "g1/joy";
-  cfg["velocity_command"]["type"] = "joy";
-  YAML::Node joy;
-  joy["linear_x"] = "lefty";
-  joy["linear_y"] = "leftx";
-  joy["angular_z"] = "rightx";
-  joy["deadman"] = "leftshoulder";
-  cfg["velocity_command"]["joy"] = joy;
+  loco_rig::SetJoyCommand(cfg);
   return cfg;
 }
 
