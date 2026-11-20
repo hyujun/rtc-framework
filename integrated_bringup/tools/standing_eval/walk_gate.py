@@ -389,6 +389,21 @@ def run_settings(run: Path, fallback: dict) -> dict:
     return {"rtf": rtf, **{k: note.get(k, fallback[k]) for k in ("z_ref", "stop_window")}}
 
 
+def unjudged_scripts(walk_runs: list[Path]) -> list[str]:
+    """The walk runs whose command script is not WALK_SCRIPT, as ``run:script``.
+
+    walk_summary places WALK_SCRIPT's segments on the log; another script's
+    run (run_arms --script) would be graded on the wrong windows. A run.json
+    without the key predates the option and ran the walk script.
+    """
+    out = []
+    for r in walk_runs:
+        script = json.loads((r / "run.json").read_text()).get("script", "walk")
+        if script != "walk":
+            out.append(f"{r.name}:{script}")
+    return out
+
+
 def runs(out: Path, arm: str) -> list[Path]:
     return sorted(
         p for p in out.glob(f"{arm}_*") if p.is_dir() and p.name[len(arm) + 1 :].isdigit()
@@ -411,6 +426,9 @@ def main(argv: list[str] | None = None) -> int:
         help="judge the walk arm alone (a tuning batch); otherwise walk_estop runs are required",
     )
     args = p.parse_args(argv)
+    others = unjudged_scripts(runs(args.out, "walk") + runs(args.out, "walk_estop"))
+    if others:
+        p.error(f"walk_gate judges the walk command script only; these runs ran another: {others}")
 
     if args.probe:
         result = {"probe": [probe(r) for r in runs(args.out, "walk")]}

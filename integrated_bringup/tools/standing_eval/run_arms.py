@@ -33,8 +33,8 @@ message for ``--duration`` s. The arms differ only in the switch step:
           controller → ``--lead`` → a window (``--duration``)   — the operator stop
   walk    the loco switch with the MPC on (enable_mpc:=true, never mpc_off),
           then the walking command script (twist_script.py, the sim-second
-          table of rtc_tools.analysis.walk_metrics.WALK_SCRIPT, published on
-          ``--cmd-topic``): its start is marked once the controller's
+          table rtc_tools.analysis.walk_metrics.COMMAND_SCRIPTS[``--script``],
+          default WALK_SCRIPT, published on ``--cmd-topic``): its start is marked once the controller's
           subscription matched; the stop window is its last ``--stop-window``
           s; the run ends when the script has rested             — walking
   walk_estop as walk, and ``--estop-at`` s into the script /rtc_cm/trigger_estop
@@ -418,6 +418,8 @@ def _twist_start(args: argparse.Namespace) -> tuple[bool, dict, str]:
                 args.cmd_topic,
                 "--rtf",
                 str(args.rtf or 1.0),
+                "--script",
+                args.script,
             ],
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -454,7 +456,7 @@ def _twist_stop(args: argparse.Namespace) -> tuple[bool, dict, str]:
 
 def walk_until_stop_window(args: argparse.Namespace) -> float:
     """The script's length before its last ``--stop-window`` s [s, sim]."""
-    return wm.script_length() - args.stop_window
+    return wm.script_length(wm.COMMAND_SCRIPTS[args.script]) - args.stop_window
 
 
 # The event scripts (module docstring), one step per entry: ("sleep", its
@@ -621,6 +623,7 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
         "z_ref": args.z_ref,
         "stop_window": args.stop_window,
         "source": args.source,
+        "script": args.script,
     }
     args.run_out = out
     args.twist_proc = None
@@ -824,6 +827,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--logging-root", type=Path, required=True)
     p.add_argument(
+        "--script",
+        choices=sorted(wm.COMMAND_SCRIPTS),
+        default="walk",
+        help="the walk arms' command script (walk_metrics.COMMAND_SCRIPTS; walk = WALK_SCRIPT)",
+    )
+    p.add_argument(
         "--source",
         choices=("truth", "inekf"),
         default="truth",
@@ -831,9 +840,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
     # The stop window inside the script's rest; the walking stop while it walks.
-    walking_s = wm.script_length(wm.WALK_SCRIPT[:-1])
-    if not 0.0 < args.stop_window <= wm.WALK_SCRIPT[-1].length_s:
-        p.error(f"--stop-window must be in (0, {wm.WALK_SCRIPT[-1].length_s}] s")
+    script = wm.COMMAND_SCRIPTS[args.script]
+    walking_s = wm.script_length(script[:-1])
+    if not 0.0 < args.stop_window <= script[-1].length_s:
+        p.error(f"--stop-window must be in (0, {script[-1].length_s}] s")
     if not 0.0 < args.estop_at < walking_s:
         p.error(f"--estop-at must be in (0, {walking_s}) s — inside the walking part")
     if args.mpc_threads is not None:

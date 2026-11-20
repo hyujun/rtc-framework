@@ -94,6 +94,23 @@ def test_a_gait_table_the_windows_cannot_use_is_refused_up_front(tmp_path, capsy
         assert why in capsys.readouterr().err
 
 
+def test_a_run_of_another_command_script_is_refused_not_graded(tmp_path, capsys):
+    for name, note in (
+        ("walk_0", {}),
+        ("walk_1", {"script": "walk"}),
+        ("walk_2", {"script": "curve"}),
+    ):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "run.json").write_text(json.dumps(note))
+    for extra in ([], ["--probe"]):
+        with pytest.raises(SystemExit) as e:
+            walk_gate.main([str(tmp_path), "--gait-yaml", str(GAIT_YAML), *extra])
+        assert e.value.code == 2
+        err = capsys.readouterr().err
+        assert "walk_2:curve" in err
+        assert "walk_0" not in err and "walk_1" not in err
+
+
 def test_a_missing_value_fails_its_check():
     assert not walk_gate.check("x", None, 1.0, "<=")["pass"]
     assert not walk_gate.check("x", math.nan, 1.0, "<=")["pass"]

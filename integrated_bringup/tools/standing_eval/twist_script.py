@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Publish a velocity command script as geometry_msgs/Twist, then rest.
 
-The script is rtc_tools.analysis.walk_metrics.WALK_SCRIPT (sim seconds). It
-waits for a subscriber (the controller's), then publishes at ``--rate`` Hz on
+The script is one of rtc_tools.analysis.walk_metrics.COMMAND_SCRIPTS
+(``--script``, default ``walk`` = WALK_SCRIPT; sim seconds). It waits for a
+subscriber (the controller's), then publishes at ``--rate`` Hz on
 the wall clock, the command of sim time ``wall elapsed × --rtf``, with depth 1.
 After the script it publishes the zero command ``--rest-count`` times and
 exits 0; SIGINT (the caller's stop) does the same at once.
@@ -21,7 +22,12 @@ import signal
 import sys
 import time
 
-from rtc_tools.analysis.walk_metrics import WALK_SCRIPT, command_at, script_length, segment_at
+from rtc_tools.analysis.walk_metrics import (
+    COMMAND_SCRIPTS,
+    command_at,
+    script_length,
+    segment_at,
+)
 
 
 def emit(**fields) -> None:
@@ -35,7 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rate", type=float, default=20.0, help="publish rate [Hz, wall]")
     p.add_argument("--wait-subscriber", type=float, default=60.0, help="[s, wall]")
     p.add_argument("--rest-count", type=int, default=5)
+    p.add_argument("--script", choices=sorted(COMMAND_SCRIPTS), default="walk")
     args = p.parse_args(argv)
+    script = COMMAND_SCRIPTS[args.script]
     if not args.rtf > 0.0 or not args.rate > 0.0:
         p.error("--rtf and --rate must be positive")
 
@@ -61,20 +69,20 @@ def main(argv: list[str] | None = None) -> int:
         if stop["now"]:
             emit(event="interrupted_before_start", topic=args.topic)
             return 4
-        total = script_length(WALK_SCRIPT)
+        total = script_length(script)
         t0 = time.monotonic()
-        emit(event="start", wall=time.time(), topic=args.topic, rtf=args.rtf)
+        emit(event="start", wall=time.time(), topic=args.topic, rtf=args.rtf, script=args.script)
         period = 1.0 / args.rate
         last_seg = None
         while not stop["now"]:
             t_sim = (time.monotonic() - t0) * args.rtf
             if t_sim >= total:
                 break
-            seg = segment_at(WALK_SCRIPT, t_sim)
+            seg = segment_at(script, t_sim)
             if seg != last_seg:
                 emit(event="segment", name=seg, wall=time.time(), t_sim=t_sim)
                 last_seg = seg
-            vx, vy, wz = command_at(WALK_SCRIPT, t_sim)
+            vx, vy, wz = command_at(script, t_sim)
             msg = Twist()
             msg.linear.x, msg.linear.y, msg.angular.z = vx, vy, wz
             pub.publish(msg)
