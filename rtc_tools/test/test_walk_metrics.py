@@ -93,7 +93,7 @@ def synthetic(swap_slots: bool = False, settle_noise_s: float = 0.0):
     for c in range(2):
         on = (meas_mask >> c) & 1 == 1
         both = meas_mask == 3
-        fz[:, c] = np.where(both, -WEIGHT / 2, np.where(on, -WEIGHT, 0.0))
+        fz[:, c] = np.where(both, WEIGHT / 2, np.where(on, WEIGHT, 0.0))  # ground → foot
     if swap_slots:
         fz = fz[:, ::-1]
     gait = np.select(
@@ -146,18 +146,25 @@ def synthetic(swap_slots: bool = False, settle_noise_s: float = 0.0):
         "ref_base_vx": cmd[:, 0],
         "ref_base_vy": zeros,
         "ref_base_vz": zeros,
-        "meas_contact_valid": np.full(n, 3.0),
-        "meas_fz_left": fz[:, 0],
-        "meas_fz_right": fz[:, 1],
+        # The contact names (and their order) come from this block.
+        "lambda_left_fz": zeros,
+        "lambda_right_fz": zeros,
     }
     for m in wm.MARGINS:
         diag[m] = np.ones(n)
     header = list(diag)
-    return header, diag
+    # The truth file on the diag rows: bit 0 the base lane, bit 1 + c contact c.
+    truth = {
+        "tick": diag["tick"],
+        "truth_mask": np.full(n, 7.0),
+        "truth_grf_left_fz": fz[:, 0],
+        "truth_grf_right_fz": fz[:, 1],
+    }
+    return header, diag, truth
 
 
 def test_the_segments_are_placed_from_the_command_column():
-    header, diag = synthetic()
+    header, diag, truth = synthetic()
     seg = wm.find_segments(diag["t_relative_s"], diag["cmd_vx"])
     assert seg is not None
     assert seg.a == pytest.approx(A_FOUND, abs=2 * DT)
@@ -170,13 +177,13 @@ def test_the_windows_are_whole_walk_cycles():
     assert wm.window_lengths(1.1) == pytest.approx((4.4, 2.2, 1.1))
     # The yaw window ends A_FOUND − A into D (ω 0): that share of 0.3 rad/s over
     # two cycles of the period the caller gives, not of a fixed length.
-    header, diag = synthetic()
-    s = wm.walk_summary(header, diag, GAITS, walk_period_s=1.1)
+    header, diag, truth = synthetic()
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=1.1, truth=truth)
     assert s["tracking"]["yaw_rate_mean_err"] == pytest.approx(
         0.3 * (A_FOUND - A) / 2.2, abs=0.3 * 2 * DT / 2.2
     )
     # Four cycles longer than B (8 s) would read A: refused, not averaged over.
-    assert "error" in wm.walk_summary(header, diag, GAITS, walk_period_s=2.1)
+    assert "error" in wm.walk_summary(header, diag, GAITS, walk_period_s=2.1, truth=truth)
 
 
 @pytest.mark.parametrize("bad", [0.0, -1.0, math.nan, math.inf])
@@ -209,8 +216,8 @@ def test_a_window_longer_than_its_segment_is_refused(period, script, fits):
 
 
 def test_an_exact_tracker_scores_zero_error_and_known_counts():
-    header, diag = synthetic()
-    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
+    header, diag, truth = synthetic()
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE, truth=truth)
     assert s["tracking"]["vx_err_rms"] == pytest.approx(0.0, abs=1e-12)
     assert s["tracking"]["vx_mean_err"] == pytest.approx(0.0, abs=1e-9)
     assert s["tracking"]["yaw_rate_err_rms"] == pytest.approx(0.0, abs=1e-12)
@@ -254,24 +261,22 @@ def test_an_exact_tracker_scores_zero_error_and_known_counts():
 
 
 def test_swapped_force_slots_fail_the_slot_check():
-    header, diag = synthetic(swap_slots=True)
-    c = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)["contacts"]
+    header, diag, truth = synthetic(swap_slots=True)
+    c = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE, truth=truth)["contacts"]
     assert c["slot_check_failures"] == c["single_support_phases"] > 0
 
 
 def test_the_stop_waits_for_a_continuous_second_of_stillness():
-    header, diag = synthetic(settle_noise_s=2.0)
-    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
+    header, diag, truth = synthetic(settle_noise_s=2.0)
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE, truth=truth)
     assert s["stop"]["stop_settle_s"] == pytest.approx(2.0, abs=2 * DT)
 
 
 def test_a_stale_force_sample_is_not_a_contact_change():
-    header, diag = synthetic()
-    diag["meas_contact_valid"] = diag["meas_contact_valid"].copy()
-    diag["meas_contact_valid"][(diag["t_relative_s"] > 30.0)] = 2.0  # left stale
-    diag["meas_fz_left"] = diag["meas_fz_left"].copy()
-    diag["meas_fz_left"][diag["t_relative_s"] > 30.0] = 0.0  # a held value that is not read
-    c = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)["contacts"]
+    header, diag, truth = synthetic()
+    truth["truth_mask"][(diag["t_relative_s"] > 30.0)] = 5.0  # base + right: left stale
+    truth["truth_grf_left_fz"][diag["t_relative_s"] > 30.0] = 0.0  # a held value, not read
+    c = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE, truth=truth)["contacts"]
     assert c["extra_edges"] == 0
     assert c["invalid_force_rows"] > 0
 
@@ -297,40 +302,40 @@ def test_a_touch_down_must_hold():
 
 
 def test_no_script_is_an_error_not_a_pass():
-    header, diag = synthetic()
+    header, diag, truth = synthetic()
     diag["cmd_vx"] = np.zeros_like(diag["cmd_vx"])
-    assert "error" in wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
+    assert "error" in wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE, truth=truth)
 
 
 def test_an_infinite_residual_or_speed_is_judged_not_dropped():
-    header, diag = synthetic()
+    header, diag, truth = synthetic()
     diag["eom_residual_inf"] = diag["eom_residual_inf"].copy()
     diag["eom_residual_inf"][:] = math.inf
     diag["base_vx"] = diag["base_vx"].copy()
     diag["base_vx"][diag["t_relative_s"] > A + 6.0] = math.inf
-    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE, truth=truth)
     assert s["events"]["eom_residual_inf_max"] == math.inf
     assert s["tracking"]["vx_err_rms"] == math.inf
 
 
 def test_a_nan_flag_counts_as_a_failed_row():
-    header, diag = synthetic()
+    header, diag, truth = synthetic()
     for col in ("cmd_valid", "tau_valid", "fault_latched", "mode"):
         diag[col] = diag[col].copy()
         diag[col][(diag["t_relative_s"] > A + 3.0) & (diag["t_relative_s"] < A + 3.1)] = math.nan
-    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE, truth=truth)
     assert s["counters"]["cmd_invalid_rows_b_to_d"] > 0
     assert s["counters"]["fault_latched_rows"] > 0
     assert s["counters"]["degraded_fraction"] > 0
 
 
 def test_a_mostly_nan_window_reports_its_finite_fraction():
-    header, diag = synthetic()
+    header, diag, truth = synthetic()
     diag["base_vx"] = diag["base_vx"].copy()
     diag["base_vx"][(diag["t_relative_s"] > A + 4.0) & (diag["t_relative_s"] < A + 10.0)] = (
         math.nan
     )
-    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE, truth=truth)
     assert s["tracking"]["vx_window_finite_fraction"] < 0.1
 
 
@@ -371,3 +376,18 @@ def test_the_curve_scripts_walk_with_a_3_s_turn_each_way(name, wz):
     ]
     assert script[0] == wm.WALK_SCRIPT[0]  # the same ramp
     assert wm.command_at(script, 7.5) == (0.5, 0.0, wz)
+
+
+def test_without_a_truth_file_the_contact_checks_have_no_numbers():
+    header, diag, _ = synthetic()
+    s = wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE)
+    assert s["contacts"]["names"] == ["left", "right"]
+    assert "error" in s["contacts"] and "missed_edges" not in s["contacts"]
+    # What the plan alone gives is still there.
+    assert s["steps_completed"] > 0 and s["events"]["rows"] > 0
+
+
+def test_a_log_that_names_no_contact_is_an_error_not_a_pass():
+    header, diag, truth = synthetic()
+    header = [h for h in header if not h.startswith("lambda_")]
+    assert "error" in wm.walk_summary(header, diag, GAITS, walk_period_s=CYCLE, truth=truth)
