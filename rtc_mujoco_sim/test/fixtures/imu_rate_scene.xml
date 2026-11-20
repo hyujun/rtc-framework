@@ -1,0 +1,57 @@
+<mujoco model="imu_rate_test">
+  <!-- IMU rate export fixture: a pendulum whose second link hangs from a
+       ball joint, so the IMU site turns about all three axes. The IMU site
+       is off the joint and tilted, so lever-arm and frame terms are all
+       non-zero. Frame sensors on the same site give the reference motion;
+       the accelerometer's cutoff is one the motion reaches, and the tip
+       strikes the floor so the contact lane is loaded. Implicitfast, as the
+       shipped loco profiles run. -->
+  <compiler angle="radian"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast"/>
+
+  <worldbody>
+    <body name="arm_base" pos="0 0 0.52">
+      <joint name="j1" type="hinge" axis="0 1 0" range="-3.14 3.14" damping="0.2"/>
+      <inertial pos="0 0 -0.15" mass="0.5" diaginertia="0.005 0.005 0.005"/>
+      <geom type="capsule" fromto="0 0 0 0 0 -0.30" size="0.01"
+            rgba="0.6 0.6 0.6 1" contype="0" conaffinity="0"/>
+      <body name="wrist" pos="0 0 -0.30">
+        <joint name="j2" type="ball" damping="0.001"/>
+        <inertial pos="0.02 0.01 -0.08" mass="0.2" diaginertia="0.0004 0.0003 0.0002"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.12" size="0.01"
+              rgba="0.4 0.4 0.8 1" contype="0" conaffinity="0"/>
+        <site name="imu_site" pos="0.04 0.03 -0.10" euler="0.3 -0.2 0.5" size="0.005"/>
+        <body name="tip_link" pos="0 0 -0.15">
+          <inertial pos="0 0 0" mass="0.05" diaginertia="0.0001 0.0001 0.0001"/>
+          <geom name="tip_a_contact_geom" type="sphere" size="0.03" rgba="0.8 0.2 0.2 1"/>
+          <site name="tip_a_ft_site" pos="0 0 0" size="0.003" group="3"/>
+        </body>
+      </body>
+    </body>
+
+    <body name="ground">
+      <geom name="ground_box" type="box" size="2 2 0.05" pos="0 0 0"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="m1" joint="j1" kp="20" kv="1" ctrlrange="-3.14 3.14"/>
+  </actuator>
+
+  <sensor>
+    <gyro name="imu_gyro" site="imu_site"/>
+    <accelerometer name="imu_accel" site="imu_site" cutoff="14"/>
+    <framequat name="imu_quat" objtype="site" objname="imu_site"/>
+    <framelinvel name="imu_linvel" objtype="site" objname="imu_site"/>
+    <contact name="tip_a_contact"
+             geom1="tip_a_contact_geom"
+             num="1"
+             data="found force torque dist pos normal tangent"
+             reduce="netforce"/>
+  </sensor>
+
+  <keyframe>
+    <!-- j1, j2 (w x y z) / j1, j2 (body angular velocity) -->
+    <key name="start" qpos="1.0  0.9512 0.2003 0.1502 0.1802" qvel="0.5  4.0 -3.0 6.0"/>
+  </keyframe>
+</mujoco>

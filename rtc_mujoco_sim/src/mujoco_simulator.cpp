@@ -733,6 +733,70 @@ bool MuJoCoSimulator::ConfigureImuNoise(JointGroup& group, const ImuNoiseConfig&
   return true;
 }
 
+bool MuJoCoSimulator::ConfigureImuRateExport(JointGroup& group, ImuRateExport mode) noexcept {
+  group.imu_rate_channels.clear();
+  group.imu_rate_snapshots = 0;
+  group.imu_rate_fresh = false;
+  if (mode == ImuRateExport::kSample || !group.is_robot) {
+    group.imu_rate_prev.clear();
+    group.imu_rate_cur.clear();
+    return true;
+  }
+  try {
+    std::size_t offset = 0;
+    for (const auto& si : group.sensor_infos) {
+      const bool gyro = si.type == mjSENS_GYRO;
+      if ((gyro || si.type == mjSENS_ACCELEROMETER) && si.dim == 3) {
+        const int sid = mj_name2id(model_, mjOBJ_SENSOR, si.name.c_str());
+        if (sid < 0 || model_->sensor_objtype[sid] != mjOBJ_SITE) {
+          fprintf(stderr,
+                  "[MuJoCoSimulator] ERROR: group '%s' — imu_rate_export tick_mean needs sensor "
+                  "'%s' on a site\n",
+                  group.name.c_str(), si.name.c_str());
+          group.imu_rate_channels.clear();
+          return false;
+        }
+        JointGroup::ImuRateChannel ch;
+        ch.offset = offset;
+        ch.gyro = gyro;
+        ch.site = model_->sensor_objid[sid];
+        ch.cutoff = model_->sensor_cutoff[sid];
+        group.imu_rate_channels.push_back(ch);
+      }
+      offset += static_cast<std::size_t>(si.dim);
+    }
+    group.imu_rate_prev.assign(group.imu_rate_channels.size(), ImuSiteSnapshot{});
+    group.imu_rate_cur.assign(group.imu_rate_channels.size(), ImuSiteSnapshot{});
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[MuJoCoSimulator] ERROR: group '%s' — imu_rate_export setup failed: %s\n",
+            group.name.c_str(), e.what());
+    group.imu_rate_channels.clear();
+    return false;
+  }
+  if (group.imu_rate_channels.empty()) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] WARN: group '%s' — imu_rate_export tick_mean but the group "
+            "exports no gyro or accelerometer; nothing to apply\n",
+            group.name.c_str());
+    return true;
+  }
+  if (model_->opt.integrator == mjINT_RK4) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] WARN: group '%s' — imu_rate_export tick_mean exports sensordata "
+            "while the integrator is RK4 (its stages leave no step-start kinematics)\n",
+            group.name.c_str());
+  }
+  if (group.state_publish_divisor > 1) {
+    fprintf(stderr,
+            "[MuJoCoSimulator] WARN: group '%s' — imu_rate_export tick_mean averages one physics "
+            "step, not the %d-step publish period\n",
+            group.name.c_str(), group.state_publish_divisor);
+  }
+  fprintf(stdout, "[MuJoCoSimulator] [%s] imu_rate_export: tick_mean over %zu channel(s)\n",
+          group.name.c_str(), group.imu_rate_channels.size());
+  return true;
+}
+
 // ── Contact wrench auto-discovery ────────────────────────────────────────
 // Scans group.sensor_infos for mjSENS_CONTACT entries (dim==17 expected for
 // data="found force torque dist pos normal tangent" with num=1). For each
@@ -1324,6 +1388,12 @@ bool MuJoCoSimulator::Initialize() noexcept {
   for (std::size_t gi = 0; gi < n_paired; ++gi) {
     if (!ConfigureImuNoise(*groups_[gi], cfg_.groups[gi].imu_noise)) {
       fprintf(stderr, "[MuJoCoSimulator] Initialize aborted: invalid imu_noise for group '%s'\n",
+              groups_[gi]->name.c_str());
+      return false;
+    }
+    if (!ConfigureImuRateExport(*groups_[gi], cfg_.groups[gi].imu_rate_export)) {
+      fprintf(stderr,
+              "[MuJoCoSimulator] Initialize aborted: invalid imu_rate_export for group '%s'\n",
               groups_[gi]->name.c_str());
       return false;
     }
@@ -2119,6 +2189,8 @@ void MuJoCoSimulator::StepForTest() noexcept {
   ApplyCommand();
   PreparePhysicsStep();
   mj_step(model_, data_);
+  // One StepForTest is one substep, and is that step's last.
+  SnapshotImuSites();
   // Same order the SimLoop uses: contacts integrated while mjData::contact is
   // still the one mj_step just produced.
   AccumulateBallContacts(step_for_test_count_ + 1, model_->opt.timestep);
@@ -2141,6 +2213,12 @@ void MuJoCoSimulator::RefreshObjectForTest() noexcept {
   // freshly spawned pose — reading here is what lets a test assert the exact
   // spawn rather than one integration step past it.
   ReadObjectStates();
+}
+
+void MuJoCoSimulator::RepublishSensorsForTest() noexcept {
+  if (!model_ || !data_)
+    return;
+  ReadSensors();
 }
 
 void MuJoCoSimulator::ResetForTest() noexcept {

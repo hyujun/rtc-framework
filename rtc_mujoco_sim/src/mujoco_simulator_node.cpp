@@ -712,6 +712,16 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
       LoadContactWrenchConfig("robot_response", gname, gc.contact_wrench);
       LoadImuNoiseConfig("robot_response", gname, gc.imu_noise);
+      {
+        const auto key = "robot_response." + gname + ".imu_rate_export";
+        const auto text = get_parameter(key).as_string();
+        const auto mode = urtc::ParseImuRateExport(text);
+        if (!mode) {
+          throw std::runtime_error(key + " must be \"sample\" or \"tick_mean\", got \"" + text +
+                                   "\"");
+        }
+        gc.imu_rate_export = *mode;
+      }
 
       group_configs_.push_back(std::move(gc));
     }
@@ -817,6 +827,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter(prefix + "imu_noise.accel.white_sigma", 0.0);
     declare_parameter(prefix + "imu_noise.accel.bias_sigma", 0.0);
     declare_parameter(prefix + "imu_noise.accel.bias_walk_sigma", 0.0);
+    // What the gyros / accelerometers export for one step: "sample" (the
+    // default) = mjData::sensordata, "tick_mean" = the mean of the IMU site's
+    // motion over the step — see ImuRateExport.
+    declare_parameter(prefix + "imu_rate_export", std::string("sample"));
   }
 
   void LoadImuNoiseConfig(const std::string& section, const std::string& gname,

@@ -3,6 +3,7 @@
 
 // ── Includes: project, then MuJoCo, then C++ stdlib ───────────────────────────
 #include "rtc_mujoco_sim/imu_noise_model.hpp"
+#include "rtc_mujoco_sim/imu_rate_export.hpp"
 #include "rtc_mujoco_sim/object_pool.hpp"
 #include "rtc_mujoco_sim/projectile_ball.hpp"
 #include <rtc_base/concurrency/spsc_queue.hpp>
@@ -345,6 +346,20 @@ struct JointGroupConfig {
   // same seed and the same IMU layout draw identical noise.
   ImuNoiseConfig imu_noise;
 
+  // ── IMU rate export (robot groups only) ─────────────────────────────────
+  // What the group's gyros and accelerometers export for one step
+  // (imu_rate_export.hpp). kSample = mjData::sensordata, the value of one
+  // instant; kTickMean = the mean of the IMU site's motion between snapshots
+  // taken right after consecutive steps' last mj_step. A snapshot is the
+  // instant mjData::sensordata describes (the start of the last substep, one
+  // substep before the published joint state), so the mean ends where the
+  // export's other sensors are. The export stays sensordata without a pair:
+  // the first two after Initialize or a reset, under RK4 (its stages leave
+  // the kinematics off the step's start), and across a world-gravity change.
+  // The mean covers one physics step whatever state_publish_divisor is.
+  // The MJCF cutoff is applied, then imu_noise.
+  ImuRateExport imu_rate_export{ImuRateExport::kSample};
+
   // ── Contact wrench publishing (optional, mjSENS_CONTACT auto-discovery) ──
   // Scans this group's sensor_infos for mjSENS_CONTACT entries (dim==17,
   // data="found force torque dist pos normal tangent" reduce="netforce"), then
@@ -525,6 +540,28 @@ struct JointGroup {
   bool imu_noise_enabled{false};
   ImuNoiseModel imu_noise;
   std::vector<std::size_t> imu_noise_offsets;
+
+  // ── IMU rate export (SimLoop-only after Initialize) ────────────────────
+  // One channel per 3-axis gyro / accelerometer in sensor_infos when
+  // imu_rate_export is kTickMean (empty otherwise). imu_rate_prev / _cur hold
+  // each channel's site snapshot of the two latest steps (swapped, never
+  // reallocated, on the sim step); imu_rate_snapshots counts the usable
+  // snapshots in a row (0, 1, 2+); imu_rate_gravity is the world gravity at
+  // the last one; imu_rate_fresh says one was taken since the last
+  // ReadSensors, so no pair is exported twice.
+  struct ImuRateChannel {
+    std::size_t offset{0};  // into sensor_buffer
+    bool gyro{false};       // else accelerometer
+    int site{-1};           // mjModel site id
+    double cutoff{0.0};     // MJCF cutoff (0 = none)
+  };
+
+  std::vector<ImuRateChannel> imu_rate_channels;
+  std::vector<ImuSiteSnapshot> imu_rate_prev;
+  std::vector<ImuSiteSnapshot> imu_rate_cur;
+  int imu_rate_snapshots{0};
+  std::array<double, 3> imu_rate_gravity{};
+  bool imu_rate_fresh{false};
 
   using SensorCallback =
       std::function<void(const std::vector<SensorInfo>& infos, const std::vector<double>& values)>;
@@ -932,6 +969,10 @@ class MuJoCoSimulator {
   // the SimLoop owns this mutation, so a test that is not running the SimLoop
   // needs an inline entry point.
   void ResetForTest() noexcept;
+  // Read the sensors again with no physics step in between (the SimLoop
+  // always steps between two exports; this checks the guard that no pair is
+  // exported twice).
+  void RepublishSensorsForTest() noexcept;
   // Write the world pose of mocap body `mocap_index` (0 … nmocap − 1; quat
   // w, x, y, z, normalised here) and the sliding friction (> 0) of geom
   // `geom_id`, for a test driving StepForTest: a crane welded to a mocap body
@@ -1446,6 +1487,11 @@ class MuJoCoSimulator {
   // Validate imu_noise and build the group's ImuNoiseModel over its gyro /
   // accelerometer exports; counts the noise= warning. False = invalid config.
   [[nodiscard]] bool ConfigureImuNoise(JointGroup& group, const ImuNoiseConfig& cfg) noexcept;
+  // Build the group's tick-mean channels (imu_rate_export kTickMean). False =
+  // a gyro / accelerometer that is not on a site.
+  [[nodiscard]] bool ConfigureImuRateExport(JointGroup& group, ImuRateExport mode) noexcept;
+  // Snapshot every tick-mean IMU site. Call right after a step's last mj_step.
+  void SnapshotImuSites() noexcept;
   // 그룹의 sensor_infos 에서 mjSENS_CONTACT 만 추려 contact_wrench_infos 생성.
   // sensor name suffix 와 site name suffix 로 target/site/body 를 자동 resolve.
   // allow_partial_discovery=false 면 unresolved 1건이라도 있으면 false 반환.
