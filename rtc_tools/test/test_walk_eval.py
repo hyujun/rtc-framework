@@ -295,7 +295,7 @@ def test_the_constraint_vector_keeps_out_of_j():
 PROVENANCE = {
     "commit": "abc1234",
     "dirty": False,
-    "config": {"installed_sha256": "f00", "source_sha256": "f00"},
+    "config": {"files": 18, "installed_sha256": "f00", "source_sha256": "f00"},
     "overlay": None,
     "model_match": {"mass_kg": 9e-7, "com_m": 7e-9, "inertia_kgm2": 6e-7},
 }
@@ -348,6 +348,7 @@ def test_a_clean_run_is_valid(tmp_path):
     assert set(v["checks"]) == {
         "recorder", "no_wip", "overlay", "rtf", "single_support", "command_shape",
         "zero_u_fb_norm", "commit_clean", "config_installed", "model_match",
+        "log_readable", "log_spans_script",
     }  # fmt: skip
 
 
@@ -361,10 +362,22 @@ def test_a_clean_run_is_valid(tmp_path):
         ({"note": {}}, "commit_clean"),
         ({"note": {"provenance": {**PROVENANCE, "dirty": True}}}, "commit_clean"),
         (
-            {"note": {"provenance": {**PROVENANCE, "config": {"installed_sha256": "a",
-                                                              "source_sha256": "b"}}}},
+            {"note": {"provenance": {**PROVENANCE, "config": {"files": 18, "installed_sha256": "a", "source_sha256": "b"}}}},
             "config_installed",
         ),
+        # No file was hashed: two equal hashes of nothing are not a match.
+        (
+            {"note": {"provenance": {**PROVENANCE, "config": {
+                "files": 0, "installed_sha256": "e", "source_sha256": "e"}}}},
+            "config_installed",
+        ),
+        # The model could not be compared: an error instead of numbers.
+        (
+            {"note": {"provenance": {**PROVENANCE, "model_match": {"error": "no mujoco"}}}},
+            "model_match",
+        ),
+        # A run that names no real-time factor has nothing to be held to.
+        ({"note": {"provenance": PROVENANCE, "rtf": None}}, "rtf"),
         # A plant 0.93 kg lighter than the control model: a body is missing.
         (
             {"note": {"provenance": {**PROVENANCE, "model_match": {
@@ -470,3 +483,57 @@ def test_the_completion_constraint_only_rejects():
     better = we.compare_completion(control, {"n": 54, "completed": 40})
     assert not better["reject"] and better["fisher_p"] > 0.5
     assert math.isclose(worse["power_at_minus_0.2"], 0.61, abs_tol=0.02)
+
+
+def test_a_log_cut_short_without_a_fault_is_not_a_completed_run(tmp_path):
+    diag, truth = synthetic(length=START + 9.0)  # ends in the straight walk, no fault row
+    write_run(tmp_path, diag, truth, note={"provenance": PROVENANCE})
+    note = json.loads((tmp_path / "run.json").read_text())
+    run = we.Run(we.load_run(tmp_path / we.CONTROLLER_DIR), wm.WALK_SCRIPT)
+    v = we.run_validity(run, tmp_path, note, we.ValiditySpec(), None)
+    assert not v["checks"]["log_spans_script"] and not v["valid"]
+    # A run that faulted that early is a failure the arm counts, not a cut log.
+    write_run(
+        tmp_path / "f",
+        *synthetic(length=START + 9.0, fault_at=START + 8.0),
+        note={"provenance": PROVENANCE},
+    )
+    faulted = we.Run(we.load_run(tmp_path / "f" / we.CONTROLLER_DIR), wm.WALK_SCRIPT)
+    vf = we.run_validity(faulted, tmp_path / "f", note, we.ValiditySpec(), None)
+    assert vf["checks"]["log_spans_script"] and vf["valid"]
+
+
+@pytest.mark.parametrize("column", ["contact_mask", "fault_cause", "cmd_vx"])
+def test_a_cell_that_did_not_parse_in_a_placing_column_invalidates_the_run(column):
+    diag, truth = synthetic()
+    diag[column] = diag[column].copy()
+    diag[column][4000] = math.nan
+    run = run_of(diag, truth)
+    assert not we.log_readable(run) and not we.log_spans_script(run)
+    assert we.log_readable(run_of(*synthetic()))
+
+
+def test_an_unreadable_run_is_listed_and_the_batch_goes_on(tmp_path):
+    for k in range(2):
+        write_run(tmp_path / f"C_{k}", *synthetic(), note={"provenance": PROVENANCE})
+    write_run(tmp_path / "C_2", *synthetic(), note={"provenance": PROVENANCE})
+    (tmp_path / "C_2" / we.CONTROLLER_DIR / ld.DIAG_FILE).write_text("")  # an empty log
+    write_run(tmp_path / "C_3", *synthetic(), note={"provenance": PROVENANCE})
+    (tmp_path / "C_3" / "launch.log").unlink()
+    diag, truth = synthetic()
+    del diag["plausibility_rejects"]  # a column no core metric reads
+    write_run(tmp_path / "C_4", diag, truth, note={"provenance": PROVENANCE})
+    diag, truth = synthetic()
+    del diag["cmd_wz"]  # a placing column
+    write_run(tmp_path / "C_5", diag, truth, note={"provenance": PROVENANCE})
+    out = we.evaluate_batch(tmp_path, {"arms": {"C": {"runs": "C_*"}}})["arms"]["C"]
+    by_run = {r["run"]: r for r in out["runs"]}
+    assert "error" in by_run["C_2"] and "error" in by_run["C_3"]
+    assert by_run["C_4"]["valid"] and "plausibility_rejects" in by_run["C_4"]["refused"]
+    assert not by_run["C_5"]["valid"]
+    assert out["summary"]["n"] == 3 and out["summary"]["completed"] == 3
+    # A column the registration asks to be zero and the log lacks fails that check.
+    spec = {"arms": {"C": {"runs": "C_*"}}, "validity": {"zero_columns": ["no_such_column"]}}
+    again = we.evaluate_batch(tmp_path, spec)["arms"]["C"]
+    assert again["summary"] == {"n": 0}
+    assert not {r["run"]: r for r in again["runs"]}["C_0"]["checks"]["zero_no_such_column"]

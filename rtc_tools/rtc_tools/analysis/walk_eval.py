@@ -36,7 +36,8 @@ Run metrics (:data:`METRICS`)
       a planned contact comes on.
     * ``v_mps`` is the base's displacement along its own heading over the
       straight window (from 1 s after it starts to its end, or to 0.5 s before
-      the fault; at least 2 s), divided by the window; ``v_ratio`` divides that
+      the run's last counted row if that is earlier; at least 2 s), divided by
+      the window; ``v_ratio`` divides that
       by the mean commanded speed. ``v_ratio`` is a ratio, not a speed.
     * a fault is *straight* before the first turn command and a *transition*
       fault within two touchdowns after a command transition.
@@ -46,8 +47,14 @@ Validity (:func:`run_validity`)
     asked real-time factor, the command had the registered shape, the gait's
     single support had the registered length, the run carried the arm's overlay
     and — for runs that record it — the build, the installed configuration and
-    the plant model are the ones the batch declares. Invalid runs are listed,
-    not dropped silently.
+    the plant model are consistent: a clean checkout, an installed
+    configuration equal to it, a plant that matches the controller's model
+    (what it cannot show: that the installed binaries were built from that
+    commit). A log the numbers cannot be trusted on is invalid too — cells
+    that did not parse in the columns every window is placed by, or a log
+    that ends before the script does without a fault. Invalid runs are listed
+    with the check that failed, and a run that cannot be read at all is
+    listed with its error; neither stops the batch.
 
 Arm statistics
     Counts and medians over the valid runs (:func:`arm_summary`), the Wilson
@@ -729,7 +736,8 @@ class ModelTolerance:
 
 @dataclass(frozen=True)
 class ValiditySpec:
-    """What a run must show to count. None switches a check off (it is then reported so)."""
+    """What a run must show to count. None switches a check off: it is then absent from
+    the run's ``checks`` (never listed as passed)."""
 
     rtf_tol: float | None = 0.05
     single_support_s: tuple[float, float] | None = None
@@ -771,6 +779,7 @@ def provenance_checks(note: Mapping, model: ModelTolerance) -> dict[str, bool]:
     return {
         "commit_clean": bool(prov.get("commit")) and prov.get("dirty") is False,
         "config_installed": bool(config)
+        and bool(config.get("files"))
         and config.get("installed_sha256") is not None
         and config.get("installed_sha256") == config.get("source_sha256"),
         "model_match": all(
@@ -795,6 +804,45 @@ def overlay_ok(note: Mapping, want: str | None) -> bool:
     return args[0].endswith(want) or recorded == want
 
 
+# The columns every window and count is placed by: a cell of these that did not
+# parse would otherwise read as "no contact", "no fault" or "no command".
+PLACING_COLUMNS = ("t_relative_s", "contact_mask", "fault_cause", "cmd_vx", "cmd_wz")
+
+
+def log_readable(run: Run) -> bool:
+    """Every placing column is there, has rows and holds only numbers."""
+    return all(
+        c in run.log.diag and run.log.diag[c].size > 0 and bool(np.isfinite(run.log.diag[c]).all())
+        for c in PLACING_COLUMNS
+    )
+
+
+def log_spans_script(run: Run) -> bool:
+    """The log runs from the first command to the end of the script's moving part.
+
+    A log cut short with no fault row (a simulator that died, a recorder
+    stopped early) has not shown that the run completed.
+    """
+    if not log_readable(run):
+        return False
+    command = np.abs(run.log.column("cmd_vx")) + np.abs(run.log.column("cmd_wz"))
+    moving = np.flatnonzero(command > 0.01 * (run.v_cmd + run.wz_cmd))
+    if not moving.size:
+        return False
+    return bool(run.t[-1] - run.t[moving[0]] >= wm.script_length(run.script[:-1]))
+
+
+CORE_METRICS = (
+    "completed",
+    "survival_s",
+    "touchdowns",
+    "straight_fault",
+    "transition_fault",
+    "exposed",
+    "plan_loss",
+)
+
+
 def run_validity(
     run: Run, run_dir: Path, note: Mapping, spec: ValiditySpec, overlay: str | None
 ) -> dict:
@@ -808,8 +856,13 @@ def run_validity(
         "no_wip": "[wip]" not in log_text,
         "overlay": overlay_ok(note, overlay),
     }
-    if spec.rtf_tol is not None and target:
-        checks["rtf"] = rtf is not None and abs(rtf / target - 1.0) <= spec.rtf_tol
+    if spec.rtf_tol is not None:
+        # A run that names no target has nothing to be held to: that fails, it does not skip.
+        checks["rtf"] = (
+            bool(target) and rtf is not None and abs(rtf / target - 1.0) <= spec.rtf_tol
+        )
+    checks["log_readable"] = log_readable(run)
+    checks["log_spans_script"] = run.faulted or log_spans_script(run)
     support = _single_support(run, TIER_NONE)
     if spec.single_support_s is not None:
         lo, hi = spec.single_support_s
@@ -825,7 +878,9 @@ def run_validity(
             for event, want in spec.command_rate.items()
         )
     for column in spec.zero_columns:
-        checks[f"zero_{column}"] = bool(np.all(run.log.column(column) == 0.0))
+        checks[f"zero_{column}"] = column in run.log.diag and bool(
+            np.all(run.log.diag[column] == 0.0)
+        )
     if spec.provenance:
         checks.update(provenance_checks(note, spec.model))
     return {
@@ -924,10 +979,23 @@ def evaluate_batch(root: Path, spec: Mapping) -> dict:
             if not note_path.is_file():
                 runs.append({"run": str(run_dir.relative_to(root)), "missing": True})
                 continue
-            note = json.loads(note_path.read_text())
-            run = Run(load_run(run_dir / CONTROLLER_DIR), script)
-            values, refused = evaluate_available(run)
-            validity = run_validity(run, run_dir, note, vspec, arm.get("overlay"))
+            try:
+                note = json.loads(note_path.read_text())
+                run = Run(load_run(run_dir / CONTROLLER_DIR), script)
+                validity = run_validity(run, run_dir, note, vspec, arm.get("overlay"))
+                values, refused = evaluate_available(run)
+            except Exception as exc:  # one unreadable run must not take the batch with it
+                runs.append(
+                    {
+                        "run": str(run_dir.relative_to(root)),
+                        "valid": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            # An arm is summed over these: a run that cannot give one does not count.
+            validity["checks"]["core_metrics"] = all(k in values for k in CORE_METRICS)
+            validity["valid"] = all(validity["checks"].values())
             runs.append(
                 {
                     "run": str(run_dir.relative_to(root)),
@@ -940,7 +1008,7 @@ def evaluate_batch(root: Path, spec: Mapping) -> dict:
                     "constraints": constraints(run),
                 }
             )
-        present = [r for r in runs if not r.get("missing")]
+        present = [r for r in runs if not r.get("missing") and "error" not in r]
         sessions = [r["session"] for r in present]
         keys = {r["pooling_key"] for r in present}
         valid = [r["metrics"] for r in present if r["valid"]]
@@ -981,6 +1049,8 @@ def main(argv: list[str] | None = None) -> int:
         for r in arm["runs"]:
             if r.get("missing"):
                 print("  missing:", r["run"])
+            elif "error" in r:
+                print("  unreadable:", r["run"], r["error"])
             elif not r["valid"]:
                 failed = [k for k, ok in r["checks"].items() if not ok]
                 print("  invalid:", r["run"], failed)
