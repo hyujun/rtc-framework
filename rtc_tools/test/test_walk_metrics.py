@@ -337,3 +337,37 @@ def test_a_mostly_nan_window_reports_its_finite_fraction():
 def test_an_unreadable_first_force_sample_makes_no_edge():
     f = np.array([math.nan, 20.0, 20.0, 1.0])
     assert wm.measured_contact(f, 15.0, 6.0).tolist() == [True, True, True, False]
+
+
+@pytest.mark.parametrize("name", sorted(wm.COMMAND_SCRIPTS))
+def test_every_command_script_is_as_long_as_the_walk_and_ends_in_its_stop(name):
+    script = wm.COMMAND_SCRIPTS[name]
+    assert wm.script_length(script) == pytest.approx(wm.script_length(wm.WALK_SCRIPT))
+    assert script[-1].length_s == wm.WALK_SCRIPT[-1].length_s
+    assert (script[-1].vx0, script[-1].vx1, script[-1].wz) == (0.0, 0.0, 0.0)
+    assert len({s.name for s in script}) == len(script)
+
+
+def test_the_walk_command_script_is_the_judged_one():
+    assert wm.COMMAND_SCRIPTS["walk"] is wm.WALK_SCRIPT
+
+
+@pytest.mark.parametrize(("name", "wz"), [("turn", 0.4), ("turn_slow", 0.3)])
+def test_the_turn_scripts_turn_in_place_both_ways_with_no_net_heading(name, wz):
+    walking = wm.COMMAND_SCRIPTS[name][:-1]
+    assert all(s.vx0 == s.vx1 == 0.0 for s in walking)
+    assert sorted({s.wz for s in walking}) == [-wz, wz]
+    assert sum(s.wz * s.length_s for s in walking) == pytest.approx(0.0)
+    assert wm.script_length(walking) == pytest.approx(16.0)
+
+
+@pytest.mark.parametrize(("name", "wz"), [("curve", 0.4), ("curve_slow", 0.3)])
+def test_the_curve_scripts_walk_with_a_3_s_turn_each_way(name, wz):
+    script = wm.COMMAND_SCRIPTS[name]
+    turns = [s for s in script if s.wz != 0.0]
+    assert [(s.wz, s.length_s, s.vx0, s.vx1) for s in turns] == [
+        (wz, 3.0, 0.5, 0.5),
+        (-wz, 3.0, 0.5, 0.5),
+    ]
+    assert script[0] == wm.WALK_SCRIPT[0]  # the same ramp
+    assert wm.command_at(script, 7.5) == (0.5, 0.0, wz)

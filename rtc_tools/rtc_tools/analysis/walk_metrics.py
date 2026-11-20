@@ -76,6 +76,46 @@ WALK_SCRIPT = (
 )
 
 
+def _turn(wz: float) -> tuple[Segment, ...]:
+    # Turning in place: +wz, -wz, twice, 4 s each (16 s of walking, as in
+    # WALK_SCRIPT, net heading 0), then the same 10 s stop.
+    return (
+        Segment("A", 4.0, 0.0, 0.0, wz),
+        Segment("B", 4.0, 0.0, 0.0, -wz),
+        Segment("C", 4.0, 0.0, 0.0, wz),
+        Segment("D", 4.0, 0.0, 0.0, -wz),
+        Segment("E", 10.0, 0.0, 0.0, 0.0),
+    )
+
+
+def _curve(wz: float) -> tuple[Segment, ...]:
+    # Walking with a left and a right turn: the WALK_SCRIPT ramp, a hold, +wz
+    # and -wz for 3 s each at 0.5 m/s, a hold, the same 10 s stop.
+    return (
+        Segment("A", 2.0, 0.0, 0.5, 0.0),
+        Segment("B", 4.0, 0.5, 0.5, 0.0),
+        Segment("C", 3.0, 0.5, 0.5, wz),
+        Segment("D", 3.0, 0.5, 0.5, -wz),
+        Segment("E", 4.0, 0.5, 0.5, 0.0),
+        Segment("F", 10.0, 0.0, 0.0, 0.0),
+    )
+
+
+# The command scripts a run can publish, by name. Every one ends in a 10 s
+# stop and is as long as WALK_SCRIPT, so a run's length and stop window do not
+# depend on the script. walk_summary judges WALK_SCRIPT only (its segments by
+# name); the others are inputs for the estimator evaluation (WE-F05c — a
+# turn in place and a walk with turns both ways; the "_slow" pair is its
+# pre-registered fallback should the 0.4 rad/s turns not survive).
+COMMAND_SCRIPTS: dict[str, tuple[Segment, ...]] = {
+    "walk": WALK_SCRIPT,
+    "turn": _turn(0.4),
+    "curve": _curve(0.4),
+    "turn_slow": _turn(0.3),
+    "curve_slow": _curve(0.3),
+}
+
+
 def script_length(script: Sequence[Segment] = WALK_SCRIPT) -> float:
     """The script's length [s]."""
     return sum(s.length_s for s in script)
