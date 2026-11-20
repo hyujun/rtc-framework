@@ -189,6 +189,23 @@ def test_loco_profiles_share_one_imu_noise_block() -> None:
     )
 
 
+def test_loco_profiles_export_the_imu_tick_mean() -> None:
+    """Both loco profiles export the IMU's tick mean, and the node declares the key.
+
+    Like imu_noise, a simulation test condition the two robots share; and a
+    group-level scalar, which the block scan above does not see.
+    """
+    assert "imu_rate_export" in _declared_keys()
+    for profile in LOCO_PROFILES:
+        response = _params(profile).get("robot_response", {})
+        modes = [
+            response[group]["imu_rate_export"]
+            for group in response.get("groups", [])
+            if "imu_rate_export" in response.get(group, {})
+        ]
+        assert modes == ["tick_mean"], f"{profile}: imu_rate_export {modes}"
+
+
 def _overlay_paths(profile: str) -> list[str]:
     share = get_package_share_directory("integrated_bringup")
     directory = os.path.join(share, "config", profile, "sim_overlays")
