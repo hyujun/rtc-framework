@@ -47,7 +47,9 @@
           # sensor_layout.has_native_moment below — tx/ty/tz in slots 4..6
           # (stride 7). Frame: the sole sensor site's axes, the moment about
           # the site origin. Sign: foot-on-floor, i.e. a standing foot reads a
-          # negative fz.
+          # negative fz. Only floor contacts count: the MJCF filters both sole
+          # sensors to the world body (body2="world"), so a foot resting on the
+          # other foot reads zero.
           #
           # The locomotion controller logs it (locomotion_truth.csv truth_grf_*:
           # contact c reads slot c, so this list is in model.contacts order);

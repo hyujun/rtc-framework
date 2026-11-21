@@ -5,8 +5,9 @@
     - <option integrator="implicitfast" timestep="0.002"/> — the control period; the simulator divides it by
       its n_substeps (3 -> physics substep 0.002/3). A standalone mj_step at 0.002 is coarser than the sim
     - the 4 foot contact spheres per foot -> one box geom (left_sole / right_sole)
-    - per sole: a <contact> sensor (<name>_sole_contact, netforce, 17 values) and a <framepos> of the sole
-      geom (<name>_sole_pos); <name>_sole_ft_site on the sole's bottom face is the wrench reference site
+    - per sole: a <contact> sensor (<name>_sole_contact, netforce, 17 values) filtered to the world body
+      (body2="world": only ground contacts count, not foot-on-foot or foot-on-leg) and a <framepos> of the
+      sole geom (<name>_sole_pos); <name>_sole_ft_site on the sole's bottom face is the wrench reference site
     - wrist joints + motors removed (6): wrists are rigid, 23 actuated joints remain
     - <motor> -> <position kp kv>: legs & waist 200/5, arms 100/2
     - framepos/framequat/framelinvel/frameangvel of pelvis (ground truth), IMU sensors kept
@@ -278,8 +279,8 @@
     <accelerometer name="imu-torso-linear-acceleration" site="imu_in_torso" noise="1e-2" cutoff="157"/>
     <gyro name="imu-pelvis-angular-velocity" site="imu_in_pelvis" noise="5e-4" cutoff="34.9"/>
     <accelerometer name="imu-pelvis-linear-acceleration" site="imu_in_pelvis" noise="1e-2" cutoff="157"/>
-    <contact name="left_sole_contact" geom1="left_sole" num="1" data="found force torque dist pos normal tangent" reduce="netforce"/>
-    <contact name="right_sole_contact" geom1="right_sole" num="1" data="found force torque dist pos normal tangent" reduce="netforce"/>
+    <contact name="left_sole_contact" geom1="left_sole" body2="world" num="1" data="found force torque dist pos normal tangent" reduce="netforce"/>
+    <contact name="right_sole_contact" geom1="right_sole" body2="world" num="1" data="found force torque dist pos normal tangent" reduce="netforce"/>
     <framepos name="left_sole_pos" objtype="geom" objname="left_sole"/>
     <framepos name="right_sole_pos" objtype="geom" objname="right_sole"/>
   </sensor>

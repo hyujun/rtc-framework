@@ -16,9 +16,11 @@
 //     source's normalised copy) and the twist is base-LOCAL, [v; ω].
 //   - The body group's contact wrench lane (inference group c = contact c),
 //     fresh by rtc::IsSensorGroupFresh against the same age. Its producers on
-//     the shipped profiles are the simulator's sole sensors; the robots have
-//     no foot force sensor, which is why the lane is filed as truth. A robot
-//     that gains one has to be classified again.
+//     the shipped profiles are the simulator's sole sensors (the G1 ones
+//     count only contacts with the world body, body2="world": a foot resting
+//     on the other foot or leg reads zero); the robots have no foot force
+//     sensor, which is why the lane is filed as truth. A robot that gains
+//     one has to be classified again.
 //
 // Frames and signs of the contact block (truth_grf_<c>_*, truth_cop_<c>_*):
 //   - Axes and origin are the lane's: rtc_mujoco_sim's sole sensor site,

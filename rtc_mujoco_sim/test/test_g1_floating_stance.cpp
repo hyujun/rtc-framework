@@ -20,6 +20,8 @@
 //   IMU    — the same stance at rest: both accelerometers read the specific
 //            force R_siteᵀ·(0, 0, g₀) and both gyros ~0, within controls
 //            measured once on this MJCF
+//   feet   — one sole resting on the other: each sole sensor reads its sole's
+//            ground contacts only, never the foot-on-foot force (#1148)
 // The thresholds are the Sprint Contract numbers (#975 v3) and do not move
 // with the measurement; the pilot that sized them is recorded in the issue.
 // ──────────────────────────────────────────────────────────────────────────────
@@ -218,6 +220,10 @@ TEST_F(G1FloatingModel, SoleContactSensorsFramePosAndReferenceSites) {
     EXPECT_EQ(m_->sensor_dim[contact], kContactSensorDim) << stem;
     EXPECT_EQ(m_->sensor_objtype[contact], mjOBJ_GEOM) << stem;
     EXPECT_EQ(m_->sensor_objid[contact], sole) << stem << " must watch its own sole geom";
+    // body2="world": only contacts with the world body's static geoms (the
+    // floor) count — not foot-on-foot or foot-on-leg (#1148).
+    EXPECT_EQ(m_->sensor_reftype[contact], mjOBJ_BODY) << stem;
+    EXPECT_EQ(m_->sensor_refid[contact], 0) << stem << " must count ground contacts only";
     const int pos = Id(mjOBJ_SENSOR, (stem + "_pos").c_str());
     ASSERT_GE(pos, 0) << stem;
     EXPECT_EQ(m_->sensor_type[pos], mjSENS_FRAMEPOS) << stem;
@@ -426,6 +432,105 @@ TEST_F(G1FloatingModel, ThreeRunsAreDeterministic) {
               0)
         << "run " << i << " final qpos differs bit-wise";
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sole sensors with one foot resting on the other (#1148)
+// ═══════════════════════════════════════════════════════════════════════════
+// The "stand" keyframe lowered by 2 mm, with the right leg bent so that the
+// right sole lies on top of the left sole (same yaw, 3 cm to the right,
+// interpenetrating by 1 mm) and touches nothing else. The joint values were
+// solved once by least squares on this MJCF (position residual 6.7 mm, which
+// is why the overlap below is checked rather than assumed). The left sole then
+// touches the floor and the right sole at once.
+//
+// With geom1 alone a contact sensor sums every contact of its geom: the left
+// sensor read the floor minus the right foot's push (82 N instead of 171 N) and
+// the right sensor read the push on the left foot (89 N instead of 0).
+TEST_F(G1FloatingModel, SoleSensorsReadGroundContactsOnlyWithOneFootOnTheOther) {
+  constexpr double kFootOnFootMinN = 10.0;  // fixture validity
+  constexpr double kOracleTolN = 1e-9;
+  const std::array<std::pair<const char*, double>, 6> right_leg{{
+      {"right_hip_pitch_joint", -0.130228},
+      {"right_hip_roll_joint", 0.315467},
+      {"right_hip_yaw_joint", -0.095464},
+      {"right_knee_joint", 0.208305},
+      {"right_ankle_pitch_joint", -0.092982},
+      {"right_ankle_roll_joint", -0.2618},
+  }};
+  mj_resetDataKeyframe(m_, d_, Id(mjOBJ_KEY, "stand"));
+  d_->qpos[2] -= 0.002;
+  for (const auto& [joint, q] : right_leg) {
+    const int j = Id(mjOBJ_JOINT, joint);
+    ASSERT_GE(j, 0) << joint;
+    d_->qpos[m_->jnt_qposadr[j]] = q;
+  }
+  // Every servo holds the pose it is in.
+  for (int a = 0; a < m_->nu; ++a) {
+    d_->ctrl[a] = d_->qpos[m_->jnt_qposadr[m_->actuator_trnid[2 * a]]];
+  }
+  mj_forward(m_, d_);
+
+  // Oracle from the contact list: per sole, the force it applies to world-body
+  // geoms (world axes, the sensor's sign), and the force it exchanges with
+  // anything else.
+  std::array<int, 2> sole{};
+  std::array<std::array<double, 3>, 2> ground{};
+  std::array<int, 2> ground_contacts{}, other_contacts{};
+  std::array<double, 2> other_norm{};
+  for (std::size_t k = 0; k < 2; ++k)
+    sole[k] = Id(mjOBJ_GEOM, kSole[k]);
+  for (int c = 0; c < d_->ncon; ++c) {
+    const mjContact& con = d_->contact[c];
+    std::array<mjtNum, 6> f6{};
+    mj_contactForce(m_, d_, c, f6.data());
+    // mj_contactForce is in the contact frame (rows of con.frame) and is the
+    // force geom[0] applies to geom[1].
+    std::array<double, 3> on_geom1{};
+    for (int i = 0; i < 3; ++i)
+      for (int r = 0; r < 3; ++r)
+        on_geom1[i] += con.frame[3 * r + i] * f6[r];
+    for (std::size_t k = 0; k < 2; ++k) {
+      const bool first = con.geom[0] == sole[k];
+      if (!first && con.geom[1] != sole[k])
+        continue;
+      const int other = first ? con.geom[1] : con.geom[0];
+      const double sign = first ? 1.0 : -1.0;  // sole-on-other
+      if (m_->geom_bodyid[other] == 0) {
+        ++ground_contacts[k];
+        for (int i = 0; i < 3; ++i)
+          ground[k][i] += sign * on_geom1[i];
+      } else {
+        ++other_contacts[k];
+        other_norm[k] += std::hypot(on_geom1[0], on_geom1[1], on_geom1[2]);
+      }
+    }
+  }
+  // The fixture: left sole on the floor and under the right sole, right sole
+  // on the left sole only, with a real push between them (①).
+  ASSERT_GE(ground_contacts[0], 1) << "left sole must stand on the floor";
+  ASSERT_GE(other_contacts[0], 1) << "left sole must carry the right sole";
+  ASSERT_EQ(ground_contacts[1], 0) << "right sole must not touch the floor";
+  ASSERT_GE(other_contacts[1], 1) << "right sole must rest on the left sole";
+  ASSERT_GE(other_norm[1], kFootOnFootMinN) << "foot-on-foot force too small to test";
+
+  for (std::size_t k = 0; k < 2; ++k) {
+    const int s = Id(mjOBJ_SENSOR, (std::string(kSole[k]) + "_contact").c_str());
+    ASSERT_GE(s, 0);
+    const mjtNum* v = d_->sensordata + m_->sensor_adr[s];
+    for (int i = 0; i < 3; ++i) {  // ② force = the ground contacts only
+      EXPECT_NEAR(v[1 + i], ground[k][i], kOracleTolN) << kSole[k] << " force[" << i << "]";
+    }
+  }
+  const int left = Id(mjOBJ_SENSOR, "left_sole_contact");
+  const int right = Id(mjOBJ_SENSOR, "right_sole_contact");
+  EXPECT_GT(d_->sensordata[m_->sensor_adr[left]], 0.0) << "left sole found";
+  EXPECT_LT(d_->sensordata[m_->sensor_adr[left] + 3], 0.0) << "left sole presses down";
+  // ③ the foot on the other foot finds no ground contact and reads zero.
+  const mjtNum* r = d_->sensordata + m_->sensor_adr[right];
+  EXPECT_EQ(r[0], 0.0) << "right sole found";
+  for (int i = 0; i < 6; ++i)
+    EXPECT_EQ(r[1 + i], 0.0) << "right sole force/torque[" << i << "]";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
