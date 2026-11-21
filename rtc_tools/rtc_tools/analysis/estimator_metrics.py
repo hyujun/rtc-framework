@@ -21,18 +21,32 @@ contact names, gravity). This module reads the pair and computes, per run:
   touchdown / liftoff latency, slip false positives, the time in each mode.
 * **accelerometer check**: the measured specific force against the one the
   truth IMU-point trajectory implies (lever arm included).
+* **walking and standing parts**: the run splits at the first planned
+  lift-off (the first row a contact of the full planned stance is off). The
+  NEES is also averaged over each part, and the z gyro bias estimate is held
+  against the run's measured offset (the mean of the measured z rate minus the
+  truth one at the IMU — a constant bias) over the walking part.
+* **resets and slip cycling**: the resets after the first started row (its
+  own reset, the activation's, is not one) and, per foot, the entries into slip
+  within a trailing :data:`SLIP_WINDOW_S` window — a *cycle* is that count at
+  :data:`SLIP_CYCLE_ENTRIES` or more for :data:`SLIP_CYCLE_S` or longer
+  (WD-359). On an inekf-driven run the same counts of the logged online
+  estimate (``online_source``) are what the controller ran on.
 * **online comparison** (an inekf-driven run): the replay against the logged
   online estimate — the first tick a discrete field differs, the continuous
-  difference before it.
+  difference before it, and whether those rows cover the scored ones.
 
 The gauge (yaw and translation are unobservable) is aligned at the start of
 every state epoch (a reset starts the estimate over at a new origin): the yaw
 ψ₀ = atan2(E₁₀, E₀₀) of E = R R̂ᵀ and the translation that puts the base on
 the truth at the epoch's first truth row. Ticks
-are scored where the estimate has started and a truth row exists; NEES skips
+are scored where the estimate has started and a truth row exists, up to
+:func:`cut_row` (a fault, a fall: the rows after it are not scored, so a
+reset or a slip that follows a fall is not counted); NEES skips
 held ticks (``periods`` ≠ ≥ 1). A K-run summary (:func:`aggregate`) judges the
 run-level ANEES / ANIS against the χ²(K·dof)/(K·dof) 95 % band — each run's
-time average taken as one sample, a band no narrower than the true one.
+time average taken as one sample, a band no narrower than the true one — for
+the whole run and for its walking and standing parts.
 
 Pure numpy; no robot constant (weights, extrinsic and names come from the
 sidecar and the file).
@@ -51,6 +65,7 @@ import numpy as np
 from rtc_tools.analysis.locomotion_diag import read_table
 from rtc_tools.analysis.walk_metrics import (
     edges,
+    first_lift_row,
     mask_bits,
     match_edges,
     measured_contact,
@@ -81,6 +96,16 @@ EDGE_MARGIN_S = 0.060
 EDGE_MATCH_S = 0.5
 LATENCY_WINDOW_S = 0.3
 SLIP_SPEED_MPS = 0.02
+
+# Slip cycling (WD-359): the entries into slip of one foot on the rows of a
+# trailing window; a cycle holds the count at ≥ SLIP_CYCLE_ENTRIES for
+# ≥ SLIP_CYCLE_S. The stretch at ≥ SLIP_REPORT_ENTRIES is reported beside it.
+SLIP_WINDOW_S = 0.5
+SLIP_CYCLE_ENTRIES = 12
+SLIP_CYCLE_S = 1.0
+SLIP_REPORT_ENTRIES = 8
+# The online estimate's velocity error is also reported over the last second before the cut.
+PRE_CUT_S = 1.0
 
 # Online comparison bounds before the first discrete divergence (WD-305 (ii)).
 ONLINE_ROT_RAD = 1e-4
@@ -310,6 +335,56 @@ def epochs(cols: Table) -> list[np.ndarray]:
     return out
 
 
+def slip_entries(mode: np.ndarray, t: np.ndarray, window_s: float = SLIP_WINDOW_S) -> np.ndarray:
+    """(n,) entries into slip on the rows in (t − `window_s`, t] — an entry is a slip
+    row after a row in another mode (the first row is none)."""
+    entry = np.zeros(len(mode))
+    if len(mode) > 1:
+        entry[1:] = (mode[1:] == MODE_SLIP) & (mode[:-1] != MODE_SLIP)
+    total = np.concatenate([[0.0], np.cumsum(entry)])
+    first = np.searchsorted(t, t - window_s, side="right")
+    return total[1:] - total[first]
+
+
+def longest_span(t: np.ndarray, on: np.ndarray) -> float:
+    """The longest t[last] − t[first] over a stretch of consecutive `on` rows (0 without one)."""
+    on = np.asarray(on, dtype=bool)
+    if not on.any():
+        return 0.0
+    d = np.diff(np.concatenate([[0], on.astype(np.int8), [0]]))
+    starts, ends = np.flatnonzero(d == 1), np.flatnonzero(d == -1) - 1
+    return float(np.max(t[ends] - t[starts]))
+
+
+def slip_cycle(cols: Table, names: list[str], prefix: str = "mode_") -> dict:
+    """Per foot: the window's most entries, the longest stretch at ≥ SLIP_CYCLE_ENTRIES
+    (``cycle_span_s``) and at ≥ SLIP_REPORT_ENTRIES (``report_span_s``), whether it
+    cycled; ``feet_cycling`` counts the feet that did. `prefix` names the mode columns."""
+    t = cols["t_relative_s"]
+    feet = {}
+    for c in names:
+        count = slip_entries(cols[f"{prefix}{c}"], t)
+        span = longest_span(t, count >= SLIP_CYCLE_ENTRIES)
+        feet[c] = {
+            "window_max": int(count.max()) if count.size else 0,
+            "cycle_span_s": span,
+            "report_span_s": longest_span(t, count >= SLIP_REPORT_ENTRIES),
+            # The rows sit on a tick grid: a stretch of exactly SLIP_CYCLE_S may read 1 ulp short.
+            "cycle": bool(span >= SLIP_CYCLE_S - 1e-9),
+        }
+    return {"feet": feet, "feet_cycling": sum(f["cycle"] for f in feet.values())}
+
+
+def resets_after_start(cols: Table, prefix: str = "") -> int | None:
+    """Resets after the first started row — that row's own reset (the activation's) is
+    not one; None when the estimate never started. `prefix` names the columns."""
+    started = np.flatnonzero(cols[f"{prefix}initialized"] == 1)
+    if not started.size:
+        return None
+    count = cols[f"{prefix}reset_count"][started[0] :]
+    return int(np.nanmax(count) - count[0])
+
+
 # A fall: the truth base below this fraction of its height at the first truth row.
 FALL_HEIGHT_FRACTION = 0.6
 
@@ -355,6 +430,12 @@ def run_metrics(cols: Table, meta: dict) -> dict:
     out["start_tick"] = int(cols["tick"][first[0]]) if first.size else None
     out["start_t_s"] = float(t[first[0]]) if first.size else None
     out["resets"] = int(np.nanmax(cols["reset_count"])) if n else 0
+    out["resets_after_start"] = resets_after_start(cols)
+    lift = first_lift_row(cols["planned_mask"], nc) if n else None
+    walking = np.zeros(n, dtype=bool)
+    if lift is not None:
+        walking[lift:] = True
+    out["lift_t_s"] = float(t[lift]) if lift is not None else None
 
     # ── the gauge, per epoch ──────────────────────────────────────────────
     r_hat = _quat(cols, "base_")  # R_WB estimate
@@ -470,6 +551,23 @@ def run_metrics(cols: Table, meta: dict) -> dict:
     out["nees_in_band_fraction_truth"] = (
         float(np.mean((nv >= lo5) & (nv <= hi5))) if nv.size else None
     )
+    for part, rows in (("walk", walking), ("stand", ~walking)):
+        v = nees[rows & np.isfinite(nees)]
+        out[f"nees_{part}_ticks"] = int(v.size)
+        out[f"nees_{part}_mean_per_dof_truth"] = float(np.mean(v) / NEES_DOF) if v.size else None
+
+    # ── z gyro bias against the run's measured offset (a constant bias) ───
+    out["gyro_bias_z_truth"] = out["gyro_bias_z_dev_max_truth"] = None
+    if "bg_z" in cols and "in_imu_gz" in cols:
+        ok = have_truth & (cols["in_imu_valid"] == 1)
+        if ok.any():
+            w_imu_z = np.einsum("j,nj->n", r_bi[:, 2], w_true_b)  # (R_BIᵀ ω_B)_z
+            bias = float(np.mean((cols["in_imu_gz"] - w_imu_z)[ok]))
+            sel = walking & started & np.isfinite(cols["bg_z"])
+            out["gyro_bias_z_truth"] = bias
+            out["gyro_bias_z_dev_max_truth"] = (
+                float(np.max(np.abs(cols["bg_z"][sel] - bias))) if sel.any() else None
+            )
 
     # ── NIS (every requested update: used or gated) ───────────────────────
     nis: list[float] = []
@@ -524,6 +622,19 @@ def run_metrics(cols: Table, meta: dict) -> dict:
             },
         }
     out["contact"] = contact
+    out["slip_cycle"] = slip_cycle(cols, names)
+
+    # ── the online estimate the controller ran on (an inekf-driven run) ───
+    if "online_initialized" in cols and bool((cols["online_initialized"] == 1).any()):
+        on = (cols["online_initialized"] == 1) & have_truth
+        last = on & (t >= t[-1] - PRE_CUT_S)
+        dv = np.linalg.norm(v_true_b - _vec(cols, "online_base_v"), axis=1)
+        out["online_source"] = {
+            "resets_after_start": resets_after_start(cols, "online_"),
+            "slip_cycle": slip_cycle(cols, names, "online_mode_"),
+            "vel_err_rms_truth": _rms(dv[on]),
+            "vel_err_rms_last_s_truth": _rms(dv[last]),
+        }
 
     # ── accelerometer: measured vs the truth IMU point's specific force ───
     out["accel_check"] = accel_check(cols, r_wi_true, v_wi_true, g)
@@ -581,8 +692,10 @@ def compare_online(cols: Table, meta: dict) -> dict:
     end = diverge["row"] if diverge else stop
     rows = np.arange(end)
     rows = rows[cols["initialized"][rows] == 1]
+    # The rows the run's metrics score (up to its cut) are the ones the comparison must cover.
+    cut, _ = cut_row(cols)
     out: dict = {"compared_rows": int(end), "stop": reason if diverge is None else "diverged",
-                 "first_divergence": diverge}  # fmt: skip
+                 "first_divergence": diverge, "covers_scored_rows": bool(end >= cut)}  # fmt: skip
     if rows.size:
         r_a = _quat(cols, "base_")[rows]
         r_b = _quat(cols, "online_base_")[rows]
@@ -599,9 +712,16 @@ def compare_online(cols: Table, meta: dict) -> dict:
 
 
 def aggregate(runs: list[dict]) -> dict:
-    """The K-run consistency verdict (module docstring)."""
+    """The K-run consistency verdict (module docstring).
+
+    Every ANEES / ANIS entry holds its run mean, the χ² band at its K and
+    ``pass`` (inside the band); ``below_upper`` is the one-sided half, the
+    verdict where a value under the band only means a conservative filter.
+    """
     out: dict = {"runs": len(runs)}
     for key, dof, name in (("nees_mean_per_dof_truth", NEES_DOF, "anees_truth"),
+                           ("nees_walk_mean_per_dof_truth", NEES_DOF, "anees_walk_truth"),
+                           ("nees_stand_mean_per_dof_truth", NEES_DOF, "anees_stand_truth"),
                            ("nis_mean_per_dof", NIS_DOF, "anis")):  # fmt: skip
         vals = [r[key] for r in runs if r.get(key) is not None]
         if not vals:
@@ -610,7 +730,9 @@ def aggregate(runs: list[dict]) -> dict:
         k = len(vals)
         lo, hi = mean_band(k * dof)
         mean = float(np.mean(vals))
-        out[name] = {"value": mean, "band": [lo, hi], "k": k, "pass": bool(lo <= mean <= hi)}
+        out[name] = {"value": mean, "band": [lo, hi], "k": k, "pass": bool(lo <= mean <= hi),
+                     "below_upper": bool(mean <= hi)}  # fmt: skip
+    out["runs_cycling"] = sum(bool((r.get("slip_cycle") or {}).get("feet_cycling")) for r in runs)
     for key in ("tilt_rms_truth", "yaw_rms_truth", "vel_err_rms_truth", "pos_drift_per_step_truth",
                 "pos_drift_per_s_truth"):  # fmt: skip
         vals = [r[key] for r in runs if r.get(key) is not None]
