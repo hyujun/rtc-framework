@@ -379,6 +379,22 @@ def test_arm_groups_are_the_name_before_the_dot():
         gate._groups({"truth.s1": {}, "truth.s2": {}})
 
 
+def test_g1_is_judged_only_with_the_registered_thresholds():
+    scripts, stand = batch()
+    for r in scripts["walk"]["arms"]["truth"]:
+        r["replay"]["nees_walk_mean_per_dof_truth"] = 3.0  # above 1.5 × the registered 1.591
+    thresholds = gate.derive_thresholds(
+        [r["replay"] for r in scripts["walk"]["arms"]["truth"]],
+        [r["replay"] for r in stand["truth"]],
+    )["thresholds"]
+    out = gate.judge(scripts, stand, thresholds, n_perm=199)
+    assert "anees_walk_g1" in out["open_loop"]["failed"] and out["verdict"] == "FAIL"
+    assert out["open_loop"]["g1_anees_walk_max"] == gate.g1_bound(gate.ANEES_WALK_BASELINE)
+    derived = gate.judge(scripts, stand, None, n_perm=199)  # a (re-)registration step
+    assert "anees_walk_g1" not in derived["open_loop"]["failed"]
+    assert derived["open_loop"]["g1_anees_walk_max"] == gate.g1_bound(3.0)
+
+
 def test_the_judge_refuses_to_run_without_registered_thresholds(tmp_path, monkeypatch):
     spec = tmp_path / "spec.yaml"
     spec.write_text("scripts: {}\nstand: {arms: {}}\n")
@@ -439,6 +455,48 @@ def walk_gate_diag():
     return gate.walk_gate.DIAG
 
 
+def test_the_registered_numbers_are_on_the_rule_grid():
+    regs = gate.registered()
+    assert set(regs) == set(gate.THRESHOLD_KEYS)
+    for k, v in regs.items():
+        assert v > 0 and math.isclose(v / gate.STEP, round(v / gate.STEP)), k
+        assert v <= gate.ABS_CAP, k
+    assert gate.ANEES_WALK_BASELINE is not None and gate.ANEES_WALK_BASELINE > 0
+
+
+def test_g1_fails_a_walking_anees_above_the_registered_bound():
+    walk, stand = baseline({"nees_walk_mean_per_dof_truth": 1.4})
+    thresholds = gate.derive_thresholds(walk, stand)["thresholds"]
+    names = [c["name"] for c in gate.baseline_checks(walk, stand, thresholds)["checks"]]
+    assert "anees_walk_g1" not in names  # no registered baseline: no G1
+    ok = gate.baseline_checks(walk, stand, thresholds, anees_walk_baseline=1.4 / 1.5)
+    assert ok["failed"] == []  # at the bound
+    out = gate.baseline_checks(walk, stand, thresholds, anees_walk_baseline=0.9)
+    assert out["failed"] == ["anees_walk_g1"]
+    assert gate.g1_bound(1.591) == 2.3865
+
+
+def test_the_registered_walking_anees_baseline_was_outside_its_band():
+    from rtc_tools.analysis import estimator_metrics as em
+
+    # The WE-F06 baseline's 41 walking replays (#1150): G1 exists only for an out-of-band one.
+    lo, hi = em.mean_band(41 * em.NEES_DOF)
+    assert not lo <= gate.ANEES_WALK_BASELINE <= hi
+
+
+def test_the_registered_numbers_match_only_their_own_baseline():
+    regs = gate.registered()
+    derived = {"thresholds": dict(regs), "anees_walk_baseline": gate.ANEES_WALK_BASELINE + 1e-4}
+    assert gate.registered_matches(regs, derived)
+    assert not gate.registered_matches(regs, {**derived, "anees_walk_baseline": None})
+    off = gate.ANEES_WALK_BASELINE + 2 * gate.ANEES_WALK_BASELINE_TOL
+    assert not gate.registered_matches(regs, {**derived, "anees_walk_baseline": off})
+    for k in gate.THRESHOLD_KEYS:
+        moved = {**derived, "thresholds": {**regs, k: regs[k] + gate.STEP}}
+        assert not gate.registered_matches(regs, moved), k
+        assert not gate.registered_matches(regs, {**derived, "thresholds": {**regs, k: None}}), k
+
+
 # ── the document ──────────────────────────────────────────────────────────
 
 
@@ -464,6 +522,9 @@ def test_the_document_states_the_registered_constants():
         f"{em.SLIP_WINDOW_S:g} s 창의 slip 진입이 {em.SLIP_CYCLE_ENTRIES} 회 이상",
         f"{em.SLIP_CYCLE_S:.1f} s 이상",
         f"{em.SLIP_REPORT_ENTRIES} 회 이상의 길이는 보고",
+        *(f"`{k}` {v:g}" for k, v in gate.registered().items()),
+        f"보행 ANEES baseline {gate.ANEES_WALK_BASELINE:g}",
+        f"뒤 G1 상한은 {gate.g1_bound(gate.ANEES_WALK_BASELINE):g}",
     ):
         assert token in doc, token
 

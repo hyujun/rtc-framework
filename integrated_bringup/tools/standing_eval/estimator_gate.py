@@ -23,12 +23,15 @@ provenance) count, and each must have its replay.
 
 Open loop (WD-360) — on the truth runs' replays (``estimator_metrics``)
     The rules are fixed here; the numbers they give on the WE-F06 baseline are
-    :data:`REGISTERED` (``--derive`` computes them). A continuous threshold is
+    :data:`REGISTERED` and :data:`ANEES_WALK_BASELINE` (``--derive`` computes
+    them; a registered judge reports whether they equal this batch's — true on
+    the baseline itself). A continuous threshold is
     ⌈:data:`SCALE` × the baseline statistic⌉ on :data:`STEP`: a regression bar
     for later batches under the same condition (the baseline passes its own by
     construction). Gates on the baseline: walking-part ANEES inside its χ² band
     (recorded, not failed — outside it, the later G1 is the inekf replay ANEES
-    ≤ :data:`ANEES_RATIO` × the baseline's), standing ANEES and every ANIS
+    ≤ :data:`ANEES_RATIO` × the baseline's, judged with the registered
+    thresholds), standing ANEES and every ANIS
     under the band's upper end, every run's tilt · yaw · velocity rms and drift
     per step under :data:`ABS_CAP`, on walking runs the z gyro bias error, the
     far-from-edge recall and precision of the worse foot and its slip false
@@ -114,7 +117,8 @@ RECALL_FAR_MIN = 0.90  # G6
 PRECISION_FAR_MIN = 0.99  # G7
 SLIP_FP_MAX = 0.005
 ANEES_RATIO = 1.5
-# The numbers the rules give on the WE-F06 baseline (None: not registered yet).
+# The numbers the rules give on the WE-F06 baseline (#1150: the replays of the batch's
+# 41 walking and 5 standing truth runs).
 THRESHOLD_KEYS = (
     "walk_vel_rms_median",
     "walk_vel_rms_max",
@@ -123,8 +127,19 @@ THRESHOLD_KEYS = (
     "walk_drift_per_step_max",
     "stand_vel_rms_max",
 )
-REGISTERED: dict | None = None
-ANEES_WALK_BASELINE: float | None = None
+REGISTERED: dict | None = {
+    "walk_vel_rms_median": 0.006,  # [m/s]
+    "walk_vel_rms_max": 0.016,  # [m/s]
+    "walk_tilt_rms_max": 0.012,  # [rad]
+    "walk_yaw_rms_max": 0.030,  # [rad]
+    "walk_drift_per_step_max": 0.004,  # [m]
+    "stand_vel_rms_max": 0.002,  # [m/s]
+}
+# Its walking-part ANEES, outside the χ² band (recorded): G1 — a later batch's walking
+# replay ANEES ≤ ANEES_RATIO × this — is judged with the registered thresholds. None
+# (REGISTERED too) is the state before a (re-)registration: --derive only.
+ANEES_WALK_BASELINE: float | None = 1.591
+ANEES_WALK_BASELINE_TOL = 5e-4  # its rounding
 
 # ── closed loop (WD-358) ──────────────────────────────────────────────────
 ALPHA = 0.05
@@ -219,8 +234,14 @@ def run_checks(m: dict, walking: bool) -> list[dict]:
     return out
 
 
-def baseline_checks(walk: list[dict], stand: list[dict], thresholds: dict | None) -> dict:
-    """The baseline's set and run checks; the threshold ones need `thresholds`."""
+def baseline_checks(
+    walk: list[dict],
+    stand: list[dict],
+    thresholds: dict | None,
+    anees_walk_baseline: float | None = None,
+) -> dict:
+    """The baseline's set and run checks; the threshold ones need `thresholds`, G1
+    (walking ANEES ≤ ANEES_RATIO × a registered out-of-band baseline) `anees_walk_baseline`."""
     w, s = em.aggregate(walk), em.aggregate(stand)
     anees = w.get("anees_walk_truth")
     lo, hi = anees["band"] if anees else (math.nan, math.nan)
@@ -250,6 +271,9 @@ def baseline_checks(walk: list[dict], stand: list[dict], thresholds: dict | None
     if thresholds is not None:
         for key in THRESHOLD_KEYS:
             checks.append(check(key, stats[key], thresholds[key], "<="))
+        if anees_walk_baseline is not None:
+            checks.append(check("anees_walk_g1", anees and anees["value"],
+                                g1_bound(anees_walk_baseline), "<="))  # fmt: skip
     runs = {}
     for group, walking in ((walk, True), (stand, False)):
         for m in group:
@@ -555,7 +579,8 @@ def judge(scripts: dict, stand: dict, thresholds: dict | None, n_perm: int = N_P
     stand_truth = [r["replay"] for r in stand["truth"]]
     derived = derive_thresholds(walk_truth, stand_truth)
     use = thresholds if thresholds is not None else derived["thresholds"]
-    base = baseline_checks(walk_truth, stand_truth, use)
+    g1 = ANEES_WALK_BASELINE if thresholds is not None else None  # registered only
+    base = baseline_checks(walk_truth, stand_truth, use, g1)
     control = stand_control(stand["truth"])
     b = {r["run"]: stand_checks(r, control, use) for r in stand["inekf"]}
     walk = scripts.get(CLOSED_LOOP_SCRIPT)
@@ -621,12 +646,35 @@ def judge(scripts: dict, stand: dict, thresholds: dict | None, n_perm: int = N_P
             "update_ns": [u for u in update if u],
         },
     }
-    if not base["anees_walk_in_band"] and derived["anees_walk_baseline"] is not None:
-        out["open_loop"]["later_g1_anees_walk_max"] = ANEES_RATIO * derived["anees_walk_baseline"]
+    if thresholds is not None:  # the registered bound (none if the baseline was in band)
+        if ANEES_WALK_BASELINE is not None:
+            out["open_loop"]["g1_anees_walk_max"] = g1_bound(ANEES_WALK_BASELINE)
+    elif not base["anees_walk_in_band"] and derived["anees_walk_baseline"] is not None:
+        out["open_loop"]["g1_anees_walk_max"] = g1_bound(derived["anees_walk_baseline"])
     fails = open_failed or stand_failed or walk_failed
     verdict = "FAIL" if fails else ("UNDECIDABLE" if out["walk"]["undecidable"] else "PASS")
     out["verdict"] = verdict if thresholds is not None else f"{verdict} (unregistered thresholds)"
     return out
+
+
+def g1_bound(anees_walk_baseline: float) -> float:
+    """G1's upper end: ANEES_RATIO × an out-of-band walking-ANEES baseline."""
+    return round(ANEES_RATIO * anees_walk_baseline, 9)
+
+
+def registered_matches(thresholds: dict, derived: dict) -> bool:
+    """The registered numbers equal the ones the rules give on this batch's baseline."""
+    same = all(
+        math.isclose(thresholds[k], math.nan if (v := derived["thresholds"][k]) is None else v)
+        for k in THRESHOLD_KEYS
+    )
+    b = derived["anees_walk_baseline"]
+    return (
+        same
+        and ANEES_WALK_BASELINE is not None
+        and b is not None
+        and abs(ANEES_WALK_BASELINE - b) <= ANEES_WALK_BASELINE_TOL
+    )
 
 
 def registered() -> dict | None:
@@ -659,12 +707,7 @@ def main(argv: list[str] | None = None) -> int:
     result = judge(scripts, stand, thresholds)
     result["unusable_runs"] = errors + stand_errors
     if thresholds is not None:
-        result["registered_equals_derived"] = all(
-            math.isclose(
-                thresholds[k], math.nan if (v := result["derived"]["thresholds"][k]) is None else v
-            )
-            for k in THRESHOLD_KEYS
-        )
+        result["registered_equals_derived"] = registered_matches(thresholds, result["derived"])
     out = args.out or args.root / "estimator_gate.json"
     out.write_text(json.dumps(result, indent=1, default=walk_gate._json) + "\n")
     print("verdict", result["verdict"])
