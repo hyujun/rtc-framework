@@ -42,6 +42,16 @@ Run metrics (:data:`METRICS`)
       by the mean commanded speed. ``v_ratio`` is a ratio, not a speed.
     * a fault is *straight* before the first turn command and a *transition*
       fault within two touchdowns after a command transition.
+    * the *foot gap* is the two contact frames' separation (R's ``foot_<c>_x/y``,
+      the state source's forward kinematics) across the base's heading, signed
+      so that the stand before the command reads positive — crossed feet read
+      negative. ``foot_gap_min_est`` is its least value over the walking rows
+      and ``foot_gap_narrow_fraction_est`` the share of those rows on which it
+      is under the batch spec's ``foot_width_m`` (the sole's width: a gap under
+      it lets the soles overlap). It needs exactly two contacts and stand rows
+      before the command; the fraction also needs ``foot_width_m``. It reads the
+      separation across the heading only, so a fore-aft offset that keeps the
+      soles apart still counts as narrow.
 
 Validity (:func:`run_validity`)
     A run counts only if the recorder exited cleanly, the simulator held the
@@ -192,6 +202,7 @@ class Run:
 
     log: RunLog
     script: Sequence[wm.Segment]
+    foot_width_m: float | None = None  # the batch spec's sole width (foot gap metrics)
 
     @cached_property
     def t(self) -> np.ndarray:
@@ -528,10 +539,7 @@ def truth_normal_force(run: Run) -> np.ndarray:
 def _weight(run: Run, _tier: str) -> float | None:
     """The standing load [N]: the summed normal force over the stand rows before the command."""
     fz = truth_normal_force(run)
-    moving = np.flatnonzero(_commanded(run))
-    before = np.arange(len(run.t)) < (moving[0] if moving.size else len(run.t))
-    rows = before & (run.log.column("ref_source") == wm.REF_SOURCE_STAND)
-    rows &= np.isfinite(fz).all(axis=1)
+    rows = _stand_before_command(run) & np.isfinite(fz).all(axis=1)
     return float(np.mean(fz[rows].sum(axis=1))) if rows.any() else None
 
 
@@ -549,6 +557,55 @@ def _contact_fz_error(run: Run, tier: str) -> float | None:
     err = (plan - true)[run.walking_rows()]
     err = err[np.isfinite(err)]
     return float(np.sqrt(np.mean(err * err)) / weight) if err.size else None
+
+
+def _stand_before_command(run: Run) -> np.ndarray:
+    """Rows before the first commanded row on which the reference is the stand."""
+    moving = np.flatnonzero(_commanded(run))
+    before = np.arange(len(run.t)) < (moving[0] if moving.size else len(run.t))
+    return before & (run.log.column("ref_source") == wm.REF_SOURCE_STAND)
+
+
+def foot_gap(run: Run, tier: str) -> np.ndarray:
+    """Per row, the foot separation across the base heading [m] (module docstring).
+
+    Positive in the stand before the command; NaN where a column is not finite.
+    """
+    contacts = run.log.contacts
+    if len(contacts) != 2:
+        raise MetricUnavailable(
+            f"the foot gap needs exactly two contacts (the log has {contacts})"
+        )
+    base = run.log.base(tier)
+    a, b = contacts
+    dx = run.log.column(f"foot_{a}_x") - run.log.column(f"foot_{b}_x")
+    dy = run.log.column(f"foot_{a}_y") - run.log.column(f"foot_{b}_y")
+    psi = _yaw(base)
+    across = -np.sin(psi) * dx + np.cos(psi) * dy
+    stand = across[_stand_before_command(run) & np.isfinite(across)]
+    if not stand.size:
+        raise MetricUnavailable("no stand rows before the command to orient the foot gap")
+    side = float(np.median(stand))
+    if side == 0.0:
+        raise MetricUnavailable("the feet stand on one line across the heading")
+    return across * math.copysign(1.0, side)
+
+
+def _walking_gap(run: Run, tier: str) -> np.ndarray:
+    gap = foot_gap(run, tier)[run.walking_rows()]
+    return gap[np.isfinite(gap)]
+
+
+def _foot_gap_min(run: Run, tier: str) -> float | None:
+    gap = _walking_gap(run, tier)
+    return float(gap.min()) if gap.size else None
+
+
+def _foot_gap_narrow(run: Run, tier: str) -> float | None:
+    if run.foot_width_m is None:
+        raise MetricUnavailable("the batch spec names no foot_width_m")
+    gap = _walking_gap(run, tier)
+    return float((gap < run.foot_width_m).mean()) if gap.size else None
 
 
 def _solve_records(run: Run) -> np.ndarray:
@@ -603,6 +660,7 @@ class Metric:
 _BASE = (TIER_EST, TIER_TRUTH)
 _PLAN = (TIER_NONE,)
 _TRUTH = (TIER_TRUTH,)
+_EST = (TIER_EST,)  # R's forward kinematics: the state source's, there is no truth copy
 
 METRICS: dict[str, Metric] = {
     "completed": Metric(_PLAN, "bool", _completed),
@@ -633,6 +691,8 @@ METRICS: dict[str, Metric] = {
     "tilt_rms": Metric(_BASE, "rad", _tilt_rms),
     "weight_n": Metric(_TRUTH, "N", _weight),
     "contact_fz_error": Metric(_TRUTH, "body weight", _contact_fz_error),
+    "foot_gap_min": Metric(_EST, "m", _foot_gap_min),
+    "foot_gap_narrow_fraction": Metric(_EST, "fraction", _foot_gap_narrow),
 }
 
 
@@ -1004,10 +1064,20 @@ def evaluate_batch(root: Path, spec: Mapping) -> dict:
     validity: fields that replace the batch's for this arm — how a deliberately
     perturbed plant declares the model difference it runs with}}),
     ``control`` (an arm name), ``validity`` (:class:`ValiditySpec` fields),
-    ``min_valid`` and ``j_terms`` (a :data:`J_TERMS` subset, default all).
+    ``min_valid``, ``j_terms`` (a :data:`J_TERMS` subset, default all) and
+    ``foot_width_m`` (the sole's width [m] the foot gap is judged against;
+    without it the narrow fraction is refused).
     """
     script = wm.COMMAND_SCRIPTS[spec.get("script", "walk")]
     tier = spec.get("tier", TIER_TRUTH)
+    width = spec.get("foot_width_m")
+    if width is not None and not (
+        isinstance(width, (int, float))
+        and not isinstance(width, bool)
+        and math.isfinite(width)
+        and width > 0
+    ):
+        raise ValueError(f"foot_width_m must be a positive length [m], not {width!r}")
     vspec = validity_spec(spec.get("validity"))
     arms: dict[str, dict] = {}
     for name, arm in spec["arms"].items():
@@ -1024,7 +1094,7 @@ def evaluate_batch(root: Path, spec: Mapping) -> dict:
                 continue
             try:
                 note = json.loads(note_path.read_text())
-                run = Run(load_run(run_dir / CONTROLLER_DIR), script)
+                run = Run(load_run(run_dir / CONTROLLER_DIR), script, width)
                 validity = run_validity(run, run_dir, note, arm_vspec, arm.get("overlay"))
                 values, refused = evaluate_available(run)
             except Exception as exc:  # one unreadable run must not take the batch with it
@@ -1061,7 +1131,7 @@ def evaluate_batch(root: Path, spec: Mapping) -> dict:
             "one_build_and_overlay": len(keys) <= 1,
             "summary": arm_summary(valid, tier) if valid else {"n": 0},
         }
-    out: dict = {"tier": tier, "arms": arms}
+    out: dict = {"tier": tier, "foot_width_m": width, "arms": arms}
     control = spec.get("control")
     min_valid = spec.get("min_valid", 0)
     if control is not None:

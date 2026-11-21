@@ -365,6 +365,11 @@ struct JointGroupConfig {
   // data="found force torque dist pos normal tangent" reduce="netforce"), then
   // resolves each to a (target, ft_site, body, frame_id) tuple. World-frame
   // wrench is transformed into the ft_site's body frame at every sim tick.
+  // The simulator does not filter contacts: the wrench is whatever the
+  // sensor's geom1/body1 and geom2/body2 filter admits. A sensor with geom1
+  // alone sums every contact of that geom, self-contact included, so one
+  // meant to read the ground reaction alone carries the filter in the MJCF
+  // (e.g. body2="world").
   // Per-target topics: <topic_prefix>/<target>/contact_wrench (WrenchStamped).
   struct ContactWrenchConfig {
     bool enabled{false};

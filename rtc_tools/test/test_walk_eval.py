@@ -605,3 +605,91 @@ def test_an_arm_can_declare_the_model_difference_it_runs_with(tmp_path):
     assert not out["C"]["runs"][0]["checks"]["model_match"]  # the batch's tolerance
     assert out["P"]["runs"][0]["valid"]  # the arm's declared one
     assert "single_support" in out["P"]["runs"][0]["checks"]  # the rest of the batch's still holds
+
+
+# ── foot gap ──────────────────────────────────────────────────────────────
+
+GAP = 0.2  # the stance width across the heading [m]
+NARROW = (START + 4.0, START + 5.0)  # a straight-walking second with the feet close
+
+
+def with_feet(diag, narrow_gap=0.03, left_side=1.0):
+    """`diag` plus foot_<c>_x/y: the feet GAP apart across the base heading, a
+    fore-aft offset during the turn (it must not count), and `narrow_gap` in NARROW.
+
+    `left_side` −1 puts the left foot on the right (the stand orients the sign).
+    """
+    t = diag["t_relative_s"]
+    psi = we._yaw({f"q{k}": diag[f"base_q{k}"] for k in "xyzw"})
+    half = np.where((t >= NARROW[0]) & (t < NARROW[1]), narrow_gap, GAP) / 2
+    turning = np.abs(diag["cmd_wz"]) > 0
+    for name, lat, fwd in (
+        ("left", left_side * half, np.where(turning, 0.2, 0.0)),
+        ("right", -left_side * half, np.zeros_like(t)),
+    ):
+        diag[f"foot_{name}_x"] = diag["base_px"] + fwd * np.cos(psi) - lat * np.sin(psi)
+        diag[f"foot_{name}_y"] = diag["base_py"] + fwd * np.sin(psi) + lat * np.cos(psi)
+    return diag
+
+
+def _expected_narrow(run):
+    rows = run.walking_rows()
+    narrow = (run.t >= NARROW[0]) & (run.t < NARROW[1])
+    return (rows & narrow).sum() / rows.sum()
+
+
+@pytest.mark.parametrize("left_side", [1.0, -1.0])
+def test_the_foot_gap_is_across_the_heading_and_oriented_by_the_stand(left_side):
+    diag, truth = synthetic()
+    run = run_of(with_feet(diag, left_side=left_side), truth)
+    run.foot_width_m = 0.06
+    values = we.evaluate(run, ["foot_gap_min_est", "foot_gap_narrow_fraction_est"])
+    assert values["foot_gap_min_est"] == pytest.approx(0.03, abs=1e-12)
+    expected = _expected_narrow(run)
+    assert 0.0 < expected < 1.0
+    assert values["foot_gap_narrow_fraction_est"] == pytest.approx(expected, rel=1e-12)
+    gap = we.foot_gap(run, we.TIER_EST)
+    assert gap[run.walking_rows()].max() == pytest.approx(GAP, abs=1e-12)  # the turn's offset
+
+
+def test_crossed_feet_read_a_negative_gap():
+    diag, truth = synthetic()
+    run = run_of(with_feet(diag, narrow_gap=-0.01), truth)
+    assert we.evaluate(run, ["foot_gap_min_est"])["foot_gap_min_est"] == pytest.approx(-0.01)
+
+
+def test_the_foot_gap_is_refused_without_what_it_needs():
+    diag, truth = synthetic()
+    run = run_of(with_feet(diag), truth)
+    with pytest.raises(we.MetricUnavailable, match="foot_width_m"):
+        we.evaluate(run, ["foot_gap_narrow_fraction_est"])
+    assert we.evaluate(run, ["foot_gap_min_est"])["foot_gap_min_est"] == pytest.approx(0.03)
+    for key in ("foot_gap_min_truth", "foot_gap_min"):
+        with pytest.raises(we.MetricUnavailable):
+            we.split_key(key)
+    with pytest.raises(we.MetricUnavailable, match="foot_left_x"):
+        we.evaluate(run_of(synthetic()[0], truth), ["foot_gap_min_est"])
+    no_stand = with_feet(synthetic()[0])
+    no_stand["ref_source"] = np.full(len(no_stand["tick"]), 2.0)  # walk from the first row
+    with pytest.raises(we.MetricUnavailable, match="stand rows"):
+        we.evaluate(run_of(no_stand, truth), ["foot_gap_min_est"])
+    three = with_feet(synthetic()[0])
+    three["lambda_extra_fz"] = np.zeros(len(three["tick"]))
+    with pytest.raises(we.MetricUnavailable, match="exactly two contacts"):
+        we.evaluate(run_of(three, truth), ["foot_gap_min_est"])
+
+
+def test_a_batch_passes_its_foot_width_to_the_runs(tmp_path):
+    diag, truth = synthetic()
+    write_run(tmp_path / "C_0", with_feet(diag), truth, note={"provenance": PROVENANCE})
+    spec = {"arms": {"C": {"runs": "C_*"}}, "foot_width_m": 0.06}
+    out = we.evaluate_batch(tmp_path, spec)
+    assert out["foot_width_m"] == 0.06
+    metrics = out["arms"]["C"]["runs"][0]["metrics"]
+    run = we.Run(we.load_run(tmp_path / "C_0" / we.CONTROLLER_DIR), wm.WALK_SCRIPT)
+    assert metrics["foot_gap_narrow_fraction_est"] == pytest.approx(_expected_narrow(run))
+    refused = we.evaluate_batch(tmp_path, {"arms": spec["arms"]})["arms"]["C"]["runs"][0]
+    assert "foot_gap_narrow_fraction_est" in refused["refused"]
+    for bad in (0.0, -0.06, "0.06", math.nan, True):
+        with pytest.raises(ValueError, match="foot_width_m"):
+            we.evaluate_batch(tmp_path, {**spec, "foot_width_m": bad})
