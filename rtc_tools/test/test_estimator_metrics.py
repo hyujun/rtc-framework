@@ -463,3 +463,241 @@ def test_the_online_comparison_stops_at_the_first_divergence_or_gap():
     out = em.compare_online(cols, META)
     assert out["compared_rows"] == 20
     assert out["stop"] == "gap"
+    assert out["covers_scored_rows"] is False  # the run is scored to its end
+
+
+def test_the_online_comparison_needs_to_cover_only_the_scored_rows():
+    n = 50
+    cols = base_table(n)
+    rots = np.array([rz(0.0) for _ in range(n)])
+    for prefix in ("base_", "online_base_"):
+        put_pose(cols, prefix, rots, np.zeros((n, 3)))
+    put_vec(cols, "base_v", np.zeros((n, 3)))
+    put_vec(cols, "online_base_v", np.zeros((n, 3)))
+    for f in em.DISCRETE:
+        cols[f"online_{f}"] = cols[f].copy() if f in cols else np.zeros(n)
+        cols.setdefault(f, cols[f"online_{f}"].copy())
+    for c in NAMES:
+        for f in ("mode", "update"):
+            cols[f"online_{f}_{c}"] = cols[f"{f}_{c}"].copy()
+    cols["mode_left_foot"][40] = 3  # a discrete divergence at row 40
+    cols["online_fault_latched"] = np.zeros(n)
+    assert em.compare_online(cols, META)["covers_scored_rows"] is False
+    cols["online_fault_latched"][30:] = 1.0  # cut at 30: the divergence is after it
+    out = em.compare_online(cols, META)
+    assert out["stop"] == "diverged" and out["covers_scored_rows"] is True
+
+
+# ── walking / standing parts, gyro bias ────────────────────────────────────
+
+
+def exact_run(n):
+    """A run whose estimate is the truth (any metric not under test reads 0)."""
+    t, rots, pos, vel_w, v_b, w_b = walking_truth(n)
+    cols = base_table(n)
+    put_truth(cols, rots, pos, v_b, w_b)
+    put_pose(cols, "base_", rots, pos)
+    put_vec(cols, "base_v", v_b)
+    put_imu_state(cols, rots, pos, np.einsum("nij,nj->ni", rots, v_b + np.cross(w_b, P_BI)))
+    return cols, rots, v_b, w_b
+
+
+def test_the_nees_splits_at_the_first_planned_lift_off():
+    n, lift = 400, 150
+    cols, rots, v_b, w_b = exact_run(n)
+    vel_wi = np.einsum("nij,nj->ni", rots, v_b + np.cross(w_b, P_BI))
+    xi_phi, xi_v = np.array([0.01, -0.02, 0.0]), np.array([0.05, 0.02, -0.01])
+    put_imu_state(cols, rots, cols_pos(cols), vel_wi, np.eye(3), xi_phi, xi_v)
+    cols["planned_mask"][lift:] = np.where(np.arange(n - lift) % 100 < 50, 1.0, 3.0)
+    cols["planned_mask"][lift + 100 :] = 2.0  # a later lift-off is not the split
+    p = np.diag([4e-4, 1e-4, 9.0, 1e-3, 2e-3, 4e-3])
+    for i in range(6):
+        cols[f"P_{i}_{i}"] = np.full(n, p[i, i])
+        cols[f"P_{i}_{i}"][lift:] *= 4.0  # the walking part's NEES is a quarter of the stand's
+    m = em.run_metrics(cols, META)
+    e = np.array([xi_phi[0], xi_phi[1], *xi_v])
+    keep = [0, 1, 3, 4, 5]
+    want = float(e @ np.linalg.solve(p[np.ix_(keep, keep)], e)) / 5
+    assert m["lift_t_s"] == pytest.approx(lift * DT, abs=TOL)
+    assert (m["nees_stand_ticks"], m["nees_walk_ticks"]) == (lift, n - lift)
+    assert m["nees_stand_mean_per_dof_truth"] == pytest.approx(want, rel=1e-9)
+    assert m["nees_walk_mean_per_dof_truth"] == pytest.approx(want / 4, rel=1e-9)
+    cols["planned_mask"][:] = 3.0  # a stand run: no walking part
+    m = em.run_metrics(cols, META)
+    assert m["lift_t_s"] is None and m["nees_walk_mean_per_dof_truth"] is None
+    assert m["nees_stand_ticks"] == n
+
+
+def cols_pos(cols):
+    return np.stack([cols[f"truth_p{a}"] for a in "xyz"], axis=1)
+
+
+def test_the_gyro_bias_is_held_against_the_measured_offset_over_the_walking_part():
+    n, lift, bias = 300, 100, 2e-3
+    cols, rots, v_b, w_b = exact_run(n)
+    w_imu = w_b @ R_BI  # R_BIᵀ ω_B per row
+    for i, a in enumerate("xyz"):
+        cols[f"in_imu_g{a}"] = w_imu[:, i] + (bias if a == "z" else 0.0)
+        cols[f"bg_{a}"] = np.zeros(n)
+    cols["in_imu_gz"][::2] += 1e-3  # zero-mean noise on the offset
+    cols["in_imu_gz"][1::2] -= 1e-3
+    cols["bg_z"][:] = bias
+    cols["bg_z"][50] = bias + 0.5  # before the lift-off: not scored
+    cols["bg_z"][200] = bias - 1e-3
+    cols["planned_mask"][lift:] = 1.0
+    m = em.run_metrics(cols, META)
+    assert m["gyro_bias_z_truth"] == pytest.approx(bias, abs=TOL)
+    assert m["gyro_bias_z_dev_max_truth"] == pytest.approx(1e-3, abs=TOL)
+
+
+def test_a_run_without_the_gyro_columns_has_no_bias_numbers():
+    cols, *_ = exact_run(50)
+    m = em.run_metrics(cols, META)
+    assert m["gyro_bias_z_truth"] is None and m["gyro_bias_z_dev_max_truth"] is None
+
+
+# ── resets after the start, slip cycling (WD-359) ──────────────────────────
+
+# A grid of 1/512 s: the window (0.5 s = 256 rows) and the span (1 s = 512 rows) are exact.
+SLIP_DT = 1.0 / 512
+
+
+def slip_modes(n, entries):
+    """Stance everywhere, slip on the rows in `entries` (each an entry: none adjacent)."""
+    mode = np.full(n, float(em.MODE_STANCE))
+    mode[list(entries)] = em.MODE_SLIP
+    return mode
+
+
+def cycling_entries(first_on, last_on, middle_step=20):
+    """Entries whose count over the 256-row window is ≥ 12 on exactly [first_on, last_on].
+
+    12 entries 2 rows apart end at `first_on`; the twelfth from last sits 255 rows before
+    `last_on` (it leaves the window on the next row) and 11 follow it; between, a step of
+    ≤ 21 rows keeps 12 inside every window.
+    """
+    head = [first_on - 2 * (11 - k) for k in range(12)]
+    leave = last_on - 255
+    middle = list(range(head[-1] + middle_step, leave, middle_step))
+    tail = [leave + 2 * k for k in range(12)]
+    rows = head + middle + tail
+    assert all(b - a >= 2 for a, b in zip(rows, rows[1:], strict=False))
+    assert all(b - a <= 21 for a, b in zip(rows, rows[1:], strict=False))
+    return rows
+
+
+def slip_table(n, left_entries, right_entries=()):
+    return {
+        "t_relative_s": np.arange(n) * SLIP_DT,
+        "mode_left_foot": slip_modes(n, left_entries),
+        "mode_right_foot": slip_modes(n, right_entries),
+    }
+
+
+def test_the_window_counts_the_entries_in_the_last_half_second():
+    t = np.arange(600) * SLIP_DT
+    mode = slip_modes(600, [10, 12, 300])
+    mode[13] = em.MODE_SLIP  # 12 → 13 stays in slip: one entry, not two
+    count = em.slip_entries(mode, t)
+    assert count[9] == 0 and count[10] == 1 and count[12] == 2 and count[13] == 2
+    assert count[10 + 255] == 2  # row 10 is 255 rows back: still inside (t − 0.5, t]
+    assert count[10 + 256] == 1  # exactly 0.5 s back: out
+    assert count[300] == 1  # rows 10 and 12 have left
+
+
+def test_a_cycle_is_twelve_entries_held_for_one_second():
+    n = 3000
+    exact = slip_table(n, cycling_entries(600, 600 + 512))
+    cyc = em.slip_cycle(exact, NAMES)
+    left = cyc["feet"]["left_foot"]
+    assert left["cycle_span_s"] == pytest.approx(1.0, abs=TOL)
+    assert left["cycle"] is True and cyc["feet_cycling"] == 1
+    assert cyc["feet"]["right_foot"] == {"window_max": 0, "cycle_span_s": 0.0,
+                                         "report_span_s": 0.0, "cycle": False}  # fmt: skip
+    short = em.slip_cycle(slip_table(n, cycling_entries(600, 600 + 507)), NAMES)
+    assert short["feet"]["left_foot"]["cycle_span_s"] == pytest.approx(507 / 512, abs=TOL)
+    assert short["feet"]["left_foot"]["cycle"] is False and short["feet_cycling"] == 0
+
+
+def test_eleven_entries_in_every_window_is_no_cycle_however_long():
+    n = 6000
+    # One entry every 23.3 rows: a 256-row window holds 11 at most, 10 at least.
+    rows = [int(round(100 + 23.3 * k)) for k in range(240)]
+    cyc = em.slip_cycle(slip_table(n, rows), NAMES)
+    left = cyc["feet"]["left_foot"]
+    assert left["window_max"] == 11
+    assert left["cycle_span_s"] == 0.0 and left["cycle"] is False
+    assert left["report_span_s"] > 9.0  # ≥ 8 the whole stretch: reported, not judged
+
+
+def slip_run(n, fault_row=None):
+    """A run_metrics table whose left foot cycles from row 600 to the end."""
+    cols, *_ = exact_run(n)
+    cols["t_relative_s"] = np.arange(n) * SLIP_DT
+    cols["mode_left_foot"] = slip_modes(n, range(600, n - 1, 2))
+    cols["online_fault_latched"] = np.zeros(n)
+    if fault_row is not None:
+        cols["online_fault_latched"][fault_row:] = 1.0
+    return cols
+
+
+def test_the_slip_after_the_cut_is_not_counted():
+    n = 3000
+    assert em.run_metrics(slip_run(n), META)["slip_cycle"]["feet_cycling"] == 1
+    cut = em.run_metrics(slip_run(n, fault_row=700), META)
+    assert cut["cut"] == "fault"
+    assert cut["slip_cycle"]["feet_cycling"] == 0
+    assert cut["slip_cycle"]["feet"]["left_foot"]["window_max"] == 50  # rows 600 … 698
+
+
+def test_resets_after_the_start_skip_the_activation_and_stop_at_the_cut():
+    n = 600
+    cols, *_ = exact_run(n)
+    cols["initialized"][:20] = 0.0
+    cols["reset_count"][:] = 1.0  # the activation reset
+    m = em.run_metrics(cols, META)
+    assert m["resets"] == 1 and m["resets_after_start"] == 0
+    cols["reset_count"][300:] = 2.0
+    cols["initialized"][300:310] = 0.0  # a reset restarts the estimate
+    assert em.run_metrics(cols, META)["resets_after_start"] == 1
+    cols["online_fault_latched"] = np.zeros(n)
+    cols["online_fault_latched"][250:] = 1.0  # the reset after the fault is the fall's
+    assert em.run_metrics(cols, META)["resets_after_start"] == 0
+    cols["initialized"][:] = 0.0
+    assert em.resets_after_start(cols) is None
+
+
+def test_an_inekf_driven_run_reports_the_online_estimates_own_counts():
+    n = 3000
+    cols = slip_run(n)
+    cols["online_initialized"] = np.ones(n)
+    cols["online_reset_count"] = np.ones(n)
+    cols["online_reset_count"][900:] = 3.0
+    cols["online_mode_left_foot"] = np.full(n, float(em.MODE_STANCE))  # the online never slipped
+    cols["online_mode_right_foot"] = slip_modes(n, range(1000, n - 1, 2))
+    v = np.stack([cols[f"truth_v{a}"] for a in "xyz"], axis=1)
+    v[-513:, 0] += 0.03  # the last second (both ends: 513 rows) off by 3 cm/s
+    put_vec(cols, "online_base_v", v)
+    m = em.run_metrics(cols, META)
+    on = m["online_source"]
+    assert on["resets_after_start"] == 2
+    assert on["slip_cycle"]["feet"]["left_foot"]["cycle"] is False
+    assert on["slip_cycle"]["feet"]["right_foot"]["cycle"] is True
+    assert on["vel_err_rms_last_s_truth"] == pytest.approx(0.03, abs=1e-6)
+    assert m["slip_cycle"]["feet"]["left_foot"]["cycle"] is True  # the replay's own
+    cols["online_initialized"][:] = 0.0  # a truth-driven run has no online estimate
+    assert "online_source" not in em.run_metrics(cols, META)
+
+
+def test_the_k_run_verdict_has_the_walking_and_standing_parts():
+    runs = [{"nees_walk_mean_per_dof_truth": x, "nees_stand_mean_per_dof_truth": 0.2,
+             "slip_cycle": {"feet_cycling": int(x > 1.4)}} for x in (0.9, 1.1, 1.3, 1.5)]  # fmt: skip
+    agg = em.aggregate(runs)
+    lo, hi = em.mean_band(20)
+    assert agg["anees_walk_truth"]["value"] == pytest.approx(1.2, abs=TOL)
+    assert agg["anees_walk_truth"]["pass"] is (lo <= 1.2 <= hi)
+    stand = agg["anees_stand_truth"]
+    assert stand["pass"] is False and stand["below_upper"] is True  # conservative, not failed
+    assert agg["anees_walk_truth"]["below_upper"] is True  # inside the band: under its upper end
+    assert agg["anees_truth"] is None
+    assert agg["runs_cycling"] == 1

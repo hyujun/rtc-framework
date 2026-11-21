@@ -277,9 +277,8 @@ class Run:
     @cached_property
     def lift(self) -> int | None:
         """The first row on which a contact of the full stance is planned off."""
-        m, full = self.mask, self.full_mask
-        rows = np.flatnonzero((m[1:] != full) & (m[:-1] == full)) + 1
-        return int(rows[0]) if rows.size else None
+        # full_mask refuses a log that names no contact.
+        return wm.first_lift_row(self.mask, self.full_mask.bit_length())
 
     @cached_property
     def touchdown_rows(self) -> np.ndarray:

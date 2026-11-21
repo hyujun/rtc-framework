@@ -296,6 +296,15 @@ def mask_bits(mask: np.ndarray, n: int) -> np.ndarray:
     return np.stack([(m >> c) & 1 == 1 for c in range(n)], axis=1)
 
 
+def first_lift_row(mask: np.ndarray, contacts: int) -> int | None:
+    """The first row on which a contact of the full stance is off after a full-stance
+    row (the first lift-off); None if no foot ever lifts. A NaN mask reads as all clear."""
+    m = np.where(np.isfinite(mask), mask, 0).astype(np.int64)
+    full = (1 << contacts) - 1
+    rows = np.flatnonzero((m[1:] != full) & (m[:-1] == full)) + 1
+    return int(rows[0]) if rows.size else None
+
+
 def edges(state: np.ndarray, t: np.ndarray) -> list[tuple[float, bool]]:
     """(time, rising) of every change of a boolean series."""
     s = state.astype(np.int8)
