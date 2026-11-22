@@ -1896,7 +1896,7 @@ def _isolated_session_env(monkeypatch, tmp_path):
 
 
 class TestFindEnclosingSession:
-    """find_enclosing_session: CSV 경로 상위에서 YYMMDD_HHMM 디렉토리를 찾는다."""
+    """find_enclosing_session: CSV 경로 상위에서 세션 (YYMMDD_HHMM[SS]) 디렉토리를 찾는다."""
 
     def test_csv_directly_in_session_root(self, tmp_path):
         session = _make_session(tmp_path)

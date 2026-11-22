@@ -127,7 +127,7 @@ PID=$(pidof -s integrated_rt_controller) && ps -eLo pid,tid,cls,rtprio,psr,comm 
 
 ### 로그
 
-각 실행은 `logging_data/YYMMDD_HHMM/` 세션 디렉토리에 기록된다. 보관 개수는 로봇 config 의 `max_log_sessions` (기본 10) 이고 같은 이름의 launch 인자로 바꿀 수 있다.
+각 실행은 `logging_data/YYMMDD_HHMMSS/` 세션 디렉토리에 기록된다. 보관 개수는 로봇 config 의 `max_log_sessions` (기본 10) 이고 같은 이름의 launch 인자로 바꾼다.
 
 | 서브디렉토리 | 내용 |
 |---|---|

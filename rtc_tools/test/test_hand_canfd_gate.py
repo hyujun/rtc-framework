@@ -773,7 +773,7 @@ def test_artifacts_fall_back_to_the_pre_f08_pair_only_as_a_pair(tmp_path):
     # Neither name present: the current names, so the exit-3 message shows them.
     assert _names(_artifacts(legacy, "")) == ("hand_timing_log.csv", "hand_stats.json")
     # Two complete pairs (a pre- and a post-rename binary restarted into the
-    # same minute's session): the current pair.
+    # same session): the current pair.
     both = write_session(tmp_path / "both", legacy_names=True)
     write_session(tmp_path / "both")
     assert _names(_artifacts(both, "")) == ("hand_timing_log.csv", "hand_stats.json")

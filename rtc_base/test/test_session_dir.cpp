@@ -18,6 +18,7 @@
 #include <ctime>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -243,7 +244,7 @@ TEST_F(SessionDirTest, SessionDir_UsesRtcSessionDirEnv) {
 }
 
 TEST_F(SessionDirTest, SessionDir_NoEnv_CreatesUnderResolvedRoot) {
-  // env 없음 + cwd 에 install/+src/ 존재 → ws/logging_data/YYMMDD_HHMM 생성.
+  // env 없음 + cwd 에 install/+src/ 존재 → ws/logging_data/YYMMDD_HHMMSS 생성.
   const fs::path ws = tmp_root_ / "auto_ws";
   fs::create_directories(ws / "install");
   fs::create_directories(ws / "src");
@@ -255,6 +256,19 @@ TEST_F(SessionDirTest, SessionDir_NoEnv_CreatesUnderResolvedRoot) {
   const fs::path session = rtc::ResolveSessionDir();
   EXPECT_EQ(session.parent_path(), ws / "logging_data");
   EXPECT_TRUE(fs::is_directory(session / "timing"));
+  // 초 단위 이름 (#1156) 이고, 정리가 세션으로 센다.
+  EXPECT_EQ(session.filename().string().size(), 13U);
+  ASSERT_EQ(rtc::ListSessionDirs(ws / "logging_data").size(), 1U);
+  EXPECT_EQ(rtc::ListSessionDirs(ws / "logging_data").front(), session);
+}
+
+TEST(GenerateSessionTimestamp, IsNamedToTheSecond) {
+  // "YYMMDD_HHMMSS" — 분 단위면 60 s 안의 두 기동이 한 폴더를 쓴다 (#1156).
+  const std::string name = rtc::GenerateSessionTimestamp();
+  ASSERT_EQ(name.size(), 13U);
+  EXPECT_EQ(name[6], '_');
+  EXPECT_EQ(name.find_first_not_of("0123456789", 7), std::string::npos);
+  EXPECT_EQ(name.substr(0, 6).find_first_not_of("0123456789"), std::string::npos);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -262,7 +276,7 @@ TEST_F(SessionDirTest, SessionDir_NoEnv_CreatesUnderResolvedRoot) {
 //
 // 호출처 (10 s stats 저장 타이머 · on_activate 의 여러 번 · configure 의
 // CM ↔ 컨트롤러 log set) 는 한 프로세스의 호출이 같은 세션이라고 가정한다.
-// 분이 바뀔 때마다 새 디렉토리가 생기면 retention 이 실제 세션을 지운다.
+// 시각이 바뀔 때마다 새 디렉토리가 생기면 retention 이 실제 세션을 지운다.
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST_F(SessionDirTest, SessionDir_NoEnv_KeepsOneNamePerProcess) {
@@ -373,11 +387,43 @@ TEST_F(SessionDirTest, CleanupOldSessions_NeverRemovesKeptSession) {
   EXPECT_TRUE(fs::exists(root / "260105_1300"));
 }
 
+TEST_F(SessionDirTest, ListSessionDirs_MixedNamesSortAsTimes) {
+  // 옛 YYMMDD_HHMM 과 새 YYMMDD_HHMMSS 가 섞여도 시간순이고 둘 다 정리 대상이다.
+  // 같은 분이면 옛 이름 (그 분의 시작) 이 먼저다. Python
+  // test_mixed_session_names_sort_and_clean_up_as_times 의 짝 (PROC-5).
+  const fs::path root = tmp_root_ / "logging_data";
+  for (const char* ts :
+       {"260730_101805", "260730_1017", "260730_101730", "260729_2359", "260730_1018"}) {
+    fs::create_directories(root / ts);
+  }
+  // 세션이 아닌 이름 — 5 · 7 자리 시각, 구분자 다름
+  for (const char* other : {"260730_10173", "260730_1017300", "260730-101730"}) {
+    fs::create_directories(root / other);
+  }
+
+  std::vector<std::string> names;
+  for (const auto& dir : rtc::ListSessionDirs(root)) {
+    names.push_back(dir.filename().string());
+  }
+  EXPECT_EQ(names, (std::vector<std::string>{"260729_2359", "260730_1017", "260730_101730",
+                                             "260730_1018", "260730_101805"}));
+
+  rtc::CleanupOldSessions(root, 2);
+  EXPECT_FALSE(fs::exists(root / "260729_2359"));
+  EXPECT_FALSE(fs::exists(root / "260730_1017"));
+  EXPECT_FALSE(fs::exists(root / "260730_101730"));
+  EXPECT_TRUE(fs::exists(root / "260730_1018"));
+  EXPECT_TRUE(fs::exists(root / "260730_101805"));
+  EXPECT_TRUE(fs::exists(root / "260730_10173"));
+  EXPECT_TRUE(fs::exists(root / "260730_1017300"));
+  EXPECT_TRUE(fs::exists(root / "260730-101730"));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ResolveRunId — $RTC_RUN_ID → getpid() 2단 체인 (#376)
 //
-// 세션 디렉토리가 분 해상도라 같은 분의 두 기동은 같은 timing CSV 에 append
-// 된다. run_id 가 그 경계이므로, 이 체인이 조용히 상수로 떨어지면 (예: 파싱
+// 한 세션 디렉토리의 두 기동 (같은 초, 또는 같은 $RTC_SESSION_DIR) 은 같은
+// timing CSV 에 append 된다. run_id 가 그 경계이므로, 이 체인이 조용히 상수로 떨어지면 (예: 파싱
 // 실패를 0 으로 읽어 두 런이 같은 값을 갖는 경우) 경계가 다시 사라진다.
 // ─────────────────────────────────────────────────────────────────────────────
 

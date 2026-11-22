@@ -93,7 +93,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Resolve input ────────────────────────────────────────────────────────────
-# Trace lives at <ws>/logging_data/<YYMMDD_HHMM>/tracing/<lttng_session>/.
+# Trace lives at <ws>/logging_data/<YYMMDD_HHMMSS>/tracing/<lttng_session>/.
 # Pick the most recent session folder that actually has a tracing/ subdir.
 if [[ -z "$INPUT" ]]; then
   INPUT="$(ls -1dt "$WS"/logging_data/[0-9]*/tracing/*/ 2>/dev/null | head -1 || true)"

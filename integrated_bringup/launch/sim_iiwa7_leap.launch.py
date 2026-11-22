@@ -85,7 +85,7 @@ PROFILE = "iiwa7_leap"
 def launch_setup(context, *args, **kwargs):
     """Setup function executed with launch context for conditional parameter loading."""
 
-    # ── Session directory (YYMMDD_HHMM) ──────────────────────────────────────
+    # ── Session directory (YYMMDD_HHMMSS) ────────────────────────────────────
     session = open_session(context)
     session_dir = session.directory
 
@@ -504,7 +504,7 @@ def generate_launch_description():
             )
         ),
         description=(
-            "Maximum number of session folders to keep (YYMMDD_HHMM). Default "
+            "Maximum number of session folders to keep (YYMMDD_HHMMSS). Default "
             "comes from config/iiwa7_leap/sim.yaml, which is also the SSoT for "
             "the RT node's own max_log_sessions parameter."
         ),

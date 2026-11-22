@@ -31,7 +31,7 @@
     # ── Logging ──────────────────────────────────────────────────────────────
     enable_logging: true
     enable_timing_log: true
-    max_log_sessions: 10 # session folders kept (YYMMDD_HHMM); the sim launch reads this too
+    max_log_sessions: 10 # session folders kept (YYMMDD_HHMMSS); the sim launch reads this too
 
     # ── Robot model ──────────────────────────────────────────────────────────
     # The public floating-base G1 (robots/g1/urdf/g1_29dof_floating.urdf, wrists

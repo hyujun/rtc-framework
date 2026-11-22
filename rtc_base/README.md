@@ -237,7 +237,7 @@ RT 스레드 (producer) 에서 비-RT 스레드 (consumer) 로 데이터를 넘�
 
 ### 로깅 (`logging/`)
 
-**CM per-tick timing** -- `cm_timing_log.csv` 의 스키마는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` 입니다 (MPC / hand 와 같은 8열). `run_id` 는 `logging/run_id.hpp` 가 `Open()` 에서 한 번 정해 매 행에 찍으므로, 같은 분에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못합니다. controller 데이터 CSV 는 `rtc_controller_interface` 의 `ControllerLogSet` 과 각 controller 의 POD 미러가 맡습니다.
+**CM per-tick timing** -- `cm_timing_log.csv` 의 스키마는 `t_wall_ns, tick_count, run_id, t_state_us, t_compute_us, t_publish_us, t_total_us, jitter_us` 입니다 (MPC / hand 와 같은 8열). `run_id` 는 `logging/run_id.hpp` 가 `Open()` 에서 한 번 정해 매 행에 찍으므로, 같은 초에 재기동해 한 세션 디렉토리를 공유한 두 런을 분석이 합쳐 읽지 못합니다. controller 데이터 CSV 는 `rtc_controller_interface` 의 `ControllerLogSet` 과 각 controller 의 POD 미러가 맡습니다.
 
 세 phase 열은 `t_total_us` 로 합산되지 않습니다. `PeriodicRtThread::MarkPublishDone()` 을 부르는 producer (CM) 는 남는 `t_total_us − (t_state_us + t_compute_us + t_publish_us)` 가 post-publish tail 입니다 (분석 쪽 파생 열은 `rtc_tools` `plotting/plotters/timing.py` 의 `add_tail_column`). 훅 `OnLoopEntry()` · `JitterMeaningful()` · `RequestLoopExit()` · `SuppressTimingThisTick()` 의 계약은 `periodic_rt_thread.hpp` Doxygen 을 봅니다.
 
@@ -263,10 +263,10 @@ producer.Drain([&](const StateLogPod& p) { logger.Log(p); });  // non-RT timer
 
 #### 세션 디렉토리 (`session_dir.hpp`)
 
-세션 로그는 `logging_data/YYMMDD_HHMM/` 아래에 쌓입니다.
+세션 로그는 `logging_data/YYMMDD_HHMMSS/` 아래에 쌓입니다.
 
 ```
-logging_data/YYMMDD_HHMM/
+logging_data/YYMMDD_HHMMSS/
 ├── controllers/   # controller 별 데이터 CSV (config_key 하위)
 ├── timing/        # cm/mpc/hand per-tick timing CSV
 ├── monitor/
@@ -281,7 +281,7 @@ logging_data/YYMMDD_HHMM/
 
 | 함수 | 설명 |
 |------|------|
-| `GenerateSessionTimestamp()` | `YYMMDD_HHMM` 타임스탬프 |
+| `GenerateSessionTimestamp()` | `YYMMDD_HHMMSS` 타임스탬프 |
 | `ResolveLoggingRoot()` | `logging_data` 루트 결정 (아래 체인) |
 | `ResolveSessionDir()` | `$RTC_SESSION_DIR`, 없으면 루트 아래 프로세스당 한 세션 |
 | `EnsureSessionSubdirs(dir)` / `TimingDir(dir)` | 하위 폴더 생성 / `<session>/timing/` 경로 |

@@ -15,9 +15,9 @@
 // rtc_base/timing/rt_tick_timing_sample.hpp — so a single set of tooling
 // consumes both CSVs.
 //
-// `run_id` is what makes the append mode below readable (#376). Session dirs
-// are minute-resolution, so two starts within one minute land in the SAME
-// file; without a per-run stamp `n / span` rate analysis reads both as one
+// `run_id` is what makes the append mode below readable (#376). Two starts
+// in one session dir (the same second, or one $RTC_SESSION_DIR) land in the
+// SAME file; without a per-run stamp `n / span` rate analysis reads both as one
 // run and no sensor fires (the drop counters are honestly 0 — nothing was
 // dropped). The column costs the RT path nothing: Log() runs on the draining
 // consumer (CM log thread @ 100 Hz, MPC / hand aux timers @ 1 Hz), never

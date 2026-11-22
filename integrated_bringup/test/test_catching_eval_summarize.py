@@ -316,25 +316,28 @@ def test_run_unit_kills_residuals_in_its_own_sessions_only(tmp_path):
 @pytest.mark.parametrize(
     ("log", "taken", "refused"),
     [
-        # the RT node's line, whatever the minute
+        # the RT node's line, whatever the stamp
         (
-            "lane -> /w/logging_data/261011_2333/x\nSession dir: /w/logging_data/261011_2330 (\n",
+            "lane -> /w/logging_data/261011_233300/x\nSession dir: /w/logging_data/261011_2330 (\n",
             "logging_data/261011_2330",
             False,
         ),
-        # the fallback at the unit's minute or later
-        ("lane -> /w/logging_data/261011_2332/x\n", "logging_data/261011_2332", False),
-        ("lane -> /w/logging_data/261011_2333/x\n", "logging_data/261011_2333", False),
-        # an older one is another run's
-        ("lane -> /w/logging_data/261011_2300/x\n", "", True),
+        # the fallback at the unit's second or later
+        ("lane -> /w/logging_data/261011_233205/x\n", "logging_data/261011_233205", False),
+        ("lane -> /w/logging_data/261011_233300/x\n", "logging_data/261011_233300", False),
+        # an older one is another run's — an older minute, an earlier second of the
+        # unit's minute (#1156), an old minute-named session
+        ("lane -> /w/logging_data/261011_230000/x\n", "", True),
+        ("lane -> /w/logging_data/261011_233150/x\n", "", True),
+        ("lane -> /w/logging_data/261011_2332/x\n", "", True),
         ("no session at all\n", "", False),
     ],
 )
-def test_run_unit_binds_the_session_fallback_to_its_minute(tmp_path, log, taken, refused):
+def test_run_unit_binds_the_session_fallback_to_its_stamp(tmp_path, log, taken, refused):
     """#822 D13: the fallback name is moved with a failed unit (keep_failed_session)."""
     block = _run_unit_block("SREL=$(grep -o 'Session dir: ", 'echo "$SREL" > "$OUT/session.txt"')
     (tmp_path / "launch.log").write_text(log)
-    script = f'OUT="{tmp_path}"; MINUTE=261011_2332\n{block}'
+    script = f'OUT="{tmp_path}"; STAMP=261011_233205\n{block}'
     subprocess.run(["bash", "-c", script], check=True)
     assert (tmp_path / "session.txt").read_text() == taken + "\n"
     assert (tmp_path / "session_refused.txt").exists() == refused

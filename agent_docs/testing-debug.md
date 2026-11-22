@@ -110,7 +110,7 @@ RT tick 이 heap 을 안 만진다는 주장을 재는 sensor 는 셋이고, 선
 
 토픽·CSV 컬럼·증상별 처방은 [Live Debug Topics](../docs/testing.md#live-debug-topics) · [Debugging](../docs/testing.md#debugging). 판독할 때:
 
-- timing CSV 는 **`run_id` 로 먼저 그룹핑** 한다 — 같은 분의 재기동이 같은 파일에 append 된다.
+- timing CSV 는 **`run_id` 로 먼저 그룹핑** 한다 — 한 세션의 재기동이 같은 파일에 append 된다.
 - sim 모드 (`use_sim_time_sync=true`) 의 `jitter_us` 는 RT 지표가 아니다.
 - timing CSV 의 phase 열은 `t_total_us` 로 합산되지 않는다. 긴 tick 을 특정 phase 탓으로 읽기 전에 **잔차** (`t_total_us − phase 합`) 부터 본다.
 - sim 의 커맨드 lane 은 device group 당 하나다 (`devices.<group>.backend.command_topic`). robot 모드 전용 토픽의 침묵을 sim 에서 "RT loop 정지" 로 읽지 않는다.

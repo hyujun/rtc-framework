@@ -14,9 +14,9 @@ The configuration file and the result folder are stage 1's
 A unit, in order — every step is what ``tools/catching_eval/run_unit.sh`` does,
 whose header is the history of why:
 
-1. **Not in the minute of the previous launch**, nor in a minute that already
-   has a session: a session directory is minute-named, and two bringups in one
-   would share it.
+1. **Not in the second of the previous launch**, nor in a second that already
+   has a session: a session directory is named to the second (``YYMMDD_HHMMSS``,
+   #1156), and two bringups in one would share it.
 2. **Bringup**: ``ros2 launch integrated_bringup sim_<robot>.launch.py`` with the
    arm's two modes as launch arguments (``integrated_bringup.catch_modes`` — no
    overlay file), the viewer per ``sim.viewer`` with its world-changing keys off
@@ -50,7 +50,7 @@ whose header is the history of why:
    workspace is not the unit's). A launch that had to be SIGKILLed fails the unit
    (``FAIL:launch killed``): the RT node's CSVs may end mid-row.
 8. **The session** the sim wrote is checked for foreign files (a test run that
-   started in the launch's minute writes fixture CSVs into the same directory),
+   started in the launch's second writes fixture CSVs into the same directory),
    copied into the unit and removed. A unit that fails keeps its session as
    ``session_failed``.
 
@@ -747,8 +747,9 @@ def driver_timeout_s(n_throws: int) -> int:
 
 # ── what the logs and the session say ────────────────────────────────────────
 
-_SESSION_LINE = re.compile(r"Session dir: (/\S*/\d{6}_\d{4})\b")
-_SESSION_NAME = re.compile(r"logging_data/(\d{6}_\d{4})\b")
+# YYMMDD_HHMMSS, or YYMMDD_HHMM before #1156 (``rtc_tools.utils.session_dir``).
+_SESSION_LINE = re.compile(r"Session dir: (/\S*/\d{6}_\d{4}(?:\d{2})?)\b")
+_SESSION_NAME = re.compile(r"logging_data/(\d{6}_\d{4}(?:\d{2})?)\b")
 _COMMIT_LINE = re.compile(r"commit at t_c − [0-9.]* s")
 _SEGMENT_STARTUP = re.compile(
     r"MPC segment planner (?:ready|approach grid)|mpc_docking segment planner ready"
@@ -759,7 +760,7 @@ def session_dir_from_log(log_text: str, logging_root: str) -> str | None:
     """The session directory of the bringup whose log this is.
 
     The RT node's own line (``Session dir: <path>``) when it is there; otherwise
-    the first ``logging_data/<YYMMDD_HHMM>`` the log names, under ``logging_root``
+    the first ``logging_data/<YYMMDD_HHMMSS>`` the log names, under ``logging_root``
     — the launch's root, which a caller in the launch's environment and directory
     gets from ``rtc_tools.utils.session_dir.resolve_logging_root``. None when the
     log names no session: the caller must not then copy or remove anything.
@@ -773,15 +774,15 @@ def session_dir_from_log(log_text: str, logging_root: str) -> str | None:
     return None
 
 
-def unit_session(log_text: str, logging_root: str, minute: str) -> tuple[str | None, str]:
-    """The session of a unit launched in ``minute`` (``YYMMDD_HHMM``, what
-    :func:`wait_for_free_minute` waited for) and, when it is not taken, why.
+def unit_session(log_text: str, logging_root: str, stamp: str) -> tuple[str | None, str]:
+    """The session of a unit launched at ``stamp`` (``YYMMDD_HHMMSS``, what
+    :func:`wait_for_free_stamp` waited for) and, when it is not taken, why.
 
     :func:`session_dir_from_log`, but a name the fallback reads is only taken when it
-    is not older than ``minute``. The fallback is used when the RT node wrote no
+    is not older than ``stamp``. The fallback is used when the RT node wrote no
     ``Session dir:`` line — it left before it configured (``FAIL:startup``) — and then
     reads the first session name any line of the log names (the sim's lane paths).
-    A session older than the unit's minute was there before this launch opened one,
+    A session older than the unit's stamp was there before this launch opened one,
     so it is another run's, whatever line named it: it is not moved. Names sort as
     times (``list_session_dirs``).
     """
@@ -789,9 +790,9 @@ def unit_session(log_text: str, logging_root: str, minute: str) -> tuple[str | N
     if session is None or _SESSION_LINE.search(log_text):
         return session, ""
     name = os.path.basename(session)
-    if name < minute:
+    if name < stamp:
         return None, (
-            f"the log names {name}, older than this unit's minute {minute}: "
+            f"the log names {name}, older than this unit's start {stamp}: "
             "another run's session, not taken"
         )
     return session, ""
@@ -823,7 +824,7 @@ CONTROLLER_LOGS = ("catching_diag.csv", "planner_events.csv", "nlp_candidates.cs
 def session_contamination(session_dir: Path, state_logs: Sequence[str]) -> str | None:
     """Why the catching controller's logs in ``session_dir`` are not one unit's, or None.
 
-    A ``colcon test`` that starts in the launch's minute can write fixture CSVs into
+    A ``colcon test`` that starts in the launch's second can write fixture CSVs into
     the same time-named session: a CSV whose first row does not have its header's
     field count, or a file that is not one of the controller's logs, refuses the
     unit. The words are ``run_unit.sh``'s.
@@ -966,23 +967,23 @@ def own_source_tree() -> str | None:
     return None if os.path.commonpath([here, prefix]) == prefix else here
 
 
-def minute_stamp() -> str:
-    """The name a session opened now would get."""
-    return datetime.datetime.now().strftime("%y%m%d_%H%M")
+def session_stamp() -> str:
+    """The name a session opened now would get (``rtc_tools.utils.session_dir``)."""
+    return datetime.datetime.now().strftime("%y%m%d_%H%M%S")
 
 
-def wait_for_free_minute(stamp_file: Path, logging_root: str, *, sleep=time.sleep) -> str:
-    """Wait until now is not the minute of the previous launch (``stamp_file``) nor a
-    minute ``logging_root`` already has a session of; then write it to ``stamp_file``."""
+def wait_for_free_stamp(stamp_file: Path, logging_root: str, *, sleep=time.sleep) -> str:
+    """Wait until now is not the second of the previous launch (``stamp_file``) nor a
+    second ``logging_root`` already has a session of; then write it to ``stamp_file``."""
     try:
         last = stamp_file.read_text(encoding="utf-8").strip()
     except OSError:
         last = ""
     while True:
-        now = minute_stamp()
+        now = session_stamp()
         if now != last and not os.path.isdir(os.path.join(logging_root, now)):
             break
-        sleep(2)
+        sleep(0.2)
     stamp_file.parent.mkdir(parents=True, exist_ok=True)
     stamp_file.write_text(now + "\n", encoding="utf-8")
     return now
@@ -1174,7 +1175,7 @@ class RunContext:
 
 
 class UnitRun:
-    """One unit, from the free minute to its status (the module docstring's steps)."""
+    """One unit, from the free stamp to its status (the module docstring's steps)."""
 
     def __init__(self, spec: UnitSpec, expect: Expectation, ctx: RunContext) -> None:
         self.spec, self.expect, self.ctx = spec, expect, ctx
@@ -1184,7 +1185,7 @@ class UnitRun:
         self.driver: Group | None = None
         self.launch_tail: LogTail | None = None
         self.session: str | None = None
-        self.minute = ""  # the minute the unit's launch was started in
+        self.stamp = ""  # the second the unit's launch was started in
         self.launch_killed = False  # the launch had to be SIGKILLed (its CSVs may be cut)
 
     # ── records ──────────────────────────────────────────────────────────
@@ -1333,7 +1334,7 @@ class UnitRun:
         spec, ctx, out = self.spec, self.ctx, self.out
         if (out / "trials").exists():
             return "FAIL:trials dir exists (move the old unit aside)"
-        self.minute = wait_for_free_minute(ctx.sim_root / ".last_minute", ctx.logging_root)
+        self.stamp = wait_for_free_stamp(ctx.sim_root / ".last_stamp", ctx.logging_root)
         self._write_conditions()
 
         log_path = out / "launch.log"
@@ -1346,7 +1347,7 @@ class UnitRun:
                 break
             time.sleep(1)
         log = _read_text(log_path)
-        self.session, not_taken = unit_session(log, ctx.logging_root, self.minute)
+        self.session, not_taken = unit_session(log, ctx.logging_root, self.stamp)
         self._note("session.txt", (self.session or "") + "\n")
         if not_taken:
             self._note("session_refused.txt", not_taken + "\n")

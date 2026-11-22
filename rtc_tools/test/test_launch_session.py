@@ -112,7 +112,7 @@ def test_exports_the_session_and_run_id_to_child_processes(logging_root):
         )
 
     assert exported["RTC_SESSION_DIR"] == session.directory
-    # Same-minute restarts share a session directory, so the run id is the only
+    # Restarts into one session directory (same second) share it, so the run id is the only
     # boundary inside an appended timing CSV (#376).
     assert exported["RTC_RUN_ID"].isdigit()
 

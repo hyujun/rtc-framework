@@ -14,7 +14,7 @@ The helper:
       session tree as the CSV timing logs, so trace and CSV cross-reference
       1:1 (not the ``~/.ros/tracing/`` ros2_tracing default). The
       session_name defaults to ``"trace"``; the surrounding session_dir
-      already carries the YYMMDD_HHMM stamp.
+      already carries the YYMMDD_HHMMSS stamp.
     * is a no-op when ``enable_tracing:=false`` (returns ``[]``)
     * declines to act with a clear message when ros2_tracing is not on the
       Python path (so ``./install.sh --tracing`` is suggested instead of
@@ -131,10 +131,10 @@ def make_trace_action(
 
     # session_name = LTTng session identifier. Default "trace" keeps the
     # directory short; the surrounding session_dir already carries the
-    # YYMMDD_HHMM stamp, so the LTTng dir does not need to repeat it.
+    # YYMMDD_HHMMSS stamp, so the LTTng dir does not need to repeat it.
     session_name = LaunchConfiguration(session_name_arg).perform(context) or "trace"
 
-    # base_path = <logging_data>/<YYMMDD_HHMM>/tracing → the CTF trace lands
+    # base_path = <logging_data>/<YYMMDD_HHMMSS>/tracing → the CTF trace lands
     # at <session_dir>/tracing/<session_name>/ alongside CSV timing logs,
     # not in ~/.ros/tracing/. session_dir's "tracing" subdir is pre-created
     # by create_session_dir (_SESSION_SUBDIRS).

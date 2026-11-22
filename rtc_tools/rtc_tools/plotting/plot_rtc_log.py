@@ -95,7 +95,8 @@ def main():
         type=int,
         default=None,
         help="Timing CSV only: plot this run instead of the last one. A session "
-        "directory is minute-resolution, so restarting inside one minute appends "
+        "directory is second-resolution (minute before #1156), so restarting inside "
+        "one appends "
         "a second run to the same file (#376); the loader keeps the last run and "
         "prints what it dropped.",
     )

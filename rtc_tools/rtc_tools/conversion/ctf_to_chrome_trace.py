@@ -2,7 +2,7 @@
 
 Input: a directory containing an LTTng CTF trace (the output of
 ``ros2 launch ... enable_tracing:=true`` lives at
-``<ws>/logging_data/<YYMMDD_HHMM>/tracing/<session_name>/``; manual
+``<ws>/logging_data/<YYMMDD_HHMMSS>/tracing/<session_name>/``; manual
 ``ros2 trace`` CLI captures land under ``~/.ros/tracing/``). The directory
 is expected to contain ``metadata`` plus one or more channel binaries —
 babeltrace2 walks any sub-tree automatically.
