@@ -10,7 +10,7 @@
 // Layout: <mkdtemp>/logging_data/session. The session is nested one level below
 // a root of its own so that retention, which runs on the session's PARENT,
 // scans this private root and never the shared temp dir. "session" does not
-// match the YYMMDD_HHMM pattern, so retention never deletes it either. The
+// match the YYMMDD_HHMM[SS] pattern, so retention never deletes it either. The
 // whole <mkdtemp> tree is removed at teardown.
 //
 // One instance per binary: a package's CMakeLists calls
@@ -99,7 +99,7 @@ inline IsolatedSessionDir& SessionDir() {
 ///
 /// It sits next to the binary's own session, under the private root, so a
 /// retention pass that a configure runs on its parent can only ever see this
-/// binary's directories — and none of their names matches YYMMDD_HHMM, which
+/// binary's directories — and none of their names matches YYMMDD_HHMM[SS], which
 /// is why a tag of six digits is refused. A tag with a '/' is refused too: it
 /// would place the directory, and the remove_all() on it, outside that root.
 ///
@@ -123,7 +123,7 @@ class ScopedSessionDir {
     }
     if (tag.size() == 6 && tag.find_first_not_of("0123456789") == std::string_view::npos) {
       throw std::logic_error("ScopedSessionDir tag '" + std::string(tag) +
-                             "' would let the directory match retention's YYMMDD_HHMM");
+                             "' would let the directory match retention's YYMMDD_HHMM[SS]");
     }
     static std::atomic<unsigned> next{0};
     dir_ = root / (std::string(tag) + "_" + std::to_string(next.fetch_add(1)));

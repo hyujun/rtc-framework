@@ -596,11 +596,40 @@ def test_without_that_line_the_session_is_under_the_launchs_logging_root():
     )
 
 
-def test_a_fallback_name_older_than_the_units_minute_is_not_taken():
-    """Older than the minute the launch was started in: another run's session."""
-    session, why = cpt.unit_session(_LANE, "/root/logging_data", "261011_2333")
+def test_a_fallback_name_older_than_the_units_stamp_is_not_taken():
+    """Older than the second the launch was started in: another run's session (an old
+    minute-named session is older than any second of a later minute)."""
+    session, why = cpt.unit_session(_LANE, "/root/logging_data", "261011_233300")
     assert session is None
-    assert "261011_2332, older than this unit's minute 261011_2333" in why
+    assert "261011_2332, older than this unit's start 261011_233300" in why
+
+
+_LANE_SECONDS = _LANE.replace("261011_2332", "261011_233205")
+
+
+def test_a_session_named_to_the_second_is_read_from_either_line():
+    """#1156: the two patterns ended in ``\\d{4}\\b`` and did not match a 6-digit time."""
+    assert cpt.session_dir_from_log(_LANE_SECONDS, "/root/logging_data") == (
+        "/root/logging_data/261011_233205"
+    )
+    log = _RT + "Session dir: /ws/logging_data/261011_233205 (max_sessions=60)\n"
+    assert cpt.session_dir_from_log(log, "/other") == "/ws/logging_data/261011_233205"
+
+
+def test_an_earlier_session_of_the_units_minute_is_not_taken():
+    """#1156: with names to the second, a session opened earlier in the same minute is
+    older than the unit's stamp — another run's, as an older minute was before."""
+    session, why = cpt.unit_session(_LANE_SECONDS, "/root/logging_data", "261011_233230")
+    assert session is None
+    assert "261011_233205, older than this unit's start 261011_233230" in why
+
+
+@pytest.mark.parametrize("stamp", ["261011_233205", "261011_233204", "261011_232959"])
+def test_a_session_of_the_units_second_or_later_is_taken(stamp):
+    assert cpt.unit_session(_LANE_SECONDS, "/root/logging_data", stamp) == (
+        "/root/logging_data/261011_233205",
+        "",
+    )
 
 
 @pytest.mark.parametrize("minute", ["261011_2332", "261011_2331"])
@@ -830,37 +859,37 @@ def test_a_process_is_read_in_its_session():
     assert process_sessions()[os.getpid()] == os.getsid(0)
 
 
-# ── the free minute, the revisions, the configuration ────────────────────────
-def test_a_unit_never_starts_in_the_minute_of_the_previous_launch(tmp_path, monkeypatch):
-    minutes = iter(["261011_2238", "261011_2238", "261011_2239"])
-    monkeypatch.setattr(cpt, "minute_stamp", lambda: next(minutes))
-    stamp = tmp_path / "sim" / ".last_minute"
+# ── the free second, the revisions, the configuration ────────────────────────
+def test_a_unit_never_starts_in_the_second_of_the_previous_launch(tmp_path, monkeypatch):
+    stamps = iter(["261011_223805", "261011_223805", "261011_223806"])
+    monkeypatch.setattr(cpt, "session_stamp", lambda: next(stamps))
+    stamp = tmp_path / "sim" / ".last_stamp"
     stamp.parent.mkdir()
-    stamp.write_text("261011_2238\n")
+    stamp.write_text("261011_223805\n")
     slept = []
-    assert cpt.wait_for_free_minute(stamp, str(tmp_path / "logging_data"), sleep=slept.append) == (
-        "261011_2239"
+    assert cpt.wait_for_free_stamp(stamp, str(tmp_path / "logging_data"), sleep=slept.append) == (
+        "261011_223806"
     )
-    assert slept == [2, 2] and stamp.read_text() == "261011_2239\n"
+    assert slept == [0.2, 0.2] and stamp.read_text() == "261011_223806\n"
 
 
-def test_a_unit_never_starts_in_a_minute_that_already_has_a_session(tmp_path, monkeypatch):
+def test_a_unit_never_starts_in_a_second_that_already_has_a_session(tmp_path, monkeypatch):
     """Whoever opened it — another evaluation in this workspace, a person's launch."""
-    minutes = iter(["261011_2238", "261011_2239"])
-    monkeypatch.setattr(cpt, "minute_stamp", lambda: next(minutes))
+    stamps = iter(["261011_223805", "261011_223806"])
+    monkeypatch.setattr(cpt, "session_stamp", lambda: next(stamps))
     root = tmp_path / "logging_data"
-    (root / "261011_2238").mkdir(parents=True)
+    (root / "261011_223805").mkdir(parents=True)
     slept = []
-    stamp = tmp_path / "sim" / ".last_minute"  # no stamp yet: the first unit of a folder
-    assert cpt.wait_for_free_minute(stamp, str(root), sleep=slept.append) == "261011_2239"
-    assert slept == [2] and stamp.read_text() == "261011_2239\n"
+    stamp = tmp_path / "sim" / ".last_stamp"  # no stamp yet: the first unit of a folder
+    assert cpt.wait_for_free_stamp(stamp, str(root), sleep=slept.append) == "261011_223806"
+    assert slept == [0.2] and stamp.read_text() == "261011_223806\n"
 
 
 def test_the_stamp_is_the_name_a_session_gets():
     from rtc_tools.utils.session_dir import is_session_dir_name
 
-    assert is_session_dir_name(cpt.minute_stamp())
-    assert cpt.minute_stamp() == datetime.datetime.now().strftime("%y%m%d_%H%M")
+    assert is_session_dir_name(cpt.session_stamp())
+    assert len(cpt.session_stamp()) == len(datetime.datetime.now().strftime("%y%m%d_%H%M%S"))
 
 
 def test_a_tree_without_a_repository_has_an_unknown_revision(tmp_path):

@@ -75,7 +75,7 @@ TEST(IsolatedSessionDirTest, RetentionOnThePrivateRootKeepsEveryScope) {
 }
 
 TEST(IsolatedSessionDirTest, ASixDigitTagIsRefused) {
-  // "<tag>_<n>" with a six-digit tag reaches YYMMDD_HHMM once n has four digits.
+  // "<tag>_<n>" with a six-digit tag reaches YYMMDD_HHMM[SS] once n has four digits.
   EXPECT_THROW(ScopedSessionDir("260314"), std::logic_error);
   EXPECT_EQ(SessionDir().Dir().string(), Env());
 }

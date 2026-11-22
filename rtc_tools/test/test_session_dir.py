@@ -20,6 +20,7 @@ from rtc_tools.utils.session_dir import (
     create_session_dir,
     get_or_create_session_dir,
     get_session_dir,
+    is_session_dir_name,
     list_session_dirs,
     resolve_logging_root,
     workspace_logging_root,
@@ -159,10 +160,11 @@ _EXPECTED_SUBDIRS = ("timing", "monitor", "device", "sim", "plots", "motions", "
 def test_create_session_dir_makes_all_subdirs(tmp_path):
     session = create_session_dir(str(tmp_path / "logging_data"))
 
-    # 이름은 YYMMDD_HHMM 패턴
+    # 이름은 YYMMDD_HHMMSS 패턴 (초 단위, #1156)
     assert os.path.basename(session).count("_") == 1
     name = os.path.basename(session)
-    assert len(name) == 11 and name[6] == "_"
+    assert len(name) == 13 and name[6] == "_"
+    assert name.replace("_", "").isdigit() and is_session_dir_name(name)
 
     for sub in _EXPECTED_SUBDIRS:
         assert os.path.isdir(os.path.join(session, sub))
@@ -296,6 +298,37 @@ def test_list_session_dirs_is_sessions_only_oldest_first(tmp_path):
     (root / "260109_0000").write_text("")
 
     assert list_session_dirs(str(root)) == ["260101_0900", "260102_1000", "260103_1100"]
+
+
+@pytest.mark.parametrize(
+    ("name", "is_session"),
+    [
+        ("260730_101730", True),  # YYMMDD_HHMMSS (#1156)
+        ("260730_1017", True),  # 옛 YYMMDD_HHMM
+        ("260730_10173", False),
+        ("260730_1017300", False),
+        ("260730-101730", False),
+        ("260730_10173a", False),
+    ],
+)
+def test_session_name_takes_both_forms_only(name, is_session):
+    assert is_session_dir_name(name) is is_session
+
+
+def test_mixed_session_names_sort_and_clean_up_as_times(tmp_path):
+    """옛 4 자리와 새 6 자리 이름이 섞여도 시간순 — 같은 분이면 옛 이름 (그 분의
+    시작) 이 먼저다 (C++ ListSessionDirs_MixedNamesSortAsTimes 의 짝, PROC-5)."""
+    root = tmp_path / "logging_data"
+    root.mkdir()
+    names = ("260730_101805", "260730_1017", "260730_101730", "260729_2359", "260730_1018")
+    for name in names:
+        (root / name).mkdir()
+
+    order = ["260729_2359", "260730_1017", "260730_101730", "260730_1018", "260730_101805"]
+    assert list_session_dirs(str(root)) == order
+
+    cleanup_old_sessions(str(root), 2)
+    assert sorted(p.name for p in root.iterdir()) == ["260730_1018", "260730_101805"]
 
 
 def test_list_session_dirs_is_empty_without_a_root(tmp_path):

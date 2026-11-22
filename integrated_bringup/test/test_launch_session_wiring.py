@@ -266,7 +266,7 @@ def test_the_session_path_reaches_every_consumer(filename, isolated_logging_root
 
     "Real-robot behaviour is unchanged" is operationally this: ``$RTC_SESSION_DIR``
     and (for the robot launches) the generated controller_manager RT parameter
-    file name the same ``YYMMDD_HHMM`` directory, and exactly one is created.
+    file name the same ``YYMMDD_HHMMSS`` directory, and exactly one is created.
     The RT node logs into ``$RTC_SESSION_DIR`` itself — it has no ``log_dir``
     since #933, and refuses to configure if one is still passed — so the launch
     must not hand it one.

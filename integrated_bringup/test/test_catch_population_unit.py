@@ -103,7 +103,7 @@ class Rig:
         self.profile = tmp_path / "profile.json"
         self.profile.write_text('{"prediction": {"horizon_s": 1.0}}')
         self.logging_root = tmp_path / "logging_data"
-        self.session = self.logging_root / "261011_2332"
+        self.session = self.logging_root / "261011_233205"
         self.expect, self.mirror, log = _unit_state("ur5e_p1b", arm)
         # The sim's viewer input is off, and its open viewer says so (#822 D7).
         (self.fake / "launch.log").write_text(log + cpt.VIEWER_INPUT_BANNER + "\n")
@@ -143,12 +143,12 @@ class Rig:
         )
         # The unit's waits, fifty times faster — and, so that a loaded host does not
         # decide a test, five times as many looks for a process to come up. The free
-        # minute has its own tests.
+        # stamp has its own tests.
         fast = SimpleNamespace(sleep=lambda s: time.sleep(s / 50), monotonic=time.monotonic)
         monkeypatch.setattr(cpt, "time", fast)
         monkeypatch.setattr(cpt, "STARTUP_TIMEOUT_S", 5 * cpt.STARTUP_TIMEOUT_S)
         monkeypatch.setattr(cpt, "ESTIMATOR_TIMEOUT_S", 5 * cpt.ESTIMATOR_TIMEOUT_S)
-        monkeypatch.setattr(cpt, "wait_for_free_minute", lambda *a, **k: "261011_2332")
+        monkeypatch.setattr(cpt, "wait_for_free_stamp", lambda *a, **k: "261011_233200")
         self.viewer_input = False
         monkeypatch.setattr(cpt, "read_mirror", lambda: (self.mirror, "tennis", self.viewer_input))
         self.units: list[cpt.UnitRun] = []
@@ -468,9 +468,9 @@ def test_a_bringup_that_names_no_session_copies_and_removes_nothing(rig):
     assert (rig.tmp / "not_a_session" / "sim").is_dir()  # left where it is
 
 
-def test_a_fallback_session_older_than_the_units_minute_is_not_moved(rig):
+def test_a_fallback_session_older_than_the_units_stamp_is_not_moved(rig):
     """No `Session dir:` line: the first session name of the log is the fallback, and a
-    session older than the minute the unit was started in is another run's."""
+    session older than the second the unit was started in is another run's."""
     older = rig.logging_root / "261011_2300"
     (older / "sim").mkdir(parents=True)
     rig.set(FAKE_NO_SESSION_LINE=1)
@@ -746,7 +746,7 @@ class Command:
         prefix = tmp / "install"
         prefix.mkdir()
         env.setenv("COLCON_PREFIX_PATH", str(prefix))
-        rig.set(FAKE_SESSION=tmp / "logging_data" / "261011_2332")
+        rig.set(FAKE_SESSION=tmp / "logging_data" / "261011_233205")
         env.setenv("ROS_DOMAIN_ID", os.environ.get("ROS_DOMAIN_ID", "0"))  # restored after
         env.setattr(cpt, "analyse_unit", self.analyse)
         self.analysed = []
@@ -794,7 +794,7 @@ def test_the_command_throws_analyses_and_collects(command):
     assert (command.unit_dir / "status").read_text() == "DONE\n"
     # The session is where the command's environment says the launch writes it.
     assert (command.unit_dir / "session" / "controllers").is_dir()
-    assert not (command.rig.tmp / "logging_data" / "261011_2332").exists()
+    assert not (command.rig.tmp / "logging_data" / "261011_233205").exists()
     assert command.analysed == ["chunk_000"]
     rows = (command.result / "nlp_mpc_docking" / "sim_throws.csv").read_text().splitlines()
     assert rows[0].startswith("arm,seed,chunk,idx,throw_id") and len(rows) == 3
