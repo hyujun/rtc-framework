@@ -209,7 +209,7 @@ ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --stats   # 통계만
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv           # plot + 통계
 ```
 
-파일은 `logging_data/<session_id>/timing/` 에 생긴다. 같은 분에 재기동하면 두 런이 한 CSV 에 이어 붙으므로 도구가 마지막 런만 고른다 (`--run-id` 로 변경). 목표는 `t_total_us` 의 p99 가 주기 (500 Hz 면 2 ms) 의 절반 이하, overrun · skip · drop 카운터가 모두 0, 첫 tick 을 뺀 max 가 p99 의 10 배 이내이다.
+파일은 `logging_data/<session_id>/timing/` 에 생긴다. 같은 세션에 재기동하면 (같은 초, 또는 `$RTC_SESSION_DIR` 재사용) 두 런이 한 CSV 에 이어 붙으므로 도구가 마지막 런만 고른다 (`--run-id` 로 변경). 목표는 `t_total_us` 의 p99 가 주기 (500 Hz 면 2 ms) 의 절반 이하, overrun · skip · drop 카운터가 모두 0, 첫 tick 을 뺀 max 가 p99 의 10 배 이내이다.
 
 **cyclictest (OS 지터만 보는 보조 측정)** :
 

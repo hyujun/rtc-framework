@@ -20,7 +20,7 @@ namespace rtc {
 //
 // 모든 패키지에서 공유하는 세션 기반 로깅 디렉토리 관리.
 // 세션 디렉토리 구조:
-//   logging_data/YYMMDD_HHMM/
+//   logging_data/YYMMDD_HHMMSS/   (옛 세션은 YYMMDD_HHMM — 둘 다 인식)
 //     controllers/  — per-controller 데이터 CSV (예:
 //                     demo_wbc_controller/<log_name>.csv); on-demand 생성
 //     timing/       — per-tick 스레드 타이밍 CSV (cm_timing_log,
@@ -40,18 +40,21 @@ namespace rtc {
 //
 // 세션 디렉토리 결정 체인 (ResolveSessionDir):
 //   1) $RTC_SESSION_DIR
-//   2) ResolveLoggingRoot() / ProcessSessionName()  (프로세스당 한 YYMMDD_HHMM)
+//   2) ResolveLoggingRoot() / ProcessSessionName()  (프로세스당 한 YYMMDD_HHMMSS)
 //
 // Header-only — rtc_base의 링크 정책 유지.
 
-/// "YYMMDD_HHMM" 형식의 타임스탬프 문자열 생성
+/// "YYMMDD_HHMMSS" 형식의 타임스탬프 문자열 생성.
+///
+/// 초까지 찍는다 — 분 단위면 60 초 안에 시작한 두 run 이 한 세션 폴더를
+/// 함께 써서 파일이 섞이고, 연속 run 드라이버가 새 분을 기다려야 했다 (#1156).
 inline std::string GenerateSessionTimestamp() {
   const auto now = std::chrono::system_clock::now();
   const auto time_t = std::chrono::system_clock::to_time_t(now);
   std::tm local_tm{};
   localtime_r(&time_t, &local_tm);
   std::array<char, 16> ts{};
-  std::strftime(ts.data(), ts.size(), "%y%m%d_%H%M", &local_tm);
+  std::strftime(ts.data(), ts.size(), "%y%m%d_%H%M%S", &local_tm);
   return std::string(ts.data());
 }
 
@@ -110,11 +113,11 @@ inline std::filesystem::path ResolveLoggingRoot() {
   return (cwd.empty() ? fs::path(".") : cwd) / "logging_data";
 }
 
-/// env 폴백 세션의 이름 — 이 프로세스에서 처음 불린 시각의 "YYMMDD_HHMM".
+/// env 폴백 세션의 이름 — 이 프로세스에서 처음 불린 시각의 "YYMMDD_HHMMSS".
 ///
 /// 호출처는 한 프로세스의 ResolveSessionDir() 호출이 모두 같은 세션이라고
 /// 가정한다 (주기 저장 타이머, on_activate 의 여러 번, configure 하는 CM 과
-/// 컨트롤러 log set). 매 호출 시각을 찍으면 분이 바뀔 때마다 새
+/// 컨트롤러 log set). 매 호출 시각을 찍으면 초가 바뀔 때마다 새
 /// 디렉토리가 생기고 한 런의 파일이 흩어진다 (#930). run_id.hpp 는 값이 env
 /// 또는 PID 라 원래 상수여서 캐시하지 않지만, 이 이름은 시각이므로 고정하려면
 /// 캐시가 필요하다. 루트는 캐시하지 않는다 — 노드는 실행 중에 cwd 나
@@ -137,7 +140,7 @@ inline const std::string& ProcessSessionName() {
 /// 2) ResolveLoggingRoot() / ProcessSessionName() — 루트는 매 호출 다시 풀고,
 ///    이름은 프로세스의 첫 폴백 호출에서 한 번 정해진다
 ///
-/// @return 세션 디렉토리 절대 경로 (e.g. .../logging_data/260314_1430)
+/// @return 세션 디렉토리 절대 경로 (e.g. .../logging_data/260314_143005)
 inline std::filesystem::path ResolveSessionDir() {
   // 1. 환경변수 우선 (RTC_SESSION_DIR)
   const char* env = std::getenv("RTC_SESSION_DIR");
@@ -156,7 +159,11 @@ inline std::filesystem::path ResolveSessionDir() {
   return session_dir;
 }
 
-/// YYMMDD_HHMM 패턴과 일치하는 세션 디렉토리 목록을 정렬하여 반환
+/// 세션 이름 패턴 (YYMMDD_HHMMSS 또는 옛 YYMMDD_HHMM) 과 일치하는 세션
+/// 디렉토리 목록을 정렬하여 반환.
+///
+/// 이름의 사전순이 곧 시간순이다 — 두 형식이 섞여도 앞 11 자가 같으면
+/// 짧은 옛 이름 (그 분의 시작) 이 먼저 온다.
 inline std::vector<std::filesystem::path> ListSessionDirs(
     const std::filesystem::path& logging_root) {
   std::vector<std::filesystem::path> dirs;
@@ -164,8 +171,8 @@ inline std::vector<std::filesystem::path> ListSessionDirs(
     return dirs;
   }
 
-  // YYMMDD_HHMM 패턴: 6자리 날짜 _ 4자리 시간
-  const std::regex pattern(R"(\d{6}_\d{4})");
+  // 6자리 날짜 _ 4자리 시분 [+ 2자리 초]
+  const std::regex pattern(R"(\d{6}_\d{4}(\d{2})?)");
   for (const auto& entry : std::filesystem::directory_iterator(logging_root)) {
     if (entry.is_directory()) {
       const std::string name = entry.path().filename().string();
@@ -179,7 +186,7 @@ inline std::vector<std::filesystem::path> ListSessionDirs(
 }
 
 /// 오래된 세션 디렉토리를 삭제하여 max_sessions 개수 이하로 유지.
-/// logging_root 내 YYMMDD_HHMM 패턴 디렉토리만 대상.
+/// logging_root 내 세션 이름 패턴 (ListSessionDirs) 디렉토리만 대상.
 ///
 /// `keep` 은 호출자가 지금 쓰는 세션이다 — 개수에는 들지만 지우지 않는다.
 /// 오래 사는 프로세스의 세션은 이름이 고정이라 (ProcessSessionName, 또는

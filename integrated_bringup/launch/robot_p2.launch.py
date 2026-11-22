@@ -156,7 +156,7 @@ def generate_launch_description():
         "max_log_sessions",
         default_value=str(max_log_sessions_from_yaml(_base_yaml_path(PROFILE))),
         description=(
-            "Maximum number of session folders to keep (YYMMDD_HHMM). Default "
+            "Maximum number of session folders to keep (YYMMDD_HHMMSS). Default "
             f"comes from config/{PROFILE}/_base.yaml, which is also the SSoT for "
             "the RT node's own max_log_sessions parameter."
         ),

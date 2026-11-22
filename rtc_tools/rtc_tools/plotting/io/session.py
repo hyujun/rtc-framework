@@ -2,9 +2,9 @@
 
 Figures belong next to the data they were drawn from, so the CSV being plotted
 decides the session: we walk *up from the CSV path* to the enclosing
-``YYMMDD_HHMM`` directory. Only when the CSV lives outside any session tree do
+``YYMMDD_HHMMSS`` directory. Only when the CSV lives outside any session tree do
 we fall back to the ambient session (``RTC_SESSION_DIR``, then the most recent
-``logging_data/<YYMMDD_HHMM>/``).
+``logging_data/<YYMMDD_HHMMSS>/``).
 
 Deriving the directory from the environment alone (the earlier behaviour) sent
 every figure to the *newest* session, so replotting an older session's CSV
@@ -23,7 +23,7 @@ from rtc_tools.utils.session_dir import (
 
 
 def find_enclosing_session(path):
-    """Return the ``YYMMDD_HHMM`` session directory containing ``path``, or None.
+    """Return the ``YYMMDD_HHMMSS`` session directory containing ``path``, or None.
 
     Walks upward from the file's own directory, so both ``<session>/foo.csv``
     and ``<session>/controllers/<key>/foo.csv`` resolve to ``<session>``.
@@ -39,7 +39,7 @@ def find_enclosing_session(path):
 
 
 def _latest_session(logging_root):
-    """Return the newest ``YYMMDD_HHMM`` dir under ``logging_root``, or None."""
+    """Return the newest ``YYMMDD_HHMMSS`` dir under ``logging_root``, or None."""
     names = list_session_dirs(logging_root)
     return os.path.join(logging_root, names[-1]) if names else None
 
@@ -50,7 +50,7 @@ def resolve_default_save_dir(csv_path=None):
     Resolution order:
       1. session directory enclosing ``csv_path`` (figures land next to the CSV)
       2. ``$RTC_SESSION_DIR`` (live launch session)
-      3. most recent ``<logging_root>/YYMMDD_HHMM/``
+      3. most recent ``<logging_root>/YYMMDD_HHMMSS/``
 
     Returns None if no session can be located.
     """

@@ -320,7 +320,7 @@ latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `Devi
 | `mpc_timing_log.csv` | MPC 스레드 tick (≤ 100 Hz, 컨트롤러별 `<config_key>` 서브디렉토리) |
 | `rt_callback_timing_log.csv` | **디바이스 state 콜백** 1회 (tick 이 아니다) |
 
-- `tick_count` 는 drop 검증용 단조 번호다. `run_id` 는 기동 식별자다 — 세션 디렉토리가 분 해상도라 같은 분의 재기동이 같은 파일에 append 되는 경계를 가른다. 한 launch 의 프로세스는 `$RTC_RUN_ID` 를 공유하므로 채널 간 join 이 된다
+- `tick_count` 는 drop 검증용 단조 번호다. `run_id` 는 기동 식별자다 — 한 세션 디렉토리의 재기동이 같은 파일에 append 되는 경계를 가른다. 한 launch 의 프로세스는 `$RTC_RUN_ID` 를 공유하므로 채널 간 join 이 된다
 - `cm_timing_log.csv` 에서 `t_total_us − (t_state+t_compute+t_publish)` 잔차가 그 tick 의 post-publish tail 이다. 긴 tick 을 "publish 때문" 이라 읽기 전에 이 잔차를 먼저 본다
 - sim 모드에서는 `jitter_us` 가 0 이다 (wakeup 이 sim step 이라 jitter 는 RT 지표가 아니다)
 - `rt_callback` 행의 `t_compute_us` · `jitter_us` 는 0 이다. `t_total_us` 는 콜백 **본문** 시간이라 executor dispatch 는 빠지고, 합 / 관측창은 slot 2 duty 의 하한이다

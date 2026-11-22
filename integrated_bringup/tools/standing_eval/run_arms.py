@@ -686,8 +686,9 @@ def solver_threads(launch_log: Path) -> int | None:
 def newest_session(root: Path, after: float) -> Path | None:
     """The session a run wrote: the one holding the newest CSV written after `after`.
 
-    Session folders are named to the minute, so two runs can share one and the
-    folder's own mtime does not move when a file inside it is rewritten.
+    Session folders are named to the second (to the minute before #1156), so two runs
+    share one only within a second or under one ``RTC_SESSION_DIR``, and the folder's
+    own mtime does not move when a file inside it is rewritten.
     """
     if not root.is_dir():
         return None

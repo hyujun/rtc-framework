@@ -15,7 +15,7 @@ C++ ``rtc_base/logging/session_dir.hpp`` 와 동일한 결정 로직을 Python �
 세션 디렉토리 결정 체인 (``get_or_create_session_dir``, C++ ``ResolveSessionDir`` 미러)::
 
     1. $RTC_SESSION_DIR
-    2. resolve_logging_root() / 프로세스 전역 이름 (첫 폴백 호출 시 "YYMMDD_HHMM" 으로 확정)
+    2. resolve_logging_root() / 프로세스 전역 이름 (첫 폴백 호출 시 "YYMMDD_HHMMSS" 로 확정)
 
 env 는 매 호출 먼저 확인하고 루트도 매 호출 다시 결정하며, 프로세스 전역인 것은
 폴백 세션의 *이름* 뿐이다 (#930). 반면 ``create_session_dir`` 은 호출마다 새
@@ -41,7 +41,8 @@ _SESSION_SUBDIRS = (
     "motions",
     "tracing",
 )
-_SESSION_PATTERN = re.compile(r"^\d{6}_\d{4}$")
+# YYMMDD_HHMMSS (#1156) 와 옛 YYMMDD_HHMM 을 함께 인식한다 — 옛 세션도 정리 · 탐색된다.
+_SESSION_PATTERN = re.compile(r"^\d{6}_\d{4}(\d{2})?$")
 
 # get_or_create_session_dir 의 폴백 세션 이름 — 프로세스당 한 번만 정한다 (#930).
 _fallback_name: str | None = None
@@ -59,9 +60,9 @@ PRE_F08_HAND_STEMS = {HAND_TIMING_STEM: "hand_udp_timing_log", HAND_STATS_STEM: 
 
 
 def is_session_dir_name(name: str) -> bool:
-    """``YYMMDD_HHMM`` 세션 디렉토리 이름인지 판정합니다.
+    """``YYMMDD_HHMMSS`` (또는 옛 ``YYMMDD_HHMM``) 세션 디렉토리 이름인지 판정합니다.
 
-    C++ ``CleanupOldSessions()`` 의 ``\\d{6}_\\d{4}`` 정규식과 같은 패턴.
+    C++ ``ListSessionDirs()`` 의 ``\\d{6}_\\d{4}(\\d{2})?`` 정규식과 같은 패턴.
     세션 폴더를 식별하는 곳 (정리·최신 세션 탐색·CSV → 세션 역산) 은 모두
     이 함수를 쓴다 — 느슨한 자체 판정 (길이·구분자 위치) 은 세션이 아닌
     디렉토리를 세션으로 오인한다.
@@ -109,8 +110,8 @@ def _ensure_session_subdirs(session_dir: str) -> None:
 
 
 def _session_timestamp() -> str:
-    """세션 이름 ``YYMMDD_HHMM`` (C++ ``GenerateSessionTimestamp``)."""
-    return datetime.now().strftime("%y%m%d_%H%M")
+    """세션 이름 ``YYMMDD_HHMMSS`` (C++ ``GenerateSessionTimestamp``)."""
+    return datetime.now().strftime("%y%m%d_%H%M%S")
 
 
 def create_session_dir(logging_root: str | None = None) -> str:
@@ -131,8 +132,9 @@ def create_session_dir(logging_root: str | None = None) -> str:
 def list_session_dirs(logging_root: str) -> list[str]:
     """``logging_root`` 아래 세션 디렉토리 **이름** 을 오래된 것부터 정렬해 반환.
 
-    이름이 ``YYMMDD_HHMM`` 이라 사전순이 곧 시간순이다. 루트가 없거나 읽을 수
-    없으면 빈 list. 세션 폴더를 훑는 곳 (정리 · 최신 세션 탐색) 은 이 함수를
+    이름이 ``YYMMDD_HHMMSS`` 라 사전순이 곧 시간순이다 — 옛 ``YYMMDD_HHMM`` 이
+    섞여도 앞 11 자가 같으면 짧은 옛 이름 (그 분의 시작) 이 먼저 온다. 루트가
+    없거나 읽을 수 없으면 빈 list. 세션 폴더를 훑는 곳 (정리 · 최신 세션 탐색) 은 이 함수를
     쓴다 — "무엇이 세션인가" 의 판정이 한 곳에 있어야 함께 바뀐다.
     """
     try:
@@ -145,7 +147,7 @@ def list_session_dirs(logging_root: str) -> list[str]:
 
 
 def cleanup_old_sessions(logging_root: str, max_sessions: int, keep: str | None = None) -> None:
-    """YYMMDD_HHMM 패턴 세션 폴더를 ``max_sessions`` 개 이하로 유지.
+    """세션 이름 패턴 (:func:`is_session_dir_name`) 폴더를 ``max_sessions`` 개 이하로 유지.
 
     ``keep`` 은 호출자가 지금 쓰는 세션이다 — 개수에는 들지만 지우지 않는다
     (C++ ``CleanupOldSessions`` 의 ``keep`` 과 같은 규칙).
@@ -168,7 +170,8 @@ def cleanup_old_sessions(logging_root: str, max_sessions: int, keep: str | None 
 def generate_run_id() -> str:
     """이번 launch 를 식별하는 런 ID (``YYMMDDHHMMSS`` 숫자 문자열).
 
-    세션 디렉토리는 분 해상도라 같은 분 안의 두 기동이 한 디렉토리를 공유하고,
+    세션 디렉토리는 초 해상도라 같은 초 안의 두 기동은 한 디렉토리를 공유하고
+    (옛 분 해상도 세션은 같은 분),
     per-tick 타이밍 CSV 로거는 의도적으로 append 로 연다 (재시작 세션
     이어쓰기). 그 파일 안에서 런을 가르는 유일한 표식이 이 값이다 — 없으면
     ``n / span`` 레이트 분석이 두 런을 한 런으로 읽고도 아무 센서가 발화하지
@@ -205,7 +208,7 @@ def get_or_create_session_dir() -> str:
     C++ ``rtc::ResolveSessionDir()`` 와 같은 규칙이다: env 는 매 호출 먼저
     확인하고, 루트(:func:`resolve_logging_root`)도 매 호출 다시 결정한다.
     폴백 세션의 *이름* 만 첫 폴백 호출 때 한 번 정해 프로세스 내내 재사용하므로,
-    오래 사는 프로세스가 분마다 새 디렉토리를 만들지 않는다 (#930). 호출마다
+    오래 사는 프로세스가 초마다 새 디렉토리를 만들지 않는다 (#930). 호출마다
     새 이름이 필요하면 :func:`create_session_dir` 을 쓴다.
     """
     global _fallback_name

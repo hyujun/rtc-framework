@@ -97,7 +97,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py enable_tracing:=true
 ros2 launch integrated_bringup robot_ur5e_p1a.launch.py enable_tracing:=true    # 실기
 ```
 
-출력은 `<ws>/logging_data/<YYMMDD_HHMM>/tracing/<session_name>/` (CTF 디렉토리) 이고 CSV timing log 와 같은 session_dir 에 들어간다. Ctrl+C 로 끝내면 flush 는 자동이다.
+출력은 `<ws>/logging_data/<YYMMDD_HHMMSS>/tracing/<session_name>/` (CTF 디렉토리) 이고 CSV timing log 와 같은 session_dir 에 들어간다. Ctrl+C 로 끝내면 flush 는 자동이다.
 
 | LaunchArgument | 설명 |
 |---|---|

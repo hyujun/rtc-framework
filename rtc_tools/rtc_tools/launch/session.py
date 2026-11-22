@@ -130,7 +130,7 @@ def open_session(
         max_sessions=max_sessions,
         actions=[
             SetEnvironmentVariable(name="RTC_SESSION_DIR", value=directory),
-            # 세션 디렉토리는 분 해상도라 같은 분의 재기동이 같은 디렉토리를 얻고,
+            # 세션 디렉토리는 초 해상도라 같은 초의 재기동이 같은 디렉토리를 얻고,
             # 타이밍 CSV 는 거기에 append 된다. 이 런 ID 가 그 파일 안의 런 경계이며,
             # 한 launch 의 모든 노드가 같은 값을 받아야 CSV 간 join 이 성립한다 (#376).
             SetEnvironmentVariable(name="RTC_RUN_ID", value=generate_run_id()),

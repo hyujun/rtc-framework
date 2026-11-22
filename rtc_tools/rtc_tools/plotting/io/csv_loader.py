@@ -6,8 +6,8 @@ are rejected with a clear error so silent column padding cannot mask
 regressions. Re-record sessions with the current code.
 
 Timing CSVs additionally carry a `run_id` column (#376). Session directories
-are minute-resolution and the timing logger appends, so two starts within one
-minute land in the same file; loading such a file whole makes every `n / span`
+are second-resolution (minute-resolution before #1156) and the timing logger
+appends, so two starts within one land in the same file; loading such a file whole makes every `n / span`
 rate 17%-ish wrong with no other symptom. `select_run` keeps the LAST run and
 says so loudly. Files without the column (archived sessions) load as one run.
 """
@@ -189,8 +189,8 @@ def _ensure_timestamp_column(df):
 def select_run(df, filepath, run_id=None):
     """Reduce a multi-run timing CSV to one run; announce what was dropped.
 
-    The `run_id` column (#376) is what a restart inside one minute-resolution
-    session directory leaves behind. Merging the runs is never right — the
+    The `run_id` column (#376) is what a restart inside one session directory
+    leaves behind. Merging the runs is never right — the
     interesting failure is not that the plot looks odd but that `n / span`
     silently reports a rate that never happened (#349: 413 Hz for a loop that
     ticked at 500 Hz, with jitter p99 of 0.225 µs insisting the period was

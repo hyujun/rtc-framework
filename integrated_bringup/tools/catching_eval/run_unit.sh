@@ -7,7 +7,7 @@
 # (RTC_WS names another), and a repository that is not under <workspace>/src is
 # refused — the revision written into the unit must be the tree that was built.
 # Nothing is written into the repository: the unit goes to <out_dir>, the
-# launch-minute stamp to $DATA/.last_minute.
+# launch stamp (the second, as a session is named) to $DATA/.last_stamp.
 # <out_dir>, the overlay, DATA and PROFILE may be relative to the caller's
 # directory: they are made absolute before the script moves to the workspace.
 # The planner's search budget (not a ROS parameter — only the
@@ -79,7 +79,7 @@
 # lead their sessions: setsid): another sim of this workspace, on another domain, is not the
 # unit's. The session is the RT node's `Session dir:` line; without it (the RT node left before it
 # configured) the first `logging_data/<name>` of the log is taken only when it is not older than
-# the unit's minute — an older session is another run's, and is not moved (session_refused.txt).
+# the unit's stamp — an older session is another run's, and is not moved (session_refused.txt).
 # #822 additions, for a unit that measures a value: an overlay written by `mk_overlay.py --set`
 # states its EXPECT_KV in its header, checked with the caller's EXPECT_KV (expect_kv.py overlay —
 # a key the two set to other values fails the unit as FAIL:expect_kv); the approach grid's
@@ -151,12 +151,12 @@ read -r G_NPRE G_DTPRE <<< "$GRID"
 export ROS_DOMAIN_ID=${EVAL_DOMAIN:-88}
 [ -f "$PROFILE" ] || { echo "FAIL:no profile $PROFILE" > "$OUT/status"; exit 1; }
 
-# Session dirs are minute-named: never start in the minute of the previous launch.
+# Session dirs are named to the second (#1156): never start in the second of the previous launch.
 mkdir -p "$DATA"
-LAST=$(cat "$DATA/.last_minute" 2>/dev/null)
-while [ "$(date +%y%m%d_%H%M)" == "$LAST" ]; do sleep 2; done
-MINUTE=$(date +%y%m%d_%H%M)
-echo "$MINUTE" > "$DATA/.last_minute"
+LAST=$(cat "$DATA/.last_stamp" 2>/dev/null)
+while [ "$(date +%y%m%d_%H%M%S)" == "$LAST" ]; do sleep 0.2; done
+STAMP=$(date +%y%m%d_%H%M%S)
+echo "$STAMP" > "$DATA/.last_stamp"
 
 stop_group() {  # stop_group <pgid> <seconds to wait before KILL>
   [ -z "$1" ] && return
@@ -244,8 +244,8 @@ done
 SREL=$(grep -o 'Session dir: [^ ]*logging_data/[0-9_]*' "$OUT/launch.log" | head -1 | grep -o 'logging_data/[0-9_]*')
 if [ -z "$SREL" ]; then
   SREL=$(grep -o 'logging_data/[0-9_]*' "$OUT/launch.log" | head -1)
-  if [ -n "$SREL" ] && [[ "${SREL#logging_data/}" < "$MINUTE" ]]; then
-    echo "the log names ${SREL#logging_data/}, older than this unit's minute $MINUTE: another run's session, not taken" > "$OUT/session_refused.txt"
+  if [ -n "$SREL" ] && [[ "${SREL#logging_data/}" < "$STAMP" ]]; then
+    echo "the log names ${SREL#logging_data/}, older than this unit's start $STAMP: another run's session, not taken" > "$OUT/session_refused.txt"
     SREL=""
   fi
 fi
@@ -410,7 +410,7 @@ SREL=$(cat "$OUT/session.txt" 2>/dev/null)
 if [ -z "$SREL" ] || [ ! -d "$WS/$SREL" ]; then echo "FAIL:no session directory in the launch log" > "$OUT/status"; exit 1; fi
 SES=$WS/$SREL
 du -sh "$SES" > "$OUT/session_size.txt"
-# A hook `colcon test` that starts in the launch's minute can write fixture CSVs
+# A hook `colcon test` that starts in the launch's second can write fixture CSVs
 # into the same time-named session dir: refuse header/row disagreement or foreign files.
 for f in "$SES"/controllers/demo_catching_controller/*.csv; do
   h=$(head -1 "$f" | awk -F, '{print NF}'); r=$(sed -n 2p "$f" | awk -F, '{print NF}')

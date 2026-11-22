@@ -12,7 +12,7 @@
 - **설정**: `config/<robot>/` 에 로봇별 `_base.yaml` (mode 공통) 과 `robot.yaml` / `sim.yaml` (mode 차이), 컨트롤러별 `controllers/*.yaml`. 손 설정만 있는 `config/b7_p2/` 는 `udp_hand.launch.py` 의 `params_file` 로 띄웁니다.
 - **데모 컨트롤러**: `DemoJointController` · `DemoTaskController` · `DemoComplianceController` · `DemoWbcController` (TSID + MPC) · `DemoDualArmController` · `DemoCatchingController` · `DemoInferenceController` (ONNX 정책). 등록 목록은 `src/controllers/controller_registration.cpp`.
 - **GUI**: `demo_controller_gui` (컨트롤러 전환 · 게인 튜닝 · 상태 모니터링) 와 `motion_editor_gui`. 손 sequence 를 GUI 없이 도는 CLI: [`demo_controller_sequence`](docs/demo-controller-sequence.md).
-- **세션 로그**: `logging_data/YYMMDD_HHMM/` (`timing/`, `device/`, `controllers/<config_key>/`) 에 자동 저장되고 보관 수는 `max_log_sessions` (기본 10) 입니다.
+- **세션 로그**: `logging_data/YYMMDD_HHMMSS/` (`timing/`, `device/`, `controllers/<config_key>/`) 에 자동 저장되고 보관 수는 `max_log_sessions` (기본 10).
 
 ### 로봇 × launch 매트릭스
 
@@ -64,7 +64,7 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 
 ### Launch 파일
 
-`launch/` 에 launch 파일이 열 있다. 전부 같은 뼈대다 — 세션 디렉토리 (`logging_data/YYMMDD_HHMM/`) 를 만들고, CPU 격리 (`cpu_shield.sh`) 를 켜고, 하드웨어 쪽 (UR 드라이버 + hand UDP 노드, 또는 MuJoCo 시뮬레이터) 과 RT 컨트롤러 노드 `integrated_rt_controller` 를 띄워 lifecycle 을 순서대로 활성화한다. CycloneDDS 설정은 [rtc_controller_manager README](../rtc_controller_manager/README.md#설정-파일) 가 갖는다. 빌드는 [루트 README](../README.md#빠른-시작) 를 따른다.
+`launch/` 에 launch 파일이 열 있다. 전부 같은 뼈대다 — 세션 디렉토리 (`logging_data/<YYMMDD_HHMMSS>/`) 를 만들고, CPU 격리 (`cpu_shield.sh`) 를 켜고, 하드웨어 쪽 (UR 드라이버 + hand UDP 노드, 또는 MuJoCo 시뮬레이터) 과 RT 컨트롤러 노드 `integrated_rt_controller` 를 띄워 lifecycle 을 순서대로 활성화한다. CycloneDDS 설정은 [rtc_controller_manager README](../rtc_controller_manager/README.md#설정-파일) 가 갖는다. 빌드는 [루트 README](../README.md#빠른-시작) 를 따른다.
 
 | launch 파일 | 띄우는 것 | 명령 |
 |---|---|---|

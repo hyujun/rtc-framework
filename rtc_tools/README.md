@@ -15,10 +15,10 @@ RTC 로그 시각화, 포구 sim 평가 도구, MJCF/URDF 변환·비교, launch
 빌드는 [루트 README](../README.md#빠른-시작) 를 따른다. 이 패키지만 다시 빌드하려면 `./build.sh -p rtc_tools` 다.
 
 ```bash
-# 가장 최근 세션의 CM 타이밍 로그를 그린다 (세션 CSV 는 logging_data/YYMMDD_HHMM/ 아래)
-ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.csv
+# 가장 최근 세션의 CM 타이밍 로그를 그린다 (세션 CSV 는 logging_data/YYMMDD_HHMMSS/ 아래)
+ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMMSS>/timing/cm_timing_log.csv
 # 통계만 (창 없이)
-ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMM>/timing/cm_timing_log.csv --stats
+ros2 run rtc_tools plot_rtc_log logging_data/<YYMMDD_HHMMSS>/timing/cm_timing_log.csv --stats
 ```
 
 도구 선택 요약:
@@ -98,14 +98,14 @@ ros2 run rtc_tools plot_rtc_log planner_events.csv
 ros2 run rtc_tools plot_rtc_log dualarm_diag.csv
 ros2 run rtc_tools plot_rtc_log joint_ff.csv
 ros2 run rtc_tools plot_rtc_log locomotion_diag.csv     # locomotion_truth.csv 도 같다
-# 같은 분에 재기동해 한 파일에 런이 둘 이상이면 (기본: 마지막 런) 특정 런 선택
+# 재기동으로 한 파일에 런이 둘 이상이면 (기본: 마지막 런) 특정 런 선택
 ros2 run rtc_tools plot_rtc_log cm_timing_log.csv --run-id 260808143052
 # 창 없이 PNG 만 저장
 ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --save-dir /tmp/plots --no-show
 ros2 run rtc_tools plot_rtc_log <device>_state_log.csv --all      # 모든 figure
 ```
 
-- `--save-dir` 를 안 주면 **입력 CSV 가 속한 세션의 `plots/`** 에 저장한다. CSV 경로에서 위로 올라가며 만나는 `YYMMDD_HHMM` 디렉토리가 기준이라, 지난 세션의 CSV 를 다시 그려도 figure 가 그 세션에 남는다. 세션 트리 밖의 CSV 는 `RTC_SESSION_DIR/plots/` → 현재 ws `logging_data` 의 최신 세션 순으로 폴백하고, 그것도 없으면 저장 없이 창만 띄운다.
+- `--save-dir` 를 안 주면 **입력 CSV 가 속한 세션의 `plots/`** 에 저장한다. CSV 경로에서 위로 올라가며 만나는 세션 디렉토리가 기준이라, 지난 세션의 CSV 를 다시 그려도 figure 가 그 세션에 남는다. 세션 트리 밖의 CSV 는 `RTC_SESSION_DIR/plots/` → 현재 ws `logging_data` 의 최신 세션 순으로 폴백하고, 그것도 없으면 저장 없이 창만 띄운다.
 - 창은 기본으로 뜬다 (`--show`). `--save-dir` 만 주면 PNG 를 쓴 뒤 **창을 닫을 때까지 종료하지 않으므로** 스크립트·백그라운드에서는 `--no-show` 를 함께 준다 (그때 Agg backend).
 - 타이밍 CSV 에 `run_id` 가 여러 개면 마지막 런만 그리고 버린 런을 stdout 에 적는다. `--run-id` 에 없는 값을 주면 사용 가능한 목록과 함께 에러로 끝난다.
 
@@ -210,7 +210,7 @@ ros2 run rtc_tools urdf_to_mjcf --robot-dir robot_descriptions/robots/ur5e_assm_
 
 ```bash
 python3 -m rtc_tools.conversion.ctf_to_chrome_trace \
-    --input logging_data/<YYMMDD_HHMM>/tracing/<session_name> --output trace.json
+    --input logging_data/<YYMMDD_HHMMSS>/tracing/<session_name> --output trace.json
 babeltrace2 <trace_dir> | python3 -m rtc_tools.conversion.ctf_to_chrome_trace --stdin --output trace.json
 ```
 
@@ -563,7 +563,7 @@ actions = make_trace_action(context, session_dir=session_dir)   # [] 가능
 **`session_dir`**: C++ `rtc_base/logging/session_dir.hpp` 와 같은 결정 로직이다. 로깅 루트 (`resolve_logging_root`) 는 3 단 체인이다.
 
 1. 로깅 루트: `$COLCON_PREFIX_PATH` 첫 entry 가 쓰기 가능하면 그 `parent/logging_data` → cwd 에서 위로 올라가며 `install/` + `src/` 쌍을 찾으면 그 디렉토리의 `logging_data` → 최종 폴백 `$PWD/logging_data`.
-2. 세션 디렉토리: `$RTC_SESSION_DIR` → 없으면 로깅 루트 아래 `YYMMDD_HHMM` (프로세스당 한 이름, `create_session_dir` 는 매번 새로). 런 ID (`generate_run_id`, `YYMMDDHHMMSS`) 는 launch 가 `RTC_RUN_ID` 로 전파한다.
+2. 세션 디렉토리: `$RTC_SESSION_DIR` → 없으면 로깅 루트 아래 `YYMMDD_HHMMSS` (프로세스당 한 이름, `create_session_dir` 는 매번 새로). 런 ID (`generate_run_id`, `YYMMDDHHMMSS`) 는 launch 가 `RTC_RUN_ID` 로 전파한다.
 
 ```python
 from rtc_tools.utils.session_dir import (create_session_dir, cleanup_old_sessions,

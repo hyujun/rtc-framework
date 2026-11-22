@@ -9,9 +9,9 @@
 // One row per tick is appended to a thread-specific CSV path with schema
 //   t_wall_ns,tick_count,run_id,t_state_us,t_compute_us,t_publish_us,t_total_us,jitter_us
 // where the first three columns are emitted by ThreadTimingCsvLogger — run_id
-// separates two starts that share one minute-resolution session dir, which the
-// append mode otherwise merges silently (#376) — and the next five are the
-// per-phase wall-clock breakdown captured by the producer.
+// separates two starts that share one session dir (same second; same minute
+// before #1156), which the append mode otherwise merges silently (#376) — and
+// the next five are the per-phase wall-clock breakdown captured by the producer.
 //
 // Field semantics (held identical between CM and MPC so analysis scripts
 // can join across threads):

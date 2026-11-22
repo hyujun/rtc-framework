@@ -98,7 +98,7 @@ def launch_setup(context, *args, **kwargs):
     """Setup function executed with launch context for conditional parameter loading."""
     profile = SIDE_PROFILES[LaunchConfiguration("side").perform(context)]
 
-    # ── Session directory (YYMMDD_HHMM) ──────────────────────────────────────
+    # ── Session directory (YYMMDD_HHMMSS) ────────────────────────────────────
     session = open_session(context)
     session_dir = session.directory
 
@@ -495,7 +495,7 @@ def generate_launch_description():
             )
         ),
         description=(
-            "Maximum number of session folders to keep (YYMMDD_HHMM). Default "
+            "Maximum number of session folders to keep (YYMMDD_HHMMSS). Default "
             "comes from config/p2/_base.yaml, which is also the SSoT for "
             "the RT node's own max_log_sessions parameter."
         ),
