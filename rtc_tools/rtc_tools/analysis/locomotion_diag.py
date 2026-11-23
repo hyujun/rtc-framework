@@ -94,6 +94,7 @@ FAULT_CAUSE_NAMES = (
     "model epoch",
     "plan loss",
     "pose guard",
+    "mpc wait",
 )
 REFERENCE_SOURCE_NAMES = ("idle", "stand", "walk", "fault")
 HEALTH_NAMES = ("nominal", "degraded", "fault")

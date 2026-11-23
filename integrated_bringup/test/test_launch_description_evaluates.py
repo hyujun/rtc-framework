@@ -154,6 +154,9 @@ EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     ],
     "sim_g1_loco.launch.py": [
         ("sim_lanes", {"sim_lanes": "true"}),
+        # The MPC lock-step: the controller's sync mode and the simulator's
+        # armed command wait from one argument.
+        ("mpc_lockstep", {"enable_mpc": "true", "mpc_sync": "lockstep"}),
     ],
     "sim_b7_loco.launch.py": [
         ("sim_lanes", {"sim_lanes": "true"}),

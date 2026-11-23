@@ -3,6 +3,7 @@
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "integrated_bringup/support/layout_profile.hpp"
 #include "integrated_bringup/support/owned_topics.hpp"
+#include "integrated_bringup/support/sim_time_sync.hpp"
 #include "rtc_base/threading/thread_utils.hpp"
 
 #include <chrono>
@@ -72,6 +73,35 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_configure(
       const std::string profile = ReadLayoutProfile(*node);
       layout_profile_drops_mpc_ = LayoutProfileDropsMpc(profile);
       mpc_worker_slots_ = rtc::SelectMpcWorkerSlots(profile);
+    }
+    // The lock-step is a simulation mode: the RT tick waits for a solve, which
+    // only a tick the simulator waits for may do. The fact is the CM's
+    // (cm_sim_time_sync, read-only, false or absent anywhere else) — refused
+    // here, before anything of the mode exists (fail-closed).
+    mpc_channel_.Close();
+    if (mpc_enabled_ && mpc_lockstep_) {
+      if (!node || !CmSimTimeSync(*node)) {
+        RCLCPP_ERROR(logger_,
+                     "[locomotion] configure refused: mpc.sync.mode lockstep needs a controller "
+                     "manager in simulation lock-step (cm_sim_time_sync true); this one is not "
+                     "— use free_run on real hardware");
+        ResetLogState();
+        return CallbackReturn::FAILURE;
+      }
+      if (!mpc_channel_.Open()) {
+        RCLCPP_ERROR(logger_,
+                     "[locomotion] configure refused: the solve trigger channel's eventfds");
+        ResetLogState();
+        return CallbackReturn::FAILURE;
+      }
+      mpc_manager_.SetDeliveryDelayNs(mpc_delivery_ticks_ * tick_dt_ns_);
+      RCLCPP_INFO(logger_,
+                  "[locomotion] MPC lock-step: a solve every %ld ticks, delivered %ld ticks after "
+                  "its state, wait timeout %.2f s",
+                  static_cast<long>(mpc_grid_ticks_), static_cast<long>(mpc_delivery_ticks_),
+                  cfg_.mpc.wait_timeout_s);
+    } else {
+      mpc_manager_.SetDeliveryDelayNs(0);
     }
 
     // The status topic, with or without an MPC.
@@ -222,6 +252,16 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
   if (mpc_thread_) {
     if (rc == CallbackReturn::SUCCESS) {
       mpc_thread_->Resume();
+      if (mpc_lockstep_) {
+        // Resume, then arm (the channel's contract); the tick's lock-step
+        // state starts afresh with this activation.
+        mpc_trigger_outstanding_ = false;
+        mpc_trigger_iter_ = 0;
+        mpc_grid_known_ = false;
+        mpc_wait_us_ = 0.0;
+        mpc_wait_count_ = 0;
+        mpc_channel_.Arm();
+      }
     } else {
       PauseMpc();  // nothing will deactivate a refused activation
     }
@@ -243,6 +283,7 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_cleanup(
   joy_sub_.reset();
   external_wrench_sub_.reset();
   StopMpcThread();
+  mpc_channel_.Close();  // after the thread that held its pointer
   ResetOwnedTopics(owned_topics_);
   log_drain_timer_.reset();
   log_drain_cb_group_.reset();

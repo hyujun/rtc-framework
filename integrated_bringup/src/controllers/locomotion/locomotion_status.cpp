@@ -108,6 +108,8 @@ const char* LocomotionFaultCauseName(std::uint8_t cause) noexcept {
       return "plan_loss";
     case Cause::kPoseGuard:
       return "pose_guard";
+    case Cause::kMpcWait:
+      return "mpc_wait";
   }
   return "unknown";
 }
