@@ -19,7 +19,13 @@
 #                     after a contact switch were withheld two to four periods
 #                     in a row (their first nodes over publish_prim_tol).
 #   riccati.enabled   the plan's feedback gain added to the acceleration
-#                     reference — off (the manager reads an absent key as on);
+#                     reference — on (the manager reads an absent key as on),
+#                     scaled by gain_scale 0.25: in the W8-F05 campaign (#1155,
+#                     truth input, the three shipped-off options on) 0.25 tracked
+#                     and survived the walk better than 1.0 but rejects a forward
+#                     push less well; against the options-off profile it walks
+#                     longer and tracks 0.03 slower (the v_ratio non-inferiority
+#                     it was held to, -0.02, was not met);
 #                     the other riccati keys are the manager's (rtc_mpc
 #                     manager/mpc_solution_manager.hpp).
 #   sanity            the plausibility check of a sampled plan (a plan that fails
@@ -71,7 +77,7 @@
 # collision barriers are the reference's (its code's piecewise-polynomial
 # form; mu, delta from its task). The 16 sphere pairs are its foot centre, the
 # two points ±0.6·x_max along the sole and the ankle (r 0.05), and the knees
-# (r 0.075), in the ankle-roll / knee joint frames; collision ships off.
+# (r 0.075), in the ankle-roll / knee joint frames; collision ships on (W8-F05).
 #
 # 32 nodes × 0.035 s = 1.12 s (the reference: 1.1 s, its last interval 0.015 s).
 # The reference integrates with RK4; the two offered here are semi-implicit
@@ -82,10 +88,10 @@ locomotion_controller:
     period_nodes: 2
     max_policy_age_s: 0.35            # [s] 5 periods (0.070)
     riccati:
-      enabled: false
-      gain_scale: 1.0
+      enabled: true
+      gain_scale: 0.25                # W8-F05 (#1155), see the header
       accel_only: true
-      max_delta_blocks:               # the Δx cap per state block when on (mpc_riccati overlay)
+      max_delta_blocks:               # the Δx cap per state block
         base_position: 0.05           # [m]
         base_orientation: 0.1         # [rad]
         joint_position: 0.2           # [rad]
@@ -279,7 +285,7 @@ locomotion_controller:
           barrier_delta: 0.03        # [N·m]
         joint_limits: {mu: 1200.0, delta: 0.1}
         collision:
-          enabled: false
+          enabled: true
           mu: 1500.0
           delta: 0.04                # [m]
           pairs:

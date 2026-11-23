@@ -4,7 +4,8 @@
 #
 # The Riccati feedback of the sampled plan is added to the acceleration
 # reference, each state block's deviation capped by mpc.riccati.max_delta_blocks
-# (locomotion/mpc.yaml). Reported beside the MPC arm, not shipped on.
+# (locomotion/mpc.yaml). g1_loco ships it on (W8-F05), so this overlay now
+# repeats the shipped value; run_arms' mpc_fb arm still names it.
 integrated_rt_controller:
   ros__parameters:
     locomotion_controller:

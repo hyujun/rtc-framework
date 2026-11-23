@@ -8,9 +8,12 @@
 #
 # q_default is the original whole-body MPC's default joint state (hip pitch
 # −0.05, knee 0.1, ankle pitch −0.05, everything else 0; the hand held at 0,
-# WD-12) and intermediate_fraction its 70 % averaged-velocity knot. Arm swing
-# is off (the original swings shoulder pitch and elbow with its left / right
-# phase; here the phase is the gait's, so it is a tuning item — W8).
+# WD-12) with the shoulder rolls opened 0.15 rad (left +, right −) so the
+# swinging hand clears the hip in the control model's collision geometry up
+# to gain 0.45, and intermediate_fraction its 70 % averaged-velocity knot. Arm
+# swing is on (the original swings shoulder pitch and elbow with its left /
+# right phase; here the phase is the gait's): its gain was tuned in W8-F05
+# (#1155) and the shipped 0.15 kept.
 locomotion_controller:
   reference:
     intermediate_fraction: 0.7
@@ -31,11 +34,11 @@ locomotion_controller:
       waist_roll_joint: 0.0
       waist_pitch_joint: 0.0
       left_shoulder_pitch_joint: 0.0
-      left_shoulder_roll_joint: 0.0
+      left_shoulder_roll_joint: 0.15
       left_shoulder_yaw_joint: 0.0
       left_elbow_joint: 0.0
       right_shoulder_pitch_joint: 0.0
-      right_shoulder_roll_joint: 0.0
+      right_shoulder_roll_joint: -0.15
       right_shoulder_yaw_joint: 0.0
       right_elbow_joint: 0.0
       thumb_cmc_aa_joint: 0.0
@@ -49,7 +52,7 @@ locomotion_controller:
       middle_dip_fe_joint: 0.0
       ring_mcp_fe_joint: 0.0
     arm_swing:
-      enabled: false
+      enabled: true
       gain: 0.15                 # [rad·s/m]
       phase_offset: 0.15
       joints:
