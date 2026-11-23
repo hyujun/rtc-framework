@@ -256,8 +256,10 @@ rtc::RTControllerInterface::CallbackReturn LocomotionController::on_activate(
         // Resume, then arm (the channel's contract); the tick's lock-step
         // state starts afresh with this activation.
         mpc_trigger_outstanding_ = false;
+        mpc_trigger_iter_ = 0;
         mpc_grid_known_ = false;
         mpc_wait_us_ = 0.0;
+        mpc_wait_count_ = 0;
         mpc_channel_.Arm();
       }
     } else {

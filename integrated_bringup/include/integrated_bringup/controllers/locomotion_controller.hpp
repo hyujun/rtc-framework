@@ -513,8 +513,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   [[nodiscard]] bool SpawnMpcThread(std::unique_ptr<rtc::mpc::MPCHandlerBase> handler) noexcept;
   void StopMpcThread() noexcept;
   void PauseMpc() noexcept;  ///< the command timer off, sampling off, the thread paused
-  /// Lock-step: disarm the channel and give a waiting tick a few ms to leave
-  /// Compute — before the thread is paused or stopped (the channel's contract).
+  /// Lock-step: disarm the channel and wait (bounded, tens of ms) for a tick
+  /// released from its wait to leave Compute — before the thread is paused or
+  /// stopped (the channel's contract).
   void ReleaseLockstepTick() noexcept;
   void LogMpcTick() noexcept;
   // The velocity command (command.cpp). Off the RT thread: the subscription
@@ -705,7 +706,6 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::uint64_t mpc_grid_origin_{0};  ///< the first latched tick of the stream
   double mpc_wait_us_{0.0};           ///< this tick's wait
   std::uint64_t mpc_wait_count_{0};
-  std::uint64_t mpc_grid_skips_{0};      ///< grid ticks without a trigger (no state to send)
   std::atomic<bool> in_compute_{false};  ///< the RT tick is inside Compute (deactivate waits on it)
   // RT tick state.
   rtc::mpc::WbcReference wbc_ref_{};

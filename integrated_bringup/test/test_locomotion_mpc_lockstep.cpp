@@ -218,22 +218,24 @@ TEST_F(LocomotionMpcLockstepTest, AWaitPastTheTimeoutLatchesTheFault) {
 TEST_F(LocomotionMpcLockstepTest, ADeactivationReleasesATickWaitingOnTheSolve) {
   BringUpLockstep(LockstepConfig(/*wait_timeout_s=*/5.0));
   ASSERT_TRUE(TickUntil([this] { return ctrl_->Source() == Source::kStand; }));
-  stub_->sleep_us = 2000000;  // a solve the wait would sit on for 2 s
-  std::atomic<bool> done{false};
-  std::thread ticker([this, &done] {
-    for (std::int64_t i = 0; i < n_ + 2 && !done.load(); ++i) {
+  stub_->sleep_us = 600000;  // a solve the wait would sit on for 0.6 s
+  std::atomic<bool> stop{false};
+  std::thread ticker([this, &stop] {
+    // Ticks until told to stop — the one inside the wait when the stop comes
+    // is the last (no tick runs on the deactivated controller).
+    for (std::int64_t i = 0; i < n_ + 2 && !stop.load(std::memory_order_acquire); ++i) {
       static_cast<void>(Tick());
     }
-    done.store(true);
   });
   std::this_thread::sleep_for(100ms);  // the ticker is inside the wait by now
+  stop.store(true, std::memory_order_release);
   const auto t0 = std::chrono::steady_clock::now();
   Deactivate();
   EXPECT_LT(std::chrono::steady_clock::now() - t0, 500ms) << "the deactivation did not wait";
   ticker.join();
   EXPECT_LT(std::chrono::steady_clock::now() - t0, 1s) << "the tick was released";
   EXPECT_EQ(ctrl_->LastDiag().fault_count, 0U) << "cancelled, not timed out";
-  stub_->sleep_us = 0;
+  // The stub is still inside its 0.6 s solve; the fixture's teardown joins it.
 }
 
 TEST_F(LocomotionMpcLockstepTest, AStaleTickOnTheGridSkipsTheTriggerAndKeepsTheGrid) {

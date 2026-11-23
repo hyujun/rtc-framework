@@ -107,8 +107,11 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
 
   ControllerOutput out{};
   FillOutput(state, out);
+  // The tick's own time: the lock-step's wait for the solve (mpc_wait_us) is
+  // not compute and is logged apart.
   const double tick_us =
-      std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+      std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() -
+      mpc_wait_us_;
   FillLogs(state, out, now_ns, tick_us);
   return out;
 }

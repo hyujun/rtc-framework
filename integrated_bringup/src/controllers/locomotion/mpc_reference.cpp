@@ -322,11 +322,11 @@ bool LocomotionController::SpawnMpcThread(std::unique_ptr<mpc::MPCHandlerBase> h
 void LocomotionController::ReleaseLockstepTick() noexcept {
   // The channel's contract (rtc_mpc solve_trigger_channel.hpp): disarm before
   // the thread is paused or stopped. A tick waiting on the channel wakes with
-  // "cancelled" at once; give it a few milliseconds to leave Compute before
-  // the thread it was waiting on goes — never the wait timeout itself (this
-  // runs on the nrt executor).
+  // "cancelled" at once and finishes its tick (the QP, the logs: a few ms);
+  // wait for it to leave Compute, bounded so a stuck tick cannot hold the nrt
+  // executor for the wait timeout itself.
   mpc_channel_.Disarm();
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
   while (in_compute_.load(std::memory_order_acquire) &&
          std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(std::chrono::microseconds(100));

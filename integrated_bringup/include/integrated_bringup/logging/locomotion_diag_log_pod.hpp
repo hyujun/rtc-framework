@@ -203,7 +203,7 @@ struct LocomotionDiagLogPod {
   // ── Appended: the MPC lock-step (locomotion_controller.hpp `mpc.sync`) ──
   bool mpc_sync_lockstep{false};            ///< the solve is triggered by the tick
   std::uint64_t mpc_trigger_tick{0};        ///< the tick of the last solve request
-  double mpc_wait_us{0.0};                  ///< this tick's wait for a solve [µs] (in tick_us)
+  double mpc_wait_us{0.0};                  ///< this tick's wait for a solve [µs] (not in tick_us)
   std::uint64_t mpc_wait_count{0};          ///< ticks that waited, this activation
   std::uint64_t mpc_pending_superseded{0};  ///< plans published behind a pending one
 };

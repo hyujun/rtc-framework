@@ -96,7 +96,7 @@ configure 때 정하고 실행 중에는 바꾸지 않는다.
 
 `b7_loco` 의 값은 `g1_loco` 의 것을 옮긴 잠정값이다 (`mpc:` 없음 = MPC 없음). `estimator.inekf` 절은 `g1_loco` 에만 있다.
 
-**MPC lock-step** (`mpc.sync.mode: lockstep`, sim 전용 — launch `mpc_sync:=lockstep`): MPC thread 가 벽시계로 혼자 돌지 않고 RT tick 이 N = `period_nodes`·dt / tick 마다 solve 를 요청하고 (N 은 정수여야 한다) L = `delivery_ticks` tick 뒤 (0 = N) 그 solve 를 기다린 뒤 plan 을 채택한다 — plan 의 나이가 호스트 속도와 무관하게 정확히 L tick 이고, sim 은 tick 을 기다리므로 rtf 가 solve 를 따라 내려간다. controller manager 가 sim lock-step 이 아니면 (`cm_sim_time_sync` 없음 · false) configure 거부 (실기는 항상 free_run). 대기가 `wait_timeout_s` 를 넘으면 fault `mpc_wait`. free_run 에서는 publish deadline 이 막던 solve 를 lock-step 에서는 세기만 한다. diag 꼬리 열 `mpc_sync_lockstep` · `mpc_trigger_tick` · `mpc_wait_us` (tick_us 에 포함 — 연산 시간 판정에서 뺀다) · `mpc_wait_count` · `mpc_pending_superseded`. sim 쪽은 `sync_timeout_armed_ms` (launch 가 4 s 로 두고 `wait_timeout_s` 가 그 아래인지 검사).
+**MPC lock-step** (`mpc.sync.mode: lockstep`, sim 전용 — launch `mpc_sync:=lockstep`): MPC thread 가 벽시계로 혼자 돌지 않고 RT tick 이 N = `period_nodes`·dt / tick 마다 solve 를 요청하고 (N 은 정수여야 한다) L = `delivery_ticks` tick 뒤 (0 = N) 그 solve 를 기다린 뒤 plan 을 채택한다 — plan 의 나이가 호스트 속도와 무관하게 정확히 L tick 이고, sim 은 tick 을 기다리므로 rtf 가 solve 를 따라 내려간다. controller manager 가 sim lock-step 이 아니면 (`cm_sim_time_sync` 없음 · false) configure 거부 (실기는 항상 free_run). 대기가 `wait_timeout_s` 를 넘으면 fault `mpc_wait`. free_run 에서는 publish deadline 이 막던 solve 를 lock-step 에서는 세기만 한다. diag 꼬리 열 `mpc_sync_lockstep` · `mpc_trigger_tick` · `mpc_wait_us` (`wbc_tick_us` 는 이 대기를 뺀 값) · `mpc_wait_count` (활성화마다 0 부터) · `mpc_pending_superseded`. sim 쪽은 `sync_timeout_armed_ms` (launch 가 4 s 로 두고 `wait_timeout_s` 가 그 아래인지 검사).
 
 ## 로그와 판정
 
