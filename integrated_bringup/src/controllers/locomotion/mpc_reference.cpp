@@ -20,12 +20,14 @@
 #include <Eigen/Geometry>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace integrated_bringup {
@@ -92,6 +94,29 @@ void LocomotionController::BuildMpc(const YAML::Node& cfg) {
       !(std::isfinite(mpc_dt_) && mpc_dt_ > 0.0)) {
     Fail("kinodynamic.horizon_nodes must be in [1, " + std::to_string(mpc::kMaxHorizon) +
          "] and dt > 0");
+  }
+  // The lock-step's tick counts: the MPC period in ticks must be whole, the
+  // delivery within it (header). Whether this CM is a simulation's is the
+  // node's to say (on_configure).
+  mpc_lockstep_ = cfg_.mpc.lockstep;
+  mpc_grid_ticks_ = 0;
+  mpc_delivery_ticks_ = 0;
+  mpc_wait_timeout_ns_ = 0;
+  if (mpc_lockstep_) {
+    const double period_ticks = static_cast<double>(cfg_.mpc.period_nodes) * mpc_dt_ * 1e9 /
+                                static_cast<double>(tick_dt_ns_);
+    const double whole = std::round(period_ticks);
+    if (!(whole >= 1.0) || std::abs(period_ticks - whole) > 1e-6) {
+      Fail("sync.mode lockstep needs period_nodes * dt to be a whole number of control ticks (" +
+           std::to_string(period_ticks) + ")");
+    }
+    mpc_grid_ticks_ = static_cast<std::int64_t>(whole);
+    mpc_delivery_ticks_ = cfg_.mpc.delivery_ticks == 0 ? mpc_grid_ticks_ : cfg_.mpc.delivery_ticks;
+    if (mpc_delivery_ticks_ < 1 || mpc_delivery_ticks_ > mpc_grid_ticks_) {
+      Fail("sync.delivery_ticks must be in [1, " + std::to_string(mpc_grid_ticks_) +
+           "] (the period in ticks), got " + std::to_string(mpc_delivery_ticks_));
+    }
+    mpc_wait_timeout_ns_ = std::llround(cfg_.mpc.wait_timeout_s * 1e9);
   }
 
   // The MPC's model is the dynamics model (hands locked at neutral).
@@ -252,8 +277,19 @@ bool LocomotionController::SpawnMpcThread(std::unique_ptr<mpc::MPCHandlerBase> h
     }
     launch.solver_threads = handler->solver_config().num_threads;
     launch.workers = mpc_worker_slots_;
+    if (mpc_lockstep_) {
+      // One tick per request from the RT tick (the channel is this
+      // controller's, opened at configure); the publish rule reads the nodes
+      // from the delivery on.
+      launch.trigger = mpc::SolveTrigger::kExternal;
+      launch.channel = &mpc_channel_;
+    }
     auto thread = std::make_unique<mpc::HandlerMPCThread>();
     thread->Configure(*mpc_model_, std::move(handler), std::move(phase_owned_));
+    if (mpc_lockstep_) {
+      thread->SetConsumedWindowOffsetNs(
+          static_cast<std::uint64_t>(mpc_delivery_ticks_ * tick_dt_ns_));
+    }
     thread->Init(mpc_manager_, launch);
     // A record of an earlier thread run is not this one's: the RT tick reads
     // "none" until this thread writes its first (thread start orders the two
@@ -283,10 +319,25 @@ bool LocomotionController::SpawnMpcThread(std::unique_ptr<mpc::MPCHandlerBase> h
   return true;
 }
 
+void LocomotionController::ReleaseLockstepTick() noexcept {
+  // The channel's contract (rtc_mpc solve_trigger_channel.hpp): disarm before
+  // the thread is paused or stopped. A tick waiting on the channel wakes with
+  // "cancelled" at once; give it a few milliseconds to leave Compute before
+  // the thread it was waiting on goes — never the wait timeout itself (this
+  // runs on the nrt executor).
+  mpc_channel_.Disarm();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+  while (in_compute_.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+  }
+}
+
 void LocomotionController::PauseMpc() noexcept {
   StopCommandTimer();  // its writer is the paused thread's phase manager
   mpc_manager_.SetEnabled(false);
   if (mpc_thread_) {
+    ReleaseLockstepTick();
     mpc_thread_->Pause();
   }
 }
@@ -297,6 +348,7 @@ void LocomotionController::StopMpcThread() noexcept {
   mpc_timing_timer_.reset();
   mpc_timing_cb_group_.reset();
   if (mpc_thread_) {
+    ReleaseLockstepTick();
     mpc_thread_->StopAndJoin();
     mpc_thread_.reset();
     phase_ = nullptr;  // owned by the thread
@@ -361,12 +413,66 @@ void LocomotionController::RestartMpcStream() noexcept {
     phase_->RequestReset();
   }
   mpc_manager_.SetStateEpoch(++mpc_state_epoch_);
+  // Lock-step: the grid restarts with the stream's first latched tick; a solve
+  // still running answers its request (the manager refuses its plan by epoch),
+  // and the next grid tick waits for it before it triggers.
+  mpc_grid_known_ = false;
   wbc_ref_ = mpc::WbcReference{};
   u_fb_norm_ = 0.0;
   rejected_plan_id_ = 0;
   ForgetFollowedPlans();
   ref_source_ = ReferenceSource::kIdle;
   ApplyContactMask(all_contacts_mask_);
+}
+
+void LocomotionController::LockstepTick(const ControllerState& state) noexcept {
+  const std::uint64_t it = state.iteration;
+  mpc_wait_us_ = 0.0;
+  // 1. A solve requested L ticks ago is due: wait for it, whatever the state
+  //    source says this tick (the plan's age must not depend on it).
+  if (mpc_trigger_outstanding_ &&
+      it >= mpc_trigger_iter_ + static_cast<std::uint64_t>(mpc_delivery_ticks_)) {
+    WaitForSolve();
+  }
+  if (fault_latched_tick_ || !(source_ok_ && reference_latched_)) {
+    return;  // no plan to follow, nothing to send; the grid keeps its origin
+  }
+  // 2. The due plan (the manager's delivery delay makes it due now) before a
+  //    new request can overwrite the buffer behind it.
+  FollowPlan(state);
+  if (fault_latched_tick_) {
+    return;
+  }
+  // 3. The grid: the stream's first latched tick is its origin.
+  if (!mpc_grid_known_) {
+    mpc_grid_known_ = true;
+    mpc_grid_origin_ = it;
+  }
+  if ((it - mpc_grid_origin_) % static_cast<std::uint64_t>(mpc_grid_ticks_) != 0) {
+    return;
+  }
+  if (mpc_trigger_outstanding_) {
+    WaitForSolve();  // L < N never reaches here busy; a restart's old solve can
+    if (fault_latched_tick_) {
+      return;
+    }
+  }
+  WriteMpcState();
+  mpc_channel_.RequestSolve();
+  mpc_trigger_outstanding_ = mpc_channel_.Armed();
+  mpc_trigger_iter_ = it;
+}
+
+void LocomotionController::WaitForSolve() noexcept {
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto status = mpc_channel_.WaitIdle(mpc_wait_timeout_ns_);
+  mpc_wait_us_ =
+      std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+  ++mpc_wait_count_;
+  mpc_trigger_outstanding_ = false;
+  if (status == mpc::SolveTriggerChannel::WaitStatus::kTimeout) {
+    Latch(FaultCause::kMpcWait);
+  }
 }
 
 void LocomotionController::FollowPlan(const ControllerState& state) noexcept {

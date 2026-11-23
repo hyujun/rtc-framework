@@ -100,7 +100,7 @@ LocomotionMpcConfig ParseMpc(const YAML::Node& n, const std::string& where) {
   LocomotionMpcConfig out;
   CheckKeys(n, where,
             {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity", "ocp_type",
-             "solver", "kinodynamic", "max_stale_solutions"},
+             "solver", "kinodynamic", "max_stale_solutions", "sync"},
             {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity"});
   out.present = true;
   out.enabled = ReadBool(n, "enabled", where);
@@ -125,6 +125,40 @@ LocomotionMpcConfig ParseMpc(const YAML::Node& n, const std::string& where) {
   out.sanity_joint_delta_rad = ReadPositive(n["sanity"], "joint_delta_rad", san, false);
   out.sanity_base_speed = ReadPositive(n["sanity"], "base_speed", san, false);
   out.sanity_wrench_scale = ReadPositive(n["sanity"], "wrench_scale", san, false);
+  // `sync:` (optional; absent = free_run). The tick counts (N integer, L in
+  // 1..N) are checked where the control rate is known (BuildMpc).
+  if (n["sync"]) {
+    const std::string sy = where + ".sync";
+    CheckKeys(n["sync"], sy, {"mode", "delivery_ticks", "wait_timeout_s"}, {"mode"});
+    std::string mode;
+    try {
+      mode = n["sync"]["mode"].as<std::string>();
+    } catch (const YAML::Exception&) {
+      Refuse(sy + ".mode", "expected a string, got " + Spelling(n["sync"]["mode"]));
+    }
+    if (mode == "lockstep") {
+      out.lockstep = true;
+    } else if (mode != "free_run") {
+      Refuse(sy + ".mode", "expected free_run or lockstep, got '" + mode + "'");
+    }
+    if (n["sync"]["delivery_ticks"]) {
+      int ticks = 0;
+      try {
+        ticks = n["sync"]["delivery_ticks"].as<int>();
+      } catch (const YAML::Exception&) {
+        Refuse(sy + ".delivery_ticks",
+               "expected an integer, got " + Spelling(n["sync"]["delivery_ticks"]));
+      }
+      if (ticks < 0) {
+        Refuse(sy + ".delivery_ticks",
+               "must be >= 0 (0 = one period), got " + std::to_string(ticks));
+      }
+      out.delivery_ticks = ticks;
+    }
+    if (n["sync"]["wait_timeout_s"]) {
+      out.wait_timeout_s = ReadPositive(n["sync"], "wait_timeout_s", sy, /*zero_ok=*/false);
+    }
+  }
   out.node = YAML::Clone(n);
   return out;
 }

@@ -142,6 +142,15 @@
 //     riccati: {enabled: bool, ...}   # rtc_mpc MPCSolutionManager
 //     sanity: {joint_delta_rad, base_speed, wrench_scale}   # all > 0, below
 //     ocp_type / solver / kinodynamic / max_stale_solutions   # rtc_mpc MPCFactory · manager
+//     sync:         # optional; absent = free_run
+//       mode: free_run | lockstep   # lockstep: the RT tick triggers the solve every
+//                                   # N = period_nodes·dt/tick ticks (N integer) and waits
+//                                   # for it L ticks later; the plan is taken at exactly
+//                                   # L ticks of age. Sim only: configure is refused
+//                                   # unless the CM declared cm_sim_time_sync true.
+//       delivery_ticks: L           # 1..N; 0 = N (one period)
+//       wait_timeout_s: s           # > 0; the tick's wait for a solve past this latches
+//                                   # the fault mpc_wait
 // With mpc.enabled the planner's sections are read too: command.* (the
 // command filter: its base_height is the stance height), gait.*, swing.*,
 // terrain.*, and reference.* (its q_default names the body joints and the
@@ -223,6 +232,7 @@
 #include "rtc_mpc/phase/locomotion_phase_manager.hpp"
 #include "rtc_mpc/reference/command_filter.hpp"
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
+#include "rtc_mpc/thread/solve_trigger_channel.hpp"
 #include "rtc_mpc/types/wbc_reference.hpp"
 #include "rtc_tsid/locomotion/locomotion_formulation.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
@@ -281,6 +291,9 @@ struct LocomotionMpcConfig {
   double sanity_joint_delta_rad{0.0};  ///< [rad]
   double sanity_base_speed{0.0};       ///< [m/s]
   double sanity_wrench_scale{0.0};     ///< × the robot's weight
+  bool lockstep{false};                ///< `sync.mode: lockstep` (header comment)
+  int delivery_ticks{0};               ///< `sync.delivery_ticks`; 0 = one period
+  double wait_timeout_s{2.0};          ///< `sync.wait_timeout_s`
   YAML::Node node;                     ///< the whole section (factory and manager keys)
 };
 
@@ -424,6 +437,19 @@ class LocomotionController final : public rtc::RTControllerInterface {
   /// True when this configuration runs the MPC (mpc.enabled).
   [[nodiscard]] bool MpcEnabled() const noexcept { return mpc_enabled_; }
 
+  /// True when the MPC runs in lock-step with the RT tick (`mpc.sync.mode: lockstep`).
+  [[nodiscard]] bool MpcLockstep() const noexcept { return mpc_lockstep_; }
+
+  /// Lock-step: the trigger period and the delivery delay, in ticks.
+  [[nodiscard]] std::int64_t MpcGridTicks() const noexcept { return mpc_grid_ticks_; }
+
+  [[nodiscard]] std::int64_t MpcDeliveryTicks() const noexcept { return mpc_delivery_ticks_; }
+
+  /// Lock-step: the trigger channel (tests arm / read it; the tick requests on it).
+  [[nodiscard]] const rtc::mpc::SolveTriggerChannel& MpcChannel() const noexcept {
+    return mpc_channel_;
+  }
+
   /// The MPC thread, or null before the first activation that spawned it.
   [[nodiscard]] const rtc::mpc::MPCThread* MpcThread() const noexcept { return mpc_thread_.get(); }
 
@@ -487,6 +513,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   [[nodiscard]] bool SpawnMpcThread(std::unique_ptr<rtc::mpc::MPCHandlerBase> handler) noexcept;
   void StopMpcThread() noexcept;
   void PauseMpc() noexcept;  ///< the command timer off, sampling off, the thread paused
+  /// Lock-step: disarm the channel and give a waiting tick a few ms to leave
+  /// Compute — before the thread is paused or stopped (the channel's contract).
+  void ReleaseLockstepTick() noexcept;
   void LogMpcTick() noexcept;
   // The velocity command (command.cpp). Off the RT thread: the subscription
   // callback (Store only), the timer (the filter's one writer).
@@ -507,6 +536,11 @@ class LocomotionController final : public rtc::RTControllerInterface {
   // On the RT thread, in tick order.
   void WriteMpcState() noexcept;
   void FollowPlan(const rtc::ControllerState& state) noexcept;
+  /// Lock-step (header): wait for a due solve, follow, trigger on the grid.
+  void LockstepTick(const rtc::ControllerState& state) noexcept;
+  /// Lock-step: block until the outstanding solve is answered (or the timeout
+  /// latches the fault, or the channel is disarmed).
+  void WaitForSolve() noexcept;
   [[nodiscard]] std::uint8_t Plausible(const rtc::mpc::WbcReference& r) const noexcept;
   /// Record the sampled plan for the diag log, before the check.
   void RecordSample(bool sampled) noexcept;
@@ -658,6 +692,21 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::array<double, kLocomotionMaxBodyJoints> joint_hi_{};
   std::uint32_t all_contacts_mask_{0};
   std::int64_t tick_dt_ns_{0};
+  // ── Lock-step (mpc.sync.mode: lockstep; header) ──
+  bool mpc_lockstep_{false};
+  std::int64_t mpc_grid_ticks_{0};             ///< N: the trigger period in ticks
+  std::int64_t mpc_delivery_ticks_{0};         ///< L: the delivery delay in ticks
+  std::int64_t mpc_wait_timeout_ns_{0};        ///< the tick's wait for a solve
+  rtc::mpc::SolveTriggerChannel mpc_channel_;  ///< owned here; the thread holds a pointer
+  // RT tick state of the lock-step.
+  bool mpc_trigger_outstanding_{false};
+  std::uint64_t mpc_trigger_iter_{0};
+  bool mpc_grid_known_{false};
+  std::uint64_t mpc_grid_origin_{0};  ///< the first latched tick of the stream
+  double mpc_wait_us_{0.0};           ///< this tick's wait
+  std::uint64_t mpc_wait_count_{0};
+  std::uint64_t mpc_grid_skips_{0};      ///< grid ticks without a trigger (no state to send)
+  std::atomic<bool> in_compute_{false};  ///< the RT tick is inside Compute (deactivate waits on it)
   // RT tick state.
   rtc::mpc::WbcReference wbc_ref_{};
   ReferenceSource ref_source_{

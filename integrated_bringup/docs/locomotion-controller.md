@@ -91,10 +91,12 @@ configure 때 정하고 실행 중에는 바꾸지 않는다.
 | `model.yaml` | `model.*` — 본체 군 · 손 군 · 접촉 · 몸통 · 팔 끝 frame |
 | `runtime.yaml` | `command_type: pd_feedforward` · `pd_feedforward {kp, kd}` (본체 roster 순) · `fault {max_source_bad_ticks, damping_kd, pose_guard {base_tilt_rad}}` ((0, π/2], 필수) · `estimator {source: truth | inekf, body_max_age_ms, hand_max_age_ms, inekf {imu_frame, imu, core, fsm, init, policy}}` (`inekf` 는 `source: inekf` 면 필수이고, 있으면 source 와 무관하게 검사한다. `imu.sample_period_s` = 1 / control_rate 이어야 하고, `imu_frame` 은 root 관절에 붙은 frame 이어야 한다. schema 는 `controllers/locomotion/inekf_source_config.hpp`) · `velocity_command {topic}` (선택 — Twist 명령) · `topics` (본체 → 손 순) · `logs` |
 | `whole_body_qp.yaml` | `whole_body_qp.*` — task · 제약 · `health {max_invalid_ticks, recover_valid_ticks}` · `com` task (수평 CoM 고정) |
-| `mpc.yaml` | `mpc.*` — 소비자 키 `enabled` · `period_nodes` · `max_policy_age_s` · `riccati {enabled, …}` · `sanity {joint_delta_rad, base_speed, wrench_scale}` (`mpc:` 가 있으면 전부 필수, 의미는 헤더) + OCP (`kinodynamic`) · `solver` |
+| `mpc.yaml` | `mpc.*` — 소비자 키 `enabled` · `period_nodes` · `max_policy_age_s` · `riccati {enabled, …}` · `sanity {joint_delta_rad, base_speed, wrench_scale}` (`mpc:` 가 있으면 전부 필수, 의미는 헤더) · `sync {mode: free_run \| lockstep, delivery_ticks, wait_timeout_s}` (선택; 아래) + OCP (`kinodynamic`) · `solver` |
 | `command.yaml` · `gait.yaml` · `swing.yaml` · `reference.yaml` | `mpc.enabled` 일 때 MPC 의 stage reference 로 조립 — `reference.q_default` 의 손 관절은 MPC 동안 손의 hold 자세 |
 
 `b7_loco` 의 값은 `g1_loco` 의 것을 옮긴 잠정값이다 (`mpc:` 없음 = MPC 없음). `estimator.inekf` 절은 `g1_loco` 에만 있다.
+
+**MPC lock-step** (`mpc.sync.mode: lockstep`, sim 전용 — launch `mpc_sync:=lockstep`): MPC thread 가 벽시계로 혼자 돌지 않고 RT tick 이 N = `period_nodes`·dt / tick 마다 solve 를 요청하고 (N 은 정수여야 한다) L = `delivery_ticks` tick 뒤 (0 = N) 그 solve 를 기다린 뒤 plan 을 채택한다 — plan 의 나이가 호스트 속도와 무관하게 정확히 L tick 이고, sim 은 tick 을 기다리므로 rtf 가 solve 를 따라 내려간다. controller manager 가 sim lock-step 이 아니면 (`cm_sim_time_sync` 없음 · false) configure 거부 (실기는 항상 free_run). 대기가 `wait_timeout_s` 를 넘으면 fault `mpc_wait`. free_run 에서는 publish deadline 이 막던 solve 를 lock-step 에서는 세기만 한다. diag 꼬리 열 `mpc_sync_lockstep` · `mpc_trigger_tick` · `mpc_wait_us` (tick_us 에 포함 — 연산 시간 판정에서 뺀다) · `mpc_wait_count` · `mpc_pending_superseded`. sim 쪽은 `sync_timeout_armed_ms` (launch 가 4 s 로 두고 `wait_timeout_s` 가 그 아래인지 검사).
 
 ## 로그와 판정
 

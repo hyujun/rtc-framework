@@ -70,6 +70,7 @@ struct LocomotionDiagLogPod {
     kModelEpoch = 4,   ///< the state is in another model layout than the controller's
     kPlanLoss = 5,     ///< the MPC plan was lost with the robot off a still double support
     kPoseGuard = 6,    ///< the pose guard refused the measured pose for the whole settle time
+    kMpcWait = 7,      ///< lock-step: the tick's wait for the MPC solve passed its timeout
   };
   /// Where this tick's reference came from.
   enum class ReferenceSource : std::uint8_t {
@@ -199,6 +200,12 @@ struct LocomotionDiagLogPod {
   std::int8_t cmd_deadman{-1};  ///< joy: 1 held / 0 released / −1 unreadable; twist: −1
   // ── Appended: the rest of the estimator's inputs, from `estimator` above
   // (est_imu_valid, est_imu_age_us — no field of their own).
+  // ── Appended: the MPC lock-step (locomotion_controller.hpp `mpc.sync`) ──
+  bool mpc_sync_lockstep{false};            ///< the solve is triggered by the tick
+  std::uint64_t mpc_trigger_tick{0};        ///< the tick of the last solve request
+  double mpc_wait_us{0.0};                  ///< this tick's wait for a solve [µs] (in tick_us)
+  std::uint64_t mpc_wait_count{0};          ///< ticks that waited, this activation
+  std::uint64_t mpc_pending_superseded{0};  ///< plans published behind a pending one
 };
 
 static_assert(locomotion::kMaxEstimatorSlots == LocomotionDiagLogPod::kMaxContacts,
@@ -284,6 +291,7 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
         "mpc_last_compute_us,mpc_last_state_seq,mpc_last_state_epoch,mpc_last_plan_id";
   os << ",cmd_input,cmd_deadman";
   os << ",est_imu_valid,est_imu_age_us";
+  os << ",mpc_sync_lockstep,mpc_trigger_tick,mpc_wait_us,mpc_wait_count,mpc_pending_superseded";
 }
 
 inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogPod& p,
@@ -390,6 +398,8 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
   // Age in µs; −1 (never received / no site) stays −1, not −0.001.
   os << ',' << (e.imu_valid ? 1 : 0) << ','
      << (e.imu_age_ns < 0 ? -1.0 : static_cast<double>(e.imu_age_ns) * 1e-3);
+  os << ',' << (p.mpc_sync_lockstep ? 1 : 0) << ',' << p.mpc_trigger_tick << ',' << p.mpc_wait_us
+     << ',' << p.mpc_wait_count << ',' << p.mpc_pending_superseded;
 }
 
 }  // namespace integrated_bringup

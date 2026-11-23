@@ -1007,11 +1007,14 @@ TEST(LocomotionDiagLog, TheHeaderAndARowHaveTheSameColumns) {
             std::string::npos);
   // The lane's force is simulator truth: it is in the truth log, not here.
   EXPECT_EQ(header.str().find("meas_fz"), std::string::npos);
-  // The replay inputs appended last; an empty pod reads "no sample, never received".
-  const std::string tail = ",cmd_input,cmd_deadman,est_imu_valid,est_imu_age_us";
+  // The replay inputs, then the MPC lock-step, appended last; an empty pod
+  // reads "no sample, never received, free-run, nothing waited".
+  const std::string tail =
+      ",cmd_input,cmd_deadman,est_imu_valid,est_imu_age_us,mpc_sync_lockstep,mpc_trigger_tick,"
+      "mpc_wait_us,mpc_wait_count,mpc_pending_superseded";
   ASSERT_GE(header.str().size(), tail.size());
   EXPECT_EQ(header.str().substr(header.str().size() - tail.size()), tail);
-  const std::string row_tail = ",0,-1";
+  const std::string row_tail = ",0,-1,0,0,0,0,0";
   EXPECT_EQ(row.str().substr(row.str().size() - row_tail.size()), row_tail);
 }
 

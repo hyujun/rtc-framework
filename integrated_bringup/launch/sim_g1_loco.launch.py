@@ -96,6 +96,36 @@ from rtc_tools.launch.trace_action import make_trace_action
 PROFILE = "g1_loco"
 
 
+def _mpc_wait_timeout_s(ctrl_overrides: dict) -> float:
+    """The locomotion controller's `mpc.sync.wait_timeout_s` in force: the launch
+    override when one is given, else the shipped mpc.yaml's value (2.0 when the
+    file has none)."""
+    key = "locomotion_controller.mpc.sync.wait_timeout_s"
+    if key in ctrl_overrides:
+        return float(ctrl_overrides[key])
+    import yaml
+
+    path = os.path.join(
+        get_package_share_directory("integrated_bringup"),
+        "config",
+        PROFILE,
+        "controllers",
+        "locomotion",
+        "mpc.yaml",
+    )
+    try:
+        with open(path) as f:
+            doc = yaml.safe_load(f) or {}
+        return float(
+            doc.get("locomotion_controller", {})
+            .get("mpc", {})
+            .get("sync", {})
+            .get("wait_timeout_s", 2.0)
+        )
+    except (OSError, AttributeError, TypeError, ValueError):
+        return 2.0
+
+
 def launch_setup(context, *args, **kwargs):
     """Setup function executed with launch context for conditional parameter loading."""
 
@@ -230,6 +260,27 @@ def launch_setup(context, *args, **kwargs):
     )
     if mpc_threads is not None:
         ctrl_overrides["locomotion_controller.mpc.solver.num_threads"] = mpc_threads
+
+    # `mpc_sync` picks how the MPC thread is clocked: free_run (the wall clock,
+    # as on the robot) or lockstep (the RT tick triggers and waits for the
+    # solve; the simulator waits for the tick). Lock-step needs the simulator's
+    # armed command wait to outlast the controller's solve wait, else the sim
+    # steps on without the command the tick is still computing.
+    mpc_sync = LaunchConfiguration("mpc_sync").perform(context)
+    if mpc_sync != "":
+        if mpc_sync not in ("free_run", "lockstep"):
+            raise RuntimeError(f"mpc_sync must be free_run or lockstep, got '{mpc_sync}'")
+        ctrl_overrides["locomotion_controller.mpc.sync.mode"] = mpc_sync
+        if mpc_sync == "lockstep":
+            armed_ms = float(sim_overrides.get("sync_timeout_armed_ms", 4000.0))
+            wait_s = float(_mpc_wait_timeout_s(ctrl_overrides))
+            if wait_s * 1000.0 >= armed_ms:
+                raise RuntimeError(
+                    f"mpc_sync lockstep needs mpc.sync.wait_timeout_s ({wait_s}) below the "
+                    f"simulator's sync_timeout_armed_ms ({armed_ms} ms)"
+                )
+            # sim_overrides is already in sim_params (the same dict object).
+            sim_overrides["sync_timeout_armed_ms"] = armed_ms
 
     # Optional: override initial_controller
     initial_controller = LaunchConfiguration("initial_controller").perform(context)
@@ -576,6 +627,18 @@ def generate_launch_description():
         ),
     )
 
+    mpc_sync_arg = DeclareLaunchArgument(
+        "mpc_sync",
+        default_value="",
+        description=(
+            "How the MPC thread is clocked: free_run (wall clock, as on the robot) or "
+            "lockstep (the RT tick triggers and waits for each solve; the simulator waits "
+            "for the tick, so the real-time factor follows the solve). Empty -> the YAML's "
+            "mpc.sync.mode. lockstep also sets the simulator's sync_timeout_armed_ms "
+            "(4000 unless given) and refuses a wait_timeout_s at or above it"
+        ),
+    )
+
     mpc_threads_arg = DeclareLaunchArgument(
         "mpc_threads",
         default_value="",
@@ -649,6 +712,7 @@ def generate_launch_description():
             enable_mpc_arg,
             command_input_arg,
             layout_profile_arg,
+            mpc_sync_arg,
             mpc_threads_arg,
             enable_tracing_arg,
             trace_session_name_arg,

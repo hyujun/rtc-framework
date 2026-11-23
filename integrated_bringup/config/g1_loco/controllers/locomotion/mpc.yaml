@@ -28,6 +28,15 @@
 #                     it was held to, -0.02, was not met);
 #                     the other riccati keys are the manager's (rtc_mpc
 #                     manager/mpc_solution_manager.hpp).
+#   sync              optional. mode free_run: the MPC thread runs on the wall
+#                     clock at 1 / (period_nodes · dt) — the real robot. mode
+#                     lockstep (simulation only; the controller manager must run
+#                     in sim lock-step, else configure is refused): the RT tick
+#                     requests a solve every period_nodes · dt / tick ticks and
+#                     waits for it delivery_ticks later, so the plan's age at
+#                     delivery is exactly that many ticks whatever the host's
+#                     speed; the simulator's real-time factor follows. The
+#                     launch sets the mode (mpc_sync).
 #   sanity            the plausibility check of a sampled plan (a plan that fails
 #                     is dropped, never followed): |q_ref − q| per joint and the
 #                     joint range widened by joint_delta_rad [rad]; base speed
@@ -89,6 +98,10 @@ locomotion_controller:
     enabled: true                     # the launches override it from enable_mpc
     period_nodes: 2
     max_policy_age_s: 0.35            # [s] 5 periods (0.070)
+    sync:
+      mode: free_run                  # the launches set lockstep for the sim (mpc_sync)
+      delivery_ticks: 0               # 0 = one period (35 ticks at 500 Hz)
+      wait_timeout_s: 2.0             # [s] a tick's wait for a solve past this is the fault mpc_wait
     riccati:
       enabled: true
       gain_scale: 0.25                # W8-F05 (#1155), see the header

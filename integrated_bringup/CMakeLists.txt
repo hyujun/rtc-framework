@@ -2448,6 +2448,36 @@ if(BUILD_TESTING)
     TIMEOUT 600
     ENV ROS_DOMAIN_ID=52
   )
+  # The MPC lock-step (mpc.sync.mode: lockstep) on the same rig and stub.
+  ament_add_gtest(test_locomotion_mpc_lockstep test/test_locomotion_mpc_lockstep.cpp
+    TIMEOUT 300
+    ENV ROS_DOMAIN_ID=52
+  )
+  target_include_directories(test_locomotion_mpc_lockstep PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
+  target_compile_definitions(test_locomotion_mpc_lockstep PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_mpc_lockstep
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_locomotion_mpc_lockstep
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    geometry_msgs
+    diagnostic_msgs
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_mpc
+    rtc_base
+    pinocchio
+    Eigen3
+  )
   target_include_directories(test_locomotion_mpc PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/test"
     "${CMAKE_CURRENT_SOURCE_DIR}/../rtc_controllers/test/include")
@@ -2859,6 +2889,7 @@ if(BUILD_TESTING)
     test_locomotion_controller
     test_locomotion_controller_alloc
     test_locomotion_mpc
+    test_locomotion_mpc_lockstep
     test_locomotion_joy_command
     test_locomotion_fault
     test_loco_estop_on_clear

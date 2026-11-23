@@ -39,6 +39,21 @@ constexpr double kCopOffsetMaxM = 0.1;
 
 ControllerOutput LocomotionController::Compute(const ControllerState& state) noexcept {
   RTC_TRACE_SCOPE("LocomotionController::Compute");
+
+  // Deactivation under the lock-step waits (briefly) for this flag to clear.
+  struct InCompute {
+    std::atomic<bool>& flag;
+
+    explicit InCompute(std::atomic<bool>& f) noexcept : flag(f) {
+      flag.store(true, std::memory_order_release);
+    }
+
+    ~InCompute() { flag.store(false, std::memory_order_release); }
+
+    InCompute(const InCompute&) = delete;
+    InCompute& operator=(const InCompute&) = delete;
+  } const in_compute{in_compute_};
+
   const auto t0 = std::chrono::steady_clock::now();
   const int64_t now_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(t0.time_since_epoch()).count();
@@ -62,14 +77,18 @@ ControllerOutput LocomotionController::Compute(const ControllerState& state) noe
     if (source_ok_ && !reference_latched_ && !estop_active_) {
       TryLatchReference(state);
     }
-    if (mpc_enabled_ && source_ok_ && reference_latched_) {
+    if (mpc_enabled_) {
       // The MPC's clock: the tick count, so it runs with the control loop. The
       // MPC gets a state only while a reference is latched (the reset, the
       // E-STOP edges and the activation restart its stream).
       mpc_t_ns_ =
           static_cast<std::uint64_t>(state.iteration) * static_cast<std::uint64_t>(tick_dt_ns_);
-      WriteMpcState();
-      FollowPlan(state);  // may latch the fault (a plan lost off a still double support)
+      if (mpc_lockstep_) {
+        LockstepTick(state);  // wait for a due solve, follow, trigger on the grid
+      } else if (source_ok_ && reference_latched_) {
+        WriteMpcState();
+        FollowPlan(state);  // may latch the fault (a plan lost off a still double support)
+      }
     }
     if (fault_latched_tick_) {
       mode_ = Mode::kFault;
@@ -508,6 +527,11 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
   d.sample = sample_diag_;
   d.u_fb_norm = u_fb_norm_;
   d.mpc_state_epoch = mpc_state_epoch_;
+  d.mpc_sync_lockstep = mpc_lockstep_;
+  d.mpc_trigger_tick = mpc_trigger_iter_;
+  d.mpc_wait_us = mpc_wait_us_;
+  d.mpc_wait_count = mpc_wait_count_;
+  d.mpc_pending_superseded = mpc_manager_.SupersededPendingCount();
   for (std::size_t i = 0; i < 4; ++i) {
     d.base_q_xyzw[i] = measured_.q[3 + i];
   }
