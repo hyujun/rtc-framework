@@ -150,11 +150,11 @@ install_cpupower() {
 
 # ── systemd oneshot 서비스 생성 ─────────────────────────────────────────────
 # 재부팅 시 자동으로 governor를 performance로 설정하는 서비스를 등록한다.
-# cpupower가 있으면 사용하고, 없으면 sysfs 직접 설정으로 fallback한다.
+# cpupower 를 거치지 않고 sysfs 에 직접 쓴다 (이유: 아래 unit 주석).
 create_governor_service() {
   local service_path="/etc/systemd/system/cpu-governor-performance.service"
 
-  # 서비스 파일 내용: cpupower 우선, sysfs fallback
+  # 서비스 파일 내용: sysfs 직접 설정
   local service_content
   read -r -d '' service_content <<'UNIT' || true
 [Unit]
@@ -164,8 +164,10 @@ ConditionPathIsDirectory=/sys/devices/system/cpu/cpu0/cpufreq
 
 [Service]
 Type=oneshot
-# cpupower가 있으면 사용, 없으면 sysfs 직접 설정
-ExecStart=/bin/bash -c 'if [ -x /usr/bin/cpupower ]; then /usr/bin/cpupower frequency-set -g performance; else for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$f" 2>/dev/null || true; done; fi'
+# sysfs 에 직접 쓴다 — Ubuntu 의 /usr/bin/cpupower 는 linux-tools-<release> 로
+# 넘기는 wrapper 라 직접 빌드한 RT 커널에서는 exit 2 로 실패한다 (-x 로는 못 거른다).
+# 한 CPU 도 performance 로 못 바꾸면 실패로 끝나 systemctl 에 드러나게 한다.
+ExecStart=/bin/bash -c 'ok=0; for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$f" 2>/dev/null && ok=1; done; [ "$ok" -eq 1 ]'
 RemainAfterExit=yes
 
 [Install]

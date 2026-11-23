@@ -973,8 +973,9 @@ check_cpu_frequency() {
       _warn "OS 코어 중 $((non_perf - rt_non_perf))개가 performance 아님 — 화면 끊김 위험"
       _category_update "cpu_frequency" "WARN"
     fi
-    _fix "sudo cpupower frequency-set -g performance"
-    _fix "또는: sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh  (영구 서비스 포함)"
+    # cpupower 는 안내하지 않는다 — Ubuntu 의 /usr/bin/cpupower 는 linux-tools-<release>
+    # wrapper 라 직접 빌드한 RT 커널에서 실패한다. setup_cpu_governor.sh 가 sysfs 로 쓴다.
+    _fix "sudo ${SCRIPT_DIR}/setup_cpu_governor.sh  (즉시 적용 + 영구 서비스)"
     _category_set_detail "cpu_frequency" "${non_perf}/${checked} non-performance"
   fi
 
@@ -984,7 +985,7 @@ check_cpu_frequency() {
   else
     if [[ "$non_perf" -gt 0 ]]; then
       _warn "cpu-governor-performance.service: not enabled (재부팅 시 powersave 복원)"
-      _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh  (서비스 자동 생성)"
+      _fix "sudo ${SCRIPT_DIR}/setup_cpu_governor.sh  (서비스 자동 생성)"
       _category_update "cpu_frequency" "WARN"
     fi
   fi
