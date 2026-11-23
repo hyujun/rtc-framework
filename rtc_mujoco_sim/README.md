@@ -9,7 +9,7 @@ MuJoCo 3.x 기반 robot-agnostic 물리 시뮬레이터 lifecycle 노드와 GLFW
 - **`robot_response` 그룹**: MuJoCo 물리로 구동한다. YAML 의 `command_joint_names` 와 XML 의 hinge + actuator 조인트가 **양방향으로 완전히 일치**해야 한다 (한쪽에만 있으면 Initialize 실패). 이름 기반 qpos / qvel / actuator 매핑이라 비연속 인덱스도 된다.
 - **`fake_response` 그룹**: 물리 없이 1차 LPF 로 command 를 되돌려 주는 100 Hz 에코백. XML 에 없는 디바이스 (예: 손) 용이다. 토픽 이름만 검증한다.
 - 한 이름이 robot 과 fake 양쪽에 있으면 에러다.
-- **동기 루프**: 매 step 마다 state 발행 → 모든 robot 그룹의 command 대기 (`sync_timeout_ms`) → `n_substeps` 번 물리 진행 → `max_rtf` 로 throttle. 컨트롤러의 tick 하나가 sim step 하나다. 명령하지 않는 그룹은 `wait_for_command: false` 로 뺀다 (안 빼면 매 step 이 타임아웃을 기다린다).
+- **동기 루프**: 매 step 마다 state 발행 → 모든 robot 그룹의 command 대기 (`sync_timeout_ms`; command 가 다 온 step 뒤에는 `sync_timeout_armed_ms` — 대기 중 들어온 pause · reset · 공 · `max_rtf` 요청은 그 대기 뒤에 처리된다) → `n_substeps` 번 물리 진행 → `max_rtf` 로 throttle. 컨트롤러의 tick 하나가 sim step 하나다. 명령하지 않는 그룹은 `wait_for_command: false` 로 뺀다 (안 빼면 매 step 이 타임아웃을 기다린다).
 - 부가 기능: [Object Pool](#object-pool) · [Object State](#object-state) · [Projectile Ball](#projectile-ball-발사-공) (투척 실험) · contact wrench 자동 발견 · 측정용 CSV lane. 동기 루프 · tick 의 배경은 [sim-rationale.md](../docs/reference/sim-rationale.md).
 
 ## 빠른 시작
@@ -32,7 +32,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 
 ```bash
 ros2 lifecycle get /mujoco_simulator          # active 여야 한다
-ros2 topic echo /sim/status --once            # [step_count, sim_time_sec, rtf, paused]
+ros2 topic echo /sim/status --once            # [step_count, sim_time_sec, rtf, paused, no_command_timeout_steps]
 ros2 topic hz /joint_states
 ros2 lifecycle set /mujoco_simulator deactivate   # 런타임 정지 / activate 로 재개
 ```
@@ -77,7 +77,8 @@ launch 인자 (빈 값 = YAML 값 사용):
 | `<object_state.topic>` | `tf2_msgs/TFMessage` | 매 step ÷ `publish_divisor` | 씬 전체의 free body 이름 · 프레임 · pose ([Object State](#object-state)) |
 | `<projectile_ball.publish.ground_truth_topic>` | `nav_msgs/Odometry` | `sample_rate_hz` (sim 시간) | 발사된 공의 참값. twist 는 world 프레임. park 중에는 발행하지 않는다 |
 | `<projectile_ball.publish.camera_topic>` | `geometry_msgs/PointStamped` | 〃 | 위 위치 + 축별 가우시안 노이즈 (카메라 관측 모사) |
-| `/sim/status` | `std_msgs/Float64MultiArray` | 1 Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
+| `/sim/status` | `std_msgs/Float64MultiArray` | 1 Hz | `[step_count, sim_time_sec, rtf, paused(0/1), no_command_timeout_steps]` — 마지막은 command 없이 timeout 으로 step 한 수 (뒤에 붙임; index 소비자 불변) |
+| `/sim/time` | `std_msgs/Float64` | 첫 robot 그룹의 state 발행마다 (그 그룹의 `state_publish_divisor`) | 그 step 의 sim 시각 [s] — sim 시간으로 script 를 재는 도구용. 다른 토픽의 stamp 는 wall 그대로 |
 
 한 step 안의 발행 순서는 sensor → contact wrench → joint state 다. joint state 가 sim-sync tick 을 깨우므로 그 tick 이 같은 step 의 센서를 보는 경우가 보통이 되게 한 순서이고, 토픽 간 순서 보장은 아니다 (필요하면 소비자가 lane 의 stamp · sequence 로 판정).
 
@@ -261,6 +262,7 @@ robot-specific 값 (`model_path`, `robot_response.groups`, joint 이름, 토픽,
 | `viewer_camera.lookat` / `.distance` | `[0,0,0]` / `2.5` | free camera 가 바라보는 점 [m, world] 과 거리. 뷰어는 MJCF `<statistic>` 을 읽지 않으므로 로봇이 원점에 없으면 여기서 맞춘다 |
 | `viewer_camera.azimuth_deg` / `.elevation_deg` | `90.0` / `-20.0` | 방위각 (90 이면 −y 쪽에서 +x 를 오른쪽에 둠) / 고각 (음수가 내려다봄) |
 | `sync_timeout_ms` | `50.0` | 모든 robot 그룹 command 대기 한계 [ms]. 넘기면 받은 command 만 적용하고 step |
+| `sync_timeout_armed_ms` | `0.0` | 모든 그룹의 command 가 온 step 뒤의 대기 한계 [ms] (`0.0` = 위와 같음; lock-step MPC 용). 어떤 만료든 해제, 다음 완전한 step 에 재무장, reset 도 해제 |
 | `max_rtf` | `1.0` | 최대 실시간 비율 (`0.0` = 무제한) |
 | `control_rate` | `500.0` | [Hz]. `physics_timestep == 1/control_rate` 가 아니면 기동 FATAL |
 | `physics_timestep` | `0.002` | 제어 주기 [s]. `0.0` 이면 XML 값 사용 |

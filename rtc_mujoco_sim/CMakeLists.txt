@@ -256,6 +256,7 @@ if(mujoco_FOUND)
               test_lifecycle
               test_runtime_controls
               test_data_flow
+              test_sync_timeout_armed
               test_sim_effort_force)
       if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/${t}.cpp")
         list(APPEND _minimal_mjcf_tests test/${t}.cpp)

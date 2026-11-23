@@ -108,6 +108,7 @@ SIM_COMBOS: list[tuple[str, dict[str, str]]] = [
             "viewer_input_enabled": "false",
             "model_path": "/nonexistent/scene.xml",
             "sync_timeout_ms": "50.0",
+            "sync_timeout_armed_ms": "4000.0",
             "max_rtf": "10.0",
             "use_yaml_servo_gains": "true",
             "initial_controller": "demo_wbc_controller",
