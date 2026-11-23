@@ -260,7 +260,7 @@ P-core / E-core 가 섞인 Intel CPU 에서는 코어 slot 이 **P-core 의 prim
 **BIOS 체크리스트 (Intel NUC)**
 
 - [ ] **Hyper-Threading: Enabled** - slot 변환이 P-core 의 primary / sibling 구분에 의존한다. 설계상 HT 가 없는 CPU (Arrow Lake-S/H/U · Lunar Lake · Panther Lake) 는 해당 없고 PASS 로 처리된다.
-- [ ] **Intel Turbo Boost: Enabled**
+- [ ] **Intel Turbo Boost: Enabled** - P-core 부스트가 MPC solve 시간을 줄인다. OS 에서 끄는 쪽 (`no_turbo=1`, AMD 는 `cpufreq/boost=0`) 은 열 쓰로틀링 jitter 를 피하는 대신 solve 가 느려지므로, 제어 PC 에서 두 상태의 `cm_timing_log` (p99 · max · overrun) 와 MPC solve 시간을 재서 고른다. `check_rt_setup.sh` 는 두 상태를 모두 PASS 로 보고한다.
 - [ ] **C-states: C1/C2 이하로 제한** (또는 GRUB 에 `intel_idle.max_cstate=1 processor.max_cstate=1`)
 - [ ] **Speed Shift (HWP): Enabled** (`intel_pstate=active`)
 - [ ] **VT-d / IOMMU: 가능하면 Disabled** (실측 후 결정)

@@ -994,17 +994,18 @@ check_cpu_frequency() {
     fi
   fi
 
-  # Turbo Boost 확인 — 주파수 변동으로 인한 jitter 유발 (특히 NUC 등 소형 PC)
+  # Turbo / Boost 는 어느 쪽도 결함이 아니다 — 켜면 MPC solve 가 빨라지고, 끄면 열
+  # 쓰로틀링 jitter 를 피한다. 제어 PC 에서 재서 고르는 값이라 상태만 보고한다
+  # (기준: docs/rt-optimization.md §6 BIOS 체크리스트).
   local turbo_file="/sys/devices/system/cpu/intel_pstate/no_turbo"
   if [[ -f "$turbo_file" ]]; then
     local no_turbo
     no_turbo=$(cat "$turbo_file" 2>/dev/null || echo "unknown")
     if [[ "$no_turbo" == "1" ]]; then
-      _pass "Intel Turbo Boost: 비활성 (주파수 안정)"
+      _pass "Intel Turbo Boost: 비활성 (OS no_turbo=1 — 측정으로 고른 값이어야 한다)"
     else
-      _warn "Intel Turbo Boost: 활성 (소형 PC에서 열 쓰로틀링으로 인한 jitter 위험)"
-      _fix "echo 1 | sudo tee ${turbo_file}"
-      _category_update "cpu_frequency" "WARN"
+      _pass "Intel Turbo Boost: 활성 (기본값 — 열 쓰로틀링 jitter 가 보이면 no_turbo=1 과 비교)"
+      _fix "비교: echo 1 | sudo tee ${turbo_file}  (재부팅 시 원복) — docs/rt-optimization.md §6"
     fi
   fi
 
@@ -1013,11 +1014,10 @@ check_cpu_frequency() {
     local amd_boost
     amd_boost=$(cat "$amd_boost_file" 2>/dev/null || echo "unknown")
     if [[ "$amd_boost" == "0" ]]; then
-      _pass "AMD Boost: 비활성 (주파수 안정)"
+      _pass "AMD Boost: 비활성 (boost=0 — 측정으로 고른 값이어야 한다)"
     else
-      _warn "AMD Boost: 활성 (소형 PC에서 열 쓰로틀링으로 인한 jitter 위험)"
-      _fix "echo 0 | sudo tee ${amd_boost_file}"
-      _category_update "cpu_frequency" "WARN"
+      _pass "AMD Boost: 활성 (기본값 — 열 쓰로틀링 jitter 가 보이면 boost=0 과 비교)"
+      _fix "비교: echo 0 | sudo tee ${amd_boost_file}  (재부팅 시 원복) — docs/rt-optimization.md §6"
     fi
   fi
 }
