@@ -2830,6 +2830,10 @@ if(BUILD_TESTING)
   # tools/standing_eval/walk_gate.py (read from the source tree): the counter line,
   # the CM's refusals, the gait order and the E-STOP edge it judges.
   ament_add_pytest_test(test_standing_eval_walk_gate test/test_standing_eval_walk_gate.py)
+  # tools/standing_eval/twist_script.py (read from the source tree): the wall and
+  # the sim (lock-step) time axes of the command script.
+  ament_add_pytest_test(test_standing_eval_twist_script
+    test/test_standing_eval_twist_script.py)
   # tools/standing_eval/estimator_gate.py (read from the source tree): the open-loop
   # rule, the standing and walking items one at a time, the A/A size of its tests.
   ament_add_pytest_test(test_standing_eval_estimator_gate

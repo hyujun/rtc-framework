@@ -76,7 +76,7 @@ class StanceRecorder(Node):
         self._missing_logged = False
         self._sim_t: float | None = None  # the latest /sim/time message
         self._sim_ts: list[float] = []  # per sample, NaN before the first message
-        self._sim_t0: float | None = None  # the sim time at the first sample
+        self._sim_elapsed = 0.0  # sim seconds since the first sample (forward steps only)
         self._wall_bound_hit = False
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self._sensor_sub = self.create_subscription(
@@ -106,7 +106,12 @@ class StanceRecorder(Node):
         self.get_logger().info(f"{msg.command_type!r} seen — recording {self._args.duration} s")
 
     def _on_sim_time(self, msg: Float64) -> None:
-        self._sim_t = float(msg.data)
+        latest = float(msg.data)
+        # Forward steps only: a /sim/reset sets the sim time back to 0 and must
+        # not stall the recording (the reentry arm resets mid-recording).
+        if self._started and self._sim_t is not None and latest > self._sim_t:
+            self._sim_elapsed += latest - self._sim_t
+        self._sim_t = latest
 
     def _on_sensors(self, msg: SimSensorState) -> None:
         if not self._started:
@@ -132,8 +137,6 @@ class StanceRecorder(Node):
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self._args.sim_time_topic:
             self._sim_ts.append(math.nan if self._sim_t is None else self._sim_t)
-            if self._sim_t0 is None and self._sim_t is not None:
-                self._sim_t0 = self._sim_t
         self._samples.append(
             sm.Sample(
                 t=t,
@@ -155,11 +158,7 @@ class StanceRecorder(Node):
                 return True
             return False
         if self._args.sim_time_topic:
-            if (
-                self._sim_t0 is not None
-                and self._sim_t is not None
-                and self._sim_t - self._sim_t0 >= self._args.duration
-            ):
+            if self._sim_elapsed >= self._args.duration:
                 return True
             self._wall_bound_hit = time.monotonic() - self._start_wall > wall_bound_s(
                 self._args.duration

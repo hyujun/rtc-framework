@@ -866,9 +866,11 @@ def lockstep_checks(diag: Mapping[str, np.ndarray], launch_log: str) -> dict[str
         stand = np.flatnonzero(diag["ref_source"] == wm.REF_SOURCE_STAND)
         if stand.size:
             plan = diag["plan_id"]
-            rows = np.arange(plan.size)
-            # The first row of each plan that appears after the first stand row.
-            first = np.flatnonzero((rows > stand[0]) & (plan != np.roll(plan, 1)) & (plan > 0))
+            # The first row of each plan id seen for the first time after the
+            # first stand row. A return to an earlier id (a sanity refusal
+            # rolled the active plan back) is not a new plan's first use.
+            ids, idx = np.unique(plan, return_index=True)
+            first = idx[(idx > stand[0]) & (ids > 0)]
             out["lockstep_age"] = first.size > 0 and bool(
                 np.all(diag["policy_age_us"][first] == LOCKSTEP_AGE_US)
             )

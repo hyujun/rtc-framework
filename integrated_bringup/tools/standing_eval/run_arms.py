@@ -383,17 +383,21 @@ class SimClock:
 
     def sleep(self, seconds: float) -> None:
         deadline = self._wall() + 10.0 * seconds + 5.0
-        start = None
+        # Elapsed = the sum of the forward steps: a /sim/reset (the reentry arm)
+        # sets the sim time back to 0 and must not stall the sleep.
+        elapsed = 0.0
+        prev = None
         while True:
             latest = self._poll(0.05)
             if latest is not None:
-                if start is None:
-                    start = latest
-                if latest - start >= seconds:
+                if prev is not None and latest > prev:
+                    elapsed += latest - prev
+                prev = latest
+                if elapsed >= seconds:
                     return
             if self._wall() > deadline:
                 raise SimClockTimeout(
-                    f"{self._topic} advanced {0.0 if start is None else latest - start:.3f} s of "
+                    f"{self._topic} advanced {elapsed:.3f} s of "
                     f"the {seconds:.3f} s asked within {10.0 * seconds + 5.0:.1f} wall s "
                     "(is the simulator running?)"
                 )

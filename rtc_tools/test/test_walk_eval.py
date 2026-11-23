@@ -760,6 +760,16 @@ def test_a_lockstep_invariant_broken_fails_its_check(tmp_path, kw, failed):
     assert [k for k, ok in v["checks"].items() if not ok] == [failed]
 
 
+def test_a_plan_rolled_back_to_an_earlier_id_is_not_judged_as_a_new_plan(tmp_path):
+    # rows 420..454 (plan 13's span) return to plan 11 (a sanity refusal) with
+    # the old plan's age: not a plan's first use, so the age invariant still holds
+    cols = lockstep_columns()
+    cols["plan_id"][420:455] = 11.0
+    cols["policy_age_us"][420:455] = 140000.0
+    v = lockstep_validity(tmp_path, appended=cols)
+    assert v["checks"]["lockstep_age"], v["checks"]
+
+
 def test_a_free_run_note_keeps_the_rtf_check_and_has_no_lockstep_checks(tmp_path):
     v = lockstep_validity(tmp_path, appended=lockstep_columns(), sync="free_run", rtf=0.5)
     assert "rtf" in v["checks"] and not v["checks"]["rtf"]

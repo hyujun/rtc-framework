@@ -837,6 +837,15 @@ def test_sim_clock_sleeps_until_the_sim_time_has_advanced():
     assert fake.sim == pytest.approx(102.5)
 
 
+def test_sim_clock_survives_a_sim_reset_during_the_sleep():
+    # 100.5, 101.0, then /sim/reset: 0.0, 0.5, 1.0, 1.5 — only the forward steps count
+    readings = iter([100.5, 101.0, 0.0, 0.5, 1.0, 1.5, 2.0])
+    fake = _FakeSim(step=0.0)
+    clock = run_arms.SimClock(poll=lambda _t: next(readings), wall=fake.clock)
+    clock.sleep(2.0)
+    assert next(readings) == 2.0  # returned at 1.5: 0.5 (pre-reset) + 1.5 (post-reset)
+
+
 def test_sim_clock_raises_when_the_sim_does_not_advance_within_the_wall_bound():
     fake = _FakeSim(step=0.0)  # a stalled sim
     clock = run_arms.SimClock(poll=fake.poll, wall=fake.clock)
