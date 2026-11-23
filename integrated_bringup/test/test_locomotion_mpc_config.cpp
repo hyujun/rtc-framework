@@ -203,7 +203,7 @@ TEST_F(LocomotionMpcConfig, TheInstalledConstraintsAreTheReferenceTasks) {
   EXPECT_EQ(c.cop_barrier.delta, 0.03);
   EXPECT_EQ(c.joint_limits.mu, 1200.0);
   EXPECT_EQ(c.joint_limits.delta, 0.1);
-  EXPECT_FALSE(c.collision_enabled);
+  EXPECT_TRUE(c.collision_enabled);
   EXPECT_EQ(c.collision.mu, 1500.0);
   EXPECT_EQ(c.collision.delta, 0.04);
 

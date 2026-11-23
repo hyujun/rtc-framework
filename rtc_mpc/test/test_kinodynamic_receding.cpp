@@ -676,7 +676,9 @@ TEST_P(KinodynamicReceding, TheWalkWindowRecedesWithinThePreregisteredBounds) {
   EXPECT_GT(cleared, 0U) << "the hook fired on the flipped nodes";
   EXPECT_LE(worst_conv_prim, solver.prim_tol);
   if (std::string_view(GetParam()) == "semi_implicit_euler") {
-    EXPECT_GE(conv, 14) << "0.9 × 15";
+    // 0.9 × the probe's converged ticks: 15 when registered, 13 once the shipped
+    // walk swings its arms from opened shoulder rolls (W8-F05, #1155).
+    EXPECT_GE(conv, 12) << "0.9 × 13";
     EXPECT_LE(sum_it, 2 * 1675);
     EXPECT_LE(Median(its), 2 * 50.0);
   }
