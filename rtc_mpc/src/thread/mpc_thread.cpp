@@ -64,7 +64,10 @@ void MPCThread::Init(MPCSolutionManager& manager,
   if (launch_config_.target_frequency_hz <= 0.0) {
     launch_config_.target_frequency_hz = 20.0;
   }
-  initialised_ = (manager_ != nullptr);
+  // An external trigger needs its channel: a loop with nothing to sleep on
+  // would never tick, so it is refused here rather than at Start.
+  initialised_ = (manager_ != nullptr) && (launch_config_.trigger != SolveTrigger::kExternal ||
+                                           launch_config_.channel != nullptr);
 }
 
 void MPCThread::Start() {
@@ -72,6 +75,7 @@ void MPCThread::Start() {
     return;
   }
   pool_state_.store(SolverPoolState::kPending, std::memory_order_release);
+  stop_nudged_.store(false, std::memory_order_release);
   // Wire the SPSC ring before the base spawns its loop thread so the very
   // first tick already pushes a sample.
   SetTimingProducer<rtc::kMpcTimingBufferCapacity>(&timing_producer_);
@@ -224,6 +228,53 @@ bool MPCThread::SetUpPool(bool thread_config_applied) noexcept {
   return true;
 }
 
+rtc::PeriodicRtThread::WaitResult MPCThread::WaitForNextTick() noexcept {
+  if (!ExternalTrigger()) {
+    return PeriodicRtThread::WaitForNextTick();
+  }
+  // Bounded slices: a Pause() does not wake the channel (it only sets its
+  // flag), and a stop nudges it — both are re-read after every wake.
+  constexpr int kSliceMs = 10;
+  SolveTriggerChannel& channel = *launch_config_.channel;
+  for (;;) {
+    if (stop_nudged_.load(std::memory_order_acquire)) {
+      // The base sees the stop before any tick; nothing outstanding waits.
+      channel.MarkCompleted(channel.RequestedId());
+      return WaitResult::kProceed;
+    }
+    if (!channel.WaitTrigger(kSliceMs)) {
+      continue;
+    }
+    const std::uint64_t id = channel.RequestedId();
+    if (Paused()) {
+      // A request that slipped in before the consumer disarmed: answered so
+      // its wait ends, not solved — the loop is paused.
+      channel.MarkCompleted(id);
+      continue;
+    }
+    in_flight_id_ = id;
+    return WaitResult::kProceed;
+  }
+}
+
+void MPCThread::OnRequestStop() noexcept {
+  stop_nudged_.store(true, std::memory_order_release);
+  if (launch_config_.channel != nullptr) {
+    // A stopping loop answers everything outstanding (monotonic, so a solve
+    // finishing after this does not take it back) and wakes both sides.
+    launch_config_.channel->MarkCompleted(launch_config_.channel->RequestedId());
+    launch_config_.channel->Nudge();
+  }
+}
+
+void MPCThread::OnLoopAborted() noexcept {
+  // A loop that refused its pool (or aborted) never ticks: nothing it was
+  // asked for will be solved, so the asker is released.
+  if (ExternalTrigger()) {
+    launch_config_.channel->MarkCompleted(launch_config_.channel->RequestedId());
+  }
+}
+
 void MPCThread::OnTick() noexcept {
   RTC_TRACE_SCOPE("mpc_tick");
 
@@ -253,6 +304,11 @@ void MPCThread::OnTick() noexcept {
     plan_id = manager_->PublishSolution(scratch_);
   }
   OnTickEnd(ok, plan_id);
+  if (ExternalTrigger()) {
+    // Answered after the publish: the consumer's wait ends with the plan in
+    // the buffer (or the record of why there is none).
+    launch_config_.channel->MarkCompleted(in_flight_id_);
+  }
 }
 
 }  // namespace rtc::mpc

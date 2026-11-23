@@ -46,7 +46,7 @@ MPC 를 기동하는 최소 흐름은 `MPCFactory::Create(cfg, model, initial_ct
 | `interpolation/` | `trajectory_interpolator.hpp` | OCP 노드 사이 cubic Hermite 보간 |
 | `feedback/` | `riccati_feedback.hpp` | `u_fb = gain_scale · K · Δx` (accel-only 모드 선택) · 평탄화된 gain layout 의 writer `PackRiccatiGainRowMajor` ↔ reader `SetGain` |
 | `manager/` | `mpc_solution_manager.hpp` | TripleBuffer + Interpolator + Feedback + SeqLock facade — `SampleReference` (→ `WbcReference`) · `ComputeReference` |
-| `thread/` | `mpc_thread.hpp` | `PeriodicRtThread` 기반 solve loop. 서브클래스가 `Solve(state, out)` 구현, `MockMPCThread` 는 테스트용 |
+| `thread/` | `mpc_thread.hpp` | `PeriodicRtThread` 기반 solve loop (주기 또는 `solve_trigger_channel.hpp` 의 외부 trigger — 소비자 tick 이 요청 · 완료 대기, sim lock-step). 서브클래스가 `Solve(state, out)` 구현, `MockMPCThread` 는 테스트용 |
 | `thread/` | `handler_mpc_thread.hpp` | `PhaseManagerBase` FSM 과 `MPCHandlerBase` solver 를 묶는 구체 thread · publish 규칙 (deadline · 소비 구간 잔차) |
 | `handler/` | `mpc_handler_base.hpp` | solve orchestrator (`Init` / `Solve` / `SeedWarmStart`), `MPCSolverConfig` |
 | `handler/` | `contact_light_mpc.hpp` · `contact_rich_mpc.hpp` | 각 OCP 를 감싼 구체 handler |

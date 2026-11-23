@@ -69,6 +69,7 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   total_solves_.store(0, std::memory_order_relaxed);
   failed_solves_.store(0, std::memory_order_relaxed);
   deadline_misses_.store(0, std::memory_order_relaxed);
+  unenforced_deadlines_.store(0, std::memory_order_relaxed);
   withheld_.store(0, std::memory_order_relaxed);
   cold_withheld_.store(0, std::memory_order_relaxed);
   repeated_skips_.store(0, std::memory_order_relaxed);
@@ -117,17 +118,26 @@ bool HandlerMPCThread::TryCrossModeSwap(const PhaseContext& ctx) {
   return true;
 }
 
-double HandlerMPCThread::ConsumedPrimInf(const MPCSolution& sol, std::uint64_t period_ns) noexcept {
+double HandlerMPCThread::ConsumedPrimInf(const MPCSolution& sol, std::uint64_t period_ns,
+                                         std::uint64_t offset_ns) noexcept {
   if (sol.horizon_length <= 0 || sol.horizon_length > kMaxHorizon || !(sol.dt_node > 0.0)) {
     return std::numeric_limits<double>::infinity();
   }
-  const double nodes = static_cast<double>(period_ns) * 1e-9 / sol.dt_node;
+  // The first node read: the one at or before the delivery; the last: one
+  // past the node the period after it ends on.
+  const double first_nodes = static_cast<double>(offset_ns) * 1e-9 / sol.dt_node;
+  const double nodes = static_cast<double>(offset_ns + period_ns) * 1e-9 / sol.dt_node;
+  const double first_whole = std::floor(first_nodes + 1e-9);
   const double whole = std::ceil(nodes - 1e-9);
+  const int first = !std::isfinite(first_whole) || first_whole <= 0.0 ? 0
+                    : first_whole >= static_cast<double>(sol.horizon_length)
+                        ? sol.horizon_length
+                        : static_cast<int>(first_whole);
   const int last = std::isfinite(whole) && whole < static_cast<double>(sol.horizon_length)
                        ? static_cast<int>(whole) + 1
                        : sol.horizon_length;
   double r = 0.0;
-  for (int k = 0; k <= std::min(last, sol.horizon_length); ++k) {
+  for (int k = first; k <= std::min(last, sol.horizon_length); ++k) {
     r = std::max(r, sol.node_prim_inf[static_cast<std::size_t>(k)]);
   }
   return r;
@@ -233,9 +243,15 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   if (cfg.publish_deadline_ms > 0.0) {
     const auto elapsed = std::chrono::steady_clock::now() - entry;
     if (std::chrono::duration<double, std::milli>(elapsed).count() > cfg.publish_deadline_ms) {
-      deadline_misses_.fetch_add(1, std::memory_order_relaxed);
-      StashRecord(SolveOutcome::kDeadline, 0, &out, state, entry);
-      return false;
+      if (ExternalTrigger()) {
+        // The consumer waits for this solve: the deadline is a count here,
+        // not a gate (the lock-step's "would have missed").
+        unenforced_deadlines_.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        deadline_misses_.fetch_add(1, std::memory_order_relaxed);
+        StashRecord(SolveOutcome::kDeadline, 0, &out, state, entry);
+        return false;
+      }
     }
   }
   if (out.cold_start && !out.converged) {
@@ -244,7 +260,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
     return false;
   }
   if (!out.converged && cfg.publish_prim_tol > 0.0 &&
-      !(ConsumedPrimInf(out, PeriodNs()) <= cfg.publish_prim_tol)) {
+      !(ConsumedPrimInf(out, PeriodNs(), consumed_offset_ns_) <= cfg.publish_prim_tol)) {
     withheld_.fetch_add(1, std::memory_order_relaxed);
     StashRecord(SolveOutcome::kWithheld, 0, &out, state, entry);
     return false;
@@ -276,7 +292,7 @@ void HandlerMPCThread::StashRecord(SolveOutcome outcome, int err, const MPCSolut
     r.converged = out->converged;
     r.cold_start = out->cold_start;
     r.prim_inf = out->residuals.prim_inf;
-    r.consumed_prim = ConsumedPrimInf(*out, PeriodNs());
+    r.consumed_prim = ConsumedPrimInf(*out, PeriodNs(), consumed_offset_ns_);
   } else {
     r.prim_inf = std::numeric_limits<double>::quiet_NaN();
     r.consumed_prim = std::numeric_limits<double>::quiet_NaN();
