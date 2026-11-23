@@ -135,6 +135,8 @@ sudo ./repo_scripts/scripts/setup_cpu_governor.sh
 
 **모든** 코어를 `performance` 로 바꾸고 재부팅 후에도 유지되게 systemd 서비스 (`cpu-governor-performance.service`) 를 등록한다. OS 코어가 `powersave` 면 화면 프레임이 떨어지므로 RT 코어만 바꾸면 안 된다. NVIDIA 시스템은 2.7 이 이 스크립트를 이어서 부른다.
 
+Ubuntu 데스크톱의 `power-profiles-daemon` 은 pstate 드라이버 (`intel_pstate` · `amd_pstate`) 가 active 모드이면 시작할 때마다 모든 코어를 `powersave` 로 되돌린다. 위 서비스와 부팅 순서가 정해져 있지 않아 재부팅마다 결과가 갈리므로 스크립트가 이를 mask 한다 (GNOME 의 "전원 모드" 메뉴가 사라진다. 되돌리기: `sudo systemctl unmask --now power-profiles-daemon`). mask 되지 않았으면 `check_rt_setup.sh` 가 WARN 한다.
+
 ### 2.7 NVIDIA (GPU 가 있을 때)
 
 NVIDIA 드라이버는 PREEMPT_RT 커널에서 빌드를 거부한다. 스크립트가 이를 우회하고 modprobe · IRQ · persistence mode · nouveau 블랙리스트까지 한 번에 처리한다.
@@ -240,6 +242,7 @@ PREEMPT_RT + cset shield 에서 Max 가 50 µs 미만이면 정상이다. `check
 | 지터가 큼 | RT 코어로 IRQ 유입 | `/proc/interrupts` 에서 RT 코어 열을 본다. 많으면 `setup_irq_affinity.sh` |
 | 지터가 큼 | DDS 스레드가 RT 코어에 있음 | 런치가 DDS 스레드를 `taskset` 으로 고정한다. 스레드별 `chrt -p` · `taskset -cp` 로 확인 |
 | 500 Hz 미달 | governor 가 `powersave` | `setup_cpu_governor.sh` (모든 코어가 `performance` 여야 함) |
+| 재부팅하면 governor 가 다시 `powersave` | `power-profiles-daemon` 이 서비스보다 늦게 떠 덮어씀 | `setup_cpu_governor.sh` 재실행 (PPD mask). `systemctl is-enabled power-profiles-daemon` 이 `masked` 여야 함 |
 | `nvidia-smi` 불가 / DKMS `apport` 오류 | RT 커널에서 NVIDIA 빌드 거부 | `setup_nvidia_rt.sh` 재실행 |
 
 DDS 는 CycloneDDS 를 권장한다: `export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, 튜닝은 [cyclone_dds.xml](../rtc_controller_manager/config/cyclone_dds.xml) (SPDP-only 멀티캐스트, discovery · NACK · heartbeat 주기). CycloneDDS 자체에는 CPU affinity 설정이 없어 고정은 런치의 `taskset` 이 맡는다.
@@ -253,20 +256,22 @@ P-core / E-core 가 섞인 Intel CPU 에서는 코어 slot 이 **P-core 의 prim
 | Raptor Lake-P | NUC 13 Pro (i5-1340P · i7-1360P · i7-1370P) | 감지 OK, P-core 자동 고정 |
 | Meteor Lake | NUC 14 Pro (Core Ultra 7 155H / 165H) | 감지 OK. `check_rt_setup.sh` 의 "지원 예정" WARN 은 감지 단계 안내이며 실패가 아니다 |
 | Arrow Lake-H | NUC 15 Pro+ (Core Ultra 7 265H / 9 285H) | 위와 동일 |
-| Panther Lake-H | Core Ultra 7 356H | 감지 OK (HT 없음이 설계). CPUID 경로로 감지돼 LP-E 를 E 로 센다 — 위와 같은 WARN |
+| Panther Lake-H | Core Ultra 7 356H | 감지 OK (HT 없음이 설계). CPUID 또는 CPPC `highest_perf` 경로로 감지돼 LP-E 를 E 로 센다 — 위와 같은 WARN |
 | NUC 13 Pro, BIOS HT off | - | `check_rt_setup.sh` FAIL. HT 를 켠다 |
 | AMD · 일반 Intel | - | hybrid 분기 없이 물리 코어 순서 |
 
 **BIOS 체크리스트 (Intel NUC)**
 
 - [ ] **Hyper-Threading: Enabled** - slot 변환이 P-core 의 primary / sibling 구분에 의존한다. 설계상 HT 가 없는 CPU (Arrow Lake-S/H/U · Lunar Lake · Panther Lake) 는 해당 없고 PASS 로 처리된다.
-- [ ] **Intel Turbo Boost: Enabled** - P-core 부스트가 MPC solve 시간을 줄인다. OS 에서 끄는 쪽 (`no_turbo=1`, AMD 는 `cpufreq/boost=0`) 은 열 쓰로틀링 jitter 를 피하는 대신 solve 가 느려지므로, 제어 PC 에서 두 상태의 `cm_timing_log` (p99 · max · overrun) 와 MPC solve 시간을 재서 고른다. `check_rt_setup.sh` 는 두 상태를 모두 PASS 로 보고한다.
+- [ ] **Intel Turbo Boost: Enabled** - P-core 부스트가 MPC solve 시간을 줄인다. OS 에서 끄는 쪽 (`no_turbo=1`, AMD 는 `cpufreq/boost=0`) 은 열 쓰로틀링 jitter 를 피하는 대신 P-core 가 base 클럭에 묶여 (Core Ultra 7 356H: Turbo 4.0 GHz → 1.7 GHz) 컨트롤러 계산과 solve 가 느려지므로, 제어 PC 에서 두 상태의 `cm_timing_log` (p99 · max · overrun) 와 MPC solve 시간을 재서 고른다. `check_rt_setup.sh` 는 두 상태를 모두 PASS 로 보고한다.
 - [ ] **C-states: C1/C2 이하로 제한** (또는 GRUB 에 `intel_idle.max_cstate=1 processor.max_cstate=1`)
 - [ ] **Speed Shift (HWP): Enabled** (`intel_pstate=active`)
 - [ ] **VT-d / IOMMU: 가능하면 Disabled** (실측 후 결정)
 - [ ] **E-core / LP E-core: Enabled 유지** - OS · IRQ 가 쓴다
 
 **`RTC_FORCE_HYBRID_GENERATION`** 은 컨테이너처럼 sysfs 를 못 읽는 환경에서 세대 판정만 덮어쓰는 테스트·CI 용 환경변수다 (`raptor_lake_p` · `meteor_lake` · `arrow_lake_h` · `raptor_lake_p_ht_off` · `none`). **production 에서는 반드시 unset** 한다. 값이 남아 있으면 `check_rt_setup.sh` 가 WARN 한다.
+
+감지는 sysfs `types/` → CPUID leaf 0x1A (shell 만) → CPPC `highest_perf` (Intel 만) → `cpuinfo_max_freq` 순으로 시도한다. `no_turbo=1` 이면 `cpuinfo_max_freq` 가 base 클럭으로 바뀌어 등급 차가 사라지고, cset shield 안의 셸에서는 CPUID 가 격리 코어에 닿지 못한다 — 그때도 `highest_perf` 는 등급을 구분한다.
 
 hybrid 감지 확인:
 

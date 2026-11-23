@@ -2002,12 +2002,26 @@ _rt_enumerate_online_cpus() {
 #      returning a non-zero EAX.
 #      EAX[31:24]: 0x40 = Intel Core (P), 0x20 = Intel Atom (E/LP-E).
 #
-#   2. `cpuinfo_max_freq` clustering (zero-dependency, sysfs only).
-#      On every hybrid x86 Intel SoC, the per-CPU `cpuinfo_max_freq` differs
-#      between P / E / LP-E tiers by a wide margin (20 %–50 %). If spread
-#      >= 15 % and we can form non-empty P/E sets, treat as hybrid.
+#   2. Per-CPU value clustering (zero-dependency, sysfs only), on
+#      `acpi_cppc/highest_perf` first (Intel only), then `cpuinfo_max_freq`.
+#      On every hybrid x86 Intel SoC both differ between P / E / LP-E tiers
+#      by a wide margin (20 %–50 %). If spread >= 15 % and we can form
+#      non-empty P/E sets, treat as hybrid.
+#      `highest_perf` goes first because `cpuinfo_max_freq` is not a fixed
+#      property: intel_pstate rewrites it to the non-turbo frequency while
+#      `intel_pstate/no_turbo` = 1, and the tiers' base clocks sit too close
+#      to split (Panther Lake-H: 1.7 / 1.6 / 1.5 GHz). `highest_perf` is the
+#      firmware's capability and ignores no_turbo (same chip: 52 / 37 / 33).
+#      It also separates the tiers further than frequency does: intel_pstate
+#      scales a hybrid P-core's perf unit at ~78.7 MHz and an E-core's at
+#      100 MHz, so E/P in highest_perf is ~0.79 × the turbo-frequency ratio —
+#      under the 85 % P threshold whenever E turbo <= P turbo. ITMT favoured
+#      cores on non-hybrid parts differ by one or two bins (< 5 %), inside it.
+#      Intel only: AMD reports preferred-core rankings there — the same
+#      homogeneous cores at 166–186 on a Ryzen 5600X, close enough to the
+#      15 % guard to cross it on other parts.
 #
-# Both helpers return the tentative `p_cpus` / `e_cpus` cpulists via the
+# All helpers return the tentative `p_cpus` / `e_cpus` cpulists via the
 # globals `_RT_FB_P_CPUS` / `_RT_FB_E_CPUS`. The shared population step
 # (`_rt_populate_hybrid_from_cpus`) then derives SMT siblings and E / LP-E
 # split by reusing the sysfs topology and cpufreq files that *are* present.
@@ -2069,14 +2083,17 @@ _rt_detect_hybrid_via_cpuid() {
   return 0
 }
 
-# Fallback 2: cpuinfo_max_freq clustering.
+# Fallbacks 2 and 3: clustering on a per-CPU sysfs value.
+# $1 = path under cpuN/ ("acpi_cppc/highest_perf" or "cpufreq/cpuinfo_max_freq").
 # Returns 0 on success, sets _RT_FB_P_CPUS / _RT_FB_E_CPUS.
-# Threshold: P-cores are those with max_freq >= 85 % of system-wide max.
+# Threshold: P-cores are those with a value >= 85 % of the system-wide max.
 # Guard: demands >= 15 % spread between min and max — filters out AMD /
-# homogeneous Intel whose per-core freqs are within a percent of each other.
-_rt_detect_hybrid_via_freq() {
+# homogeneous Intel whose per-core values are within a percent of each other.
+# Mirrors ClusterByPerCpuValue in cpu_topology.hpp.
+_rt_detect_hybrid_via_cluster() {
   _RT_FB_P_CPUS=""
   _RT_FB_E_CPUS=""
+  local relpath="$1"
   local cpu_root="${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu"
   local cpus
   cpus=$(_rt_enumerate_online_cpus "$cpu_root")
@@ -2085,8 +2102,8 @@ _rt_detect_hybrid_via_freq() {
   local cpu f max_f=0 min_f=0 missing=0
   local -A freqs=()
   for cpu in $cpus; do
-    f=$(_rt_read_trim "$cpu_root/cpu${cpu}/cpufreq/cpuinfo_max_freq")
-    if [[ -z "$f" ]]; then
+    f=$(_rt_read_trim "$cpu_root/cpu${cpu}/${relpath}")
+    if [[ ! "$f" =~ ^[1-9][0-9]*$ ]]; then   # C++ rejects <= 0 too
       missing=1
       break
     fi
@@ -2271,7 +2288,7 @@ _rt_hybrid_sanity_check() {
   # Save the freq-fallback outputs so we can re-run without clobbering the
   # canonical _RT_FB_* globals (the primary path may have filled them).
   _RT_FB_P_CPUS=""; _RT_FB_E_CPUS=""
-  if ! _rt_detect_hybrid_via_freq; then
+  if ! _rt_detect_hybrid_via_cluster "cpufreq/cpuinfo_max_freq"; then
     return 0   # Freq-clustering cannot form an opinion — nothing to check.
   fi
   p_fb="$_RT_FB_P_CPUS"
@@ -2293,14 +2310,16 @@ _rt_hybrid_sanity_check() {
 # Populate IS_HYBRID, NUM_*, NUC_GENERATION, id lists. Idempotent — callers may
 # re-invoke; later calls overwrite globals. Uses $RTC_SYSFS_ROOT (default /sys).
 #
-# Detection priority (matches cpu_topology.hpp):
+# Detection priority (cpu_topology.hpp has the same order minus CPUID):
 #   1. sysfs `types/intel_core` + `types/intel_atom` (+ optional cpuinfo
 #      `hybrid` flag). Requires kernel topology exposure that some custom
 #      RT kernel builds strip out.
 #   2. CPUID leaf 0x1A via the `cpuid` tool.
-#   3. cpuinfo_max_freq clustering (>= 15 % spread).
+#   3. acpi_cppc/highest_perf clustering (Intel only, >= 15 % spread).
+#   4. cpuinfo_max_freq clustering (>= 15 % spread).
 # First match wins. HYBRID_DETECT_SOURCE records which path populated the
-# globals ("sysfs_types" / "cpuid_0x1a" / "cpufreq_cluster" / "none").
+# globals ("sysfs_types" / "cpuid_0x1a" / "cppc_cluster" / "cpufreq_cluster"
+# / "none").
 detect_hybrid_capability() {
   local root="${RTC_SYSFS_ROOT:-/sys}"
   local cpu_root="$root/devices/system/cpu"
@@ -2361,9 +2380,22 @@ detect_hybrid_capability() {
     fi
   fi
 
-  # ── Fallback 2: cpuinfo_max_freq clustering ──────────────────────────────
+  # ── Fallback 2: ACPI CPPC highest_perf clustering (Intel only) ──────────
+  # Holds where the next one does not: with turbo off (no_turbo=1) and the
+  # shell inside a cset shield (CPUID's taskset cannot reach the shielded
+  # CPUs), this is the only path left that sees the tiers.
+  if (( IS_HYBRID == 0 )) && [[ "$CPU_VENDOR" == "GenuineIntel" ]]; then
+    if _rt_detect_hybrid_via_cluster "acpi_cppc/highest_perf"; then
+      IS_HYBRID=1
+      p_cpus="$_RT_FB_P_CPUS"
+      e_cpus="$_RT_FB_E_CPUS"
+      HYBRID_DETECT_SOURCE="cppc_cluster"
+    fi
+  fi
+
+  # ── Fallback 3: cpuinfo_max_freq clustering ──────────────────────────────
   if (( IS_HYBRID == 0 )); then
-    if _rt_detect_hybrid_via_freq; then
+    if _rt_detect_hybrid_via_cluster "cpufreq/cpuinfo_max_freq"; then
       IS_HYBRID=1
       p_cpus="$_RT_FB_P_CPUS"
       e_cpus="$_RT_FB_E_CPUS"
@@ -2547,4 +2579,27 @@ lttng_modules_compat_verdict() {
   else
     echo "incompatible ${kver} ${req}"
   fi
+}
+
+# ─── power-profiles-daemon vs the performance governor ──────────────────────
+# Print the PPD unit state ("enabled" / "disabled" / …) and return 0 when PPD
+# will overwrite the governor: power-profiles-daemon 0.21 writes "powersave" to
+# every policy's scaling_governor each time it starts (probe_epp in its
+# intel_pstate and amd_pstate drivers), but only while that pstate driver runs
+# in active mode. Returns 1 (prints nothing) when PPD is absent or masked, or
+# no pstate driver is active. "disabled" still counts — D-Bus activation
+# starts it. Consumers: setup_cpu_governor.sh (masks it), check_rt_setup.sh
+# (WARNs). Uses $RTC_SYSFS_ROOT (default /sys) for the pstate status files.
+ppd_resets_governor() {
+  local cpu_root="${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu"
+  local state active=0 drv
+  for drv in intel_pstate amd_pstate; do
+    [[ "$(_rt_read_trim "$cpu_root/$drv/status")" == "active" ]] && active=1
+  done
+  (( active == 1 )) || return 1
+  state=$(systemctl is-enabled power-profiles-daemon.service 2>/dev/null || true)
+  case "$state" in
+    "" | not-found | masked | masked-runtime) return 1 ;;
+  esac
+  echo "$state"
 }

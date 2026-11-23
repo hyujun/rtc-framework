@@ -28,7 +28,9 @@
 //   1. sysfs `/sys/devices/system/cpu/types/{intel_core,intel_atom}/cpus`
 //      — kernel >=5.18 exposes Intel hybrid classification here.
 //   2. `/proc/cpuinfo` flag `hybrid` — kernel ≥5.14 Alder-Lake+ indicator.
-//   3. Fallback: treat as NOT_NUC_HYBRID (AMD, older Intel, containers
+//   3. Per-CPU value clustering: `acpi_cppc/highest_perf` (Intel only), then
+//      `cpufreq/cpuinfo_max_freq` — see ClusterByPerCpuValue.
+//   4. Fallback: treat as NOT_NUC_HYBRID (AMD, older Intel, containers
 //      without sysfs access).
 //
 // Generation classification uses the (p_core_has_smt, has_lp_e_cores) pair:
@@ -79,6 +81,7 @@ enum class HybridDetectSource {
   NONE = 0,         // Not hybrid (or no CPU at all).
   SYSFS_TYPES,      // /sys/.../cpu/types/intel_{core,atom}   (+cpuinfo hybrid flag)
   CPUFREQ_CLUSTER,  // cpuinfo_max_freq heterogeneity clustering.
+  CPPC_CLUSTER,     // acpi_cppc/highest_perf heterogeneity clustering (Intel).
 };
 
 struct CpuTopology {
@@ -310,33 +313,48 @@ inline std::vector<std::vector<int>> ReadPhysicalCoreGroups(
   return groups;
 }
 
-// Frequency-clustering fallback. Returns (p_cpus, e_cpus) when the CPU
-// set splits into two frequency tiers — highest-tier ids go to p_cpus,
-// the rest to e_cpus. Returns empty vectors if the heterogeneity is too
-// small (< kSpreadPct) or the data is unavailable. Zero-dependency: reads
-// cpuinfo_max_freq from each cpuN directory that the caller enumerated.
+// Per-CPU value clustering fallback. Returns (p_cpus, e_cpus) when the CPU
+// set splits into two tiers of `cpuN/<relpath>` — highest-tier ids go to
+// p_cpus, the rest to e_cpus. Returns empty vectors if the heterogeneity is
+// too small (< kSpreadPct) or any reading is unavailable. Zero-dependency:
+// reads the file from each cpuN directory that the caller enumerated.
 //
-// Parameters tuned for Intel hybrid SoCs:
+// Two inputs are used, in this order (DetectCpuTopology):
+//   acpi_cppc/highest_perf   — the firmware's per-core capability. Intel
+//     only: AMD reports preferred-core rankings there (166–186 on a
+//     homogeneous Ryzen 5600X, close enough to the guard to cross it).
+//   cpufreq/cpuinfo_max_freq — not a fixed property: intel_pstate rewrites
+//     it to the non-turbo frequency while intel_pstate/no_turbo = 1, and the
+//     tiers' base clocks sit too close to split (Panther Lake-H 356H:
+//     1.7 / 1.6 / 1.5 GHz, where highest_perf still reads 52 / 37 / 33).
+// highest_perf also separates the tiers further than frequency does:
+// intel_pstate scales a hybrid P-core's perf unit at ~78.7 MHz and an
+// E-core's at 100 MHz, so E/P in highest_perf is ~0.79 × the turbo-frequency
+// ratio — under the 85 % P threshold whenever E turbo <= P turbo. ITMT
+// favoured cores on non-hybrid parts differ by one or two bins (< 5 %).
+//
+// Turbo cpuinfo_max_freq on Intel hybrid SoCs, for scale:
 //   Meteor Lake Core Ultra 9 185H   — P≈5.1 GHz  E≈3.8 GHz  LP-E≈2.5 GHz
 //   Raptor Lake-P i7-1360P          — P≈5.0 GHz  E≈3.7 GHz  (no LP-E)
 //   Arrow Lake-H Core Ultra 9 285H  — P≈5.4 GHz  E≈4.5 GHz  LP-E≈2.5 GHz
 // Homogeneous silicon (AMD Zen 4/5, Alder-Lake-N all-E, SKUs without SMT
 // heterogeneity) typically reports < 3 % spread and is rejected by the
 // 15 % threshold.
-inline std::pair<std::vector<int>, std::vector<int>> ClusterByMaxFreq(
-    const std::filesystem::path& cpu_root, const std::vector<int>& online_cpus) noexcept {
+inline std::pair<std::vector<int>, std::vector<int>> ClusterByPerCpuValue(
+    const std::filesystem::path& cpu_root, const std::vector<int>& online_cpus,
+    std::string_view relpath) noexcept {
   constexpr int kSpreadPct = 15;          // min (max-min)/max% to call hybrid
   constexpr int kPCoreThresholdPct = 85;  // P-core: f >= max * 85/100
   std::pair<std::vector<int>, std::vector<int>> empty;
   if (online_cpus.empty())
     return empty;
 
-  std::vector<std::pair<int, int>> freqs;  // (cpu, max_khz)
+  std::vector<std::pair<int, int>> freqs;  // (cpu, value)
   freqs.reserve(online_cpus.size());
   int max_f = 0;
   int min_f = 0;
   for (const int cpu : online_cpus) {
-    const int f = ReadInt(cpu_root / ("cpu" + std::to_string(cpu)) / "cpufreq/cpuinfo_max_freq");
+    const int f = ReadInt(cpu_root / ("cpu" + std::to_string(cpu)) / relpath);
     if (f <= 0)
       return empty;  // Any missing reading disqualifies the fallback.
     freqs.emplace_back(cpu, f);
@@ -364,6 +382,13 @@ inline std::pair<std::vector<int>, std::vector<int>> ClusterByMaxFreq(
   if (p_cpus.empty() || e_cpus.empty())
     return empty;
   return {std::move(p_cpus), std::move(e_cpus)};
+}
+
+// cpuinfo_max_freq clustering — the input every Intel/AMD cpufreq driver
+// exposes. See ClusterByPerCpuValue for why it is the last resort on Intel.
+inline std::pair<std::vector<int>, std::vector<int>> ClusterByMaxFreq(
+    const std::filesystem::path& cpu_root, const std::vector<int>& online_cpus) noexcept {
+  return ClusterByPerCpuValue(cpu_root, online_cpus, "cpufreq/cpuinfo_max_freq");
 }
 
 // Derive P-core SMT pairing, E/LP-E split, and all hybrid counters from a
@@ -510,9 +535,9 @@ inline std::tuple<std::string, int, int> ReadCpuVendorFamilyModel(
 //
 // Returns (label, no_ht_by_design). label is empty when the silicon is not
 // in the mapping table. no_ht_by_design is true for Lion Cove silicon
-// (Arrow Lake-S/H/U, Lunar Lake) where HT removal is the silicon spec, not
-// a BIOS toggle — used by check_rt_setup.sh to avoid suggesting an
-// impossible fix ("enable HT in BIOS") on those chips.
+// (Arrow Lake-S/H/U, Lunar Lake) and Cougar Cove (Panther Lake) where HT removal is the silicon
+// spec, not a BIOS toggle — used by check_rt_setup.sh to avoid suggesting an impossible fix
+// ("enable HT in BIOS") on those chips.
 inline std::pair<std::string, bool> LookupPlatformLabel(int family, int model) noexcept {
   if (family != 6)
     return {std::string{}, false};
@@ -541,6 +566,8 @@ inline std::pair<std::string, bool> LookupPlatformLabel(int family, int model) n
       return {"Arrow Lake-H mobile", true};
     case 0xB5:
       return {"Arrow Lake-U mobile", true};
+    case 0xCC:
+      return {"Panther Lake mobile", true};  // Core Ultra 3xxH
     default:
       return {std::string{}, false};
   }
@@ -649,21 +676,35 @@ inline CpuTopology DetectCpuTopology(std::string_view sysfs_root,
     p_cpus = p_cpus_sysfs;
     e_cpus = e_cpus_sysfs;
   } else {
-    // Step 2b (fallback): cpuinfo_max_freq clustering. Fires on kernels
-    // that don't export the hybrid topology — typically custom RT builds
-    // where CONFIG_INTEL_HFI_THERMAL / SCHED_MC_PRIO / SCHED_CLUSTER were
-    // stripped, or pre-6.10 kernels on Meteor/Arrow Lake.
+    // Step 2b (fallback): per-CPU value clustering. Fires on kernels that
+    // don't export the hybrid topology — typically custom RT builds where
+    // CONFIG_INTEL_HFI_THERMAL / SCHED_MC_PRIO / SCHED_CLUSTER were
+    // stripped, pre-6.10 kernels on Meteor/Arrow Lake, or 6.12 on Panther
+    // Lake.
     std::vector<int> online_cpus;
     for (const auto& group : core_groups)
       for (const int cpu : group)
         online_cpus.push_back(cpu);
     std::sort(online_cpus.begin(), online_cpus.end());
-    auto [p_fb, e_fb] = ClusterByMaxFreq(cpu_root, online_cpus);
-    if (!p_fb.empty() && !e_fb.empty()) {
-      t.is_hybrid = true;
-      t.detect_source = HybridDetectSource::CPUFREQ_CLUSTER;
-      p_cpus = std::move(p_fb);
-      e_cpus = std::move(e_fb);
+    // highest_perf first on Intel: it ignores intel_pstate/no_turbo, which
+    // rewrites cpuinfo_max_freq to base clocks too close to split.
+    if (t.cpu_vendor == "GenuineIntel") {
+      auto [p_cppc, e_cppc] = ClusterByPerCpuValue(cpu_root, online_cpus, "acpi_cppc/highest_perf");
+      if (!p_cppc.empty() && !e_cppc.empty()) {
+        t.is_hybrid = true;
+        t.detect_source = HybridDetectSource::CPPC_CLUSTER;
+        p_cpus = std::move(p_cppc);
+        e_cpus = std::move(e_cppc);
+      }
+    }
+    if (!t.is_hybrid) {
+      auto [p_fb, e_fb] = ClusterByMaxFreq(cpu_root, online_cpus);
+      if (!p_fb.empty() && !e_fb.empty()) {
+        t.is_hybrid = true;
+        t.detect_source = HybridDetectSource::CPUFREQ_CLUSTER;
+        p_cpus = std::move(p_fb);
+        e_cpus = std::move(e_fb);
+      }
     }
   }
 
@@ -733,7 +774,7 @@ inline std::string_view NucGenerationToString(NucGeneration g) noexcept {
 }
 
 // Matches shell `HYBRID_DETECT_SOURCE` values from rt_common.sh —
-// "sysfs_types" / "cpufreq_cluster" / "none". Used for structured logging
+// "sysfs_types" / "cppc_cluster" / "cpufreq_cluster" / "none". Used for structured logging
 // so the two layers speak the same tag.
 inline std::string_view HybridDetectSourceToString(HybridDetectSource s) noexcept {
   switch (s) {
@@ -743,6 +784,8 @@ inline std::string_view HybridDetectSourceToString(HybridDetectSource s) noexcep
       return "sysfs_types";
     case HybridDetectSource::CPUFREQ_CLUSTER:
       return "cpufreq_cluster";
+    case HybridDetectSource::CPPC_CLUSTER:
+      return "cppc_cluster";
   }
   return "none";
 }
