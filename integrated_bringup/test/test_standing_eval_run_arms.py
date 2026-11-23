@@ -785,7 +785,7 @@ def test_a_scenario_that_cannot_run_is_refused_before_the_first_run(tmp_path, ex
 @pytest.mark.parametrize(
     ("arm", "mpc_layout", "expected"),
     [
-        ("servo", False, []),  # no MPC: nothing to sync
+        ("servo", False, ["mpc_sync:=lockstep"]),  # no MPC: the launch still wires the sim's wait
         ("loco", True, ["enable_mpc:=true", "mpc_sync:=lockstep", "sim_overlay:=mpc_off"]),
         ("mpc", False, ["enable_mpc:=true", "mpc_sync:=lockstep"]),
         ("walk", False, ["enable_mpc:=true", "mpc_sync:=lockstep"]),

@@ -311,7 +311,11 @@ def launch_setup(context, *args, **kwargs):
     if mpc_sync != "":
         ctrl_overrides["locomotion_controller.mpc.sync.mode"] = mpc_sync
     effective_sync = mpc_sync or str(_shipped_mpc_sync().get("mode", "free_run"))
-    if effective_sync == "lockstep":
+    # With the MPC off (enable_mpc:=false) nothing waits for a solve: the sim
+    # keeps its short wait and an overlay may move the timeouts. (An mpc_off
+    # overlay under enable_mpc:=true is still wired — the 4 s armed wait is
+    # harmless there.)
+    if effective_sync == "lockstep" and enable_mpc != "false":
         # The two timeouts the check compares must be the ones the nodes
         # read: the shipped YAML and this launch's own arguments.
         touched = _overlay_touches(
@@ -688,7 +692,9 @@ def generate_launch_description():
             "the solve) or free_run (wall clock, as on the robot). Empty -> the YAML's "
             "mpc.sync.mode (free_run). lockstep also sets the simulator's "
             "sync_timeout_armed_ms (4000 unless given) and refuses a wait_timeout_s at or "
-            "above it; a sim_overlay may not set mpc.sync.mode"
+            "above it; a sim_overlay may not set mpc.sync.mode. lockstep needs whole tick "
+            "ratios (period_nodes * dt / tick, control_rate / command.sample_rate_hz): an "
+            "overlay that breaks them fails the controller's configure — run it free_run"
         ),
     )
 
