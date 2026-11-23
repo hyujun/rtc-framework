@@ -363,6 +363,7 @@ latch 가 서면 (또는 해제 검증 창 동안) 컨트롤러 output 은 `Devi
 | `sim_sync_tick_devices` | string[] | `[]` (= 모든 그룹) | sim step 을 완성하는 그룹. decimated 로 발행하는 그룹과 `fake_response` 그룹은 뺀다 (넣으면 step 이 느려진다). sim-sync 에서 모르는 이름은 configure 거부, `use_sim_time_sync: false` 면 키를 읽지 않는다 |
 | `config_variant` | string | `""` | 컨트롤러 YAML 탐색 디렉토리 (위) |
 | `rt_layout_profile` | string | (미선언) | launch 의 thread-layout profile id (`mpc_on` / `mpc_off`). CM 은 쓰지 않고 각 컨트롤러 노드로 전달만 한다 |
+| `cm_sim_time_sync` | bool | (컨트롤러 노드에만, read-only) | CM 이 자기 `use_sim_time_sync` 값을 각 컨트롤러 노드에 선언한다. 컨트롤러는 `integrated_bringup/support/sim_time_sync.hpp` 로 읽기만 하고 (없음 · false · 다른 타입 = false), launch 도 `ros2 param set` 도 바꿀 수 없다 |
 | `kp` · `kd` | double | `5.0` · `0.5` | (레거시) 기본 P/D 게인 |
 
 **`urdf.*`** (시스템 URDF, 모두 선택):

@@ -281,6 +281,31 @@ TEST_F(CmConfigPipelineTest, AnUnsetLayoutProfileIsNotInventedOnTheControllerNod
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// The CM's sim-sync fact reaches each controller's own node, as a value the
+// controller reads and never sets (#1168: a controller mode that blocks the
+// RT tick on a solver is admissible only under sim lock-step). Unlike the
+// layout profile it is always declared — false on a real-time CM — so a
+// controller's fail-closed read has a value to refuse on.
+TEST_F(CmConfigPipelineTest, TheSimSyncFactReachesTheControllersOwnNode) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  node->declare_parameter("use_sim_time_sync", true);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ("true", PipelineTestController::captured_cm_sim_time_sync);
+  EXPECT_TRUE(PipelineTestController::captured_cm_sim_time_sync_immutable) << "read-only";
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+TEST_F(CmConfigPipelineTest, ARealTimeCmDeclaresTheSimSyncFactFalse) {
+  auto node = MakeNode();
+  DeclareArmDevice(*node);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+  EXPECT_EQ("false", PipelineTestController::captured_cm_sim_time_sync);
+  EXPECT_TRUE(PipelineTestController::captured_cm_sim_time_sync_immutable)
+      << "a controller cannot grant itself the sim";
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 TEST_F(CmConfigPipelineTest, YamlDefaultsSurviveWithoutOverrides) {
   auto node = MakeNode();
   DeclareArmDevice(*node);

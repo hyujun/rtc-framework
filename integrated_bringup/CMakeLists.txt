@@ -389,6 +389,15 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # The fail-closed read of the CM's sim-sync fact (support/sim_time_sync.hpp)
+  # on a bare LifecycleNode — a DDS participant, so a binary of its own on the
+  # test domain.
+  ament_add_gtest(test_cm_sim_time_sync
+    test/test_cm_sim_time_sync.cpp
+    ENV ROS_DOMAIN_ID=52)
+  target_include_directories(test_cm_sim_time_sync PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_target_dependencies(test_cm_sim_time_sync rclcpp rclcpp_lifecycle)
+
   # ── demo_wbc_controller, model-less and layout suites, one binary ─────────
   #   test_demo_wbc_controller               unit tests.
   #   test_demo_wbc_base_frame_consistency   base_frame consistency (F-2).
@@ -2860,6 +2869,7 @@ if(BUILD_TESTING)
     test_locomotion_diag_golden
     test_demo_sequence_ros
     test_estimator_replay
+    test_cm_sim_time_sync
     PROPERTIES RESOURCE_LOCK ros_domain_52)
   set_tests_properties(test_catching_clik_sweep PROPERTIES RESOURCE_LOCK ros_domain_53)
   # (2) A test that ASSERTS a measured wall-clock budget: a planner p99

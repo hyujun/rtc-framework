@@ -79,6 +79,12 @@ class PipelineTestController : public RTControllerInterface {
   // the node a controller reads it from. "<absent>" = not declared there.
   static inline std::string captured_layout_profile{};
 
+  // `cm_sim_time_sync` as this controller's OWN node saw it at on_configure:
+  // "true" / "false", "<absent>" = not declared there.
+  static inline std::string captured_cm_sim_time_sync{};
+  // Whether that parameter refused a set_parameter at on_configure (read-only).
+  static inline bool captured_cm_sim_time_sync_immutable{false};
+
   static inline std::atomic<int> compute_sleep_us{0};
 
   // Channel count Compute() reports. Tests set an out-of-contract value
@@ -211,6 +217,8 @@ class PipelineTestController : public RTControllerInterface {
     captured_dt_at_load_config = -1.0;
     captured_session_logging_at_load_config = -1;
     captured_layout_profile.clear();
+    captured_cm_sim_time_sync.clear();
+    captured_cm_sim_time_sync_immutable = false;
     captured_vals.clear();
     captured_tags.clear();
     captured_ids.clear();
@@ -262,6 +270,21 @@ class PipelineTestController : public RTControllerInterface {
     captured_layout_profile = (lc && lc->has_parameter("rt_layout_profile"))
                                   ? lc->get_parameter("rt_layout_profile").as_string()
                                   : std::string("<absent>");
+    captured_cm_sim_time_sync =
+        (lc && lc->has_parameter("cm_sim_time_sync"))
+            ? std::string(lc->get_parameter("cm_sim_time_sync").as_bool() ? "true" : "false")
+            : std::string("<absent>");
+    if (lc && lc->has_parameter("cm_sim_time_sync")) {
+      // A read-only parameter refuses a set: rclcpp reports it in the result
+      // (unsuccessful) or, on some paths, by throwing. Either is "immutable".
+      try {
+        const auto result = lc->set_parameter(rclcpp::Parameter("cm_sim_time_sync", true));
+        captured_cm_sim_time_sync_immutable = !result.successful;
+      } catch (const rclcpp::exceptions::ParameterImmutableException&) {
+        captured_cm_sim_time_sync_immutable = true;
+      } catch (...) {
+      }
+    }
     if (fail_on_configure.load(std::memory_order_relaxed)) {
       return CallbackReturn::FAILURE;
     }
