@@ -14,10 +14,8 @@
 ///     prim_tol: 1.0e-3
 ///     dual_tol: 1.0e-2
 ///     mu_init: 1.0e-2
-///     max_iters: 30             # once a solve has converged
-///     max_al_iters: 20          # the standing solve's AL ceiling
-///     max_initial_iters: 0      # standing solve; 0 = max_iters, else >= max_iters
-///     max_online_al_iters: 0    # once converged; 0 = max_al_iters
+///     max_iters: 30             # Newton iterations a solve
+///     max_al_iters: 20          # AL outer iterations a solve
 ///     rollout_type: "linear"    # or "nonlinear"
 ///     linear_solver: "serial"   # "parallel" is refused at Init
 ///     num_threads: 1            # > 1 needs num_threads - 1 worker slots (Create's arg)

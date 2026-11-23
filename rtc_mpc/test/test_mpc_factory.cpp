@@ -204,19 +204,13 @@ TEST(MPCSolverConfigKeys, AnAbsentSectionKeepsTheDefaults) {
   rtc::mpc::MPCSolverConfig cfg;
   const YAML::Node root = YAML::Load("ocp_type: contact_light");
   ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(root["solver"], cfg));
-  EXPECT_EQ(cfg.max_initial_iters, 0);
-  EXPECT_EQ(cfg.max_online_al_iters, 0);
   EXPECT_EQ(cfg.rollout_type, rtc::mpc::MPCRolloutType::kLinear);
   EXPECT_EQ(cfg.linear_solver, rtc::mpc::MPCLinearSolver::kSerial);
   EXPECT_EQ(cfg.num_threads, 1);
   EXPECT_TRUE(cfg.force_initial_condition);
-  // 0 means "the same as": the standing solve runs on max_iters and the online
-  // one on max_al_iters.
-  EXPECT_EQ(cfg.InitialIters(), cfg.max_iters);
-  EXPECT_EQ(cfg.OnlineAlIters(), cfg.max_al_iters);
 }
 
-TEST(MPCSolverConfigKeys, EveryKeyIsReadAndAnUnknownOneIgnored) {
+TEST(MPCSolverConfigKeys, EveryKnownKeyIsRead) {
   rtc::mpc::MPCSolverConfig cfg;
   ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(YAML::Load(R"(
 prim_tol: 1.0e-4
@@ -224,14 +218,14 @@ dual_tol: 2.0e-4
 mu_init: 1.0e-1
 max_iters: 50
 max_al_iters: 20
-max_initial_iters: 300
-max_online_al_iters: 3
 rollout_type: nonlinear
 linear_solver: serial
 num_threads: 1
 force_initial_condition: true
 verbose: false
-some_other_key: 7
+publish_deadline_ms: 12.5
+publish_prim_tol: 0.05
+require_fresh_state: true
 )"),
                                                      cfg));
   EXPECT_EQ(cfg.prim_tol, 1e-4);
@@ -239,10 +233,9 @@ some_other_key: 7
   EXPECT_EQ(cfg.mu_init, 1e-1);
   EXPECT_EQ(cfg.max_iters, 50);
   EXPECT_EQ(cfg.max_al_iters, 20);
-  EXPECT_EQ(cfg.max_initial_iters, 300);
-  EXPECT_EQ(cfg.max_online_al_iters, 3);
-  EXPECT_EQ(cfg.InitialIters(), 300);
-  EXPECT_EQ(cfg.OnlineAlIters(), 3);
+  EXPECT_EQ(cfg.publish_deadline_ms, 12.5);
+  EXPECT_EQ(cfg.publish_prim_tol, 0.05);
+  EXPECT_TRUE(cfg.require_fresh_state);
   EXPECT_EQ(cfg.rollout_type, rtc::mpc::MPCRolloutType::kNonlinear);
   EXPECT_EQ(cfg.linear_solver, rtc::mpc::MPCLinearSolver::kSerial);
 
@@ -250,9 +243,24 @@ some_other_key: 7
   EXPECT_EQ(cfg.linear_solver, rtc::mpc::MPCLinearSolver::kParallel);  // refused at Init
 }
 
+TEST(MPCSolverConfigKeys, AnUnknownKeyFailsTheParseAndChangesNothing) {
+  rtc::mpc::MPCSolverConfig cfg;
+  cfg.max_iters = 41;
+  EXPECT_FALSE(
+      rtc::mpc::MPCFactory::LoadSolverConfig(YAML::Load("max_iters: 7\nsome_other_key: 7"), cfg));
+  EXPECT_EQ(cfg.max_iters, 41);
+  // The keys of the deleted standing budget are unknown now, too.
+  for (const char* yaml : {"max_initial_iters: 60", "max_online_al_iters: 1"}) {
+    EXPECT_FALSE(rtc::mpc::MPCFactory::LoadSolverConfig(
+        YAML::Load(std::string("max_iters: 7\n") + yaml), cfg))
+        << yaml;
+    EXPECT_EQ(cfg.max_iters, 41) << yaml;
+  }
+}
+
 TEST(MPCSolverConfigKeys, AnUnknownNameOrAWrongKindFailsTheParseAndChangesNothing) {
   for (const char* yaml : {"rollout_type: euler", "linear_solver: dense", "num_threads: two",
-                           "force_initial_condition: maybe", "max_initial_iters: [1]"}) {
+                           "force_initial_condition: maybe", "prim_tol: [1]"}) {
     rtc::mpc::MPCSolverConfig cfg;
     cfg.max_iters = 41;
     EXPECT_FALSE(rtc::mpc::MPCFactory::LoadSolverConfig(
@@ -276,13 +284,26 @@ mpc:
   EXPECT_EQ(h, nullptr);
 }
 
+TEST_F(MPCFactoryTest, AnUnknownSolverKeyIsAnInvalidSolverConfig) {
+  auto cfg = YAML::Load(R"(
+mpc:
+  ocp_type: contact_light
+  solver:
+    max_iters: 30
+    some_other_key: 7
+)");
+  std::unique_ptr<rtc::mpc::MPCHandlerBase> h;
+  const auto status = rtc::mpc::MPCFactory::Create(cfg, handler_, MakeLightContext(), h);
+  EXPECT_EQ(status.error, rtc::mpc::MPCFactoryError::kInvalidSolverConfig);
+  EXPECT_EQ(h, nullptr);
+}
+
 TEST_F(MPCFactoryTest, ANonlinearRolloutCreatesAndSolves) {
   auto cfg = YAML::Load(R"(
 mpc:
   ocp_type: contact_light
   solver:
     max_iters: 30
-    max_initial_iters: 60
     rollout_type: nonlinear
 )");
   auto ctx = MakeLightContext();
@@ -313,9 +334,7 @@ TEST_P(MPCSolverConfigRefusal, InitRefusesIt) {
 INSTANTIATE_TEST_SUITE_P(Values, MPCSolverConfigRefusal,
                          ::testing::Values("num_threads: 2", "num_threads: 0",
                                            "linear_solver: parallel",
-                                           "force_initial_condition: false",
-                                           "max_initial_iters: 29", "max_initial_iters: -1",
-                                           "max_online_al_iters: -1", "prim_tol: 0.0",
+                                           "force_initial_condition: false", "prim_tol: 0.0",
                                            "prim_tol: .nan", "max_al_iters: 0"));
 
 // ── Solver threads ──────────────────────────────────────────────────────────

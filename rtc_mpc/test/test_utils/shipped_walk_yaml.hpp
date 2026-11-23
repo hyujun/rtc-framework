@@ -94,9 +94,9 @@ inline constexpr const char* kShippedTerrainYaml = R"(
 height: 0.0
 )";
 
-/// The g1_loco profile's online budget and period, as shipped — copies, held
+/// The g1_loco profile's solve budget and period, as shipped — copies, held
 /// to the installed profile like the sections above: `mpc.solver.max_iters`,
-/// `mpc.solver.max_online_al_iters`, `mpc.period_nodes` and
+/// `mpc.solver.max_al_iters`, `mpc.period_nodes` and
 /// `mpc.solver.publish_prim_tol`.
 inline constexpr int kShippedOnlineMaxIters = 6;
 inline constexpr int kShippedOnlineAlIters = 1;

@@ -1,16 +1,14 @@
 /// @file test_mpc_thread_publish.cpp
-/// @brief The MPC thread's publish rules and its overrun split, on a stub
-///        handler (no solver): a solve past the deadline and a
-///        budget-exhausted solve whose consumed segment is over the
-///        tolerance are not published and not counted as failures; the
-///        standing solve is exempt from the deadline; a converged solve is
-///        always published; both rules are off by default; an online solve
-///        that started cold is published only once converged; an overrun
-///        after a standing-solve tick — failed or not — is counted apart
-///        from an online one. With `require_fresh_state`, a snapshot is
-///        solved once (the pending standing solve excepted); the phase
-///        manager's time is the snapshot's stamp, re-anchored where it left
-///        off on a new state epoch or a stamp that went back.
+/// @brief The MPC thread's publish rules and its overrun count, on a stub
+///        handler (no solver): a solve past the deadline (every solve,
+///        converged or not) and a budget-exhausted solve whose consumed
+///        segment is over the tolerance are not published and not counted
+///        as failures; a converged solve within the deadline is always
+///        published; both rules are off by default; a solve that started
+///        cold is published only once converged; an overrun is one count,
+///        failed solve or not. With `require_fresh_state`, a snapshot is
+///        solved once, always; the phase manager's time is the snapshot's stamp, re-anchored where
+///        it left off on a new state epoch or a stamp that went back.
 ///
 /// The model is the generic Panda fixture (the thread runs forward
 /// kinematics every tick); nothing here solves an OCP.
@@ -66,7 +64,7 @@ constexpr int kStubHorizon = 10;
 constexpr double kStubDt = 0.035;
 
 /// A handler that solves nothing: each `Solve` sleeps, then packs a finite
-/// solution whose status, standing flag and per-node residuals the test sets.
+/// solution whose status, cold flag and per-node residuals the test sets.
 class StubHandler final : public rtc::mpc::MPCHandlerBase {
  public:
   StubHandler(int nq, int nv, MPCSolverConfig cfg) : nq_(nq), nv_(nv), cfg_(cfg) {}
@@ -91,7 +89,6 @@ class StubHandler final : public rtc::mpc::MPCHandlerBase {
     out.nx = nq_ + nv_;
     out.ndx = 2 * nv_;
     rtc::mpc::MarkSolved(out, converged.load());
-    out.initial_solve = initial.load();
     out.cold_start = cold.load();
     for (std::size_t k = 0; k < out.node_prim_inf.size(); ++k) {
       out.node_prim_inf[k] = static_cast<int>(k) < big_from.load() ? small_residual.load() : 5.0;
@@ -102,8 +99,6 @@ class StubHandler final : public rtc::mpc::MPCHandlerBase {
   [[nodiscard]] bool Initialised() const noexcept override { return true; }
 
   [[nodiscard]] const MPCSolverConfig& solver_config() const noexcept override { return cfg_; }
-
-  [[nodiscard]] bool InitialSolvePending() const noexcept override { return initial.load(); }
 
   [[nodiscard]] std::string_view ocp_type() const noexcept override { return "stub"; }
 
@@ -121,7 +116,6 @@ class StubHandler final : public rtc::mpc::MPCHandlerBase {
 
   std::atomic<int> sleep_us{0};
   std::atomic<bool> converged{false};
-  std::atomic<bool> initial{false};  ///< the standing budget pending, and the solve's flag
   std::atomic<bool> cold{false};
   std::atomic<int> error{0};  ///< an MPCSolveError to return instead of a solution
   std::atomic<int> big_from{kStubHorizon + 1};  ///< first node with residual 5.0
@@ -314,21 +308,22 @@ TEST_F(MpcThreadPublishTest, ALateSolveIsNotPublishedAndNotAFailure) {
   EXPECT_EQ(stub->calls.load(), thread.TotalSolves());
 }
 
-// The standing solve runs to convergence by design: it is published however
-// long it took.
-TEST_F(MpcThreadPublishTest, TheStandingSolveIsExemptFromTheDeadline) {
+// Every solve is subject to the deadline: a slow solve that converged from a
+// cold seed is a miss too, not published.
+TEST_F(MpcThreadPublishTest, ASlowConvergedColdSolveIsADeadlineMissToo) {
   MPCSolverConfig cfg;
   cfg.publish_deadline_ms = 2.0;
   HandlerMPCThread thread;
   StubHandler* stub = Start(thread, cfg, 20.0);
   stub->sleep_us = 6000;
-  stub->initial = true;
+  stub->cold = true;
   stub->converged = true;
   thread.Start();
-  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return Published() >= 3U; }));
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.DeadlineMissCount() >= 3U; }));
   thread.StopAndJoin();
-  EXPECT_EQ(thread.DeadlineMissCount(), 0U);
-  EXPECT_EQ(thread.InitialSolveTicks(), thread.TotalSolves());
+  EXPECT_EQ(Published(), 0U);
+  EXPECT_EQ(thread.FailedSolves(), 0U);
+  EXPECT_EQ(thread.ColdWithheldCount(), 0U) << "converged: the deadline is what withheld it";
 }
 
 // A budget-exhausted solve is published when the nodes a consumer reads
@@ -381,20 +376,15 @@ TEST(MpcThreadConsumedSegment, TheSegmentEndsOneNodePastThePeriod) {
             std::numeric_limits<double>::infinity());
 }
 
-// An overrun after a standing-solve tick is counted apart from one after an
-// online tick; together they are the base's overrun count.
-TEST_F(MpcThreadPublishTest, AStandingTicksOverrunIsCountedApart) {
+// An overrun is one count: the base's OverrunCount.
+TEST_F(MpcThreadPublishTest, AnOverrunIsOneCount) {
   HandlerMPCThread thread;
   StubHandler* stub = Start(thread, MPCSolverConfig{}, 100.0);
   stub->sleep_us = 25000;  // 2.5 periods: the wait after it finds an overrun
-  stub->initial = true;
   thread.Start();
-  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.StandingOverrunCount() >= 2U; }));
-  EXPECT_EQ(thread.OnlineOverrunCount(), 0U);
-  stub->initial = false;
-  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.OnlineOverrunCount() >= 2U; }));
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.OverrunCount() >= 2U; }));
   thread.StopAndJoin();
-  EXPECT_EQ(thread.OnlineOverrunCount() + thread.StandingOverrunCount(), thread.OverrunCount());
+  EXPECT_GE(thread.OverrunCount(), 2U);
 }
 
 // An online solve that started from a cold seed (a node-grid jump) and did
@@ -419,21 +409,16 @@ TEST_F(MpcThreadPublishTest, AColdOnlineSolveIsPublishedOnlyOnceConverged) {
   EXPECT_EQ(thread.FailedSolves(), 0U);
 }
 
-// A standing-solve tick whose solve fails still counts its overrun as a
-// standing one: the tick is marked from the handler's pending standing
-// budget before it solves.
-TEST_F(MpcThreadPublishTest, AFailedStandingTicksOverrunIsCountedApart) {
+// A tick whose solve fails still counts its overrun.
+TEST_F(MpcThreadPublishTest, AFailedSolvesOverrunIsCounted) {
   HandlerMPCThread thread;
   StubHandler* stub = Start(thread, MPCSolverConfig{}, 100.0);
   stub->sleep_us = 25000;
-  stub->initial = true;
   stub->error = static_cast<int>(MPCSolveError::kSolverException);
   thread.Start();
-  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.StandingOverrunCount() >= 2U; }));
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.OverrunCount() >= 2U; }));
   thread.StopAndJoin();
-  EXPECT_EQ(thread.OnlineOverrunCount(), 0U);
   EXPECT_GT(thread.FailedSolves(), 0U);
-  EXPECT_EQ(thread.OnlineOverrunCount() + thread.StandingOverrunCount(), thread.OverrunCount());
 }
 
 // ── One solve per observation (`require_fresh_state`) ──────────────────────
@@ -452,7 +437,6 @@ TEST_F(MpcThreadPublishTest, AFreshStateRuleSolvesEachSnapshotOnce) {
   EXPECT_EQ(thread.TotalSolves(), 1U) << "a skip is not a solve";
   EXPECT_EQ(thread.FailedSolves(), 0U) << "nor a failure";
   EXPECT_EQ(thread.RepeatedObservationSkips(), thread.TickCount() - 1U);
-  EXPECT_EQ(thread.StandingRepeatSolves(), 0U);
   EXPECT_EQ(Published(), 1U);
 }
 
@@ -483,37 +467,37 @@ TEST_F(MpcThreadPublishTest, WithoutTheFreshStateRuleTheSameSnapshotIsSolvedEver
   EXPECT_EQ(stub->calls.load(), thread.TickCount());
 }
 
-// The standing solve continues on the same observation while it is pending
-// and its attempts return iterates …
-TEST_F(MpcThreadPublishTest, APendingStandingSolveContinuesOnTheSameSnapshot) {
+// A repeated snapshot is always skipped — also when the solve on it was an
+// unconverged cold one that was withheld: no continuation on the same
+// observation.
+TEST_F(MpcThreadPublishTest, AWithheldColdSolveIsNotContinuedOnTheSameSnapshot) {
   MPCSolverConfig cfg;
   cfg.require_fresh_state = true;
   HandlerMPCThread thread;
   StubHandler* stub = Start(thread, cfg, 200.0);
-  stub->initial = true;  // pending, not converged
+  stub->cold = true;  // unconverged cold: withheld
   thread.Start();
-  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return stub->calls.load() >= 5U; }));
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.RepeatedObservationSkips() >= 5U; }));
   thread.StopAndJoin();
-  EXPECT_EQ(thread.RepeatedObservationSkips(), 0U);
-  EXPECT_EQ(stub->calls.load(), thread.TickCount());
-  EXPECT_EQ(thread.StandingRepeatSolves(), stub->calls.load() - 1U);
+  EXPECT_EQ(stub->calls.load(), 1U);
+  EXPECT_EQ(thread.ColdWithheldCount(), 1U);
+  EXPECT_EQ(Published(), 0U);
+  EXPECT_EQ(thread.RepeatedObservationSkips(), thread.TickCount() - 1U);
 }
 
-// … but not after an attempt the solver rejected: that observation is not
+// … nor after an attempt the solver rejected: that observation is not
 // retried.
-TEST_F(MpcThreadPublishTest, ARejectedStandingAttemptIsNotRetriedOnTheSameSnapshot) {
+TEST_F(MpcThreadPublishTest, ARejectedAttemptIsNotRetriedOnTheSameSnapshot) {
   MPCSolverConfig cfg;
   cfg.require_fresh_state = true;
   HandlerMPCThread thread;
   StubHandler* stub = Start(thread, cfg, 200.0);
-  stub->initial = true;
   stub->error = static_cast<int>(MPCSolveError::kSolverDiverged);
   thread.Start();
   EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.RepeatedObservationSkips() >= 5U; }));
   thread.StopAndJoin();
   EXPECT_EQ(stub->calls.load(), 1U);
   EXPECT_EQ(thread.FailedSolves(), 1U);
-  EXPECT_EQ(thread.StandingRepeatSolves(), 0U);
   EXPECT_EQ(thread.RepeatedObservationSkips(), thread.TickCount() - 1U);
 }
 

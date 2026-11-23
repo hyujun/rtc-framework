@@ -72,8 +72,7 @@ class LocomotionMpcTest : public LocomotionControllerTest {
     if (const auto* t = dynamic_cast<const rtc::mpc::HandlerMPCThread*>(ctrl_->MpcThread())) {
       s += ", solves " + std::to_string(t->TotalSolves()) + " failed " +
            std::to_string(t->FailedSolves()) + " (last " + std::to_string(t->LastSolveErrorCode()) +
-           ") initial ticks " + std::to_string(t->InitialSolveTicks()) + " withheld " +
-           std::to_string(t->WithheldCount()) + " cold withheld " +
+           ") withheld " + std::to_string(t->WithheldCount()) + " cold withheld " +
            std::to_string(t->ColdWithheldCount()) + " deadline " +
            std::to_string(t->DeadlineMissCount());
     }
@@ -119,22 +118,20 @@ TEST_F(LocomotionMpcTest, AConvergedStandingPlanIsFollowedBlockForBlock) {
   }
 }
 
-TEST_F(LocomotionMpcTest, AnUnconvergedStandingPlanIsNotStoodOn) {
+// One budget for every solve: a published plan that did not converge is still a
+// usable plan, so idle -> stand needs only the plan and its contacts.
+TEST_F(LocomotionMpcTest, AnUnconvergedPublishedPlanIsStoodOn) {
   BringUpWithStub();
   stub_->converged = false;
-  stub_->initial = true;
-  ASSERT_TRUE(TickUntil([this] { return ctrl_->MpcManager().HasEverReceivedSolution(); }));
-  TickFor(100);
-  EXPECT_EQ(ctrl_->Source(), Source::kIdle);
-  EXPECT_EQ(LastMode(), Mode::kNominal);
-  stub_->converged = true;  // positive control
   ReachStand();
+  EXPECT_EQ(ctrl_->Source(), Source::kStand) << SourceName();
+  EXPECT_FALSE(ctrl_->LastDiag().mpc_converged);
+  EXPECT_EQ(LastMode(), Mode::kNominal);
 }
 
 TEST_F(LocomotionMpcTest, AnUnconvergedOnlinePlanKeepsTheStand) {
   BringUpWithStub();
   ReachStand();
-  stub_->initial = false;
   stub_->converged = false;
   const auto latched_before = ctrl_->LastDiag().fault_count;
   TickFor(150);

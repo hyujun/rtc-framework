@@ -128,7 +128,6 @@ struct LocomotionDiagLogPod {
   std::uint64_t plan_id{0};         ///< the sampled plan; 0 = none this tick
   double policy_age_us{-1.0};       ///< this tick − the plan's observation [µs]; −1 = none
   bool mpc_converged{false};        ///< the sampled plan's solve converged
-  bool mpc_initial_solve{false};    ///< it was a standing (initial) solve
   double mpc_solve_us{0.0};         ///< its solve time [µs]
   std::uint64_t schedule_epoch{0};  ///< its gait commit count
   std::uint32_t contact_mask{0};    ///< the contacts the QP held in support this tick
@@ -234,7 +233,7 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
         "margin_friction_n,margin_cop_nm,margin_yaw_nm,margin_torque_nm,margin_joint_accel,"
         "margins_stale,base_px,base_py,base_pz,base_qx,base_qy,base_qz,base_qw,"
         "base_vx,base_vy,base_vz,base_wx,base_wy,base_wz,ref_base_px,ref_base_py,ref_base_pz,"
-        "com_x,com_y,com_z,ref_source,plan_id,policy_age_us,mpc_converged,mpc_initial_solve,"
+        "com_x,com_y,com_z,ref_source,plan_id,policy_age_us,mpc_converged,"
         "mpc_solve_us,schedule_epoch,contact_mask,plausibility_rejects,u_fb_norm,mpc_state_epoch";
   for (std::size_t c = 0; c < cols.contacts; ++c) {
     for (const char* axis : {"x", "y", "z"}) {
@@ -281,7 +280,7 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
     }
   }
   os << ",mpc_last_seq,mpc_last_outcome,mpc_last_err,mpc_last_iterations,mpc_last_converged,"
-        "mpc_last_initial,mpc_last_cold,mpc_last_prim_inf,mpc_last_consumed_prim,"
+        "mpc_last_cold,mpc_last_prim_inf,mpc_last_consumed_prim,"
         "mpc_last_compute_us,mpc_last_state_seq,mpc_last_state_epoch,mpc_last_plan_id";
   os << ",cmd_input,cmd_deadman";
   os << ",est_imu_valid,est_imu_age_us";
@@ -317,9 +316,9 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
     os << ',' << x;
   }
   os << ',' << static_cast<unsigned>(p.ref_source) << ',' << p.plan_id << ',' << p.policy_age_us
-     << ',' << (p.mpc_converged ? 1 : 0) << ',' << (p.mpc_initial_solve ? 1 : 0) << ','
-     << p.mpc_solve_us << ',' << p.schedule_epoch << ',' << p.contact_mask << ','
-     << p.plausibility_rejects << ',' << p.u_fb_norm << ',' << p.mpc_state_epoch;
+     << ',' << (p.mpc_converged ? 1 : 0) << ',' << p.mpc_solve_us << ',' << p.schedule_epoch << ','
+     << p.contact_mask << ',' << p.plausibility_rejects << ',' << p.u_fb_norm << ','
+     << p.mpc_state_epoch;
   for (std::size_t i = 0; i < cols.contacts * 3; ++i) {
     os << ',' << p.foot_p[i];
   }
@@ -384,9 +383,9 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
   }
   const auto& m = p.mpc_last;
   os << ',' << m.seq << ',' << static_cast<int>(m.outcome) << ',' << m.err << ',' << m.iterations
-     << ',' << (m.converged ? 1 : 0) << ',' << (m.initial_solve ? 1 : 0) << ','
-     << (m.cold_start ? 1 : 0) << ',' << m.prim_inf << ',' << m.consumed_prim << ',' << m.compute_us
-     << ',' << m.state_sequence << ',' << m.state_epoch << ',' << m.plan_id;
+     << ',' << (m.converged ? 1 : 0) << ',' << (m.cold_start ? 1 : 0) << ',' << m.prim_inf << ','
+     << m.consumed_prim << ',' << m.compute_us << ',' << m.state_sequence << ',' << m.state_epoch
+     << ',' << m.plan_id;
   os << ',' << static_cast<unsigned>(p.cmd_input) << ',' << static_cast<int>(p.cmd_deadman);
   // Age in µs; −1 (never received / no site) stays −1, not −0.001.
   os << ',' << (e.imu_valid ? 1 : 0) << ','

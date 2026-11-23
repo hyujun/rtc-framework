@@ -500,7 +500,6 @@ void LocomotionController::FillLogs(const ControllerState& state, const Controll
                                1e-3
                          : -1.0;
   d.mpc_converged = plan && wbc_ref_.converged;
-  d.mpc_initial_solve = plan && wbc_ref_.initial_solve;
   d.mpc_solve_us = plan ? static_cast<double>(wbc_ref_.solve_duration_ns) * 1e-3 : 0.0;
   d.schedule_epoch = plan ? wbc_ref_.schedule_epoch : 0;
   d.contact_mask = contact_mask_;

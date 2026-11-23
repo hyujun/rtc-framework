@@ -295,9 +295,9 @@ TEST_F(MpcThreadIntegrationTest, DefaultPhaseConvergesFreeFlight) {
   EXPECT_EQ(thread.LastPhaseId(), 0);
 }
 
-// ── 2b. Standing-solve ticks are counted apart ──────────────────────────
+// ── 2b. The first solve is cold, withheld if unconverged, then warm ─────
 
-TEST_F(MpcThreadIntegrationTest, StandingSolveTicksAreCountedApart) {
+TEST_F(MpcThreadIntegrationTest, TheFirstSolveIsColdWithheldAndTheNextIsPublished) {
   rtc::mpc::MPCSolutionManager mgr;
   mgr.Init(MinimalManagerConfig(), model_handler_.nq(), model_handler_.nv(), 6);
   WriteNeutralState(mgr);
@@ -308,20 +308,30 @@ TEST_F(MpcThreadIntegrationTest, StandingSolveTicksAreCountedApart) {
 
   rtc::mpc::HandlerMPCThread thread;
   thread.Configure(model_handler_, std::move(handler), std::move(mock));
-  EXPECT_EQ(thread.InitialSolveTicks(), 0u);
+  EXPECT_EQ(thread.ColdWithheldCount(), 0u);
   thread.Init(mgr, MakeLaunchCfg(20.0));
   thread.Start();
   EXPECT_TRUE(rtc::testing::WaitUntil([&] { return thread.TotalSolves() >= 5u; }));
   thread.RequestStop();
   thread.Join();
 
-  // The first tick is a standing solve; this window converges, so the ticks
-  // after it run on the online budget.
-  std::printf("[report] standing ticks %llu of %llu solves\n",
-              static_cast<unsigned long long>(thread.InitialSolveTicks()),
-              static_cast<unsigned long long>(thread.TotalSolves()));
-  EXPECT_GE(thread.InitialSolveTicks(), 1u);
-  EXPECT_LT(thread.InitialSolveTicks(), thread.TotalSolves());
+  // A cold solve that converges is published; one that does not is withheld
+  // and counted, and the next solve (warm, same budget) is published. Which of
+  // the two the first solve is depends on the solver, so only what holds in
+  // both cases is asserted: at most one solve is cold-withheld, and a plan is
+  // published within the window.
+  std::printf(
+      "[report] cold-withheld %llu, withheld %llu, deadline %llu, failed %llu of %llu solves, "
+      "published %llu\n",
+      static_cast<unsigned long long>(thread.ColdWithheldCount()),
+      static_cast<unsigned long long>(thread.WithheldCount()),
+      static_cast<unsigned long long>(thread.DeadlineMissCount()),
+      static_cast<unsigned long long>(thread.FailedSolves()),
+      static_cast<unsigned long long>(thread.TotalSolves()),
+      static_cast<unsigned long long>(mgr.GetSolveStats().count));
+  EXPECT_GE(thread.TotalSolves(), 5u);
+  EXPECT_LE(thread.ColdWithheldCount(), 1u);
+  EXPECT_GE(mgr.GetSolveStats().count, 1u);
 }
 
 // ── 2c. The thread hands the phase manager its snapshot ─────────────────

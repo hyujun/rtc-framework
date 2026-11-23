@@ -385,7 +385,7 @@ TEST_F(LocomotionMpcConfig, TheWalkRtcMpcMeasuresOnIsTheInstalledOne) {
 }
 
 // The installed solver section: the tolerances the OCP's tests solve to, the
-// standing budget and the online one, the rest at its default.
+// one budget every solve runs on, the rest at its default.
 TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsTheRegisteredOne) {
   ASSERT_TRUE(root_["mpc"]["solver"].IsMap());
   rtc::mpc::MPCSolverConfig s;
@@ -396,10 +396,8 @@ TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsTheRegisteredOne) {
   EXPECT_EQ(s.max_iters, 6);
   EXPECT_EQ(s.max_iters, rtc::mpc::test_utils::kShippedOnlineMaxIters)
       << "the copy rtc_mpc tests on";
-  EXPECT_EQ(s.max_al_iters, 20);
-  EXPECT_EQ(s.max_initial_iters, 300);
-  EXPECT_EQ(s.max_online_al_iters, 1);
-  EXPECT_EQ(s.max_online_al_iters, rtc::mpc::test_utils::kShippedOnlineAlIters)
+  EXPECT_EQ(s.max_al_iters, 1);
+  EXPECT_EQ(s.max_al_iters, rtc::mpc::test_utils::kShippedOnlineAlIters)
       << "the copy rtc_mpc tests on";
   EXPECT_EQ(s.rollout_type, rtc::mpc::MPCRolloutType::kLinear);
   EXPECT_EQ(s.linear_solver, rtc::mpc::MPCLinearSolver::kSerial);

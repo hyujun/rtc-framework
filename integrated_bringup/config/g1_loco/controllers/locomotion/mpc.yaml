@@ -35,20 +35,22 @@
 #                     weight. The plan's accelerations are not judged (why:
 #                     LocomotionController::Plausible).
 #
-# solver: the tolerances the OCP's tests solve to. Until one solve converges
-# (after the build, a rebuild or a rejected solve) the MPC solves with
-# max_initial_iters and max_al_iters — the standing solve; after that with
-# max_iters and max_online_al_iters. The online budget is fixed so a solve
-# fits the period: six iterations and one AL iteration, whose solve time is
+# solver: the tolerances the OCP's tests solve to, and the one budget every
+# solve runs on — the first after the build, a rebuild or a rejected solve
+# (cold-seeded) as much as a warm one. The budget is fixed so a solve fits
+# the period: six iterations and one AL iteration, whose solve time is
 # bounded, where the AL loop's is not. Such a solve never reports
-# convergence, so the publish rules are what hold it: a solve whose tick ran
-# past publish_deadline_ms (one period) is not published, nor is one whose
-# first nodes — those read before the next plan — have a primal residual above
-# publish_prim_tol. rtc_mpc's receding test checks the standing window against
-# the residual rule at this budget, a guard against gross failures only. The
+# convergence, so the publish rules are what hold it: a cold solve is not
+# published until it converges (the next solve warm-starts from it), a solve
+# whose tick ran past publish_deadline_ms (one period) is not published, nor
+# is one whose first nodes — those read before the next plan — have a primal
+# residual above publish_prim_tol. rtc_mpc's receding test holds this budget
+# to its registered bounds from a cold start (stance, a moving base, the walk
+# window, a mid-walk re-seed: the plan after the cold one is publishable). The
 # budget was chosen in real-time sim on a development PC with two solver
 # threads (launch mpc_threads 2); one thread (num_threads below) was not
-# checked. The control PCs' soak checks it on their hardware.
+# checked. The control PCs' soak checks it on their hardware. An unknown
+# solver key is refused at configure.
 #
 # The weights are the reference whole-body task's, unchanged:
 #   - state / terminal: its Q and Q_final diagonals. The base orientation is
@@ -108,9 +110,7 @@ locomotion_controller:
       dual_tol: 1.0e-4
       mu_init: 1.0e-2
       max_iters: 6
-      max_al_iters: 20
-      max_initial_iters: 300
-      max_online_al_iters: 1
+      max_al_iters: 1
       publish_deadline_ms: 70.0       # [ms] one period
       publish_prim_tol: 0.05
       require_fresh_state: true       # one solve per state snapshot

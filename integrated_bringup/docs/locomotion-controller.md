@@ -36,7 +36,7 @@ ros2 launch rtc_teleop_input teleop_input.launch.py joy_topic:=/locomotion_contr
 - `velocity_command.type: joy` (기본 `twist`, configure 때 하나) 면 같은 키의 `topic` 이 `sensor_msgs/Joy` (표준 게임패드 배치, [rtc_teleop_input](../../rtc_teleop_input/README.md)) 이고 `joy: {linear_x, linear_y, angular_z, height_rate?, deadman}` 가 배치 이름으로 축을 고른다 — 축 [−1, 1] × `command.v_max` (높이는 `hdot_max`). deadman 버튼이 정확히 1 일 때만 움직이고, 놓으면 0 (stale 이 아닌 새 명령), 배열이 짧거나 매핑한 축이 비유한이면 메시지 전체가 0 이고 `cmd_joy_rejects` 가 는다. 그 뒤는 Twist 와 같은 필터 · stale 경로다. g1_loco 의 출하 매핑은 sim launch `command_input:=joy` (`sim_overlays/joy_command.yaml`): 왼스틱 = v_x · v_y, 오른스틱 X = yaw, LB = deadman, 높이 없음. 스키마: `controllers/locomotion/joy_command.hpp`.
 - 명령은 `command.t_stale` (0.5 s) 동안 새 메시지가 없으면 0 으로 돌아간다 (높이는 유지) — 발행자는 **주기적으로** 보낸다. 비유한 축은 직전 값을 유지한다. 활성화마다 필터가 리셋되어 높이는 `command.base_height` 로 돌아간다. 필터는 활성 동안만 돈다 (`command.sample_rate_hz`).
 - 지금의 FSM 은 **모든 접촉이 지지일 때만** stand 로 들어간다 — 속도 명령으로 gait 가 걸음으로 바뀌면 plan 의 mask 에 swing 이 생겨 walk 로 표시된다. 출하값의 보행은 sim 판정을 아직 통과하지 못했다 — 첫 걸음 전후에 plan 을 잃고, 로봇이 움직이는 중이라 plan-loss fault 로 멈춘다 (아래 평가 도구의 `walk` arm 이 재현한다). 명령은 sim 에서만 쓴다.
-- `<body group>/locomotion_status` (`diagnostic_msgs/DiagnosticStatus`, ≈ 50 Hz, MPC 없이도 발행) — `level`: OK (stand · walk, 또는 MPC 없이 nominal) · WARN (waiting · degraded · MPC 가 있는데 idle) · ERROR (fault · E-STOP); `message` = reference 출처; `values` 는 고정 키 (순서 · 이름은 `controllers/locomotion/locomotion_status.hpp` 의 `LocomotionStatusKey`): source · mode · fault_cause · estop · tick_count · plan_id · policy_age_ms · converged · initial_solve · contact_mask · schedule_epoch · state_epoch · plausibility_rejects · plan_holds · solves · failed_solves · deadline_miss · withheld · overrun · wbc_tick_us · qp_iterations · cmd_vx · cmd_vy · cmd_wz · cmd_height · cmd_valid · cmd_fresh · cmd_stale_ticks · cmd_nonfinite_ticks · cmd_ignored_axis_ticks (필터 tick 수) · source_status (상태 source 판정 이름) · estimator_resets · estimator_reset_reason · estimator_contact_mask (아래 §상태 source; truth 에서는 0) · cmd_input (0 twist · 1 joy) · cmd_deadman (joy 1 / 0 / 읽지 못함 −1, twist −1) · cmd_joy_rejects. MPC 카운터는 1 Hz 로 갱신된다. GUI (W8) 는 키로 읽는다.
+- `<body group>/locomotion_status` (`diagnostic_msgs/DiagnosticStatus`, ≈ 50 Hz, MPC 없이도 발행) — `level`: OK (stand · walk, 또는 MPC 없이 nominal) · WARN (waiting · degraded · MPC 가 있는데 idle) · ERROR (fault · E-STOP); `message` = reference 출처; `values` 는 고정 키 (순서 · 이름은 `controllers/locomotion/locomotion_status.hpp` 의 `LocomotionStatusKey`): source · mode · fault_cause · estop · tick_count · plan_id · policy_age_ms · converged · contact_mask · schedule_epoch · state_epoch · plausibility_rejects · plan_holds · solves · failed_solves · deadline_miss · withheld · overrun · wbc_tick_us · qp_iterations · cmd_vx · cmd_vy · cmd_wz · cmd_height · cmd_valid · cmd_fresh · cmd_stale_ticks · cmd_nonfinite_ticks · cmd_ignored_axis_ticks (필터 tick 수) · source_status (상태 source 판정 이름) · estimator_resets · estimator_reset_reason · estimator_contact_mask (아래 §상태 source; truth 에서는 0) · cmd_input (0 twist · 1 joy) · cmd_deadman (joy 1 / 0 / 읽지 못함 −1, twist −1) · cmd_joy_rejects. MPC 카운터는 1 Hz 로 갱신된다. GUI (W8) 는 키로 읽는다.
 
 ## 모드
 
@@ -52,15 +52,15 @@ ros2 launch rtc_teleop_input teleop_input.launch.py joy_topic:=/locomotion_contr
 | 출처 | 언제 | reference |
 |---|---|---|
 | idle | MPC 없음 · 쓸 수 있는 plan 없음 | latch 자세 (위) |
-| stand | plan 이 쓸 수 있고 (유한 · 현재 model / state epoch · `max_policy_age_s` 안 · 타당성 통과) 수렴하지 않은 standing 해가 아니며 모든 접촉이 지지 | plan 의 q · v · a · 접촉 wrench 를 블록 그대로 |
+| stand | plan 이 쓸 수 있고 (유한 · 현재 model / state epoch · `max_policy_age_s` 안 · 타당성 통과) 모든 접촉이 지지 | plan 의 q · v · a · 접촉 wrench 를 블록 그대로 |
 | walk | stand 와 같고 접촉 하나가 swing | 같은 복사 + 그 접촉을 QP 에서 뺀다 |
 | fault | 아래 latch | 없음 |
 
-- online 해는 미수렴이어도 stand 를 유지한다 (publish 규칙이 잔차를 묶는다). stand · walk → idle 은 plan 을 **잃었을 때만** 이다 (나이 · epoch · 타당성). 그때 모든 접촉 frame 이 최저점 + 15 mm 안이고 base 가 0.1 m/s 아래면 측정 자세를 다시 latch 하고, 아니면 fault (`plan_loss`) — 떠 있는 발에 하중을 주지 않기 위해서다.
+- 미수렴 해도 publish 됐으면 stand 한다 (publish 규칙이 잔차를 묶는다 — cold solve 는 수렴해야 publish, 그 다음 solve 는 소비 node 잔차로). stand · walk → idle 은 plan 을 **잃었을 때만** 이다 (나이 · epoch · 타당성). 그때 모든 접촉 frame 이 최저점 + 15 mm 안이고 base 가 0.1 m/s 아래면 측정 자세를 다시 latch 하고, 아니면 fault (`plan_loss`) — 떠 있는 발에 하중을 주지 않기 위해서다.
 - 타당성 검사 (`mpc.sanity`) 에 걸린 plan 은 fault 가 아니라 idle 이고, 그 plan 은 끝까지 다시 쓰지 않는다.
 - 단, stand · walk 중에 걸린 plan 은 **그 앞에 따르던 plan** 에 자리를 내준다 — 그 plan 이 아직 살아 있고 (epoch · `max_policy_age_s`) 그 tick 의 검사도 통과하면 계속 따른다. 다음 타당한 plan 이 오면 넘어가고, 앞 plan 이 나이로 빠지거나 다시 걸리면 위의 plan 상실 규칙대로다 (되돌아간 plan 의 앞은 없다). plan 이 늦게 올 때 허용하는 범위와 같다. idle → stand 의 조건은 바뀌지 않는다 (idle 은 아무 plan 도 따르지 않으므로 잡을 앞 plan 이 없고, idle 이 표본만 한 plan 은 잡지 않는다). 횟수는 `plan_holds` (로그 열 · 상태 키 · 10 s INFO 의 `held`).
 - reset · 활성화 · E-STOP 두 edge 는 MPC 의 상태 stream (state epoch) 과 gait 를 다시 시작한다 — 옛 stream 의 plan 은 다시 샘플되지 않는다. E-STOP 동안은 stand 로 넘어가지 않는다.
-- standing 해 (첫 solve) 는 수 초 걸릴 수 있고 그동안은 idle (latch 자세) 이다. online solve 가 publish deadline 을 못 맞추는 호스트에서는 stand 에 이르지 못한다 — 예산은 제어 PC 의 soak 가 정한다.
+- 모든 solve 는 한 예산이다 (standing 전용 예산 없음). 첫 (cold) solve 는 보통 publish 되지 않고 (미수렴), 그 다음 solve 가 첫 plan 이 된다 — 그때까지 idle (latch 자세). publish deadline 을 못 맞추는 호스트에서는 stand 에 이르지 못한다 — 예산은 제어 PC 의 soak 가 정한다.
 
 latch 는 `/rtc_cm/reset_fault` 나 **재활성화**로 풀린다 (다음 tick 에 reference 를 다시 잡는다). 원인이 남아 있으면 다시 latch 된다. E-STOP 의 두 edge 도 reference 를 다시 잡는다.
 

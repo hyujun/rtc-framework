@@ -62,7 +62,6 @@ enum class LocomotionStatusKey : std::uint8_t {
   kPlanId,
   kPolicyAgeMs,
   kConverged,
-  kInitialSolve,
   kContactMask,
   kScheduleEpoch,
   kStateEpoch,

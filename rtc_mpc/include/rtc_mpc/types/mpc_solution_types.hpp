@@ -112,9 +112,6 @@ struct MPCSolution {
   int horizon_length{0};          ///< valid node count (≤ kMaxHorizon)
   double dt_node{0.0};            ///< OCP node spacing [s]
   bool converged{false};  ///< solver convergence flag; producers keep it equal to `status == kOk`
-  /// The solve ran on the standing budget: no solve had converged since the
-  /// handler's build, rebuild or last rejected solve.
-  bool initial_solve{false};
   /// The solve started from the cold seed, not from a shifted earlier plan
   /// (the first solve after a build or a rejection, or a node-grid index that
   /// went back or moved by the horizon or more).

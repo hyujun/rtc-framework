@@ -335,7 +335,7 @@ void LocomotionController::LogMpcTick() noexcept {
                 static_cast<unsigned long>(failed),
                 static_cast<unsigned long>(mpc_thread_->DeadlineMissCount()),
                 static_cast<unsigned long>(mpc_thread_->WithheldCount()),
-                static_cast<unsigned long>(mpc_thread_->OnlineOverrunCount()),
+                static_cast<unsigned long>(mpc_thread_->OverrunCount()),
                 static_cast<double>(stats.p50_ns) * 1e-6, static_cast<double>(stats.p99_ns) * 1e-6,
                 static_cast<unsigned long>(mpc_manager_.EpochRejections()),
                 static_cast<unsigned long>(mpc_manager_.StateEpochRejections()),
@@ -387,9 +387,11 @@ void LocomotionController::FollowPlan(const ControllerState& state) noexcept {
   }
   const bool all_support = wbc_ref_.contact_mask == all_contacts_mask_;
   if (ref_source_ == ReferenceSource::kIdle) {
-    // An unconverged standing solve is not a plan to stand on. (Under the
-    // E-STOP this is not reached: nothing is latched, so nothing is followed.)
-    if (!(usable && all_support && (!wbc_ref_.initial_solve || wbc_ref_.converged))) {
+    // A published plan with every contact in support is a plan to stand on:
+    // the producer's publish rules (a cold solve only once converged, else
+    // the consumed nodes' residual) are the gate. (Under the E-STOP this is
+    // not reached: nothing is latched, so nothing is followed.)
+    if (!(usable && all_support)) {
       return;
     }
   } else if (!usable) {

@@ -183,7 +183,6 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
     out.n_contact_vars = kContactVars;
     out.gain_nodes = 0;
     rtc::mpc::MarkSolved(out, converged.load());
-    out.initial_solve = initial.load();
     out.cold_start = false;
     out.solve_duration_ns = 1234;
     out.observation_stamp_ns = state.timestamp_ns;
@@ -240,8 +239,6 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
     return cfg_;
   }
 
-  [[nodiscard]] bool InitialSolvePending() const noexcept override { return initial.load(); }
-
   [[nodiscard]] std::string_view ocp_type() const noexcept override { return "kinodynamic"; }
 
   [[nodiscard]] int horizon_length() const noexcept override { return kNodes; }
@@ -258,7 +255,6 @@ class StandingStub final : public rtc::mpc::MPCHandlerBase {
 
   std::atomic<int> sleep_us{0};
   std::atomic<bool> converged{true};
-  std::atomic<bool> initial{true};
   std::atomic<bool> fail{false};
   std::atomic<std::uint32_t> mask{0b11U};
   std::atomic<double> joint_offset{0.0};

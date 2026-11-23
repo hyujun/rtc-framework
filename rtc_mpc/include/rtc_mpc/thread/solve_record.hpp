@@ -63,7 +63,6 @@ struct SolveRecord {
   // The iterates' summary — 0 / false / NaN on a kFailed attempt (it has none).
   std::int32_t iterations{0};
   bool converged{false};
-  bool initial_solve{false};  ///< ran on the standing budget
   bool cold_start{false};
   double prim_inf{0.0};       ///< `residuals.prim_inf` of the whole horizon
   double consumed_prim{0.0};  ///< max node residual of the segment the consumer

@@ -14,7 +14,7 @@
 /// (default 1; the controller's `period_nodes`); the 60 Hz ones skip when N ≠ 1.
 ///
 ///  - stance_static: the stance gait, the state the stand pose at rest;
-///  - walk_rollout: stance until the first online tick, then the walk at
+///  - walk_rollout: stance until the first published plan, then the walk at
 ///    0.5 m/s; the state is the reference the manager's sampler
 ///    (`SampleReference`) gives at the current time — a lower bound: no model
 ///    mismatch, no delay but the plan's own;
@@ -27,9 +27,8 @@
 /// `test_kinodynamic_mpc_soak.summary.{csv,json}` next to the gtest XML, or
 /// into `RTC_MPC_SOAK_OUT_DIR`): solve time p50 / p99 / max of the online
 /// ticks (the handler's `Solve`, wall clock), the online ticks whose solve
-/// took longer than the period, the thread's overruns (online and after a
-/// standing tick, apart), deadline misses, withheld solves, standing-solve
-/// ticks, the node shifts, C-level allocations per solve, the heap (glibc
+/// took longer than the period, the thread's overruns, deadline
+/// misses, withheld solves, the node shifts, C-level allocations per solve, the heap (glibc
 /// `mallinfo2` arena + hblkhd, sampled on the MPC thread at a tick start once
 /// a second), the primal residual (whole horizon and consumed segment) and
 /// the friction / CoP margins (every 10th online tick) of the window's first
@@ -64,11 +63,11 @@
 /// core of its affinity other than the MPC core: the phase manager's seqlock
 /// reader on a FIFO core would spin against a writer preempted on the same
 /// core, so the two are refused on one core), `RTC_MPC_SOAK_MAX_ITERS` / `RTC_MPC_SOAK_AL_ITERS`
-/// (the online budget, default 10 / 1), `RTC_MPC_SOAK_DEADLINE_MS` / `RTC_MPC_SOAK_PRIM_TOL` (the
-/// publish rules, default a deadline of one period — 35 ms per node interval, so it scales with
-/// `RTC_MPC_SOAK_PERIOD_NODES` — and the g1_loco profile's residual tolerance). The defaults are
-/// the soak's own, not the profile's online budget: give the shipped one through the variables. The
-/// summary records the scheduling the MPC thread actually runs with (read back on it), not the
+/// (the one budget, default 10 / 1), `RTC_MPC_SOAK_DEADLINE_MS` / `RTC_MPC_SOAK_PRIM_TOL` (the
+/// publish rules, default (armed) a deadline of one period — 35 ms per node interval, so it scales
+/// with `RTC_MPC_SOAK_PERIOD_NODES` — and the g1_loco profile's residual tolerance). The defaults
+/// are the soak's own, not the profile's online budget: give the shipped one through the variables.
+/// The summary records the scheduling the MPC thread actually runs with (read back on it), not the
 /// requested one. An armed run exceeds the verification hook's test bound: run it by hand through
 /// `repo_scripts/scripts/with_verify_hold.sh` — the command and the control-PC recipe are in
 /// docs/testing.md.
@@ -145,7 +144,7 @@ using Clock = std::chrono::steady_clock;
 constexpr double kDeadlinePerNodeMs = 35.0;
 
 constexpr double kWriterPeriodS = 0.002;  ///< the RT side's state writes
-constexpr double kStandingTimeoutS = 180.0;
+constexpr double kFirstPlanTimeoutS = 180.0;
 
 // ── Settings ────────────────────────────────────────────────────────────────
 
@@ -211,8 +210,12 @@ Settings ReadSettings() {
     s.period_nodes_malformed = end == v || *end != '\0' || n < 1 || n >= tu::kKinoNodes;
     s.period_nodes = s.period_nodes_malformed ? 1 : static_cast<int>(n);
   }
-  // One period.
-  s.deadline_ms = EnvDouble("RTC_MPC_SOAK_DEADLINE_MS", kDeadlinePerNodeMs * s.period_nodes);
+  // Armed: one period. The smoke has the rule off (0) unless told otherwise:
+  // every solve is subject to the deadline now, and a dev PC whose solve is
+  // longer than the period (RK2: ~75 ms against 35) would never publish the
+  // first plan the window opens on. Timing is judged on the control PCs.
+  s.deadline_ms =
+      EnvDouble("RTC_MPC_SOAK_DEADLINE_MS", s.armed ? kDeadlinePerNodeMs * s.period_nodes : 0.0);
   s.prim_tol = EnvDouble("RTC_MPC_SOAK_PRIM_TOL", tu::kShippedPublishPrimTol);
   return s;
 }
@@ -249,7 +252,6 @@ struct TickRecord {
   int iterations{0};
   bool ok{false};
   bool converged{false};
-  bool initial{false};
   bool injected{false};
   double solve_ms{0.0};
   std::size_t mallocs{0};
@@ -322,18 +324,14 @@ class SoakHandler final : public rtc::mpc::MPCHandlerBase {
     if (r.ok) {
       r.iterations = out.iterations;
       r.converged = out.converged;
-      r.initial = out.initial_solve;
       r.prim = out.residuals.prim_inf;
       r.consumed = rtc::mpc::HandlerMPCThread::ConsumedPrimInf(out, period_ns_);
-      if (!out.initial_solve) {
-        ++online_;
-        online_seen_.store(true, std::memory_order_release);
-        if (online_ % 10 == 0) {
-          Margins(out, r);
-          if (inject_) {
-            r.injected = true;
-            std::this_thread::sleep_for(std::chrono::nanoseconds(3 * period_ns_ / 2));
-          }
+      ++online_;
+      if (online_ % 10 == 0) {
+        Margins(out, r);
+        if (inject_) {
+          r.injected = true;
+          std::this_thread::sleep_for(std::chrono::nanoseconds(3 * period_ns_ / 2));
         }
       }
     }
@@ -347,10 +345,6 @@ class SoakHandler final : public rtc::mpc::MPCHandlerBase {
 
   [[nodiscard]] const MPCSolverConfig& solver_config() const noexcept override {
     return inner_->solver_config();
-  }
-
-  [[nodiscard]] bool InitialSolvePending() const noexcept override {
-    return inner_->InitialSolvePending();
   }
 
   [[nodiscard]] std::string_view ocp_type() const noexcept override { return inner_->ocp_type(); }
@@ -376,11 +370,6 @@ class SoakHandler final : public rtc::mpc::MPCHandlerBase {
 
   /// Before the thread starts: the phase manager whose error a failed tick records.
   void WatchPhaseManager(const rtc::mpc::LocomotionPhaseManager* m) noexcept { phase_ = m; }
-
-  /// Any thread: an online (not standing) tick solved.
-  [[nodiscard]] bool OnlineSeen() const noexcept {
-    return online_seen_.load(std::memory_order_acquire);
-  }
 
   /// After the thread is joined.
   [[nodiscard]] std::vector<TickRecord> Records() const {
@@ -453,7 +442,6 @@ class SoakHandler final : public rtc::mpc::MPCHandlerBase {
   bool have_last_{false};
   std::int64_t last_index_{0};
   std::uint64_t online_{0};
-  std::atomic<bool> online_seen_{false};
   bool sched_read_{false};
   std::string applied_policy_{"unknown"};
   int applied_priority_{-1};
@@ -472,12 +460,10 @@ struct Summary {
   double p99_ms{0.0};
   double max_ms{0.0};
   std::size_t over_period{0};
-  std::uint64_t online_overruns{0};
-  std::uint64_t standing_overruns{0};
+  std::uint64_t overruns{0};
   std::uint64_t deadline_misses{0};
   std::uint64_t withheld{0};
   std::uint64_t cold_withheld{0};
-  std::uint64_t initial_ticks{0};
   std::uint64_t failed{0};
   std::uint64_t published{0};
   std::size_t shift0{0};
@@ -669,7 +655,7 @@ void ReadWorkers(std::string& cpus, std::string& policies) {
 
 std::string CsvHeader() {
   return "combination,window_s,online_ticks,solve_p50_ms,solve_p99_ms,solve_max_ms,over_period,"
-         "online_overruns,standing_overruns,deadline_misses,withheld,cold_withheld,initial_ticks,"
+         "overruns,deadline_misses,withheld,cold_withheld,"
          "failed,"
          "published,shift0,shift1,shift2,shift3plus,cold,injected,mean_shift_nodes,period_in_nodes,"
          "malloc_groups,"
@@ -686,9 +672,8 @@ std::string CsvHeader() {
 std::string CsvRow(const Summary& s) {
   std::ostringstream o;
   o << s.name << ',' << s.window_s << ',' << s.online_ticks << ',' << s.p50_ms << ',' << s.p99_ms
-    << ',' << s.max_ms << ',' << s.over_period << ',' << s.online_overruns << ','
-    << s.standing_overruns << ',' << s.deadline_misses << ',' << s.withheld << ','
-    << s.cold_withheld << ',' << s.initial_ticks << ',' << s.failed << ',' << s.published << ','
+    << ',' << s.max_ms << ',' << s.over_period << ',' << s.overruns << ',' << s.deadline_misses
+    << ',' << s.withheld << ',' << s.cold_withheld << ',' << s.failed << ',' << s.published << ','
     << s.shift0 << ',' << s.shift1 << ',' << s.shift2 << ',' << s.shift3plus << ',' << s.cold << ','
     << s.injected << ',' << s.mean_shift << ',' << s.period_in_nodes << ',' << s.malloc_groups
     << ',' << s.malloc_mismatched_groups << ',' << s.malloc_judged_groups << ','
@@ -870,8 +855,8 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   }
   const bool disturbed = scenario == Scenario::kWalkDisturbed;
 
-  // The handler: the OCP fixture with the integrator, the online budget and
-  // the publish rules of the settings, standing solve as shipped.
+  // The handler: the OCP fixture with the integrator, the one budget and
+  // the publish rules of the settings.
   rtc::mpc::KinodynamicOCPConfig ocp_cfg;
   ASSERT_EQ(
       rtc::mpc::LoadKinodynamicOCPConfig(tu::G1KinodynamicNode(integrator), handler_, ocp_cfg),
@@ -881,9 +866,7 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   solver.dual_tol = 1e-4;
   solver.mu_init = 1e-2;
   solver.max_iters = set.max_iters;
-  solver.max_al_iters = 20;
-  solver.max_initial_iters = std::max(300, set.max_iters);
-  solver.max_online_al_iters = set.al_iters;
+  solver.max_al_iters = set.al_iters;
   solver.publish_deadline_ms = set.deadline_ms;
   solver.publish_prim_tol = set.prim_tol;
   solver.num_threads = set.threads;
@@ -892,7 +875,7 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   const Clock::time_point t0 = Clock::now();
   const auto period_ns = static_cast<std::uint64_t>(1e9 / hz + 0.5);
   const auto capacity =
-      static_cast<std::size_t>((set.seconds + kStandingTimeoutS + 30.0) * hz) + 1000;
+      static_cast<std::size_t>((set.seconds + kFirstPlanTimeoutS + 30.0) * hz) + 1000;
   auto soak = std::make_unique<SoakHandler>(std::make_unique<rtc::mpc::KinodynamicMPC>(ocp_cfg),
                                             capacity, t0, period_ns, disturbed);
   {
@@ -995,7 +978,7 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
     mgr.WriteState(q_write, v_write, now_ns);
 
     if (!window_open) {
-      if (soak_raw->OnlineSeen()) {
+      if (plans >= 1) {
         if (walk) {
           manager_raw->RequestGait(2);
           cmd.v_x = 0.5;
@@ -1004,7 +987,7 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
         }
         window_open = true;
         window_start = now;
-      } else if (now - t0 > std::chrono::duration<double>(kStandingTimeoutS)) {
+      } else if (now - t0 > std::chrono::duration<double>(kFirstPlanTimeoutS)) {
         break;
       }
     } else if (now - window_start >= std::chrono::duration<double>(set.seconds)) {
@@ -1033,7 +1016,7 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   }
   EXPECT_EQ(worker_cpus, expected_cpus.empty() ? std::string("-") : expected_cpus)
       << name << ": the workers at the end of the run are not the pinned pool";
-  ASSERT_TRUE(window_open) << name << ": no online tick within " << kStandingTimeoutS << " s";
+  ASSERT_TRUE(window_open) << name << ": no plan published within " << kFirstPlanTimeoutS << " s";
 
   // ── Metrics over the window ──────────────────────────────────────────────
   const std::vector<TickRecord> records = soak_raw->Records();
@@ -1041,11 +1024,9 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
   Summary s;
   s.name = name;
   s.window_s = set.seconds;
-  s.online_overruns = thread.OnlineOverrunCount();
-  s.standing_overruns = thread.StandingOverrunCount();
+  s.overruns = thread.OverrunCount();
   s.deadline_misses = thread.DeadlineMissCount();
   s.withheld = thread.WithheldCount();
-  s.initial_ticks = thread.InitialSolveTicks();
   s.failed = thread.FailedSolves();
   s.cold_withheld = thread.ColdWithheldCount();
   s.applied_policy = soak_raw->AppliedPolicy();
@@ -1092,7 +1073,7 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
     if (!r.ok) {
       ++failures[{r.error, r.phase_error}];
     }
-    if (r.t < w0 || !r.ok || r.initial) {
+    if (r.t < w0 || !r.ok) {
       continue;
     }
     if (++s.online_ticks == 1) {
@@ -1199,9 +1180,9 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
       "period %zu\n"
       "[report]   MPC thread %s priority %d on cpus %s, writer cpu %d, OMP_NUM_THREADS %s; "
       "%d solver thread(s), workers on cpus %s (%s)\n"
-      "[report]   overruns online %llu standing %llu; deadline misses %llu, withheld %llu (cold "
+      "[report]   overruns %llu; deadline misses %llu, withheld %llu (cold "
       "%llu), "
-      "standing ticks %llu, failed %llu%s, published %llu\n"
+      "failed %llu%s, published %llu\n"
       "[report]   shifts 0:%zu 1:%zu 2:%zu 3+:%zu cold:%zu (injected holds %zu), mean %.2f nodes "
       "(period %.2f)\n"
       "[report]   mallocs: %zu (shift, iterations) groups, %zu not constant%s; late growth judged "
@@ -1216,13 +1197,12 @@ TEST_P(KinodynamicMpcSoak, RunsWithoutFailureAllocationDriftOrHeapGrowth) {
       s.p50_ms, s.p99_ms, s.max_ms, period_ms, s.over_period, s.applied_policy.c_str(),
       s.applied_priority, s.applied_cpus.c_str(), s.writer_cpu, s.omp_threads.c_str(),
       s.solver_threads, s.worker_cpus.c_str(), s.worker_policies.c_str(),
-      static_cast<unsigned long long>(s.online_overruns),
-      static_cast<unsigned long long>(s.standing_overruns),
+      static_cast<unsigned long long>(s.overruns),
       static_cast<unsigned long long>(s.deadline_misses),
       static_cast<unsigned long long>(s.withheld), static_cast<unsigned long long>(s.cold_withheld),
-      static_cast<unsigned long long>(s.initial_ticks), static_cast<unsigned long long>(s.failed),
-      failure_kinds.c_str(), static_cast<unsigned long long>(s.published), s.shift0, s.shift1,
-      s.shift2, s.shift3plus, s.cold, s.injected, s.mean_shift, s.period_in_nodes, s.malloc_groups,
+      static_cast<unsigned long long>(s.failed), failure_kinds.c_str(),
+      static_cast<unsigned long long>(s.published), s.shift0, s.shift1, s.shift2, s.shift3plus,
+      s.cold, s.injected, s.mean_shift, s.period_in_nodes, s.malloc_groups,
       s.malloc_mismatched_groups, mismatches.c_str(), s.malloc_judged_groups,
       s.malloc_drifting_groups, s.malloc_unjudged_late_growth, drifts.c_str(),
       s.mallocs_per_iteration, s.heap_warm, s.heap_end, s.heap_growth, s.heap_excursion,

@@ -21,7 +21,6 @@ TEST(WbcReference, TriviallyCopyableAndInvalidByDefault) {
   EXPECT_EQ(ref.plan_id, 0u);
   EXPECT_EQ(ref.contact_mask, 0u);
   EXPECT_FALSE(ref.converged);
-  EXPECT_FALSE(ref.initial_solve);
   EXPECT_EQ(ref.solve_duration_ns, 0u);
   EXPECT_DOUBLE_EQ(ref.q_ref[0], 0.0);
   EXPECT_DOUBLE_EQ(ref.wrench_ref[kMaxContactVars - 1], 0.0);
@@ -55,7 +54,6 @@ TEST(WbcReference, MemcpyRoundTripKeepsEveryField) {
   src.schedule_epoch = 27;
   src.solve_duration_ns = 0xFFFFFFFFFFFFFFF3ULL;
   src.converged = true;
-  src.initial_solve = true;
   src.progress = 0.25;
   src.beyond_horizon = true;
   src.valid = true;
@@ -88,7 +86,6 @@ TEST(WbcReference, MemcpyRoundTripKeepsEveryField) {
   EXPECT_EQ(dst.schedule_epoch, 27u);
   EXPECT_EQ(dst.solve_duration_ns, 0xFFFFFFFFFFFFFFF3ULL);
   EXPECT_TRUE(dst.converged);
-  EXPECT_TRUE(dst.initial_solve);
   EXPECT_DOUBLE_EQ(dst.progress, 0.25);
   EXPECT_TRUE(dst.beyond_horizon);
   EXPECT_TRUE(dst.valid);

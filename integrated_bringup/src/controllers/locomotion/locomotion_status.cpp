@@ -27,7 +27,6 @@ constexpr const char* kKeyNames[kLocomotionStatusKeyCount] = {
     "plan_id",
     "policy_age_ms",
     "converged",
-    "initial_solve",
     "contact_mask",
     "schedule_epoch",
     "state_epoch",
@@ -167,8 +166,6 @@ void FormatLocomotionStatusValue(LocomotionStatusKey key, const LocomotionDiagLo
       return real(s.plan_id == 0 ? -1.0 : s.policy_age_us * 1e-3);
     case Key::kConverged:
       return flag(s.mpc_converged);
-    case Key::kInitialSolve:
-      return flag(s.mpc_initial_solve);
     case Key::kContactMask:
       return u64(s.contact_mask);
     case Key::kScheduleEpoch:
