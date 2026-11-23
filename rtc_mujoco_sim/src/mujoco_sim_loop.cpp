@@ -892,7 +892,7 @@ void MuJoCoSimulator::HandleReset() noexcept {
   step_count_.store(0, std::memory_order_relaxed);
   sim_time_sec_.store(0.0, std::memory_order_relaxed);
   rtf_.store(0.0, std::memory_order_relaxed);
-  sync_armed_.store(false, std::memory_order_relaxed);  // the command stream restarts
+  sync_armed_.store(false, std::memory_order_release);  // the command stream restarts
   const auto now = std::chrono::steady_clock::now();
   rtf_wall_start_ = now;
   rtf_sim_start_ = data_->time;
@@ -1168,14 +1168,16 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
   // releases those cores in the first place.
   (void)rtc::ApplyThreadConfigVerbose(rtc::SelectThreadConfigs().sim_thread);
 
-  const auto timeout = std::chrono::milliseconds(
-      static_cast<int64_t>(cfg_.sync_timeout_ms > 0.0 ? cfg_.sync_timeout_ms : 50.0));
-  // The wait once a command has arrived (Config::sync_timeout_armed_ms).
+  // Whole milliseconds, rounded up: a wait in (0, 1) ms is a 1 ms wait, not none.
+  const auto wait_ms = [](double ms) {
+    return std::chrono::ceil<std::chrono::milliseconds>(
+        std::chrono::duration<double, std::milli>(ms));
+  };
+  const auto timeout = wait_ms(cfg_.sync_timeout_ms > 0.0 ? cfg_.sync_timeout_ms : 50.0);
+  // The wait once every awaited command has arrived (Config::sync_timeout_armed_ms).
   const auto armed_timeout =
-      cfg_.sync_timeout_armed_ms > 0.0
-          ? std::chrono::milliseconds(static_cast<int64_t>(cfg_.sync_timeout_armed_ms))
-          : timeout;
-  sync_armed_.store(false, std::memory_order_relaxed);
+      cfg_.sync_timeout_armed_ms > 0.0 ? wait_ms(cfg_.sync_timeout_armed_ms) : timeout;
+  sync_armed_.store(false, std::memory_order_release);
   uint64_t step = 0;
 
   // The step waits for a command from EVERY robot group (issue #566). The
@@ -1213,9 +1215,9 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     const auto now = std::chrono::steady_clock::now();
     if (now - last_partial_report >= std::chrono::seconds(1)) {
       fprintf(stderr,
-              "[MuJoCoSimulator] WARN: %lu step(s) ran on sync_timeout_ms without a command "
-              "from %s — set wait_for_command: false on a group the controller does not "
-              "command\n",
+              "[MuJoCoSimulator] WARN: %lu step(s) ran on the command wait's timeout without a "
+              "command from %s — set wait_for_command: false on a group the controller does "
+              "not command\n",
               static_cast<unsigned long>(n - partial_reported), missing.c_str());
       last_partial_report = now;
       partial_reported = n;
@@ -1332,19 +1334,16 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     if (stop.stop_requested() || !running_.load()) {
       break;
     }
-    if (!all_commands_in()) {
+    // The armed wait's verdict for the NEXT step, taken before ApplyCommand
+    // clears the flags and stored after the step (below): armed while every
+    // awaited command keeps arriving, off after any expiry — none at all (the
+    // controller is gone or stalled: the short wait is the old free-run) or
+    // some (a group nobody commands would otherwise make every step the long
+    // wait) — until the next complete step arms it again.
+    const bool all_in = all_commands_in();
+    const bool none_in = !robot_idx.empty() && !any_command_in();
+    if (!all_in) {
       report_partial_timeout();
-    }
-    // The armed wait: on from the first command, off after one expiry with no
-    // command at all (the controller is gone or stalled; the short wait is the
-    // old free-run) until the next command arms it again.
-    if (!robot_idx.empty()) {
-      if (any_command_in()) {
-        sync_armed_.store(true, std::memory_order_relaxed);
-      } else {
-        no_command_timeout_steps_.fetch_add(1, std::memory_order_relaxed);
-        sync_armed_.store(false, std::memory_order_relaxed);
-      }
     }
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
       HandleReset();  // drops this step's commands — computed on the pre-reset state
@@ -1389,6 +1388,12 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
     ++step;
     step_count_.store(step, std::memory_order_relaxed);
     sim_time_sec_.store(data_->time, std::memory_order_relaxed);
+    if (none_in) {
+      no_command_timeout_steps_.fetch_add(1, std::memory_order_relaxed);
+    }
+    // Release: a reader that sees the armed flag sees this step's count and
+    // the timeout count with it.
+    sync_armed_.store(all_in, std::memory_order_release);
 
     RecordClockSample(step);
 

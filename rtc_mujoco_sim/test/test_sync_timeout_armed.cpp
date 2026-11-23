@@ -41,11 +41,14 @@ TEST(SyncTimeoutArmed, OffItIsTheShortWaitThroughoutAndEveryTimeoutStepCounts) {
   sim.SetCommand(0, {0.0, 0.0});
   EXPECT_TRUE(rtc::testing::WaitUntil([&] { return sim.SyncArmed(); }, 2s))
       << "a command arms the wait even when it is the same length";
+  // Twenty more steps within the deadline: the armed wait is the short one (a
+  // long one would take 20 × 400 ms). A loaded host makes this slower, never
+  // longer than the deadline.
   const auto steps = sim.StepCount();
-  std::this_thread::sleep_for(100ms);
-  EXPECT_GE(sim.StepCount(), steps + 20) << "the armed wait is the short one";
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return sim.StepCount() >= steps + 20; }, 2s))
+      << "the armed wait is the short one";
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return sim.NoCommandTimeoutSteps() >= 40; }, 2s));
   sim.Stop();
-  EXPECT_GE(sim.NoCommandTimeoutSteps(), 40U);
   EXPECT_LE(sim.NoCommandTimeoutSteps(), sim.StepCount())
       << "a step with the command in is not a timeout step";
 }
@@ -63,6 +66,8 @@ TEST(SyncTimeoutArmed, TheLongWaitStartsWithTheFirstCommandAndOneExpiryDisarmsIt
 
   sim.SetCommand(0, {0.0, 0.0});
   EXPECT_TRUE(rtc::testing::WaitUntil([&] { return sim.SyncArmed(); }, 2s));
+  // The flag is stored after the step that armed it (acquire / release), so
+  // the counts read here are that step's.
   const auto armed_at = sim.StepCount();
   const auto timeouts_at = sim.NoCommandTimeoutSteps();
   std::this_thread::sleep_for(150ms);
@@ -90,7 +95,8 @@ TEST(SyncTimeoutArmed, ACommandReArmsAndAResetDisarms) {
   sim.SetCommand(0, {0.0, 0.0});
   EXPECT_TRUE(rtc::testing::WaitUntil([&] { return sim.SyncArmed(); }, 2s)) << "re-armed";
   sim.RequestReset();
-  // The reset lands on the sim thread within the long wait it cuts short.
+  // The reset is served after the long wait it landed in (a reset never cuts
+  // the wait short, issue #566), then disarms it.
   EXPECT_TRUE(rtc::testing::WaitUntil([&] { return !sim.SyncArmed(); }, 2s)) << "disarmed";
   const auto after_reset = sim.StepCount();
   EXPECT_TRUE(rtc::testing::WaitUntil([&] { return sim.StepCount() >= after_reset + 20; }, 2s))

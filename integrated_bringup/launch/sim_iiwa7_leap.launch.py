@@ -134,6 +134,10 @@ def launch_setup(context, *args, **kwargs):
     if sync_timeout_ms != "":
         sim_overrides["sync_timeout_ms"] = float(sync_timeout_ms)
 
+    sync_timeout_armed_ms = LaunchConfiguration("sync_timeout_armed_ms").perform(context)
+    if sync_timeout_armed_ms != "":
+        sim_overrides["sync_timeout_armed_ms"] = float(sync_timeout_armed_ms)
+
     max_rtf = LaunchConfiguration("max_rtf").perform(context)
     if max_rtf != "":
         sim_overrides["max_rtf"] = float(max_rtf)
@@ -466,6 +470,17 @@ def generate_launch_description():
         ),
     )
 
+    sync_timeout_armed_ms_arg = DeclareLaunchArgument(
+        "sync_timeout_armed_ms",
+        default_value="",
+        description=(
+            "Override sync_timeout_armed_ms from YAML. "
+            "Empty -> use YAML value (0.0 = same as sync_timeout_ms). "
+            "Command wait per step once every command has arrived, in milliseconds; "
+            "any expiry disarms it"
+        ),
+    )
+
     max_rtf_arg = DeclareLaunchArgument(
         "max_rtf",
         default_value="",
@@ -628,6 +643,7 @@ def generate_launch_description():
             enable_viewer_arg,
             viewer_input_enabled_arg,
             sync_timeout_ms_arg,
+            sync_timeout_armed_ms_arg,
             max_rtf_arg,
             use_yaml_servo_gains_arg,
             sim_lanes_arg,

@@ -131,9 +131,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
     sim_status_pub_ =
         create_publisher<std_msgs::msg::Float64MultiArray>("/sim/status", rclcpp::QoS(1));
-    // The simulator's clock, one message per step from the first robot
-    // group's state publish (the step's sim time, seconds) — for a tool that
-    // times its script by sim time. Message stamps elsewhere stay wall time.
+    // The simulator's clock: the step's sim time [s], with the first robot
+    // group's state publish (so at that group's state_publish_divisor) — for
+    // a tool that times its script by sim time. Message stamps elsewhere stay
+    // wall time.
     sim_time_pub_ = create_publisher<std_msgs::msg::Float64>("/sim/time", rclcpp::QoS(1));
 
     // The external wrench report. A report that cannot name its body, or has

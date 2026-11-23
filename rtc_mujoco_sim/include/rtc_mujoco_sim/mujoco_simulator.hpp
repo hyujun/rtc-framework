@@ -655,12 +655,15 @@ class MuJoCoSimulator {
     std::string window_title;  // viewer window title (empty = "MuJoCo Simulator")
     bool enable_viewer{true};
     double sync_timeout_ms{50.0};  // command wait timeout
-    /// The command wait once a command has arrived (armed) — the controller
-    /// is known to be there, so a step may wait longer for a tick that is
-    /// itself waiting (an MPC solve in lock-step). 0 = sync_timeout_ms. One
-    /// expiry disarms the wait (back to sync_timeout_ms until the next
-    /// command), so a controller that went away does not slow the simulator
-    /// to a crawl; a reset disarms it too.
+    /// The command wait once every awaited group's command has arrived in a
+    /// step (armed) — the controller is known to be there, so a step may wait
+    /// longer for a tick that is itself waiting (an MPC solve in lock-step).
+    /// 0 = sync_timeout_ms. Any expiry disarms it (back to sync_timeout_ms
+    /// until the next complete step) — a controller that went away, or a
+    /// group nobody commands, does not slow the simulator to a crawl; a
+    /// reset disarms it too. A request that lands during the wait (pause,
+    /// reset, a ball, a new max_rtf) is served after it, so with a long value
+    /// the control plane answers up to that much later.
     double sync_timeout_armed_ms{0.0};
     double max_rtf{0.0};  // 0.0 = unlimited
     double physics_timestep{0.0};
@@ -1256,10 +1259,11 @@ class MuJoCoSimulator {
     return no_command_timeout_steps_.load(std::memory_order_relaxed);
   }
 
-  /// Whether the next command wait is the armed one (sim thread's view,
-  /// relaxed; for tests and the status log).
+  /// Whether the next command wait is the armed one. Acquire: a reader that
+  /// sees it set sees the step count and the timeout count of the step that
+  /// set it.
   [[nodiscard]] bool SyncArmed() const noexcept {
-    return sync_armed_.load(std::memory_order_relaxed);
+    return sync_armed_.load(std::memory_order_acquire);
   }
 
   [[nodiscard]] double SimTimeSec() const noexcept { return sim_time_sec_.load(); }

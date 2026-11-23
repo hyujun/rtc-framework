@@ -472,8 +472,8 @@ def generate_launch_description():
         description=(
             "Override sync_timeout_armed_ms from YAML. "
             "Empty -> use YAML value (0.0 = same as sync_timeout_ms). "
-            "Command wait per step once a command has arrived, in milliseconds; "
-            "one expiry without a command disarms it"
+            "Command wait per step once every command has arrived, in milliseconds; "
+            "any expiry disarms it"
         ),
     )
 
