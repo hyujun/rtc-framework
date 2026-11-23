@@ -889,5 +889,158 @@ TEST_F(MpcSolutionManagerTest, TheSampleCarriesTheSolvesProvenance) {
   EXPECT_EQ(out.prim_inf_node, 1);
 }
 
+// ── Delivery delay ──────────────────────────────────────────────────────────
+//
+// A plan is taken `delay` after the state it was computed from (the file
+// comment), so its policy age at acceptance is the delay whatever the solve
+// took. Without a delay (the default) nothing above changes — every earlier
+// test runs on that path.
+
+constexpr int64_t kDelay = 5 * static_cast<int64_t>(kMs);
+
+TEST_F(MpcSolutionManagerTest, TheDeliveryDelayIsOffByDefaultAndNeverNegative) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  EXPECT_EQ(mgr_.DeliveryDelayNs(), 0);
+  mgr_.SetDeliveryDelayNs(-3);
+  EXPECT_EQ(mgr_.DeliveryDelayNs(), 0);
+  mgr_.SetDeliveryDelayNs(kDelay);
+  EXPECT_EQ(mgr_.DeliveryDelayNs(), kDelay);
+  EXPECT_EQ(mgr_.PendingPlanId(), 0u);
+  EXPECT_EQ(mgr_.SupersededPendingCount(), 0u);
+}
+
+// The plan published from a state at `obs` is pending at obs + delay − 1 and
+// taken at obs + delay, with that age (a `>` in place of the `≥` fails here).
+TEST_F(MpcSolutionManagerTest, ADelayedPlanIsTakenWhenItFallsDueNotBefore) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.SetDeliveryDelayNs(kDelay);
+  const uint64_t obs = 100 * kMs;
+  const uint64_t id = mgr_.PublishSolution(MakeSolution(obs));
+  WbcReference out{};
+  EXPECT_FALSE(mgr_.SampleReference(q_curr_, v_curr_, obs + kDelay - 1, out));
+  EXPECT_EQ(mgr_.PendingPlanId(), id) << "held back, not refused";
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_FALSE(mgr_.HasEverReceivedSolution());
+
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, obs + kDelay, out));
+  EXPECT_EQ(mgr_.PendingPlanId(), 0u);
+  EXPECT_EQ(out.plan_id, id);
+  EXPECT_EQ(out.receive_stamp_ns, obs + kDelay);
+  EXPECT_EQ(mgr_.ActivePolicyAgeNs(), kDelay);
+  EXPECT_EQ(mgr_.SupersededPendingCount(), 0u);
+}
+
+// While the new plan is pending the consumer keeps sampling the active one;
+// the new plan replaces it only when due.
+TEST_F(MpcSolutionManagerTest, APendingPlanLeavesTheActiveOneInPlaceUntilDue) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.SetDeliveryDelayNs(kDelay);
+  const uint64_t a = mgr_.PublishSolution(MakeSolution(100 * kMs));
+  WbcReference out{};
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 100 * kMs + kDelay, out));
+  ASSERT_EQ(out.plan_id, a);
+
+  const uint64_t b = mgr_.PublishSolution(MakeSolution(103 * kMs));
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 103 * kMs + kDelay - 1, out));
+  EXPECT_EQ(out.plan_id, a) << "the pending plan is not sampled";
+  EXPECT_EQ(mgr_.PendingPlanId(), b);
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 103 * kMs + kDelay, out));
+  EXPECT_EQ(out.plan_id, b);
+  EXPECT_EQ(mgr_.ActivePolicyAgeNs(), kDelay);
+  EXPECT_EQ(mgr_.EarlierPlanId(), a) << "the replaced plan is the earlier one, as without a delay";
+}
+
+// A plan already older than the delay when it arrives is taken at once (its
+// age is then whatever it is), and so is one whose stamp is ahead of the
+// clock — the age rules judge that one.
+TEST_F(MpcSolutionManagerTest, APlanAlreadyPastTheDelayIsTakenAtOnce) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.SetDeliveryDelayNs(kDelay);
+  const uint64_t late = mgr_.PublishSolution(MakeSolution(100 * kMs));
+  WbcReference out{};
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 100 * kMs + 2 * kDelay, out));
+  EXPECT_EQ(out.plan_id, late);
+  EXPECT_EQ(mgr_.ActivePolicyAgeNs(), 2 * kDelay);
+
+  const uint64_t ahead = mgr_.PublishSolution(MakeSolution(200 * kMs));
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 199 * kMs, out));
+  EXPECT_EQ(out.plan_id, ahead);
+  EXPECT_EQ(mgr_.PendingPlanId(), 0u);
+}
+
+// The pending plan is judged when it falls due: a state epoch bumped
+// meanwhile refuses it (counted as such), and nothing is installed.
+TEST_F(MpcSolutionManagerTest, APendingPlanOfAnOldStateEpochIsRefusedWhenDue) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.SetDeliveryDelayNs(kDelay);
+  const uint64_t id = mgr_.PublishSolution(MakeSolution(100 * kMs));
+  WbcReference out{};
+  EXPECT_FALSE(mgr_.SampleReference(q_curr_, v_curr_, 101 * kMs, out));
+  ASSERT_EQ(mgr_.PendingPlanId(), id);
+  mgr_.SetStateEpoch(1);
+  EXPECT_FALSE(mgr_.SampleReference(q_curr_, v_curr_, 100 * kMs + kDelay, out));
+  EXPECT_EQ(mgr_.PendingPlanId(), 0u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_EQ(mgr_.StateEpochRejections(), 1u);
+}
+
+// Disable → enable drops the pending plan with the active one: it is never
+// taken, and the next published plan is.
+TEST_F(MpcSolutionManagerTest, AReEnableDropsThePendingPlan) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.SetDeliveryDelayNs(kDelay);
+  const uint64_t id = mgr_.PublishSolution(MakeSolution(100 * kMs));
+  WbcReference out{};
+  EXPECT_FALSE(mgr_.SampleReference(q_curr_, v_curr_, 101 * kMs, out));
+  ASSERT_EQ(mgr_.PendingPlanId(), id);
+  mgr_.SetEnabled(false);
+  mgr_.SetEnabled(true);
+  EXPECT_FALSE(mgr_.SampleReference(q_curr_, v_curr_, 100 * kMs + kDelay, out));
+  EXPECT_EQ(mgr_.PendingPlanId(), 0u);
+  EXPECT_EQ(mgr_.ActivePlanId(), 0u);
+  EXPECT_FALSE(mgr_.SampleReference(q_curr_, v_curr_, 100 * kMs + 2 * kDelay, out))
+      << "the dropped plan does not come back";
+
+  const uint64_t next = mgr_.PublishSolution(MakeSolution(120 * kMs));
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 120 * kMs + kDelay, out));
+  EXPECT_EQ(out.plan_id, next);
+}
+
+// A plan published while another is pending waits its turn: the pending one
+// is taken when due (the overtaking counted), the newer one at the tick after
+// — once due itself.
+TEST_F(MpcSolutionManagerTest, APlanPublishedBehindAPendingOneIsCountedAndTakenNext) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.SetDeliveryDelayNs(kDelay);
+  const uint64_t a = mgr_.PublishSolution(MakeSolution(100 * kMs));
+  WbcReference out{};
+  EXPECT_FALSE(mgr_.SampleReference(q_curr_, v_curr_, 101 * kMs, out));
+  ASSERT_EQ(mgr_.PendingPlanId(), a);
+  const uint64_t b = mgr_.PublishSolution(MakeSolution(102 * kMs));
+
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 100 * kMs + kDelay, out));
+  EXPECT_EQ(out.plan_id, a) << "the pending plan first";
+  EXPECT_EQ(mgr_.SupersededPendingCount(), 1u);
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 100 * kMs + kDelay + 1, out));
+  EXPECT_EQ(out.plan_id, a) << "the newer plan is not due yet";
+  EXPECT_EQ(mgr_.PendingPlanId(), b);
+  ASSERT_TRUE(mgr_.SampleReference(q_curr_, v_curr_, 102 * kMs + kDelay, out));
+  EXPECT_EQ(out.plan_id, b);
+  EXPECT_EQ(mgr_.ActivePolicyAgeNs(), kDelay);
+  EXPECT_EQ(mgr_.SupersededPendingCount(), 1u);
+}
+
+// ComputeReference (the fixed-base path) honours the delay the same way.
+TEST_F(MpcSolutionManagerTest, ComputeReferenceHonoursTheDeliveryDelay) {
+  mgr_.Init(MakeConfig(true, 1000), kNq, kNv, kNc);
+  mgr_.SetDeliveryDelayNs(kDelay);
+  mgr_.PublishSolution(MakeSolution(100 * kMs));
+  EXPECT_FALSE(mgr_.ComputeReference(q_curr_, v_curr_, 100 * kMs + kDelay - 1, q_ref_, v_ref_,
+                                     a_ff_, lambda_ref_, u_fb_, meta_));
+  EXPECT_TRUE(mgr_.ComputeReference(q_curr_, v_curr_, 100 * kMs + kDelay, q_ref_, v_ref_, a_ff_,
+                                    lambda_ref_, u_fb_, meta_));
+  EXPECT_EQ(mgr_.StaleCount(), 0);
+}
+
 }  // namespace
 }  // namespace rtc::mpc

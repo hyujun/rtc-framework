@@ -158,6 +158,8 @@ void MPCSolutionManager::Init(const YAML::Node& cfg, const WbLayout& layout,
   dimension_rejections_.store(0, std::memory_order_relaxed);
   gain_node_clamps_.store(0, std::memory_order_relaxed);
   feedback_skips_.store(0, std::memory_order_relaxed);
+  superseded_pending_.store(0, std::memory_order_relaxed);
+  pending_ = nullptr;
   seen_enable_generation_ = enable_generation_.load(std::memory_order_acquire);
   written_enable_generation_ = seen_enable_generation_;
   first_sequence_after_enable_ = 0;
@@ -292,7 +294,7 @@ bool MPCSolutionManager::Tick(const Eigen::Ref<const Eigen::VectorXd>& q_curr,
   // earlier one (RejectActivePlan).
   const uint32_t model_epoch = model_epoch_.load(std::memory_order_acquire);
   const uint32_t state_epoch = state_epoch_.load(std::memory_order_acquire);
-  const MPCSolution* fresh = solution_buffer_.TryAcquireLatest();
+  const MPCSolution* fresh = TakeDuePlan(now_ns);
   bool accepted = false;
   if (fresh != nullptr) {
     if (fresh->model_epoch != model_epoch) {
@@ -489,6 +491,34 @@ void MPCSolutionManager::DropActivePlan() noexcept {
     h.plan.Clear();
     h.receive_stamp_ns = 0;
   }
+  pending_ = nullptr;
+}
+
+const MPCSolution* MPCSolutionManager::TakeDuePlan(uint64_t now_ns) noexcept {
+  // Due: the consumer's clock has reached observation + delay. A stamp ahead
+  // of the clock (a negative age) is due at once — the age rules judge it.
+  const auto due = [this, now_ns](const MPCSolution& s) {
+    const int64_t age_ns =
+        static_cast<int64_t>(now_ns) - static_cast<int64_t>(s.observation_stamp_ns);
+    return age_ns < 0 || age_ns >= delivery_delay_ns_;
+  };
+  if (pending_ != nullptr) {
+    if (!due(*pending_)) {
+      return nullptr;
+    }
+    if (solution_buffer_.HasNewData()) {
+      Bump(superseded_pending_);  // the producer ran ahead of the delivery
+    }
+    const MPCSolution* ready = pending_;
+    pending_ = nullptr;
+    return ready;
+  }
+  const MPCSolution* fresh = solution_buffer_.TryAcquireLatest();
+  if (fresh != nullptr && delivery_delay_ns_ > 0 && !due(*fresh)) {
+    pending_ = fresh;  // the reading slot stays ours until the next acquire
+    return nullptr;
+  }
+  return fresh;
 }
 
 void MPCSolutionManager::EvictIfExpired(uint64_t now_ns, uint32_t model_epoch,
