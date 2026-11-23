@@ -124,10 +124,10 @@ def _overlay_touches(overlay_path: str | None, *dotted_keys: str) -> list[str]:
     return sorted(set(found))
 
 
-def _mpc_wait_timeout_s() -> float:
-    """The locomotion controller's shipped `mpc.sync.wait_timeout_s` (2.0 when
-    the file has none). Under lock-step the launch refuses an overlay that
-    changes it, so the shipped value is the one in force."""
+def _shipped_mpc_sync() -> dict:
+    """The locomotion controller's shipped `mpc.sync` section ({} when the file
+    has none). Under lock-step the launch refuses an overlay that changes its
+    mode or wait, so the shipped values are the ones in force."""
     import yaml
 
     path = os.path.join(
@@ -141,13 +141,17 @@ def _mpc_wait_timeout_s() -> float:
     try:
         with open(path) as f:
             doc = yaml.safe_load(f) or {}
-        return float(
-            doc.get("locomotion_controller", {})
-            .get("mpc", {})
-            .get("sync", {})
-            .get("wait_timeout_s", 2.0)
-        )
-    except (OSError, AttributeError, TypeError, ValueError):
+        sync = doc.get("locomotion_controller", {}).get("mpc", {}).get("sync", {})
+        return sync if isinstance(sync, dict) else {}
+    except (OSError, AttributeError, yaml.YAMLError):
+        return {}
+
+
+def _mpc_wait_timeout_s() -> float:
+    """The shipped `mpc.sync.wait_timeout_s` (2.0 when the file has none)."""
+    try:
+        return float(_shipped_mpc_sync().get("wait_timeout_s", 2.0))
+    except (TypeError, ValueError):
         return 2.0
 
 
@@ -286,40 +290,49 @@ def launch_setup(context, *args, **kwargs):
     if mpc_threads is not None:
         ctrl_overrides["locomotion_controller.mpc.solver.num_threads"] = mpc_threads
 
-    # `mpc_sync` picks how the MPC thread is clocked: free_run (the wall clock,
-    # as on the robot) or lockstep (the RT tick triggers and waits for the
-    # solve; the simulator waits for the tick). Lock-step needs the simulator's
-    # armed command wait to outlast the controller's solve wait, else the sim
-    # steps on without the command the tick is still computing.
+    # `mpc_sync` picks how the MPC thread is clocked: lockstep (the default in
+    # the sim: the RT tick triggers and waits for the solve; the simulator
+    # waits for the tick, so the real-time factor follows the solve) or
+    # free_run (the wall clock, as on the robot — the shipped YAML's value, for
+    # the robot launches). Lock-step needs the simulator's armed command wait
+    # to outlast the controller's solve wait, else the sim steps on without
+    # the command the tick is still computing. The mode in force is this
+    # argument, or the shipped YAML's when the argument is empty; an overlay
+    # may not move the mode or either timeout (the check would be blind).
     mpc_sync = LaunchConfiguration("mpc_sync").perform(context)
+    if mpc_sync not in ("", "free_run", "lockstep"):
+        raise RuntimeError(f"mpc_sync must be free_run or lockstep, got '{mpc_sync}'")
+    touched = _overlay_touches(sim_overlay, "locomotion_controller.mpc.sync.mode")
+    if touched:
+        raise RuntimeError(
+            f"set {touched} with the mpc_sync launch argument, not a sim_overlay (the "
+            "launch wires the simulator's wait from it)"
+        )
     if mpc_sync != "":
-        if mpc_sync not in ("free_run", "lockstep"):
-            raise RuntimeError(f"mpc_sync must be free_run or lockstep, got '{mpc_sync}'")
         ctrl_overrides["locomotion_controller.mpc.sync.mode"] = mpc_sync
-        if mpc_sync == "lockstep":
-            # The two timeouts the check compares must be the ones the nodes
-            # read: the shipped YAML and this launch's own arguments. An
-            # overlay that moves either would make the check blind, so it is
-            # refused here.
-            touched = _overlay_touches(
-                sim_overlay,
-                "locomotion_controller.mpc.sync.wait_timeout_s",
-                "sync_timeout_armed_ms",
+    effective_sync = mpc_sync or str(_shipped_mpc_sync().get("mode", "free_run"))
+    if effective_sync == "lockstep":
+        # The two timeouts the check compares must be the ones the nodes
+        # read: the shipped YAML and this launch's own arguments.
+        touched = _overlay_touches(
+            sim_overlay,
+            "locomotion_controller.mpc.sync.wait_timeout_s",
+            "sync_timeout_armed_ms",
+        )
+        if touched:
+            raise RuntimeError(
+                f"mpc_sync lockstep: set {touched} with the launch arguments or the shipped "
+                "YAML, not a sim_overlay (the launch checks their order)"
             )
-            if touched:
-                raise RuntimeError(
-                    f"mpc_sync lockstep: set {touched} with the launch arguments or the shipped "
-                    "YAML, not a sim_overlay (the launch checks their order)"
-                )
-            armed_ms = float(sim_overrides.get("sync_timeout_armed_ms", 4000.0))
-            wait_s = _mpc_wait_timeout_s()
-            if wait_s * 1000.0 >= armed_ms:
-                raise RuntimeError(
-                    f"mpc_sync lockstep needs mpc.sync.wait_timeout_s ({wait_s}) below the "
-                    f"simulator's sync_timeout_armed_ms ({armed_ms} ms)"
-                )
-            # sim_overrides is already in sim_params (the same dict object).
-            sim_overrides["sync_timeout_armed_ms"] = armed_ms
+        armed_ms = float(sim_overrides.get("sync_timeout_armed_ms", 4000.0))
+        wait_s = _mpc_wait_timeout_s()
+        if wait_s * 1000.0 >= armed_ms:
+            raise RuntimeError(
+                f"mpc_sync lockstep needs mpc.sync.wait_timeout_s ({wait_s}) below the "
+                f"simulator's sync_timeout_armed_ms ({armed_ms} ms)"
+            )
+        # sim_overrides is already in sim_params (the same dict object).
+        sim_overrides["sync_timeout_armed_ms"] = armed_ms
 
     # Optional: override initial_controller
     initial_controller = LaunchConfiguration("initial_controller").perform(context)
@@ -668,13 +681,14 @@ def generate_launch_description():
 
     mpc_sync_arg = DeclareLaunchArgument(
         "mpc_sync",
-        default_value="",
+        default_value="lockstep",
         description=(
-            "How the MPC thread is clocked: free_run (wall clock, as on the robot) or "
-            "lockstep (the RT tick triggers and waits for each solve; the simulator waits "
-            "for the tick, so the real-time factor follows the solve). Empty -> the YAML's "
-            "mpc.sync.mode. lockstep also sets the simulator's sync_timeout_armed_ms "
-            "(4000 unless given) and refuses a wait_timeout_s at or above it"
+            "How the MPC thread is clocked: lockstep (the RT tick triggers and waits for "
+            "each solve; the simulator waits for the tick, so the real-time factor follows "
+            "the solve) or free_run (wall clock, as on the robot). Empty -> the YAML's "
+            "mpc.sync.mode (free_run). lockstep also sets the simulator's "
+            "sync_timeout_armed_ms (4000 unless given) and refuses a wait_timeout_s at or "
+            "above it; a sim_overlay may not set mpc.sync.mode"
         ),
     )
 

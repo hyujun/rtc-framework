@@ -96,7 +96,7 @@ configure 때 정하고 실행 중에는 바꾸지 않는다.
 
 `b7_loco` 의 값은 `g1_loco` 의 것을 옮긴 잠정값이다 (`mpc:` 없음 = MPC 없음). `estimator.inekf` 절은 `g1_loco` 에만 있다.
 
-**MPC lock-step** (`mpc.sync.mode: lockstep`, sim 전용 — launch `mpc_sync:=lockstep`): MPC thread 가 벽시계로 혼자 돌지 않고 RT tick 이 N = `period_nodes`·dt / tick 마다 solve 를 요청하고 (N 은 정수여야 한다) L = `delivery_ticks` tick 뒤 (0 = N) 그 solve 를 기다린 뒤 plan 을 채택한다 — plan 의 나이가 호스트 속도와 무관하게 정확히 L tick 이고, sim 은 tick 을 기다리므로 rtf 가 solve 를 따라 내려간다. controller manager 가 sim lock-step 이 아니면 (`cm_sim_time_sync` 없음 · false) configure 거부 (실기는 항상 free_run). 대기가 `wait_timeout_s` 를 넘으면 fault `mpc_wait`. free_run 에서는 publish deadline 이 막던 solve 를 lock-step 에서는 세기만 한다. 명령 필터도 벽시계 timer 가 아니라 RT tick 이 K = tick rate / `command.sample_rate_hz` tick 마다 step 한다 (K 정수 아니면 거부; stale 판정도 tick 시계) — planner 는 trigger tick 에 그 출력을 읽는다. diag 꼬리 열 `mpc_sync_lockstep` · `mpc_trigger_tick` · `mpc_wait_us` (`wbc_tick_us` 는 이 대기를 뺀 값) · `mpc_wait_count` (활성화마다 0 부터) · `mpc_pending_superseded`. sim 쪽은 `sync_timeout_armed_ms` (launch 가 4 s 로 두고 `wait_timeout_s` 가 그 아래인지 검사).
+**MPC lock-step** (`mpc.sync.mode: lockstep`, sim 전용 — `sim_g1_loco` launch 의 **기본** (`mpc_sync`, `free_run` 으로 끈다; 출하 YAML 은 실기용 free_run)): MPC thread 가 벽시계로 혼자 돌지 않고 RT tick 이 N = `period_nodes`·dt / tick 마다 solve 를 요청하고 (N 은 정수여야 한다) L = `delivery_ticks` tick 뒤 (0 = N) 그 solve 를 기다린 뒤 plan 을 채택한다 — plan 의 나이가 호스트 속도와 무관하게 정확히 L tick 이고, sim 은 tick 을 기다리므로 rtf 가 solve 를 따라 내려간다. controller manager 가 sim lock-step 이 아니면 (`cm_sim_time_sync` 없음 · false) configure 거부 (실기는 항상 free_run). 대기가 `wait_timeout_s` 를 넘으면 fault `mpc_wait`. free_run 에서는 publish deadline 이 막던 solve 를 lock-step 에서는 세기만 한다. 명령 필터도 벽시계 timer 가 아니라 RT tick 이 K = tick rate / `command.sample_rate_hz` tick 마다 step 한다 (K 정수 아니면 거부; stale 판정도 tick 시계) — planner 는 trigger tick 에 그 출력을 읽는다. diag 꼬리 열 `mpc_sync_lockstep` · `mpc_trigger_tick` · `mpc_wait_us` (`wbc_tick_us` 는 이 대기를 뺀 값) · `mpc_wait_count` (활성화마다 0 부터) · `mpc_pending_superseded`. sim 쪽은 `sync_timeout_armed_ms` (launch 가 4 s 로 두고 `wait_timeout_s` 가 그 아래인지 검사).
 
 ## 로그와 판정
 
@@ -182,11 +182,11 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
   - (c) 보행 (`walk` script): 검정 셋이 각 α 0.05 / 3 이다 — 완주의 단측 Fisher, 첫 lift-off 부터의 생존 (script 끝에서 절단, 적분 끝은 가장 이른 절단 시각) 의 RMST, `v_ratio_truth` 중앙값. 뒤 둘은 permutation 10 000 회 (seed 고정, `rtc_tools` `permutation_stats`) 이고, 추종비는 창이 있는 run 이 arm 마다 12 이상이어야 판정한다 (못 미치면 UNDECIDABLE). 하나라도 기각이면 FAIL 이다. inekf run 마다 결정론 항목도 본다 — cut 전 활성화 뒤 reset 0 · source fault 0 · online 추정의 slip 순환 0 · online = 재생 (WD-305 허용폭, 비교가 cut 전 행을 다 덮을 것 — 9 자리 로그 때문에 cut 뒤의 이산 분기는 세지 않는다) · 창이 있는 run 의 |Δ추종비| ≤ 0.02 · |Δ횡속도| ≤ 0.01 m/s.
   - 보고만: 검정의 검출력 · fault 원인 · 착지 수 · cut 전 1 s 의 online 속도 오차 · inekf 재생 지표와 cap · estimator Update 시간 · 다른 script 의 완주.
 
-dev PC 의 보행 평가는 출하 MPC 값 그대로 (overlay 없이) 2 thread · rtf 0.7 로 돈다. 출하 online 예산 (6 / AL 1, 70 ms 주기) 은 dev PC 2 thread 에서 solve p99 가 주기 안에 들고, 0.7 은 `walk_gate.py --probe` 로 고른 값이다 (그 R 과 그보다 작은 R 이 모두 나이 기준을 통과). 서 있기 평가는 rtf 1 로도 돈다. plan 나이는 sim 시간으로 재므로 rtf < 1 에서는 같은 wall 지연이 R 배로 작게 보인다 — 실시간 여유는 rtf 1 run 으로 본다. 이 PC 보다 느린 PC 나 1 thread 에서 solve 가 70 ms (wall) 를 넘으면 그 solve 는 withheld 되고, 그것이 `max_policy_age_s` 를 넘게 이어지면 plan 이 끊긴다. 그때는 `solver.publish_deadline_ms: 0.0` overlay (repo 밖) 를 주고 rtf 를 다시 고른다:
+dev PC 의 보행 평가는 출하 MPC 값 그대로 (overlay 없이) 2 thread 로, sim launch 의 기본인 **MPC lock-step** (`mpc_sync:=lockstep`, 위 설정 절) 에서 돈다: RT tick 이 solve 를 trigger 하고 L tick 뒤에 그 plan 을 쓰므로 plan 나이는 PC 속도와 무관하게 L × tick 이고, sim 의 rtf 는 solve 시간을 따라 내려간다 (`--rtf` 는 상한일 뿐이라 고를 필요가 없다 — 옛 `walk_gate.py --probe` 의 rtf 선택은 은퇴). 그래서 sim 결과는 알고리즘의 것이고 solve 시간 · 주기 여유는 제어 PC 의 soak 에서 따로 판정한다. `--mpc-sync free_run` 은 실기의 시계 (wall clock MPC thread) 를 sim 에 그대로 두는 옛 방식으로, 그때는 rtf < 1 이 같은 wall 지연을 R 배 작게 보이게 하고 느린 PC 에서는 withheld solve 가 `max_policy_age_s` 를 넘어 plan 이 끊긴다:
 
 ```bash
 repo_scripts/scripts/with_verify_hold.sh python3 integrated_bringup/tools/standing_eval/run_arms.py \
-  --out /tmp/walk --arms mpc walk walk_estop -k 3 --mpc-layout --mpc-threads 2 --rtf 0.7 \
+  --out /tmp/walk --arms mpc walk walk_estop -k 3 --mpc-layout --mpc-threads 2 \
   --lead 6 --duration 26 --runtime-yaml integrated_bringup/config/g1_loco/controllers/locomotion/runtime.yaml \
   --logging-root ~/ros2_ws/rtc_ws/logging_data --launch-arg max_log_sessions:=200
 python3 integrated_bringup/tools/standing_eval/walk_gate.py /tmp/walk \

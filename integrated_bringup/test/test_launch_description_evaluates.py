@@ -154,9 +154,12 @@ EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     ],
     "sim_g1_loco.launch.py": [
         ("sim_lanes", {"sim_lanes": "true"}),
-        # The MPC lock-step: the controller's sync mode and the simulator's
-        # armed command wait from one argument.
+        # The MPC lock-step (the default): the controller's sync mode and the
+        # simulator's armed command wait from one argument; free_run is the
+        # robot's clocking, and the empty value falls back to the YAML's.
         ("mpc_lockstep", {"enable_mpc": "true", "mpc_sync": "lockstep"}),
+        ("mpc_free_run", {"enable_mpc": "true", "mpc_sync": "free_run"}),
+        ("mpc_sync_yaml", {"enable_mpc": "true", "mpc_sync": ""}),
     ],
     "sim_b7_loco.launch.py": [
         ("sim_lanes", {"sim_lanes": "true"}),

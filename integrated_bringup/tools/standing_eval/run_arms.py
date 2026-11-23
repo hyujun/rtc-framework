@@ -72,16 +72,17 @@ a host slower than the control PCs gives the MPC the solve time per simulated
 second that a fast one would. ``max_rtf`` is a ceiling: check the sim reached
 it (the CM's timing lines report sim seconds per wall interval).
 
-``--mpc-sync {free_run,lockstep}`` passes mpc_sync:=<value> to every arm launched
-with the MPC and records it in run.json (default: not passed — the YAML's
-free_run). ``lockstep`` needs the MPC (``--mpc-layout``, or a walk / mpc arm) and
-runs the tools on SIM time: the simulator's real-time factor then follows the
-solve, so ``--rtf``'s fixed wall = 1 / R conversions are gone — settle, lead,
-the event scripts' sleeps and the recording length count ``/sim/time`` seconds
-(SimClock; the command script gets ``--clock sim``, the recorder
-``--sim-time-topic`` and a ``sim_t`` column), and ``walk_gate.py --probe`` no
-longer applies. A sim that stops publishing ``/sim/time`` raises instead of
-hanging the batch.
+``--mpc-sync {lockstep,free_run}`` (default ``lockstep``, the sim launch's
+default) passes mpc_sync:=<value> to every arm launched with the MPC and records
+it in run.json. Under ``lockstep`` the simulator's real-time factor follows the
+solve, so the tools run on SIM time instead of ``--rtf``'s fixed wall = 1 / R
+conversions — for every arm, with or without the MPC: settle, lead, the event
+scripts' sleeps and the recording length count ``/sim/time`` seconds (SimClock;
+the command script gets ``--clock sim``, the recorder ``--sim-time-topic`` and a
+``sim_t`` column), and ``walk_gate.py --probe`` no longer applies. A sim that
+stops publishing ``/sim/time`` raises instead of hanging the batch. ``free_run``
+is the robot's clocking (the MPC thread on the wall clock) and the old wall × R
+tools.
 
 ``--source inekf`` runs every arm on the estimated base (sim_overlay:=
 estimator_inekf); an arm that already runs with an overlay gets the two merged
@@ -1103,10 +1104,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--mpc-sync",
-        choices=("free_run", "lockstep"),
-        default=None,
-        help="mpc_sync:= for every MPC-launched arm (default: not passed); lockstep runs "
-        "the tools on /sim/time (module docstring)",
+        choices=("lockstep", "free_run"),
+        default="lockstep",
+        help="mpc_sync:= for every MPC-launched arm; lockstep (default) runs the tools on "
+        "/sim/time, free_run on wall x rtf (module docstring)",
     )
     p.add_argument("-k", type=int, default=5, help="runs per arm")
     p.add_argument("--launch", default="sim_g1_loco.launch.py")
@@ -1228,10 +1229,6 @@ def main(argv: list[str] | None = None) -> int:
         p.error(f"--stop-window must be in (0, {script[-1].length_s}] s")
     if not 0.0 < args.estop_at < walking_s:
         p.error(f"--estop-at must be in (0, {walking_s}) s — inside the walking part")
-    if args.mpc_sync == "lockstep" and not (
-        args.mpc_layout or any(a in ("mpc", "mpc_fb", *WALK_ARMS) for a in args.arms)
-    ):
-        p.error("--mpc-sync lockstep needs the MPC: pass --mpc-layout (or an mpc / walk arm)")
     if args.mpc_threads is not None:
         check_mpc_threads(p, args.mpc_threads, args.launch)
     if args.push is not None:
