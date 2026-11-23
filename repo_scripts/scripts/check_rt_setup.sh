@@ -226,7 +226,7 @@ check_cpu_isolation() {
       _fix "shield 재구성: sudo ${SCRIPT_DIR}/cpu_shield.sh off && sudo ${SCRIPT_DIR}/cpu_shield.sh on --robot"
     else
       _fix "GRUB의 isolcpus=${display} → isolcpus=${expected_display} 로 변경"
-      _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+      _fix "sudo ${SCRIPT_DIR}/setup_grub_rt.sh"
     fi
     _category_update "cpu_isolation" "WARN"
     _category_set_detail "cpu_isolation" "${display} (${method}, expected ${expected_display})"
@@ -358,6 +358,7 @@ check_hybrid_cpu() {
         _warn "Hybrid 감지 경로: CPUID leaf 0x1A fallback (sysfs types/ 미노출 — 감지는 정상)"
         _fix "primary(sysfs) 경로 복구: 커널 >= 6.9 + nuc 프로파일 재빌드 (sudo ${SCRIPT_DIR}/build_rt_kernel.sh --profile nuc)"
         _fix "  └ nuc 프로파일이 SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL 활성화 (types/ 노출은 kernel >= 6.9 도 필요)"
+        _fix "  └ 이미 6.9+ nuc 커널인데 이 경고면 그 커널이 이 CPU 의 types/ 를 노출하지 않는 것 — 감지는 정상이라 조치 불필요"
         _category_update "hybrid_cpu" "WARN"
         ;;
       cpufreq_cluster)
@@ -530,7 +531,10 @@ check_grub_params() {
     fi
   done
 
-  _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+  # GRUB 파라미터의 단일 출처는 setup_grub_rt.sh 다 — 빠진 것이 있을 때만 안내한다.
+  if [[ "${CATEGORY_STATUS[grub_params]:-PASS}" != "PASS" ]]; then
+    _fix "sudo ${SCRIPT_DIR}/setup_grub_rt.sh && sudo reboot"
+  fi
   _category_set_detail "grub_params" "${found}/${total} params"
 }
 
