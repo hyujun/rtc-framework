@@ -238,7 +238,7 @@ KERNEL_SRC_DIR="${BUILD_DIR}/linux-${KERNEL_VERSION}"
 # 실제 설치 목록과 일치시켜 (Step1 install 블록) 일부만 깔린 상태를 done 으로 오판하지 않는다.
 # dkms 는 --with-nvidia 일 때만 필수.
 is_step1_done() {
-  local required_pkgs=("build-essential" "bc" "curl" "wget" "libncurses-dev" "libssl-dev" \
+  local required_pkgs=("build-essential" "bc" "curl" "wget" "gawk" "libncurses-dev" "libssl-dev" \
                        "libelf-dev" "flex" "bison" "debhelper" "cpio" "python3")
   [[ "$WITH_NVIDIA" -eq 1 ]] && required_pkgs+=("dkms")
   for pkg in "${required_pkgs[@]}"; do
@@ -752,9 +752,11 @@ else
   fi
 
   # GPG 서명 검증용 gpg 도 포함 (--skip-verify 가 아니면 Step2 에서 사용)
+  # gawk: 6.12 의 modules.builtin.ranges 생성이 gawk 를 부른다 — Ubuntu 기본은
+  # mawk 뿐이라 없으면 vmlinux 링크 직후 Error 127 로 bindeb-pkg 가 죽는다.
   apt-get update -qq
   apt-get install -y \
-      build-essential bc curl wget \
+      build-essential bc curl wget gawk \
       libncurses-dev libssl-dev libelf-dev \
       flex bison debhelper \
       python3 cpio gpg \
