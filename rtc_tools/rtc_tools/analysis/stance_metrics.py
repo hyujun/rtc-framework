@@ -220,12 +220,33 @@ def read_csv(path: Path) -> list[Sample]:
         return [from_row(r) for r in csv.DictReader(handle)]
 
 
-def write_csv(path: Path, samples: Iterable[Sample], num_feet: int) -> None:
+SIM_T_COLUMN = "sim_t"  # optional LAST column: the simulator's time at the sample [s]
+
+
+def write_csv(
+    path: Path,
+    samples: Iterable[Sample],
+    num_feet: int,
+    sim_t: Sequence[float] | None = None,
+) -> None:
+    """The samples as a CSV; `sim_t` (one per sample) appends the ``sim_t`` column last."""
+    samples = list(samples)
+    if sim_t is not None and len(sim_t) != len(samples):
+        raise ValueError("sim_t needs one value per sample")
     with path.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(columns(num_feet))
-        for s in samples:
-            writer.writerow(to_row(s))
+        writer.writerow(columns(num_feet) + ([SIM_T_COLUMN] if sim_t is not None else []))
+        for i, s in enumerate(samples):
+            writer.writerow(to_row(s) + ([sim_t[i]] if sim_t is not None else []))
+
+
+def read_sim_t(path: Path) -> list[float] | None:
+    """The ``sim_t`` column of a recorder CSV (NaN where empty), None when it has none."""
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        if SIM_T_COLUMN not in (reader.fieldnames or ()):
+            return None
+        return [float(r[SIM_T_COLUMN]) if r[SIM_T_COLUMN] else math.nan for r in reader]
 
 
 def main(argv: list[str] | None = None) -> int:

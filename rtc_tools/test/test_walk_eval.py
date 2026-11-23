@@ -308,7 +308,9 @@ PROVENANCE = {
 SHAPE = {"turn_start": 1.5, "turn_end": 1.5, "stop": 2.5}
 
 
-def write_run(run_dir: Path, diag, truth=None, rtf=0.7, note=None, wip=False):
+def write_run(
+    run_dir: Path, diag, truth=None, rtf=0.7, note=None, wip=False, appended=None, log_lines=()
+):
     ctl = run_dir / we.CONTROLLER_DIR
     ctl.mkdir(parents=True)
     for name, table in ((ld.DIAG_FILE, diag), (we.TRUTH_FILE, truth)):
@@ -316,14 +318,19 @@ def write_run(run_dir: Path, diag, truth=None, rtf=0.7, note=None, wip=False):
             continue
         with (ctl / name).open("w", newline="") as handle:
             writer = csv.writer(handle)
-            writer.writerow(table)
-            writer.writerows(zip(*[np.asarray(v)[::10] for v in table.values()], strict=True))
+            cols = {k: np.asarray(v)[::10] for k, v in table.items()}
+            if table is diag and appended:
+                cols.update(appended)  # at the stored rate, appended last like the controller's
+            writer.writerow(cols)
+            writer.writerows(zip(*cols.values(), strict=True))
     wall0 = 1000.0
     lines = [
         f"[sim-1] [INFO] [{wall0 + i:.3f}] [mujoco_simulator]: step sim_time={rtf * i:.3f} s"
         for i in range(60)
     ]
-    (run_dir / "launch.log").write_text("\n".join(lines + (["[wip] probe"] if wip else [])))
+    (run_dir / "launch.log").write_text(
+        "\n".join(lines + list(log_lines) + (["[wip] probe"] if wip else []))
+    )
     (run_dir / "stance.csv").write_text("t\n" + "\n".join(f"{wall0 + 5 + i},0" for i in range(45)))
     base = {"recorder_rc": 0, "rtf": 0.7, "launch_args": [], "session": run_dir.name}
     (run_dir / "run.json").write_text(json.dumps({**base, **(note or {})}))
@@ -693,3 +700,77 @@ def test_a_batch_passes_its_foot_width_to_the_runs(tmp_path):
     for bad in (0.0, -0.06, "0.06", math.nan, True):
         with pytest.raises(ValueError, match="foot_width_m"):
             we.evaluate_batch(tmp_path, {**spec, "foot_width_m": bad})
+
+
+# ── MPC lock-step runs ─────────────────────────────────────────────────────
+
+STORED_ROWS = 1501  # synthetic() at the stored (0.02 s) rate
+MPC_LINE = (
+    "[locomotion_controller]: mpc: solves 500 (failed 0, deadline miss 0, withheld 0, overrun 0), "
+    "solve p50 30.0 ms p99 50.0 ms; refused: epoch 0 state 0 age {age} dim 0 implausible 0"
+)
+
+
+def lockstep_columns(age_us=70000.0, period=35, n=STORED_ROWS):
+    """The columns lock-step appends: a plan every `period` ticks, first used at `age_us`."""
+    idx = np.arange(n)
+    return {
+        "policy_age_us": age_us + 2000.0 * (idx % period),
+        "plan_id": (idx // period + 1).astype(float),
+        "mpc_sync_lockstep": np.ones(n),
+        "mpc_trigger_tick": (idx // period * period).astype(float),
+        "mpc_wait_us": np.zeros(n),
+        "mpc_wait_count": np.zeros(n),
+        "mpc_pending_superseded": np.zeros(n),
+    }
+
+
+def lockstep_validity(tmp_path, appended=None, refused_age=0, sync="lockstep", rtf=0.7):
+    diag, truth = synthetic()
+    write_run(
+        tmp_path, diag, truth, rtf=rtf, appended=appended or lockstep_columns(),
+        note={"provenance": PROVENANCE, "mpc_sync": sync, "rtf": 0.7},
+        log_lines=[MPC_LINE.format(age=refused_age)],
+    )  # fmt: skip
+    note = json.loads((tmp_path / "run.json").read_text())
+    run = we.Run(we.load_run(tmp_path / we.CONTROLLER_DIR), wm.WALK_SCRIPT)
+    return we.run_validity(run, tmp_path, note, FULL_SPEC, None)
+
+
+def test_a_lockstep_run_checks_the_invariants_not_the_rtf(tmp_path):
+    # the measured rtf (0.5) is far from the note's 0.7: lock-step does not hold it to one
+    v = lockstep_validity(tmp_path, rtf=0.5)
+    assert v["valid"], v["checks"]
+    assert "rtf" not in v["checks"]
+    assert {"lockstep_age", "lockstep_period", "lockstep_no_age_refusal"} <= set(v["checks"])
+    assert v["measured"]["rtf"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    ("kw", "failed"),
+    [
+        ({"appended": lockstep_columns(age_us=72000.0)}, "lockstep_age"),
+        ({"appended": lockstep_columns(period=36)}, "lockstep_period"),
+        ({"refused_age": 1}, "lockstep_no_age_refusal"),
+    ],
+)
+def test_a_lockstep_invariant_broken_fails_its_check(tmp_path, kw, failed):
+    v = lockstep_validity(tmp_path, **kw)
+    assert not v["valid"]
+    assert [k for k, ok in v["checks"].items() if not ok] == [failed]
+
+
+def test_a_plan_rolled_back_to_an_earlier_id_is_not_judged_as_a_new_plan(tmp_path):
+    # rows 420..454 (plan 13's span) return to plan 11 (a sanity refusal) with
+    # the old plan's age: not a plan's first use, so the age invariant still holds
+    cols = lockstep_columns()
+    cols["plan_id"][420:455] = 11.0
+    cols["policy_age_us"][420:455] = 140000.0
+    v = lockstep_validity(tmp_path, appended=cols)
+    assert v["checks"]["lockstep_age"], v["checks"]
+
+
+def test_a_free_run_note_keeps_the_rtf_check_and_has_no_lockstep_checks(tmp_path):
+    v = lockstep_validity(tmp_path, appended=lockstep_columns(), sync="free_run", rtf=0.5)
+    assert "rtf" in v["checks"] and not v["checks"]["rtf"]
+    assert not any(k.startswith("lockstep") for k in v["checks"])

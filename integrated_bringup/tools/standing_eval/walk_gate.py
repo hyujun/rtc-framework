@@ -8,7 +8,9 @@ quantity with no control is an absolute bound, a counter is 0 only where the
 control's is 0); a run passes when every check passes, the arm when every
 run does. ``--probe`` instead reports what fixes the dev-PC real-time factor
 (one walk run): no plan refused for its age, no row without a plan once
-standing, the plan age p99.
+standing, the plan age p99. Under ``run_arms --mpc-sync lockstep`` the factor
+follows the solve, so ``--probe`` prints that it does not apply and returns 0;
+the stop window is cut on the recorder's ``sim_t`` column.
 
 Sources per run: the controller's ``locomotion_diag.csv`` (walking numbers:
 rtc_tools.analysis.walk_metrics) and its ``locomotion_truth.csv`` (the contact
@@ -172,14 +174,20 @@ def control_stop_window(
     mpc_runs: list[Path], window_s: float, rtf: float | None, z_ref: float
 ) -> dict:
     """The standing control's stop-window numbers, max over its runs: the last
-    `window_s` sim seconds of its recording and of its log."""
+    `window_s` sim seconds of its recording and of its log. A recording with a
+    ``sim_t`` column (run_arms --mpc-sync lockstep) is cut on it; otherwise the
+    window is `window_s / rtf` wall seconds."""
     wall = window_s / (rtf or 1.0)
     out: dict[str, float] = {}
     for run in mpc_runs:
         samples = sm.read_csv(run / "stance.csv")
         if not samples:
             raise ValueError(f"{run}: empty stance.csv")
-        tail = [s for s in samples if s.t >= samples[-1].t - wall]
+        sim_t = sm.read_sim_t(run / "stance.csv")
+        if sim_t is not None and len(sim_t) == len(samples) and math.isfinite(sim_t[-1]):
+            tail = [s for s, x in zip(samples, sim_t, strict=True) if x >= sim_t[-1] - window_s]
+        else:
+            tail = [s for s in samples if s.t >= samples[-1].t - wall]
         m = sm.compute(tail, settle_s=0.0, force_threshold_n=5.0, z_ref=z_ref)
         _, diag = load_diag(run)
         t = diag["t_relative_s"]
@@ -416,6 +424,12 @@ def unjudged_scripts(walk_runs: list[Path]) -> list[str]:
     return out
 
 
+def all_lockstep(out: Path) -> bool:
+    """Every run.json under `out` (and at least one) records ``mpc_sync == "lockstep"``."""
+    notes = [json.loads(f.read_text()) for f in sorted(out.glob("*/run.json"))]
+    return bool(notes) and all(n.get("mpc_sync") == "lockstep" for n in notes)
+
+
 def runs(out: Path, arm: str) -> list[Path]:
     return sorted(
         p for p in out.glob(f"{arm}_*") if p.is_dir() and p.name[len(arm) + 1 :].isdigit()
@@ -442,6 +456,12 @@ def main(argv: list[str] | None = None) -> int:
     if others:
         p.error(f"walk_gate judges the walk command script only; these runs ran another: {others}")
 
+    if args.probe and all_lockstep(args.out):
+        print(
+            "--probe does not apply: every run is mpc_sync == lockstep, where the real-time "
+            "factor follows the MPC solve (nothing to probe)"
+        )
+        return 0
     if args.probe:
         result = {"probe": [probe(r) for r in runs(args.out, "walk")]}
         ok = bool(result["probe"]) and all(r["pass"] for r in result["probe"])
