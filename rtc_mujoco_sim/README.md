@@ -32,7 +32,7 @@ ros2 launch integrated_bringup sim_ur5e_p1a.launch.py
 
 ```bash
 ros2 lifecycle get /mujoco_simulator          # active 여야 한다
-ros2 topic echo /sim/status --once            # [step_count, sim_time_sec, rtf, paused]
+ros2 topic echo /sim/status --once            # [step_count, sim_time_sec, rtf, paused, no_command_timeout_steps]
 ros2 topic hz /joint_states
 ros2 lifecycle set /mujoco_simulator deactivate   # 런타임 정지 / activate 로 재개
 ```
@@ -77,7 +77,8 @@ launch 인자 (빈 값 = YAML 값 사용):
 | `<object_state.topic>` | `tf2_msgs/TFMessage` | 매 step ÷ `publish_divisor` | 씬 전체의 free body 이름 · 프레임 · pose ([Object State](#object-state)) |
 | `<projectile_ball.publish.ground_truth_topic>` | `nav_msgs/Odometry` | `sample_rate_hz` (sim 시간) | 발사된 공의 참값. twist 는 world 프레임. park 중에는 발행하지 않는다 |
 | `<projectile_ball.publish.camera_topic>` | `geometry_msgs/PointStamped` | 〃 | 위 위치 + 축별 가우시안 노이즈 (카메라 관측 모사) |
-| `/sim/status` | `std_msgs/Float64MultiArray` | 1 Hz | `[step_count, sim_time_sec, rtf, paused(0/1)]` |
+| `/sim/status` | `std_msgs/Float64MultiArray` | 1 Hz | `[step_count, sim_time_sec, rtf, paused(0/1), no_command_timeout_steps]` — 마지막은 command 없이 timeout 으로 step 한 수 (뒤에 붙임; index 소비자 불변) |
+| `/sim/time` | `std_msgs/Float64` | 매 step | 그 step 의 sim 시각 [s] — sim 시간으로 script 를 재는 도구용. 다른 토픽의 stamp 는 wall 그대로 |
 
 한 step 안의 발행 순서는 sensor → contact wrench → joint state 다. joint state 가 sim-sync tick 을 깨우므로 그 tick 이 같은 step 의 센서를 보는 경우가 보통이 되게 한 순서이고, 토픽 간 순서 보장은 아니다 (필요하면 소비자가 lane 의 stamp · sequence 로 판정).
 
@@ -261,6 +262,7 @@ robot-specific 값 (`model_path`, `robot_response.groups`, joint 이름, 토픽,
 | `viewer_camera.lookat` / `.distance` | `[0,0,0]` / `2.5` | free camera 가 바라보는 점 [m, world] 과 거리. 뷰어는 MJCF `<statistic>` 을 읽지 않으므로 로봇이 원점에 없으면 여기서 맞춘다 |
 | `viewer_camera.azimuth_deg` / `.elevation_deg` | `90.0` / `-20.0` | 방위각 (90 이면 −y 쪽에서 +x 를 오른쪽에 둠) / 고각 (음수가 내려다봄) |
 | `sync_timeout_ms` | `50.0` | 모든 robot 그룹 command 대기 한계 [ms]. 넘기면 받은 command 만 적용하고 step |
+| `sync_timeout_armed_ms` | `0.0` | command 가 한 번 온 뒤의 대기 한계 [ms] (`0.0` = 위와 같음). 기다리는 tick (lock-step MPC) 을 위해 길게 둔다. command 없이 한 번 만료하면 해제 (다음 command 에 재무장) · reset 도 해제 |
 | `max_rtf` | `1.0` | 최대 실시간 비율 (`0.0` = 무제한) |
 | `control_rate` | `500.0` | [Hz]. `physics_timestep == 1/control_rate` 가 아니면 기동 FATAL |
 | `physics_timestep` | `0.002` | 제어 주기 [s]. `0.0` 이면 XML 값 사용 |

@@ -43,6 +43,7 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string>
@@ -130,6 +131,10 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
 
     sim_status_pub_ =
         create_publisher<std_msgs::msg::Float64MultiArray>("/sim/status", rclcpp::QoS(1));
+    // The simulator's clock, one message per step from the first robot
+    // group's state publish (the step's sim time, seconds) — for a tool that
+    // times its script by sim time. Message stamps elsewhere stay wall time.
+    sim_time_pub_ = create_publisher<std_msgs::msg::Float64>("/sim/time", rclcpp::QoS(1));
 
     // The external wrench report. A report that cannot name its body, or has
     // no rate, is refused rather than left silent: its reader would log
@@ -280,6 +285,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     object_state_pub_.reset();
     object_state_msg_.transforms.clear();
     sim_status_pub_.reset();
+    sim_time_pub_.reset();
+    sim_time_group_.reset();
     ext_report_pub_.reset();
     set_external_wrench_srv_.reset();
     launch_ball_srv_.reset();
@@ -337,6 +344,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     object_state_pub_.reset();
     object_state_msg_.transforms.clear();
     sim_status_pub_.reset();
+    sim_time_pub_.reset();
+    sim_time_group_.reset();
     ext_report_pub_.reset();
     set_external_wrench_srv_.reset();
     launch_ball_srv_.reset();
@@ -358,6 +367,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     declare_parameter("model_path", std::string(""));
     declare_parameter("enable_viewer", true);
     declare_parameter("sync_timeout_ms", 50.0);
+    declare_parameter("sync_timeout_armed_ms", 0.0);
     declare_parameter("max_rtf", 0.0);
     declare_parameter("control_rate", 500.0);
     declare_parameter("physics_timestep", 0.0);
@@ -455,6 +465,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
     model_path_ = get_parameter("model_path").as_string();
     enable_viewer_ = get_parameter("enable_viewer").as_bool();
     sync_timeout_ms_ = get_parameter("sync_timeout_ms").as_double();
+    sync_timeout_armed_ms_ = get_parameter("sync_timeout_armed_ms").as_double();
     max_rtf_ = get_parameter("max_rtf").as_double();
     control_rate_ = get_parameter("control_rate").as_double();
     physics_timestep_ = get_parameter("physics_timestep").as_double();
@@ -928,6 +939,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         .window_title = {},
         .enable_viewer = enable_viewer_,
         .sync_timeout_ms = sync_timeout_ms_,
+        .sync_timeout_armed_ms = sync_timeout_armed_ms_,
         .max_rtf = max_rtf_,
         .physics_timestep = physics_timestep_,
         .n_substeps = static_cast<int>(n_substeps_),
@@ -1009,6 +1021,9 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
           });
 
       if (is_robot) {
+        if (!sim_time_group_.has_value()) {
+          sim_time_group_ = idx;  // one clock message per step, with this group's state
+        }
         sim_->SetStateCallback(
             idx,
             [this, idx](const std::vector<double>& pos, const std::vector<double>& vel,
@@ -1658,6 +1673,11 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
                          const std::vector<double>& efforts) {
     if (group_idx >= group_handles_.size())
       return;
+    if (sim_time_group_.has_value() && group_idx == *sim_time_group_ && sim_time_pub_) {
+      std_msgs::msg::Float64 clock;
+      clock.data = sim_->SimTimeSec();
+      sim_time_pub_->publish(clock);
+    }
     auto msg = sensor_msgs::msg::JointState();
     msg.header.stamp = now();
     msg.name.assign(sim_->GetStateJointNames(group_idx).begin(),
@@ -1780,6 +1800,9 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
         sim_time,
         rtf,
         is_paused ? 1.0 : 0.0,
+        // Appended (readers by index keep theirs): steps that ran on the
+        // command wait's timeout with no command in.
+        static_cast<double>(sim_->NoCommandTimeoutSteps()),
     };
     sim_status_pub_->publish(msg);
 
@@ -1800,6 +1823,8 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   // sim_status_pub_ initialized in on_configure (NOT in member initializer
   // list).
   rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64MultiArray>::SharedPtr sim_status_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64>::SharedPtr sim_time_pub_;
+  std::optional<std::size_t> sim_time_group_;  // the robot group whose state publish carries it
 
   // Not a LifecyclePublisher analogue: rclcpp_lifecycle gates PUBLISHERS only,
   // so this service answers from Inactive too. That is deliberate — staging a
@@ -1838,6 +1863,7 @@ class MuJoCoSimulatorNode : public rclcpp_lifecycle::LifecycleNode {
   std::string reset_keyframe_;  // Config::reset_keyframe; empty = qpos0 + initial_qpos
   bool enable_viewer_{true};
   double sync_timeout_ms_{50.0};
+  double sync_timeout_armed_ms_{0.0};
   double max_rtf_{0.0};
   double control_rate_{500.0};
   double physics_timestep_{0.0};

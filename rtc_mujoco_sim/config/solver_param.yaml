@@ -55,6 +55,9 @@ mujoco_simulator:
   ros__parameters:
     # ── Sync timeout (controller command wait per step) ──────────────────────
     sync_timeout_ms: 50.0
+    # Once a command has arrived: 0.0 = the same; a longer wait lets a tick
+    # that is itself waiting (lock-step MPC) finish. One expiry disarms it.
+    sync_timeout_armed_ms: 0.0
 
     # ── Real-Time Factor (1.0 = real-time, 0.0 = unlimited) ──────────────────
     max_rtf: 1.0

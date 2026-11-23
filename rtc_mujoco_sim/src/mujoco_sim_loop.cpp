@@ -892,6 +892,7 @@ void MuJoCoSimulator::HandleReset() noexcept {
   step_count_.store(0, std::memory_order_relaxed);
   sim_time_sec_.store(0.0, std::memory_order_relaxed);
   rtf_.store(0.0, std::memory_order_relaxed);
+  sync_armed_.store(false, std::memory_order_relaxed);  // the command stream restarts
   const auto now = std::chrono::steady_clock::now();
   rtf_wall_start_ = now;
   rtf_sim_start_ = data_->time;
@@ -1169,6 +1170,12 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
 
   const auto timeout = std::chrono::milliseconds(
       static_cast<int64_t>(cfg_.sync_timeout_ms > 0.0 ? cfg_.sync_timeout_ms : 50.0));
+  // The wait once a command has arrived (Config::sync_timeout_armed_ms).
+  const auto armed_timeout =
+      cfg_.sync_timeout_armed_ms > 0.0
+          ? std::chrono::milliseconds(static_cast<int64_t>(cfg_.sync_timeout_armed_ms))
+          : timeout;
+  sync_armed_.store(false, std::memory_order_relaxed);
   uint64_t step = 0;
 
   // The step waits for a command from EVERY robot group (issue #566). The
@@ -1224,6 +1231,14 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
       }
     }
     return true;
+  };
+  const auto any_command_in = [this, &robot_idx]() noexcept {
+    for (const std::size_t i : robot_idx) {
+      if (groups_[i]->cmd_pending.load(std::memory_order_relaxed)) {
+        return true;
+      }
+    }
+    return false;
   };
 
   const auto loop_start = std::chrono::steady_clock::now();
@@ -1309,15 +1324,27 @@ void MuJoCoSimulator::SimLoop(std::stop_token stop) noexcept {
       // published, and a reply that lands after the reset would drive the
       // first post-reset step. Waiting for it (at most sync_timeout_ms)
       // leaves no command in flight when the reset clears them below.
-      sync_cv_.wait_for(lock, timeout, [this, &stop, &all_commands_in] {
-        return all_commands_in() || stop.stop_requested() || !running_.load();
-      });
+      sync_cv_.wait_for(lock, sync_armed_.load(std::memory_order_relaxed) ? armed_timeout : timeout,
+                        [this, &stop, &all_commands_in] {
+                          return all_commands_in() || stop.stop_requested() || !running_.load();
+                        });
     }
     if (stop.stop_requested() || !running_.load()) {
       break;
     }
     if (!all_commands_in()) {
       report_partial_timeout();
+    }
+    // The armed wait: on from the first command, off after one expiry with no
+    // command at all (the controller is gone or stalled; the short wait is the
+    // old free-run) until the next command arms it again.
+    if (!robot_idx.empty()) {
+      if (any_command_in()) {
+        sync_armed_.store(true, std::memory_order_relaxed);
+      } else {
+        no_command_timeout_steps_.fetch_add(1, std::memory_order_relaxed);
+        sync_armed_.store(false, std::memory_order_relaxed);
+      }
     }
     if (reset_requested_.exchange(false, std::memory_order_acq_rel)) {
       HandleReset();  // drops this step's commands — computed on the pre-reset state

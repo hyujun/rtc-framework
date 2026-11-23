@@ -655,7 +655,14 @@ class MuJoCoSimulator {
     std::string window_title;  // viewer window title (empty = "MuJoCo Simulator")
     bool enable_viewer{true};
     double sync_timeout_ms{50.0};  // command wait timeout
-    double max_rtf{0.0};           // 0.0 = unlimited
+    /// The command wait once a command has arrived (armed) — the controller
+    /// is known to be there, so a step may wait longer for a tick that is
+    /// itself waiting (an MPC solve in lock-step). 0 = sync_timeout_ms. One
+    /// expiry disarms the wait (back to sync_timeout_ms until the next
+    /// command), so a controller that went away does not slow the simulator
+    /// to a crawl; a reset disarms it too.
+    double sync_timeout_armed_ms{0.0};
+    double max_rtf{0.0};  // 0.0 = unlimited
     double physics_timestep{0.0};
     int n_substeps{1};                 // substeps per control cycle (1 = legacy)
     double viewer_refresh_rate{60.0};  // viewer target refresh rate (Hz)
@@ -1242,6 +1249,19 @@ class MuJoCoSimulator {
     return partial_command_steps_.load(std::memory_order_relaxed);
   }
 
+  /// Steps that ran on the command wait's timeout with NO awaited group's
+  /// command in — the normal case before a controller connects, a stall or
+  /// a lost tick once one has (the status topic's last field).
+  [[nodiscard]] uint64_t NoCommandTimeoutSteps() const noexcept {
+    return no_command_timeout_steps_.load(std::memory_order_relaxed);
+  }
+
+  /// Whether the next command wait is the armed one (sim thread's view,
+  /// relaxed; for tests and the status log).
+  [[nodiscard]] bool SyncArmed() const noexcept {
+    return sync_armed_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] double SimTimeSec() const noexcept { return sim_time_sec_.load(); }
 
   // model_->nq became mjtSize (int64_t) in MuJoCo 3.7 — explicit narrowing.
@@ -1281,6 +1301,8 @@ class MuJoCoSimulator {
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> step_count_{0};
   std::atomic<uint64_t> partial_command_steps_{0};
+  std::atomic<uint64_t> no_command_timeout_steps_{0};
+  std::atomic<bool> sync_armed_{false};  // sim thread writes; Config::sync_timeout_armed_ms
   // ImuNoiseWarningCount(). Written by Initialize only.
   int imu_noise_warnings_{0};
   std::atomic<double> sim_time_sec_{0.0};
