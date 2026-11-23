@@ -226,7 +226,7 @@ check_cpu_isolation() {
       _fix "shield 재구성: sudo ${SCRIPT_DIR}/cpu_shield.sh off && sudo ${SCRIPT_DIR}/cpu_shield.sh on --robot"
     else
       _fix "GRUB의 isolcpus=${display} → isolcpus=${expected_display} 로 변경"
-      _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+      _fix "sudo ${SCRIPT_DIR}/setup_grub_rt.sh"
     fi
     _category_update "cpu_isolation" "WARN"
     _category_set_detail "cpu_isolation" "${display} (${method}, expected ${expected_display})"
@@ -319,10 +319,11 @@ check_hybrid_cpu() {
       # Two distinct cases share the (no P-HT, no LP-E) fingerprint:
       #   (a) Raptor/Alder-class chip with BIOS Hyper-Threading disabled →
       #       fixable in BIOS. FAIL with the existing actionable message.
-      #   (b) Lion Cove silicon (Arrow Lake-S/H/U, Lunar Lake) where HT is
+      #   (b) Lion Cove / Cougar Cove silicon (Arrow Lake-S/H/U, Lunar Lake,
+      #       Panther Lake) where HT is
       #       absent by design. PASS — there is no BIOS toggle to enable.
       if [[ "${PLATFORM_NO_HT_BY_DESIGN:-0}" -eq 1 ]]; then
-        _pass "Hybrid: ${platform_id} (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E, HT not applicable — Lion Cove silicon)"
+        _pass "Hybrid: ${platform_id} (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E, HT not applicable — P-cores have no HT by design)"
         _warn "Phase 3 지원 예정 — 현재 Stage A는 감지만 수행"
         _category_update "hybrid_cpu" "WARN"
         _category_set_detail "hybrid_cpu" "${platform_id} (silicon has no HT, Phase 3 pending)"
@@ -357,6 +358,7 @@ check_hybrid_cpu() {
         _warn "Hybrid 감지 경로: CPUID leaf 0x1A fallback (sysfs types/ 미노출 — 감지는 정상)"
         _fix "primary(sysfs) 경로 복구: 커널 >= 6.9 + nuc 프로파일 재빌드 (sudo ${SCRIPT_DIR}/build_rt_kernel.sh --profile nuc)"
         _fix "  └ nuc 프로파일이 SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL 활성화 (types/ 노출은 kernel >= 6.9 도 필요)"
+        _fix "  └ 이미 6.9+ nuc 커널인데 이 경고면 그 커널이 이 CPU 의 types/ 를 노출하지 않는 것 — 감지는 정상이라 조치 불필요"
         _category_update "hybrid_cpu" "WARN"
         ;;
       cpufreq_cluster)
@@ -529,7 +531,10 @@ check_grub_params() {
     fi
   done
 
-  _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh"
+  # GRUB 파라미터의 단일 출처는 setup_grub_rt.sh 다 — 빠진 것이 있을 때만 안내한다.
+  if [[ "${CATEGORY_STATUS[grub_params]:-PASS}" != "PASS" ]]; then
+    _fix "sudo ${SCRIPT_DIR}/setup_grub_rt.sh && sudo reboot"
+  fi
   _category_set_detail "grub_params" "${found}/${total} params"
 }
 
@@ -972,8 +977,9 @@ check_cpu_frequency() {
       _warn "OS 코어 중 $((non_perf - rt_non_perf))개가 performance 아님 — 화면 끊김 위험"
       _category_update "cpu_frequency" "WARN"
     fi
-    _fix "sudo cpupower frequency-set -g performance"
-    _fix "또는: sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh  (영구 서비스 포함)"
+    # cpupower 는 안내하지 않는다 — Ubuntu 의 /usr/bin/cpupower 는 linux-tools-<release>
+    # wrapper 라 직접 빌드한 RT 커널에서 실패한다. setup_cpu_governor.sh 가 sysfs 로 쓴다.
+    _fix "sudo ${SCRIPT_DIR}/setup_cpu_governor.sh  (즉시 적용 + 영구 서비스)"
     _category_set_detail "cpu_frequency" "${non_perf}/${checked} non-performance"
   fi
 
@@ -983,22 +989,23 @@ check_cpu_frequency() {
   else
     if [[ "$non_perf" -gt 0 ]]; then
       _warn "cpu-governor-performance.service: not enabled (재부팅 시 powersave 복원)"
-      _fix "sudo ${SCRIPT_DIR}/setup_nvidia_rt.sh  (서비스 자동 생성)"
+      _fix "sudo ${SCRIPT_DIR}/setup_cpu_governor.sh  (서비스 자동 생성)"
       _category_update "cpu_frequency" "WARN"
     fi
   fi
 
-  # Turbo Boost 확인 — 주파수 변동으로 인한 jitter 유발 (특히 NUC 등 소형 PC)
+  # Turbo / Boost 는 어느 쪽도 결함이 아니다 — 켜면 MPC solve 가 빨라지고, 끄면 열
+  # 쓰로틀링 jitter 를 피한다. 제어 PC 에서 재서 고르는 값이라 상태만 보고한다
+  # (기준: docs/rt-optimization.md §6 BIOS 체크리스트).
   local turbo_file="/sys/devices/system/cpu/intel_pstate/no_turbo"
   if [[ -f "$turbo_file" ]]; then
     local no_turbo
     no_turbo=$(cat "$turbo_file" 2>/dev/null || echo "unknown")
     if [[ "$no_turbo" == "1" ]]; then
-      _pass "Intel Turbo Boost: 비활성 (주파수 안정)"
+      _pass "Intel Turbo Boost: 비활성 (OS no_turbo=1 — 측정으로 고른 값이어야 한다)"
     else
-      _warn "Intel Turbo Boost: 활성 (소형 PC에서 열 쓰로틀링으로 인한 jitter 위험)"
-      _fix "echo 1 | sudo tee ${turbo_file}"
-      _category_update "cpu_frequency" "WARN"
+      _pass "Intel Turbo Boost: 활성 (기본값 — 열 쓰로틀링 jitter 가 보이면 no_turbo=1 과 비교)"
+      _fix "비교: echo 1 | sudo tee ${turbo_file}  (재부팅 시 원복) — docs/rt-optimization.md §6"
     fi
   fi
 
@@ -1007,11 +1014,10 @@ check_cpu_frequency() {
     local amd_boost
     amd_boost=$(cat "$amd_boost_file" 2>/dev/null || echo "unknown")
     if [[ "$amd_boost" == "0" ]]; then
-      _pass "AMD Boost: 비활성 (주파수 안정)"
+      _pass "AMD Boost: 비활성 (boost=0 — 측정으로 고른 값이어야 한다)"
     else
-      _warn "AMD Boost: 활성 (소형 PC에서 열 쓰로틀링으로 인한 jitter 위험)"
-      _fix "echo 0 | sudo tee ${amd_boost_file}"
-      _category_update "cpu_frequency" "WARN"
+      _pass "AMD Boost: 활성 (기본값 — 열 쓰로틀링 jitter 가 보이면 boost=0 과 비교)"
+      _fix "비교: echo 0 | sudo tee ${amd_boost_file}  (재부팅 시 원복) — docs/rt-optimization.md §6"
     fi
   fi
 }
