@@ -129,9 +129,10 @@ double HandlerMPCThread::ConsumedPrimInf(const MPCSolution& sol, std::uint64_t p
   const double nodes = static_cast<double>(offset_ns + period_ns) * 1e-9 / sol.dt_node;
   const double first_whole = std::floor(first_nodes + 1e-9);
   const double whole = std::ceil(nodes - 1e-9);
-  const int first = std::isfinite(first_whole) && first_whole > 0.0
-                        ? std::min(static_cast<int>(first_whole), sol.horizon_length)
-                        : 0;
+  const int first = !std::isfinite(first_whole) || first_whole <= 0.0 ? 0
+                    : first_whole >= static_cast<double>(sol.horizon_length)
+                        ? sol.horizon_length
+                        : static_cast<int>(first_whole);
   const int last = std::isfinite(whole) && whole < static_cast<double>(sol.horizon_length)
                        ? static_cast<int>(whole) + 1
                        : sol.horizon_length;

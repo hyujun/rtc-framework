@@ -775,10 +775,15 @@ TEST_F(MpcThreadPublishTest, AnExternalTriggerCoalescesAndHonoursPauseAndStop) {
   EXPECT_EQ(channel.CoalescedRequests(), 2U);
 
   stub->sleep_us = 0;
+  // The lifecycle contract: disarm, then pause; resume, then arm. A request
+  // in between is refused by the channel, not left waiting for a parked loop.
+  channel.Disarm();
   thread.Pause();
-  channel.RequestSolve();  // slipped in: answered, not solved
-  ASSERT_EQ(channel.WaitIdle(2'000'000'000), rtc::mpc::SolveTriggerChannel::WaitStatus::kIdle);
+  channel.RequestSolve();
+  EXPECT_EQ(channel.WaitIdle(2'000'000'000), rtc::mpc::SolveTriggerChannel::WaitStatus::kCancelled);
+  EXPECT_EQ(channel.IgnoredRequests(), 1U);
   thread.Resume();
+  channel.Arm();
   std::this_thread::sleep_for(50ms);
   EXPECT_EQ(stub->calls.load(), 2U) << "no ghost solve across the pause";
   channel.RequestSolve();
@@ -788,6 +793,28 @@ TEST_F(MpcThreadPublishTest, AnExternalTriggerCoalescesAndHonoursPauseAndStop) {
   const auto t0 = std::chrono::steady_clock::now();
   thread.StopAndJoin();  // the loop is asleep on the channel
   EXPECT_LT(std::chrono::steady_clock::now() - t0, 500ms);
+}
+
+// A stop answers what is outstanding: a consumer that asked a loop in the
+// middle of stopping is released, not left to its timeout; and a request to
+// a loop that is gone is answered by the stop's monotonic completion too.
+TEST_F(MpcThreadPublishTest, AStopAnswersTheOutstandingRequest) {
+  rtc::mpc::SolveTriggerChannel channel;
+  ASSERT_TRUE(channel.Open());
+  channel.Arm();
+  HandlerMPCThread thread;
+  StubHandler* stub = StartExternal(thread, MPCSolverConfig{}, channel);
+  stub->sleep_us = 50000;
+  thread.Start();
+  channel.RequestSolve();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return stub->calls.load() >= 1U; }));
+  channel.RequestSolve();  // outstanding behind the solve in progress
+  const auto t0 = std::chrono::steady_clock::now();
+  thread.StopAndJoin();
+  EXPECT_LT(std::chrono::steady_clock::now() - t0, 500ms);
+  EXPECT_EQ(channel.WaitIdle(0), rtc::mpc::SolveTriggerChannel::WaitStatus::kIdle)
+      << "the stop answered it";
+  EXPECT_TRUE(channel.Idle());
 }
 
 // A failed solve answers its request too, and the deadline is a count, not a

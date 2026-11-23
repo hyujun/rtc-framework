@@ -24,6 +24,14 @@
 /// tick never touches the thread object. Threads: one requester, one
 /// solver; `Arm` / `Disarm` from the consumer's lifecycle thread, never
 /// concurrently with its tick.
+///
+/// Lifecycle contract with the thread: `Disarm` BEFORE the thread is paused
+/// or stopped, `Arm` AFTER it has resumed (and only while it runs) — a
+/// parked or gone loop answers nothing, and a disarmed channel refuses the
+/// requests that would otherwise wait for it. The thread answers whatever is
+/// outstanding when it stops or aborts (its completion is monotonic), so a
+/// waiter is released either way; the arming order is what keeps the
+/// consumer from asking a loop that cannot answer.
 
 #include <atomic>
 #include <cstdint>
@@ -98,7 +106,9 @@ class SolveTriggerChannel {
   ///         without a request (the caller looks at its own stop flag).
   [[nodiscard]] bool WaitTrigger(int timeout_ms) noexcept;
 
-  /// @brief Answer the request @p id: store it and write the done fd.
+  /// @brief Answer the request @p id: store it (never going back — an
+  ///        answer for everything outstanding, given at a stop, is not
+  ///        undone by a solve that finishes after it) and write the done fd.
   void MarkCompleted(std::uint64_t id) noexcept;
 
   /// @brief Wake both sides without a request (a stop). Any thread.

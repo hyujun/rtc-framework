@@ -238,7 +238,9 @@ rtc::PeriodicRtThread::WaitResult MPCThread::WaitForNextTick() noexcept {
   SolveTriggerChannel& channel = *launch_config_.channel;
   for (;;) {
     if (stop_nudged_.load(std::memory_order_acquire)) {
-      return WaitResult::kProceed;  // the base sees the stop before any tick
+      // The base sees the stop before any tick; nothing outstanding waits.
+      channel.MarkCompleted(channel.RequestedId());
+      return WaitResult::kProceed;
     }
     if (!channel.WaitTrigger(kSliceMs)) {
       continue;
@@ -258,7 +260,18 @@ rtc::PeriodicRtThread::WaitResult MPCThread::WaitForNextTick() noexcept {
 void MPCThread::OnRequestStop() noexcept {
   stop_nudged_.store(true, std::memory_order_release);
   if (launch_config_.channel != nullptr) {
+    // A stopping loop answers everything outstanding (monotonic, so a solve
+    // finishing after this does not take it back) and wakes both sides.
+    launch_config_.channel->MarkCompleted(launch_config_.channel->RequestedId());
     launch_config_.channel->Nudge();
+  }
+}
+
+void MPCThread::OnLoopAborted() noexcept {
+  // A loop that refused its pool (or aborted) never ticks: nothing it was
+  // asked for will be solved, so the asker is released.
+  if (ExternalTrigger()) {
+    launch_config_.channel->MarkCompleted(launch_config_.channel->RequestedId());
   }
 }
 

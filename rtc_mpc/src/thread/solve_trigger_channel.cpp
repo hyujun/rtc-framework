@@ -4,6 +4,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 
@@ -80,7 +81,11 @@ void SolveTriggerChannel::RequestSolve() noexcept {
 
 SolveTriggerChannel::WaitStatus SolveTriggerChannel::WaitIdle(std::int64_t timeout_ns) noexcept {
   using Clock = std::chrono::steady_clock;
-  const Clock::time_point deadline = Clock::now() + std::chrono::nanoseconds(timeout_ns);
+  // Bounded: a timeout past an hour is an hour (no overflow in the deadline
+  // sum, no poll() timeout past int).
+  constexpr std::int64_t kMaxTimeoutNs = 3'600LL * 1'000'000'000LL;
+  const std::int64_t bounded = timeout_ns < 0 ? 0 : std::min(timeout_ns, kMaxTimeoutNs);
+  const Clock::time_point deadline = Clock::now() + std::chrono::nanoseconds(bounded);
   for (;;) {
     if (!armed_.load(std::memory_order_acquire)) {
       return WaitStatus::kCancelled;
@@ -124,7 +129,11 @@ bool SolveTriggerChannel::WaitTrigger(int timeout_ms) noexcept {
 }
 
 void SolveTriggerChannel::MarkCompleted(std::uint64_t id) noexcept {
-  completed_id_.store(id, std::memory_order_release);
+  // Monotonic: a stop's blanket answer is not undone by an older in-flight id.
+  std::uint64_t seen = completed_id_.load(std::memory_order_relaxed);
+  while (seen < id && !completed_id_.compare_exchange_weak(seen, id, std::memory_order_release,
+                                                           std::memory_order_relaxed)) {
+  }
   if (done_fd_ >= 0) {
     Write(done_fd_);
   }

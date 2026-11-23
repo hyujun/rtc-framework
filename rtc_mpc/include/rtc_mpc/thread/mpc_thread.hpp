@@ -44,7 +44,10 @@
 ///   paused is answered without a solve; a stop nudges the channel. No
 ///   overrun bookkeeping (the period is the consumer's), jitter not
 ///   meaningful. `target_frequency_hz` still names the nominal period the
-///   publish rules read (`PeriodNs`).
+///   publish rules read (`PeriodNs`). The consumer disarms the channel
+///   before it pauses or stops this thread and arms it after a resume (the
+///   channel's file comment): a parked loop answers nothing. Whatever is
+///   outstanding when the loop stops or aborts is answered without a solve.
 ///
 /// Lifecycle:
 ///   1. Construct subclass.
@@ -66,15 +69,15 @@
 
 namespace rtc::mpc {
 
-/// Configuration struct for launching an MPC thread. Populated by the
-/// caller (typically from `rtc::SystemThreadConfigs::mpc`) and passed into
-/// @ref MPCThread::Init.
 /// @brief What wakes the MPC loop for a solve (the file comment).
 enum class SolveTrigger : std::uint8_t {
   kPeriodic,  ///< the base's fixed-frequency schedule
   kExternal,  ///< one tick per SolveTriggerChannel request
 };
 
+/// Configuration struct for launching an MPC thread. Populated by the
+/// caller (typically from `rtc::SystemThreadConfigs::mpc`) and passed into
+/// @ref MPCThread::Init.
 struct MpcThreadLaunchConfig {
   /// Main solve thread scheduling / affinity.
   rtc::ThreadConfig main{};
@@ -191,9 +194,11 @@ class MPCThread : public rtc::PeriodicRtThread {
   }
 
   // PeriodicRtThread hooks of the external trigger: sleep on the channel
-  // (kPeriodic: the base's schedule), wake the channel on a stop, no jitter.
+  // (kPeriodic: the base's schedule), wake the channel and answer what is
+  // outstanding on a stop or an abort, no jitter.
   WaitResult WaitForNextTick() noexcept override;
   void OnRequestStop() noexcept override;
+  void OnLoopAborted() noexcept override;
 
   [[nodiscard]] bool JitterMeaningful() const noexcept override { return !ExternalTrigger(); }
 
