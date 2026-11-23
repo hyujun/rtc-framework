@@ -16,6 +16,8 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -87,7 +89,8 @@ TEST(LocomotionReferenceConfig, TheInstalledSwingAndTerrainSectionsLoadAndBuildA
 
 // reference.* names exactly the actuated joints of the shipped rosters (the body
 // group's 23 in model order, then the hand group's 10) — the joints the CM's
-// actuated model moves; the arm-swing joints are checked even though it is off.
+// actuated model moves; arm swing ships on, the shoulder rolls opened 0.15 rad
+// (left +, right −) so the swinging hand clears the hip.
 TEST(LocomotionReferenceConfig, TheInstalledReferenceSectionCoversTheShippedRosters) {
   const YAML::Node root = InstalledLocomotionConfig();
   ASSERT_TRUE(root["reference"].IsMap()) << "the include: merge did not bring reference.* in";
@@ -106,8 +109,15 @@ TEST(LocomotionReferenceConfig, TheInstalledReferenceSectionCoversTheShippedRost
   ASSERT_EQ(rtc::mpc::LoadReferenceConfig(root["reference"], joints, cfg),
             rtc::mpc::ReferenceError::kNoError);
   EXPECT_EQ(cfg.q_default.size(), joints.size());
-  EXPECT_FALSE(cfg.arm_swing_enabled);
+  EXPECT_TRUE(cfg.arm_swing_enabled);
   EXPECT_EQ(cfg.arm_swing_joints.size(), 4U);
+  const auto q = [&](const std::string& name) {
+    const auto it = std::find_if(cfg.q_default.begin(), cfg.q_default.end(),
+                                 [&](const auto& e) { return e.first == name; });
+    return it == cfg.q_default.end() ? std::nan("") : it->second;
+  };
+  EXPECT_EQ(q("left_shoulder_roll_joint"), 0.15);
+  EXPECT_EQ(q("right_shoulder_roll_joint"), -0.15);
   // One roster joint missing is refused — the loader does check coverage.
   joints.push_back("left_wrist_roll_joint");
   EXPECT_EQ(rtc::mpc::LoadReferenceConfig(root["reference"], joints, cfg),

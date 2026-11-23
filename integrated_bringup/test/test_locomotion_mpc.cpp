@@ -97,7 +97,7 @@ TEST_F(LocomotionMpcTest, AConvergedStandingPlanIsFollowedBlockForBlock) {
   }
   for (Eigen::Index i = 0; i < ref.v_des.size(); ++i) {
     EXPECT_EQ(ref.v_des(i), plan.v_ref[static_cast<std::size_t>(i)]) << i;
-    EXPECT_EQ(ref.a_des(i), plan.a_ref[static_cast<std::size_t>(i)]) << i;  // riccati off
+    EXPECT_EQ(ref.a_des(i), plan.a_ref[static_cast<std::size_t>(i)]) << i;  // the stub: no gain
   }
   for (Eigen::Index i = 0; i < ref.lambda_des.size(); ++i) {
     EXPECT_EQ(ref.lambda_des(i), plan.wrench_ref[static_cast<std::size_t>(i)]) << i;
@@ -611,7 +611,7 @@ TEST(LocomotionMpcConfig, TheConsumerKeysAreRequiredAndChecked) {
   const auto parsed = ParseLocomotionControllerConfig(MpcConfig());
   EXPECT_TRUE(parsed.mpc.present);
   EXPECT_TRUE(parsed.mpc.enabled);
-  EXPECT_FALSE(parsed.mpc.riccati_enabled);
+  EXPECT_TRUE(parsed.mpc.riccati_enabled);
   EXPECT_EQ(parsed.mpc.period_nodes, 2);
   EXPECT_EQ(parsed.mpc.max_policy_age_s, 0.35);
   // The other loco profile ships no `mpc:`: no MPC.
