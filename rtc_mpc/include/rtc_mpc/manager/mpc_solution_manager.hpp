@@ -43,6 +43,21 @@
 /// after it is refused (counted with the state-epoch rejections: another
 /// state stream) — whether it was published before or after the re-enable.
 ///
+/// Delivery delay (@ref SetDeliveryDelayNs; 0, the default, is the path
+/// above unchanged): a newly published plan is held back until the consumer's
+/// clock reaches `observation_stamp_ns + delay` — a plan is then taken a
+/// fixed time after the state it was computed from, however fast the solve
+/// was, so the consumer sees the same policy age whatever the host (the
+/// simulator's lock-step, #1168). The pending plan is the triple buffer's
+/// slot itself (no copy): the manager acquires nothing new while one is
+/// pending, judges it (epochs, dimensions) when it falls due, and takes it
+/// before it looks for a newer one. A plan already older than the delay on
+/// arrival is taken at once; one whose stamp is ahead of the clock falls due
+/// at once too (the age rules then decide). Whatever drops the active plan
+/// (a re-enable, @ref Init) drops the pending one. A plan published while
+/// another is pending is counted (@ref SupersededPendingCount) and taken at
+/// the next tick after the pending one.
+///
 /// Refusing the active plan: the consumer may refuse the plan it samples
 /// (@ref RejectActivePlan) and go back to the one accepted before it, under
 /// the same eviction rules (its epochs, its age). The manager holds that one
@@ -230,6 +245,28 @@ class MPCSolutionManager {
   ///         Any thread.
   [[nodiscard]] uint64_t DimensionRejections() const noexcept {
     return dimension_rejections_.load(std::memory_order_relaxed);
+  }
+
+  /// @brief The delivery delay [ns] (file comment); ≥ 0, 0 = none. Not a
+  ///        YAML key: the consumer that knows its tick sets it, before the
+  ///        producer starts or on the consumer thread.
+  void SetDeliveryDelayNs(int64_t delay_ns) noexcept {
+    delivery_delay_ns_ = delay_ns > 0 ? delay_ns : 0;
+  }
+
+  [[nodiscard]] int64_t DeliveryDelayNs() const noexcept { return delivery_delay_ns_; }
+
+  /// @return the plan id held back until it falls due (0 = none). Consumer
+  ///         thread.
+  [[nodiscard]] uint64_t PendingPlanId() const noexcept {
+    return pending_ != nullptr ? pending_->plan_id : 0;
+  }
+
+  /// @return times a pending plan fell due with a newer plan already
+  ///         published behind it — the producer ran ahead of the delivery.
+  ///         Any thread.
+  [[nodiscard]] uint64_t SupersededPendingCount() const noexcept {
+    return superseded_pending_.load(std::memory_order_relaxed);
   }
 
   /// @brief Sample the held plan for this tick into @p out (see the file
@@ -439,9 +476,15 @@ class MPCSolutionManager {
   std::atomic<uint64_t> dimension_rejections_{0};
   std::atomic<uint64_t> gain_node_clamps_{0};
   std::atomic<uint64_t> feedback_skips_{0};
+  std::atomic<uint64_t> superseded_pending_{0};
 
   const pinocchio::Model* model_{nullptr};  // Init's; floating-base Riccati Δx
   int64_t max_policy_age_ns_{0};            // 0 = off
+  int64_t delivery_delay_ns_{0};            // 0 = none (SetDeliveryDelayNs)
+  // The acquired-but-not-yet-due plan: the triple buffer's reading slot,
+  // valid until the next TryAcquireLatest (not called while this is set).
+  // Consumer thread only.
+  const MPCSolution* pending_{nullptr};
   bool config_valid_{true};
   Eigen::VectorXd dx_{};    // ndx, floating-base Riccati Δx
   Eigen::VectorXd u_fb_{};  // max(nu, nv), the feedback rows the tick wrote
@@ -468,8 +511,14 @@ class MPCSolutionManager {
   void EvictIfExpired(uint64_t now_ns, uint32_t model_epoch, uint32_t state_epoch) noexcept;
 
   /// Forget the active plan and the earlier one, with their receive stamps
-  /// (the next accepted plan sets its own gain flag). Consumer thread.
+  /// (the next accepted plan sets its own gain flag), and the pending plan.
+  /// Consumer thread.
   void DropActivePlan() noexcept;
+
+  /// The plan to judge this tick: the pending one once due, else a newly
+  /// published one — held back instead when the delay says so. Consumer
+  /// thread.
+  [[nodiscard]] const MPCSolution* TakeDuePlan(uint64_t now_ns) noexcept;
 
   /// A plan the consumer can sample, with the consumer-side provenance the
   /// plan does not carry. Consumer thread only.
