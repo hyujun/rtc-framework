@@ -149,3 +149,53 @@ def test_the_estop_edge_passes_when_held_waiting_and_fault_free(tmp_path):
 def test_the_estop_edge_fails_on_a_mode_or_a_fault(tmp_path):
     r = walk_gate.judge_estop(_estop_run(tmp_path, mode_under_estop=1, fault_jump=True))
     assert set(r["failed"]) == {"not_waiting_under_estop", "fault_count_change"}
+
+
+def _stance_csv(path, sim_t=None):
+    """A 20 s recording at 10 Hz of a still robot; the wall stamps run at 0.5 × the sim's."""
+    from rtc_tools.analysis import stance_metrics as sm
+
+    samples = [
+        sm.Sample(
+            t=1000.0 + 0.2 * i,
+            pos=(0.0, 0.0, 0.76),
+            quat=(1.0, 0.0, 0.0, 0.0),
+            feet=((0.0, 0.1, 0.0), (0.0, -0.1, 0.0)),
+            loads=(100.0, 100.0),
+        )
+        for i in range(100)
+    ]
+    sm.write_csv(path, samples, 2, sim_t)
+    return samples
+
+
+def test_the_stop_window_is_cut_on_sim_t_when_the_recording_has_it(tmp_path, monkeypatch):
+    cut = {}
+    real = walk_gate.sm.compute
+
+    def spy(tail, **kw):
+        cut["n"] = len(tail)
+        return real(tail, **kw)
+
+    monkeypatch.setattr(walk_gate.sm, "compute", spy)
+    monkeypatch.setattr(walk_gate, "load_diag", lambda run: (None, {"t_relative_s": [0.0, 20.0]}))
+    monkeypatch.setattr(walk_gate, "height_vs_plan", lambda *a: 0.0)
+    # wall 0.2 s apart, sim 0.1 s apart (rtf 0.5): the last 3 sim s hold 31 rows
+    _stance_csv(tmp_path / "stance.csv", [0.1 * i for i in range(100)])
+    walk_gate.control_stop_window([tmp_path], 3.0, 1.0, 0.76)
+    assert cut["n"] == 31
+    # without the column the wall window is window / rtf: rtf 1 → 3 wall s = 16 rows
+    _stance_csv(tmp_path / "stance.csv")
+    walk_gate.control_stop_window([tmp_path], 3.0, 1.0, 0.76)
+    assert cut["n"] == 16
+
+
+def test_the_probe_does_not_apply_to_lockstep_runs(tmp_path, capsys):
+    for name in ("walk_0", "mpc_0"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "run.json").write_text(json.dumps({"mpc_sync": "lockstep"}))
+    assert walk_gate.main([str(tmp_path), "--gait-yaml", str(GAIT_YAML), "--probe"]) == 0
+    assert "does not apply" in capsys.readouterr().out
+    assert not (tmp_path / "walk_probe.json").exists()
+    (tmp_path / "walk_0" / "run.json").write_text(json.dumps({"mpc_sync": "free_run"}))
+    assert not walk_gate.all_lockstep(tmp_path)

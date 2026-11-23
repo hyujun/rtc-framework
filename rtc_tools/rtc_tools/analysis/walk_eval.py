@@ -851,6 +851,42 @@ def measured_rtf(launch_log: str, wall_span: tuple[float, float]) -> float | Non
     return (window[-1][1] - window[0][1]) / (window[-1][0] - window[0][0])
 
 
+# MPC lock-step (launch mpc_sync:=lockstep): a new plan is used L ticks after its
+# trigger, so its first row's age is L × tick exactly, and triggers are N = L
+# ticks apart. The shipped G1 at 500 Hz: L = N = 35, tick 2000 µs.
+LOCKSTEP_AGE_US = 70000.0
+LOCKSTEP_PERIOD_TICKS = 35
+REFUSED_AGE_LINE = re.compile(r"mpc: solves .*?refused: epoch \d+ state \d+ age (\d+)")
+
+
+def lockstep_checks(diag: Mapping[str, np.ndarray], launch_log: str) -> dict[str, bool]:
+    """The lock-step invariants: plan age at first use, trigger spacing, no age refusal."""
+    out = dict.fromkeys(("lockstep_age", "lockstep_period", "lockstep_no_age_refusal"), False)
+    if all(c in diag for c in ("ref_source", "plan_id", "policy_age_us")):
+        stand = np.flatnonzero(diag["ref_source"] == wm.REF_SOURCE_STAND)
+        if stand.size:
+            plan = diag["plan_id"]
+            rows = np.arange(plan.size)
+            # The first row of each plan that appears after the first stand row.
+            first = np.flatnonzero((rows > stand[0]) & (plan != np.roll(plan, 1)) & (plan > 0))
+            out["lockstep_age"] = first.size > 0 and bool(
+                np.all(diag["policy_age_us"][first] == LOCKSTEP_AGE_US)
+            )
+    if "mpc_trigger_tick" in diag:
+        trig = diag["mpc_trigger_tick"]
+        distinct = trig[np.isfinite(trig)]
+        distinct = (
+            distinct[np.concatenate([[True], np.diff(distinct) != 0])]
+            if distinct.size
+            else distinct
+        )
+        steps = np.diff(distinct)
+        out["lockstep_period"] = steps.size > 0 and bool(np.all(steps == LOCKSTEP_PERIOD_TICKS))
+    found = REFUSED_AGE_LINE.findall(launch_log)
+    out["lockstep_no_age_refusal"] = bool(found) and int(found[-1]) == 0
+    return out
+
+
 def recorder_span(stance_csv: Path) -> tuple[float, float] | None:
     """Wall stamps of the recorder's first and last sample."""
     if not stance_csv.is_file():
@@ -947,11 +983,14 @@ def run_validity(
         "no_wip": "[wip]" not in log_text,
         "overlay": overlay_ok(note, overlay),
     }
-    if spec.rtf_tol is not None:
+    lockstep = note.get("mpc_sync") == "lockstep"
+    if spec.rtf_tol is not None and not lockstep:
         # A run that names no target has nothing to be held to: that fails, it does not skip.
         checks["rtf"] = (
             bool(target) and rtf is not None and abs(rtf / target - 1.0) <= spec.rtf_tol
         )
+    if lockstep:  # the rtf follows the solve: the invariants replace its tolerance
+        checks.update(lockstep_checks(run.log.diag, log_text))
     checks["log_readable"] = log_readable(run)
     checks["log_spans_script"] = run.faulted or log_spans_script(run)
     support = _single_support(run, TIER_NONE)

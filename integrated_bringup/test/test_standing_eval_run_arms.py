@@ -777,3 +777,105 @@ def test_a_scenario_that_cannot_run_is_refused_before_the_first_run(tmp_path, ex
     with pytest.raises(SystemExit):
         run_arms.main(base + extra)
     assert not (tmp_path / "walk_0").exists()
+
+
+# ── --mpc-sync (lock-step) ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("arm", "mpc_layout", "expected"),
+    [
+        ("servo", False, []),  # no MPC: nothing to sync
+        ("loco", True, ["enable_mpc:=true", "mpc_sync:=lockstep", "sim_overlay:=mpc_off"]),
+        ("mpc", False, ["enable_mpc:=true", "mpc_sync:=lockstep"]),
+        ("walk", False, ["enable_mpc:=true", "mpc_sync:=lockstep"]),
+    ],
+)
+def test_mpc_sync_goes_to_the_arms_launched_with_the_mpc(arm, mpc_layout, expected):
+    assert run_arms.launch_args(arm, mpc_layout, {}, None, "lockstep") == expected
+    # unset: the arguments the tool always passed
+    assert "mpc_sync:=lockstep" not in run_arms.launch_args(arm, mpc_layout, {})
+
+
+def test_mpc_sync_follows_the_thread_pool_arguments():
+    got = run_arms.launch_args("mpc", True, {}, 2, "free_run")
+    assert got == ["enable_mpc:=true", *POOL, "mpc_sync:=free_run"]
+
+
+def test_lockstep_without_the_mpc_is_refused(monkeypatch, capsys, tmp_path):
+    argv = ["--out", str(tmp_path), "--runtime-yaml", "x", "--logging-root", "y", "-k", "0"]
+    with pytest.raises(SystemExit):
+        run_arms.main([*argv, "--mpc-sync", "lockstep"])
+    assert "needs the MPC" in capsys.readouterr().err
+    assert run_arms.main([*argv, "--mpc-sync", "lockstep", "--mpc-layout"]) == 0
+
+
+class _FakeSim:
+    """A sim time that advances `step` per poll on a fake wall clock `dt` per read."""
+
+    def __init__(self, step, wall_dt=0.1, first=100.0):
+        self.sim = None if step is None else first
+        self.step = step
+        self.wall = 0.0
+        self.wall_dt = wall_dt
+
+    def poll(self, timeout_s):
+        if self.step is not None:
+            self.sim += self.step
+        return self.sim
+
+    def clock(self):
+        self.wall += self.wall_dt
+        return self.wall
+
+
+def test_sim_clock_sleeps_until_the_sim_time_has_advanced():
+    fake = _FakeSim(step=0.5)
+    clock = run_arms.SimClock(poll=fake.poll, wall=fake.clock)
+    clock.sleep(2.0)
+    # the start is the first reading (100.5): returns at the first poll ≥ 2.0 s later
+    assert fake.sim == pytest.approx(102.5)
+
+
+def test_sim_clock_raises_when_the_sim_does_not_advance_within_the_wall_bound():
+    fake = _FakeSim(step=0.0)  # a stalled sim
+    clock = run_arms.SimClock(poll=fake.poll, wall=fake.clock)
+    with pytest.raises(run_arms.SimClockTimeout, match="advanced 0.000 s of the 1.000 s"):
+        clock.sleep(1.0)
+    assert fake.wall > 10.0 * 1.0 + 5.0  # not before 10 × 1 + 5 wall s
+    dead = _FakeSim(step=None)  # no message at all
+    with pytest.raises(run_arms.SimClockTimeout):
+        run_arms.SimClock(poll=dead.poll, wall=dead.clock).sleep(1.0)
+
+
+def test_lockstep_events_sleep_sim_seconds_whatever_the_rtf(monkeypatch):
+    shell = FakeShell(
+        {
+            "/rtc_cm/trigger_estop": TRIGGER_OK,
+            "/rtc_cm/clear_estop": CLEAR_OK,
+            "/rtc_cm/switch_controller": SWITCH_OK,
+        },
+        active=["demo_joint_controller", "locomotion_controller"],
+    )
+    monkeypatch.setattr(run_arms, "sh", shell)
+    monkeypatch.setattr(run_arms.time, "sleep", lambda s: None)
+    clock = FakeClock()
+    assert run_arms.run_events("estop", _args(rtf=0.5, mpc_sync="lockstep"), {}, clock, t0=100.0)
+    assert clock.sleeps == [2.0, 10.0, 2.0, 1.0, 10.0]  # not divided by the rtf
+
+
+def test_the_twist_script_gets_the_sim_clock_under_lockstep(monkeypatch, tmp_path):
+    seen = []
+
+    class Proc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(run_arms.subprocess, "Popen", lambda cmd, **kw: seen.append(cmd) or Proc())
+    monkeypatch.setattr(run_arms, "read_events", lambda path: [{"event": "start", "wall": 1.0}])
+    for sync, flags in ((None, ["--rtf", "1.0"]), ("lockstep", ["--clock", "sim"])):
+        args = _args(mpc_sync=sync, run_out=tmp_path, push=None, push_body=None)
+        assert run_arms._twist_start(args)[0]
+        cmd = seen[-1]
+        assert flags[0] in cmd and cmd[cmd.index(flags[0]) + 1] == flags[1]
+        assert ("--rtf" in cmd) == (sync is None)

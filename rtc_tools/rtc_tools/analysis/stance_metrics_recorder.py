@@ -27,6 +27,12 @@ so a host that cannot keep up with the sensor rate drops samples: the metrics
 carry the sample period and the longest gap, and the tool warns when the gap
 exceeds a few periods.
 
+``--sim-time-topic`` (a ``std_msgs/Float64`` of the simulator's time, the
+``/sim/time`` a lock-step run publishes) adds a ``sim_t`` column (the latest sim
+time at each sample, NaN before the first message) and makes ``--duration``
+count SIM seconds, with a wall bound of ``20 × duration + 30`` s as the safety
+net (reported in the JSON). Without it the recording is the wall-stamped one.
+
 Every sensor name is an argument: the tool knows nothing about any robot.
 """
 
@@ -34,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from dataclasses import asdict
@@ -43,12 +50,18 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
+from std_msgs.msg import Float64
 
 from rtc_msgs.msg import JointCommand, SimSensorState
 from rtc_tools.analysis import stance_metrics as sm
 from rtc_tools.analysis.ros_stop import StopFlag, spin_until_stopped, stop_handlers
 
 CONTACT_FORCE_OFFSET = 1  # <contact data="found force ..."> → force at values[1:4]
+
+
+def wall_bound_s(duration: float) -> float:
+    """The wall-clock safety net of a sim-time recording [s]."""
+    return 20.0 * duration + 30.0
 
 
 class StanceRecorder(Node):
@@ -61,10 +74,18 @@ class StanceRecorder(Node):
         self._created_wall = time.monotonic()
         self._timed_out = False
         self._missing_logged = False
+        self._sim_t: float | None = None  # the latest /sim/time message
+        self._sim_ts: list[float] = []  # per sample, NaN before the first message
+        self._sim_t0: float | None = None  # the sim time at the first sample
+        self._wall_bound_hit = False
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self._sensor_sub = self.create_subscription(
             SimSensorState, args.sensor_topic, self._on_sensors, qos
         )
+        if args.sim_time_topic:
+            self._sim_sub = self.create_subscription(
+                Float64, args.sim_time_topic, self._on_sim_time, qos
+            )
         self._command_sub = None
         if not self._started:
             # BEST_EFFORT matches a publisher of either reliability; the sim
@@ -83,6 +104,9 @@ class StanceRecorder(Node):
             return
         self._started = True
         self.get_logger().info(f"{msg.command_type!r} seen — recording {self._args.duration} s")
+
+    def _on_sim_time(self, msg: Float64) -> None:
+        self._sim_t = float(msg.data)
 
     def _on_sensors(self, msg: SimSensorState) -> None:
         if not self._started:
@@ -106,6 +130,10 @@ class StanceRecorder(Node):
             self._args.contact_sign * float(c[CONTACT_FORCE_OFFSET + 2]) for c in contacts
         )
         t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if self._args.sim_time_topic:
+            self._sim_ts.append(math.nan if self._sim_t is None else self._sim_t)
+            if self._sim_t0 is None and self._sim_t is not None:
+                self._sim_t0 = self._sim_t
         self._samples.append(
             sm.Sample(
                 t=t,
@@ -126,6 +154,17 @@ class StanceRecorder(Node):
                 self._timed_out = True
                 return True
             return False
+        if self._args.sim_time_topic:
+            if (
+                self._sim_t0 is not None
+                and self._sim_t is not None
+                and self._sim_t - self._sim_t0 >= self._args.duration
+            ):
+                return True
+            self._wall_bound_hit = time.monotonic() - self._start_wall > wall_bound_s(
+                self._args.duration
+            )
+            return self._wall_bound_hit
         if self._samples and self._samples[-1].t - self._samples[0].t >= self._args.duration:
             return True
         # Sim time may stall (paused sim); bound the wait by wall time too.
@@ -134,6 +173,14 @@ class StanceRecorder(Node):
     @property
     def samples(self) -> list[sm.Sample]:
         return self._samples
+
+    @property
+    def sim_ts(self) -> list[float]:
+        return self._sim_ts
+
+    @property
+    def wall_bound_hit(self) -> bool:
+        return self._wall_bound_hit
 
     @property
     def timed_out(self) -> bool:
@@ -165,6 +212,12 @@ def _parser() -> argparse.ArgumentParser:
         "Use +1 for a sensor whose geom1 is the floor",
     )
     parser.add_argument("--duration", type=float, default=10.0, help="recording length [s, sim]")
+    parser.add_argument(
+        "--sim-time-topic",
+        default=None,
+        help="std_msgs/Float64 sim time (/sim/time): adds a sim_t column and makes --duration "
+        "count sim seconds, bounded by 20 × duration + 30 wall s",
+    )
     parser.add_argument("--settle", type=float, default=1.0, help="window opens after this [s]")
     parser.add_argument("--force-threshold", type=float, default=5.0, help="load floor [N]")
     parser.add_argument("--z-ref", type=float, default=None, help="height reference [m]")
@@ -206,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             samples = node.samples
             timed_out = node.timed_out
+            sim_ts = node.sim_ts
+            wall_bound_hit = node.wall_bound_hit
             started = node.started
             node.destroy_node()
             rclpy.try_shutdown()
@@ -220,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     if not samples:
         print("error: no samples recorded", file=sys.stderr)
         return 1
-    sm.write_csv(args.csv, samples, len(args.foot_pos))
+    sm.write_csv(args.csv, samples, len(args.foot_pos), sim_ts if args.sim_time_topic else None)
     try:
         metrics = sm.compute(
             samples,
@@ -231,7 +286,14 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    text = json.dumps(asdict(metrics), indent=2)
+    record = asdict(metrics)
+    if args.sim_time_topic:
+        record.update(
+            sim_time_topic=args.sim_time_topic,
+            wall_bound_s=wall_bound_s(args.duration),
+            wall_bound_hit=wall_bound_hit,
+        )
+    text = json.dumps(record, indent=2)
     print(text)
     if metrics.sample_gap_max_s > 3.0 * metrics.sample_dt_median_s > 0.0:
         print(

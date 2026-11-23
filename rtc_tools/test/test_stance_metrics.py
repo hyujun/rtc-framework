@@ -17,6 +17,7 @@ from rtc_tools.analysis.stance_metrics import (
     compute,
     from_row,
     read_csv,
+    read_sim_t,
     tilt_rad,
     to_row,
     write_csv,
@@ -213,3 +214,22 @@ def test_csv_round_trip(tmp_path):
     back = read_csv(path)
     assert back == rows
     assert from_row(dict(zip(columns(2), map(str, to_row(rows[3])), strict=True))) == rows[3]
+
+
+def test_the_sim_t_column_comes_last_and_the_reader_ignores_it(tmp_path):
+    rows = standing(5)
+    sim_t = [math.nan, 10.0, 10.002, 10.004, 10.006]
+    path = tmp_path / "stance.csv"
+    write_csv(path, rows, 2, sim_t)
+    header = path.read_text().splitlines()[0].split(",")
+    assert header == [*columns(2), "sim_t"]
+    assert read_csv(path) == rows  # by name: the fixed columns are where they were
+    got = read_sim_t(path)
+    assert math.isnan(got[0]) and got[1:] == sim_t[1:]
+    # a recording without it is byte-for-byte the old one
+    plain = tmp_path / "plain.csv"
+    write_csv(plain, rows, 2)
+    assert plain.read_text().splitlines()[0].split(",") == columns(2)
+    assert read_sim_t(plain) is None
+    with pytest.raises(ValueError, match="one value per sample"):
+        write_csv(path, rows, 2, sim_t[:2])
