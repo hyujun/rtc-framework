@@ -1131,9 +1131,10 @@ if should_skip 7 is_step7_done; then
     info "현재 실행 중인 커널: $(uname -r) (비-RT — 재부팅 필요)"
   fi
 else
-  # .deb 파일명에서 RT 커널 버전 추출
+  # .deb 파일명에서 RT 커널 버전 추출 — 파일명은 linux-image-<release>_<revision>_<arch>.deb
+  # 라 첫 `_` 앞까지만 잡는다 (탐욕적 `.*` 는 revision 까지 삼켜 grub.cfg 와 안 맞는다).
   DEB_IMAGE=$(newest_file_matching "${BUILD_DIR}" "linux-image-${KERNEL_VERSION}*.deb" "*dbg*")
-  RT_KERNEL_VER=$(echo "$DEB_IMAGE" | sed -n 's/linux-image-\(.*\)_.*\.deb/\1/p')
+  RT_KERNEL_VER=$(basename "$DEB_IMAGE" | sed -n 's/^linux-image-\([^_]*\)_.*\.deb$/\1/p')
 
   # .deb에서 추출 실패 시 RT_KERNEL_FULL 사용
   if [[ -z "$RT_KERNEL_VER" ]]; then
