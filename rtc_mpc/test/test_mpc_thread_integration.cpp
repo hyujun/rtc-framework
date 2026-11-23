@@ -330,6 +330,7 @@ TEST_F(MpcThreadIntegrationTest, TheFirstSolveIsColdWithheldAndTheNextIsPublishe
       static_cast<unsigned long long>(thread.TotalSolves()),
       static_cast<unsigned long long>(mgr.GetSolveStats().count));
   EXPECT_GE(thread.TotalSolves(), 5u);
+  EXPECT_EQ(thread.FailedSolves(), 0u) << "a failed solve re-cold-seeds the next";
   EXPECT_LE(thread.ColdWithheldCount(), 1u);
   EXPECT_GE(mgr.GetSolveStats().count, 1u);
 }

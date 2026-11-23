@@ -121,11 +121,9 @@ class MPCThread : public rtc::PeriodicRtThread {
     return timing_producer_;
   }
 
-  // ── Overruns by budget ─────────────────────────────────────────────────
-  //
-  // The base counts an overrun (PeriodicRtThread::OverrunCount: the wait
-  // found the deadline missed by more than one period) after the tick that
-  // caused it. Any thread.
+  // Overruns: the base's one count (PeriodicRtThread::OverrunCount — the
+  // wait found the deadline missed by more than one period, after the tick
+  // that caused it). Any thread.
 
  protected:
   /// @brief Perform one MPC solve.

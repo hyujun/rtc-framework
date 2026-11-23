@@ -39,7 +39,10 @@
 ///   multipliers 0).
 /// - Budget: every solve runs on the one budget (`max_iters`,
 ///   `max_al_iters`) — `MPCSolverConfig`. The first solve after a build, a
-///   rebuild or a rejected solve is cold-seeded, not differently budgeted.
+///   rebuild or a rejected solve is cold-seeded, not differently budgeted —
+///   so an OCP that rebuilds on every phase change (`RebuildsOnContextChange`:
+///   contact_light / contact_rich) cold-seeds at every phase change, and the
+///   MPC thread publishes that solve only if it converged.
 /// - On topology change (`ctx.phase_changed` with new horizon / active
 ///   contacts / weight-zero crossing): concrete handler re-Builds the OCP
 ///   and re-`setup`s the solver, then seeds the new workspace from the

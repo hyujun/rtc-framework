@@ -1062,13 +1062,19 @@ double P99(std::vector<double> v) {
 constexpr PlanDistance kEpsFloor{1e-3, 1e-2, 1e-3};
 
 /// ε of a run: the p99 over its solves from @p from of the jump a consumer
-/// sees between consecutive plans — plan k's node j + 2 against plan k + 1's
-/// node j over the consumed nodes — floored by kEpsFloor.
-PlanDistance ConsecutiveJumpP99(const std::vector<PlanSlice>& plans, std::size_t from, double mg) {
+/// sees between consecutive published plans — plan k's node j + 2 against
+/// plan k + 1's node j over the consumed nodes, both plans publishable
+/// (@p published) — floored by kEpsFloor. A withheld plan is never consumed,
+/// so a pair with one is not a jump the consumer sees.
+PlanDistance ConsecutiveJumpP99(const std::vector<PlanSlice>& plans,
+                                const std::vector<bool>& published, std::size_t from, double mg) {
   std::vector<double> q;
   std::vector<double> v;
   std::vector<double> lambda;
   for (std::size_t k = from; k + 1 < plans.size(); ++k) {
+    if (!published[k] || !published[k + 1]) {
+      continue;
+    }
     const PlanDistance d = Distance(plans[k], plans[k + 1], tu::kShippedPeriodNodes, mg);
     q.push_back(d.q);
     v.push_back(d.v);
@@ -1099,7 +1105,9 @@ PlanDistance ConsecutiveJumpP99(const std::vector<PlanSlice>& plans, std::size_t
 // the 0.35 s cap with a solve to spare); (ii) the plan at k* is as close to
 // its successor (plan k* + 1's node j against its node j + 2, over nodes
 // 0..3) as the run's later plans are to theirs: within ε, the p99 of the
-// consecutive jumps from k* + 1 to the end, floored by kEpsFloor. D is judged
+// consecutive jumps of published pairs from k* + 1 to the end, floored by
+// kEpsFloor (a withheld plan is not consumed: it is in no pair, and a
+// withheld successor leaves (ii) unjudged, reported). D is judged
 // by (i) alone ((ii) is reported there, as before). Must fail: the cold seed
 // after one iteration (max_iters 1, index 0) is farther than ε from the run's
 // plan at index 1 on the walk scenarios — else the distance has no power.
@@ -1159,10 +1167,12 @@ TEST_P(KinodynamicReceding, OneBudgetReachesAPublishablePlanFromColdWithinTheReg
     // by the thread's rule: a cold-seeded solve that did not converge is
     // withheld whatever its residual, then the consumed nodes' residual.
     int k_star = -1;
-    for (std::size_t n = origin; n < one.size(); ++n) {
-      if (!(one[n].cold && !one[n].converged) && one[n].consumed <= tu::kShippedPublishPrimTol) {
+    std::vector<bool> published(one.size(), false);
+    for (std::size_t n = 0; n < one.size(); ++n) {
+      published[n] =
+          !(one[n].cold && !one[n].converged) && one[n].consumed <= tu::kShippedPublishPrimTol;
+      if (k_star < 0 && n >= origin && published[n]) {
         k_star = static_cast<int>(n - origin);
-        break;
       }
     }
     EXPECT_TRUE(one[origin].cold) << sc.name << ": the origin solve is cold-seeded";
@@ -1172,9 +1182,9 @@ TEST_P(KinodynamicReceding, OneBudgetReachesAPublishablePlanFromColdWithinTheReg
     // (ii) at k*, within ε of the jump the later plans make to their successors.
     const std::size_t at = origin + static_cast<std::size_t>(k_star);
     ASSERT_LT(at + 2, one_plans.size()) << sc.name;
-    const PlanDistance eps = ConsecutiveJumpP99(one_plans, at + 1, mg);
+    const PlanDistance eps = ConsecutiveJumpP99(one_plans, published, at + 1, mg);
     const PlanDistance d = Distance(one_plans[at], one_plans[at + 1], tu::kShippedPeriodNodes, mg);
-    if (sc.distance) {
+    if (sc.distance && published[at + 1]) {
       EXPECT_LE(d.q, eps.q) << sc.name;
       EXPECT_LE(d.v, eps.v) << sc.name;
       EXPECT_LE(d.lambda, eps.lambda) << sc.name;
@@ -1184,8 +1194,9 @@ TEST_P(KinodynamicReceding, OneBudgetReachesAPublishablePlanFromColdWithinTheReg
         "%.3g; eps (later consecutive jumps p99, floored) q %.3g v %.3g lambda %.3g%s; origin "
         "solve: %d iterations %.1f ms conv %d\n",
         sc.name, k_star, sc.k_bound, d.q, d.v, d.lambda, eps.q, eps.v, eps.lambda,
-        sc.distance ? "" : " (reported, not gated)", one[origin].iterations, one[origin].ms,
-        one[origin].converged ? 1 : 0);
+        sc.distance ? (published[at + 1] ? "" : " (successor withheld: not judged)")
+                    : " (reported, not gated)",
+        one[origin].iterations, one[origin].ms, one[origin].converged ? 1 : 0);
 
     // Must fail: the cold seed after one iteration is not within ε on the walk.
     if (sc.walk) {
