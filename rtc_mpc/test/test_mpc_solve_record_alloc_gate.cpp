@@ -110,8 +110,6 @@ class GatingStub final : public rtc::mpc::MPCHandlerBase {
 
   [[nodiscard]] const MPCSolverConfig& solver_config() const noexcept override { return cfg_; }
 
-  [[nodiscard]] bool InitialSolvePending() const noexcept override { return false; }
-
   [[nodiscard]] std::string_view ocp_type() const noexcept override { return "stub"; }
 
   [[nodiscard]] int horizon_length() const noexcept override { return kHorizon; }

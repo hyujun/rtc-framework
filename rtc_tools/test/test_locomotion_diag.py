@@ -69,7 +69,6 @@ def diag_header() -> list[str]:
         "plan_id",
         "policy_age_us",
         "mpc_converged",
-        "mpc_initial_solve",
         "mpc_solve_us",
         "schedule_epoch",
         "contact_mask",

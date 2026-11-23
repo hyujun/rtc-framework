@@ -369,7 +369,6 @@ bool MPCSolutionManager::SampleActive(const Eigen::Ref<const Eigen::VectorXd>& q
   out.schedule_epoch = s.schedule_epoch;
   out.solve_duration_ns = s.solve_duration_ns;
   out.converged = s.converged;
-  out.initial_solve = s.initial_solve;
   out.iterations = s.iterations;
   out.prim_inf = s.residuals.prim_inf;
   out.dual_inf = s.residuals.dual_inf;

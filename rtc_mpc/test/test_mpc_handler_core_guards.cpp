@@ -526,8 +526,6 @@ class MPCHandlerCoreBudgetTest : public MPCHandlerCoreGuardTest {
     budget_.mu_init = 1e-2;
     budget_.max_iters = 2;
     budget_.max_al_iters = 3;
-    budget_.max_initial_iters = 6;
-    budget_.max_online_al_iters = 1;
   }
 
   /// The ceilings the solver ran the last solve with.
@@ -541,71 +539,46 @@ class MPCHandlerCoreBudgetTest : public MPCHandlerCoreGuardTest {
   rtc::mpc::MPCSolverConfig budget_;
 };
 
-TEST_F(MPCHandlerCoreBudgetTest, TheStandingBudgetHoldsUntilASolveConverges) {
+TEST_F(MPCHandlerCoreBudgetTest, EverySolveRunsOnTheOneBudget) {
   ChaseOCP ocp(true);
   rtc::mpc::internal::MPCHandlerCore core;
   ASSERT_EQ(core.Init(budget_, handler_, limits_, ctx_, ocp), rtc::mpc::MPCInitError::kNoError);
-  EXPECT_TRUE(core.InitialSolvePending());
+  ExpectCeilings(core, 2, 3, "after Init");
 
-  // The moving target: no solve converges, each one uses the whole standing
-  // budget, and the next one gets it again.
+  // The moving target: no solve converges; every one is capped at max_iters.
   for (int tick = 0; tick < 2; ++tick) {
     MPCSolution out{};
     ASSERT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError) << "tick " << tick;
     EXPECT_FALSE(out.converged) << "tick " << tick;
-    EXPECT_TRUE(out.initial_solve) << "tick " << tick;
-    EXPECT_EQ(out.iterations, 6) << "tick " << tick;
-    ExpectCeilings(core, 6, 3, "unconverged standing solve");
-    EXPECT_TRUE(core.InitialSolvePending()) << "tick " << tick;
+    EXPECT_LE(out.iterations, 2) << "tick " << tick;
+    EXPECT_EQ(out.cold_start, tick == 0) << "tick " << tick;
+    ExpectCeilings(core, 2, 3, "unconverged solve");
   }
 
-  // The target stops: this solve converges, still on the standing budget.
+  // The target stops: converged or not, the ceilings never move.
   ocp.state().moving = false;
   MPCSolution out{};
   ASSERT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError);
-  EXPECT_TRUE(out.converged);
-  EXPECT_TRUE(out.initial_solve);
-  ExpectCeilings(core, 6, 3, "converging standing solve");
-  EXPECT_FALSE(core.InitialSolvePending());
-
-  // From now on the online budget, converged or not.
-  ASSERT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError);
-  EXPECT_FALSE(out.initial_solve);
-  ExpectCeilings(core, 2, 1, "online solve");
+  ExpectCeilings(core, 2, 3, "target at rest");
   ocp.state().moving = true;
   ASSERT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError);
   EXPECT_FALSE(out.converged);
-  EXPECT_FALSE(out.initial_solve);
+  EXPECT_FALSE(out.cold_start);
   EXPECT_LE(out.iterations, 2);
-  ExpectCeilings(core, 2, 1, "unconverged online solve");
+  ExpectCeilings(core, 2, 3, "unconverged warm solve");
 }
 
-TEST_F(MPCHandlerCoreBudgetTest, ZeroCeilingsMeanTheOtherBudgetsValues) {
-  budget_.max_initial_iters = 0;
-  budget_.max_online_al_iters = 0;
-  ChaseOCP ocp(true);
-  rtc::mpc::internal::MPCHandlerCore core;
-  ASSERT_EQ(core.Init(budget_, handler_, limits_, ctx_, ocp), rtc::mpc::MPCInitError::kNoError);
-  ocp.state().moving = false;
-  MPCSolution out{};
-  ASSERT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError);
-  ASSERT_TRUE(out.converged);
-  ExpectCeilings(core, 2, 3, "standing solve");
-  ASSERT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError);
-  ExpectCeilings(core, 2, 3, "online solve");
-}
-
-TEST_F(MPCHandlerCoreBudgetTest, ARejectedSolveOrARebuildReturnsToTheStandingBudget) {
+TEST_F(MPCHandlerCoreBudgetTest, ARejectedSolveOrARebuildColdSeedsOnTheSameBudget) {
   ChaseOCP ocp(true);
   rtc::mpc::internal::MPCHandlerCore core;
   ASSERT_EQ(core.Init(budget_, handler_, limits_, ctx_, ocp), rtc::mpc::MPCInitError::kNoError);
   ocp.state().moving = false;
   MPCSolution first{};
   ASSERT_EQ(core.Solve(ctx_, state_, ocp, first), MPCSolveError::kNoError);
-  ASSERT_FALSE(core.InitialSolvePending());
+  ASSERT_TRUE(first.cold_start);
 
   // A rejected solve (a non-finite control in the warm start) cold-seeds the
-  // next tick, and that tick is a standing solve again.
+  // next tick, on the same ceilings.
   MPCSolution poisoned = first;
   poisoned.u_traj[3][1] = std::numeric_limits<double>::quiet_NaN();
   core.SeedWarmStart(poisoned, ocp);
@@ -613,19 +586,22 @@ TEST_F(MPCHandlerCoreBudgetTest, ARejectedSolveOrARebuildReturnsToTheStandingBud
   const MPCSolveError e = core.Solve(ctx_, state_, ocp, out);
   EXPECT_TRUE(e == MPCSolveError::kSolverDiverged || e == MPCSolveError::kSolverException)
       << static_cast<int>(e);
-  EXPECT_TRUE(core.InitialSolvePending());
   ASSERT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError);
-  EXPECT_TRUE(out.initial_solve);
-  ExpectCeilings(core, 6, 3, "after the rejection");
-  ASSERT_TRUE(out.converged);
-  ASSERT_FALSE(core.InitialSolvePending());
+  EXPECT_TRUE(out.cold_start);
+  EXPECT_EQ(core.LastNodeShift(), 0);
+  ExpectCeilings(core, 2, 3, "after the rejection");
 
-  // A rebuild: the tick that rebuilds solves on the standing budget.
+  // The next tick is warm again.
+  ASSERT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError);
+  EXPECT_FALSE(out.cold_start);
+  ExpectCeilings(core, 2, 3, "warm after the rejection");
+
+  // A rebuild: the tick that rebuilds cold-seeds, on the same ceilings.
   ocp.state().refuse_context = true;
   ASSERT_EQ(core.Solve(ctx_, state_, ocp, out), MPCSolveError::kNoError);
   EXPECT_EQ(ocp.builds(), 2);
-  EXPECT_TRUE(out.initial_solve);
-  ExpectCeilings(core, 6, 3, "after the rebuild");
+  EXPECT_TRUE(out.cold_start);
+  ExpectCeilings(core, 2, 3, "after the rebuild");
 }
 
 TEST_F(MPCHandlerCoreBudgetTest, AnOcpThatCannotRebuildIsRefusedWithoutBuildOrAllocation) {
@@ -649,11 +625,10 @@ TEST_F(MPCHandlerCoreBudgetTest, AnOcpThatCannotRebuildIsRefusedWithoutBuildOrAl
   EXPECT_EQ(fixed.builds(), 1) << "only Init built";
   EXPECT_EQ(&fixed.problem(), problem);
   EXPECT_FALSE(refused.IsValid());
-  // The refusal touched no iterate: the next tick is online and warm.
-  EXPECT_FALSE(core.InitialSolvePending());
+  // The refusal touched no iterate: the next tick is warm.
   fixed.state().refuse_context = false;
   ASSERT_EQ(core.Solve(ctx_, state_, fixed, out), MPCSolveError::kNoError);
-  EXPECT_FALSE(out.initial_solve);
+  EXPECT_FALSE(out.cold_start);
 
   // A rebuildable OCP still rebuilds on the same refusal.
   ChaseOCP rebuildable(true);

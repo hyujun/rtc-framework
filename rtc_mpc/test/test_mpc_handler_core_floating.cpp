@@ -335,7 +335,6 @@ TEST_F(MPCHandlerCoreFloatingTest, AStateEpochChangeStartsTheSolveCold) {
   reset.state_epoch = 1;
   ASSERT_EQ(core_.Solve(ctx_, reset, ocp_, out), MPCSolveError::kNoError);
   EXPECT_TRUE(out.cold_start);
-  EXPECT_TRUE(out.initial_solve) << "the standing budget, as after a build";
   EXPECT_EQ(core_.LastNodeShift(), 0);
   ASSERT_EQ(core_.Solve(ctx_, reset, ocp_, out), MPCSolveError::kNoError);
   EXPECT_FALSE(out.cold_start);

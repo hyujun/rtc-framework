@@ -24,14 +24,13 @@
 /// (`MPCSolverConfig`, both off at 0): a solve that returned after
 /// `publish_deadline_ms` since this class's `Solve` entry (after the state
 /// read, before FK and the phase manager) is not published
-/// (@ref DeadlineMissCount; the standing solve is exempt); a budget-exhausted
-/// solve whose consumed segment's residual exceeds `publish_prim_tol` is not
-/// either (@ref WithheldCount), nor an online solve that started cold and did
-/// not converge (@ref ColdWithheldCount). None is a failed solve, and none
-/// touches the handler: its iterates warm-start the next tick. A tick whose
-/// handler reports the standing budget pending (`InitialSolvePending`, read
-/// before the solve, so a failed standing solve counts too) or whose solve ran
-/// on it is marked for the overrun split (`MPCThread::StandingOverrunCount`).
+/// (@ref DeadlineMissCount); a budget-exhausted solve whose consumed
+/// segment's residual exceeds `publish_prim_tol` is not either
+/// (@ref WithheldCount), nor a solve that started cold and did not converge
+/// (@ref ColdWithheldCount). None is a failed solve, and none touches the
+/// handler: its iterates warm-start the next tick. Every solve runs on the
+/// handler's one budget — the first after a build, a rebuild or a rejection
+/// is cold-seeded, not differently budgeted or exempted.
 ///
 /// Phase time — the `t` handed to the phase manager is the snapshot's
 /// `timestamp_ns` (the consumer's clock) since the first snapshot, in
@@ -47,8 +46,7 @@
 /// change it), a
 /// tick whose snapshot `sequence` is the last attempted one returns before
 /// FK and the solve (@ref RepeatedObservationSkips; not a solve, not
-/// failed), unless the handler's standing solve is pending and the last
-/// attempt returned iterates (@ref StandingRepeatSolves).
+/// failed).
 ///
 /// Ownership — `HandlerMPCThread` takes unique-ownership of both the handler
 /// and the phase manager via `Configure`. The `RobotModelHandler` reference
@@ -177,17 +175,9 @@ class HandlerMPCThread final : public MPCThread {
     return failed_solves_.load(std::memory_order_relaxed);
   }
 
-  /// @return successful solves that ran on the standing budget
-  ///        (`MPCSolution::initial_solve`) — the standing solve's ticks, which
-  ///        a timing judgement counts apart from the online ones.
-  [[nodiscard]] std::uint64_t InitialSolveTicks() const noexcept {
-    return initial_solve_ticks_.load(std::memory_order_relaxed);
-  }
-
   /// @return solves not published because the tick ran past the handler's
-  ///        `publish_deadline_ms` (counted from this thread's `Solve` entry;
-  ///        the standing solve is exempt) — not failed solves: the iterates
-  ///        stay the next tick's warm start.
+  ///        `publish_deadline_ms` (counted from this thread's `Solve` entry)
+  ///        — not failed solves: the iterates stay the next tick's warm start.
   [[nodiscard]] std::uint64_t DeadlineMissCount() const noexcept {
     return deadline_misses_.load(std::memory_order_relaxed);
   }
@@ -200,10 +190,12 @@ class HandlerMPCThread final : public MPCThread {
     return withheld_.load(std::memory_order_relaxed);
   }
 
-  /// @return online solves started from a cold seed (`MPCSolution::cold_start`,
-  ///         a node-grid jump) that were not published because they had not
-  ///         converged — a plan without a warm start is consumed only once
-  ///         it meets the tolerance. Not in @ref WithheldCount, not failed.
+  /// @return solves started from a cold seed (`MPCSolution::cold_start`: the
+  ///         first after a build, a rebuild, a rejection or a node-grid jump)
+  ///         that were not published because they had not converged — a plan
+  ///         without a warm start is consumed only once it meets the
+  ///         tolerance; the next solve warm-starts from its iterates. Not in
+  ///         @ref WithheldCount, not failed.
   [[nodiscard]] std::uint64_t ColdWithheldCount() const noexcept {
     return cold_withheld_.load(std::memory_order_relaxed);
   }
@@ -220,12 +212,6 @@ class HandlerMPCThread final : public MPCThread {
   ///         (`require_fresh_state`).
   [[nodiscard]] std::uint64_t RepeatedObservationSkips() const noexcept {
     return repeated_skips_.load(std::memory_order_relaxed);
-  }
-
-  /// @return ticks that solved an already attempted snapshot again because
-  ///         the standing solve was still pending (`require_fresh_state`).
-  [[nodiscard]] std::uint64_t StandingRepeatSolves() const noexcept {
-    return standing_repeats_.load(std::memory_order_relaxed);
   }
 
   /// @return true once the null-handler guard has rejected a solve.
@@ -283,7 +269,6 @@ class HandlerMPCThread final : public MPCThread {
   // Repeated-observation rule (loop thread only; the switch set at Configure).
   bool require_fresh_state_{false};
   std::uint64_t last_attempted_sequence_{0};  // 0: none (sequences start at 1)
-  bool last_attempt_returned_iterates_{false};
 
   // The verdict of this tick's attempt, for OnTickEnd (loop thread only).
   // `out` is null for a failed attempt: it has no iterates to summarise.
@@ -301,12 +286,10 @@ class HandlerMPCThread final : public MPCThread {
   std::atomic<int> last_phase_id_{-1};
   std::atomic<std::uint64_t> total_solves_{0};
   std::atomic<std::uint64_t> failed_solves_{0};
-  std::atomic<std::uint64_t> initial_solve_ticks_{0};
   std::atomic<std::uint64_t> deadline_misses_{0};
   std::atomic<std::uint64_t> withheld_{0};
   std::atomic<std::uint64_t> cold_withheld_{0};
   std::atomic<std::uint64_t> repeated_skips_{0};
-  std::atomic<std::uint64_t> standing_repeats_{0};
   std::atomic<bool> null_handler_hit_{false};
 };
 

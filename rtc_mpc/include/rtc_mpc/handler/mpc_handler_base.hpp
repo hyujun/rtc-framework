@@ -29,9 +29,7 @@
 ///   a context on a node grid (`PhaseContext::on_node_grid`) — as many as
 ///   the grid index advanced since the last solve: none (node 0 takes the
 ///   measured state, nothing else moves), two or more after an overrun, a
-///   cold seed when it went back or by the horizon or more (on the budget it
-///   was on: a converged standing solve is not re-armed, or a long standing
-///   solve on a walking window would jump the index again; such a plan is
+///   cold seed when it went back or by the horizon or more (such a plan is
 ///   marked `MPCSolution::cold_start`, and the MPC thread publishes it only
 ///   once converged). After the shift
 ///   the OCP clears the multipliers of the rows its current modes make
@@ -39,10 +37,12 @@
 ///   cold seed is its reference control seeds the controls of the nodes the
 ///   shift appended with it (the states stay the last node's, the
 ///   multipliers 0).
-/// - Budget: until a solve converges after `Init`, a rebuild or a rejected
-///   solve, every solve runs on the standing budget (`max_initial_iters`,
-///   `max_al_iters`) and is marked `MPCSolution::initial_solve`; then on the
-///   online one (`max_iters`, `max_online_al_iters`) — `MPCSolverConfig`.
+/// - Budget: every solve runs on the one budget (`max_iters`,
+///   `max_al_iters`) — `MPCSolverConfig`. The first solve after a build, a
+///   rebuild or a rejected solve is cold-seeded, not differently budgeted —
+///   so an OCP that rebuilds on every phase change (`RebuildsOnContextChange`:
+///   contact_light / contact_rich) cold-seeds at every phase change, and the
+///   MPC thread publishes that solve only if it converged.
 /// - On topology change (`ctx.phase_changed` with new horizon / active
 ///   contacts / weight-zero crossing): concrete handler re-Builds the OCP
 ///   and re-`setup`s the solver, then seeds the new workspace from the
@@ -96,23 +96,23 @@ enum class MPCLinearSolver {
 /// Defaults are intentionally looser than Phase 3/4 fixtures so the typical
 /// 20-node Panda solve converges in tens of iterations rather than hundreds.
 ///
-/// Two budgets: until a solve converges — after `Init`, a rebuild, or a
-/// rejected solve that cold-seeds the next tick — the handler solves with
-/// (`max_initial_iters`, `max_al_iters`), the standing solve; after that with
-/// (`max_iters`, `max_online_al_iters`). `max_iters` counts Newton iterations
-/// over the whole solve; every AL outer iteration re-evaluates the problem
-/// and its derivatives, so `max_online_al_iters` is a budget too. Aligator
-/// tests convergence at the head of the next iteration, so a solve that
-/// converges in N iterations reports it only when the ceiling is at least
-/// N + 1 — at exactly N the same iterates come back as `kMaxIters`.
+/// One budget: every solve — the first after `Init`, a rebuild or a rejected
+/// solve (cold-seeded) as much as a warm one — runs with (`max_iters`,
+/// `max_al_iters`). `max_iters` counts Newton iterations over the whole
+/// solve; every AL outer iteration re-evaluates the problem and its
+/// derivatives, so `max_al_iters` is a budget too. Aligator tests
+/// convergence at the head of the next iteration, so a solve that converges
+/// in N iterations reports it only when the ceiling is at least N + 1 — at
+/// exactly N the same iterates come back as `kMaxIters`. A cold solve on a
+/// budget that cannot converge is withheld by the MPC thread; the next solve
+/// warm-starts from its iterates and is judged by the residual rule.
 ///
 /// The step acceptance (non-monotone line search) and the Hessian
 /// approximation (Gauss-Newton) are Aligator's defaults and are not keys.
 ///
 /// Two publish rules, applied by the MPC thread (`HandlerMPCThread`), both off
 /// at 0: a solve whose tick took longer than `publish_deadline_ms` since the
-/// thread's `Solve` entry is not published (the standing solve is exempt — it
-/// runs to convergence by design); a budget-exhausted solve (`kMaxIters`) is
+/// thread's `Solve` entry is not published; a budget-exhausted solve (`kMaxIters`) is
 /// published only when the primal residual of the segment the consumer reads
 /// (`MPCSolution::node_prim_inf`, nodes 0 … ⌈period/dt⌉ + 1) is at most
 /// `publish_prim_tol` — a converged one always is. Either way the iterates
@@ -120,19 +120,17 @@ enum class MPCLinearSolver {
 ///
 /// `require_fresh_state` (default false) makes the MPC thread solve each
 /// state snapshot once: a tick whose snapshot carries the `sequence` of the
-/// last attempted one is skipped (`HandlerMPCThread::RepeatedObservationSkips`)
-/// — except while the standing solve is pending and the last attempt
-/// returned iterates, which continue on the same observation.
+/// last attempted one is skipped (`HandlerMPCThread::RepeatedObservationSkips`).
+///
+/// `MPCFactory::LoadSolverConfig` reads exactly these keys and refuses a
+/// `solver:` map with any other (a key that no longer exists must not change
+/// the budget silently).
 struct MPCSolverConfig {
   double prim_tol{1e-3};  ///< primal infeasibility target
   double dual_tol{1e-2};  ///< dual infeasibility target
   double mu_init{1e-2};   ///< AL penalty initial value
-  int max_iters{30};      ///< per-solve iteration ceiling once a solve has converged
-  int max_al_iters{20};   ///< AL outer-loop ceiling of the standing solve
-  /// Iteration ceiling of the standing solve; 0 = `max_iters`, otherwise at
-  /// least `max_iters`.
-  int max_initial_iters{0};
-  int max_online_al_iters{0};  ///< AL outer-loop ceiling once converged; 0 = `max_al_iters`
+  int max_iters{30};      ///< per-solve Newton iteration ceiling
+  int max_al_iters{20};   ///< per-solve AL outer-loop ceiling
   MPCRolloutType rollout_type{MPCRolloutType::kLinear};
   MPCLinearSolver linear_solver{MPCLinearSolver::kSerial};  ///< `kParallel` is refused
   /// Solver threads, the calling (MPC) thread included. 1 = the serial solve,
@@ -150,16 +148,6 @@ struct MPCSolverConfig {
   double publish_deadline_ms{0.0};     ///< [ms] ≥ 0; 0 = no deadline
   double publish_prim_tol{0.0};        ///< ≥ 0; 0 = publish every finite solve
   bool require_fresh_state{false};     ///< skip a snapshot already attempted
-
-  /// @return the standing solve's iteration ceiling.
-  [[nodiscard]] constexpr int InitialIters() const noexcept {
-    return max_initial_iters > 0 ? max_initial_iters : max_iters;
-  }
-
-  /// @return the AL outer-loop ceiling once a solve has converged.
-  [[nodiscard]] constexpr int OnlineAlIters() const noexcept {
-    return max_online_al_iters > 0 ? max_online_al_iters : max_al_iters;
-  }
 };
 
 /// @brief Failure modes for @ref MPCHandlerBase::Init. Allocation is
@@ -258,12 +246,6 @@ class MPCHandlerBase {
   /// @return the solver configuration `Init` accepted (the defaults before)
   ///         — the MPC thread reads its publish rules from it.
   [[nodiscard]] virtual const MPCSolverConfig& solver_config() const noexcept = 0;
-
-  /// @return true while the next solve runs on the standing budget (no solve
-  ///         has converged since `Init`, a rebuild or a rejected solve) — the
-  ///         MPC thread marks the tick for its overrun split before solving,
-  ///         whatever the solve then returns.
-  [[nodiscard]] virtual bool InitialSolvePending() const noexcept = 0;
 
   /// @return `"contact_light"` or `"contact_rich"` — matches the underlying
   ///         OCP handler. Used by `MPCFactory` for cross-handler dispatch.

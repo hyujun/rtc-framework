@@ -87,8 +87,32 @@ bool MPCFactory::LoadSolverConfig(const YAML::Node& solver_node, MPCSolverConfig
     return true;  // leave defaults
   if (!solver_node.IsMap())
     return false;
+  // Exactly these keys; any other refuses the map (a key that no longer
+  // exists must not change the budget silently).
+  static constexpr const char* kKeys[] = {"prim_tol",
+                                          "dual_tol",
+                                          "mu_init",
+                                          "max_iters",
+                                          "max_al_iters",
+                                          "rollout_type",
+                                          "linear_solver",
+                                          "num_threads",
+                                          "force_initial_condition",
+                                          "verbose",
+                                          "publish_deadline_ms",
+                                          "publish_prim_tol",
+                                          "require_fresh_state"};
   MPCSolverConfig cfg = out;
   try {
+    for (const auto& kv : solver_node) {
+      const std::string key = kv.first.as<std::string>();
+      bool known = false;
+      for (const char* k : kKeys) {
+        known = known || key == k;
+      }
+      if (!known)
+        return false;
+    }
     if (solver_node["prim_tol"])
       cfg.prim_tol = solver_node["prim_tol"].as<double>();
     if (solver_node["dual_tol"])
@@ -99,10 +123,6 @@ bool MPCFactory::LoadSolverConfig(const YAML::Node& solver_node, MPCSolverConfig
       cfg.max_iters = solver_node["max_iters"].as<int>();
     if (solver_node["max_al_iters"])
       cfg.max_al_iters = solver_node["max_al_iters"].as<int>();
-    if (solver_node["max_initial_iters"])
-      cfg.max_initial_iters = solver_node["max_initial_iters"].as<int>();
-    if (solver_node["max_online_al_iters"])
-      cfg.max_online_al_iters = solver_node["max_online_al_iters"].as<int>();
     if (solver_node["rollout_type"] &&
         !ParseRolloutType(solver_node["rollout_type"].as<std::string>(), cfg.rollout_type))
       return false;

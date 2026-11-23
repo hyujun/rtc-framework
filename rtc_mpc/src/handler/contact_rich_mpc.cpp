@@ -30,10 +30,6 @@ const MPCSolverConfig& ContactRichMPC::solver_config() const noexcept {
   return core_->solver_config();
 }
 
-bool ContactRichMPC::InitialSolvePending() const noexcept {
-  return core_->InitialSolvePending();
-}
-
 int ContactRichMPC::horizon_length() const noexcept {
   return core_->horizon_length();
 }

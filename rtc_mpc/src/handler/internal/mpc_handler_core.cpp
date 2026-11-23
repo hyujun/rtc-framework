@@ -70,11 +70,6 @@ using Solver = aligator::SolverProxDDPTpl<double>;
       cfg.max_iters <= 0 || cfg.max_al_iters <= 0) {
     return false;
   }
-  if (cfg.max_initial_iters < 0 ||
-      (cfg.max_initial_iters > 0 && cfg.max_initial_iters < cfg.max_iters) ||
-      cfg.max_online_al_iters < 0) {
-    return false;
-  }
   if (!std::isfinite(cfg.publish_deadline_ms) || cfg.publish_deadline_ms < 0.0 ||
       !std::isfinite(cfg.publish_prim_tol) || cfg.publish_prim_tol < 0.0) {
     return false;
@@ -234,7 +229,6 @@ MPCInitError MPCHandlerCore::Init(const MPCSolverConfig& solver_cfg, const Robot
   us_warm_.assign(static_cast<std::size_t>(horizon_length_), Eigen::VectorXd::Zero(nu_));
 
   first_solve_after_build_ = true;
-  initial_solve_pending_ = true;
   have_node_index_ = false;
   last_node_shift_ = 0;
   initialised_ = true;
@@ -368,7 +362,6 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     }
     horizon_length_ = ocp.horizon_length();
     first_solve_after_build_ = true;
-    initial_solve_pending_ = true;
     have_node_index_ = false;
     // Re-size warm buffers in case horizon changed.
     xs_warm_.assign(static_cast<std::size_t>(horizon_length_ + 1),
@@ -388,21 +381,18 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
   }
 
   // A state from another state stream (the consumer reset or switched its
-  // source) is not a continuation of the iterates: a cold seed on the
-  // standing budget, as after a build.
+  // source) is not a continuation of the iterates: a cold seed, as after a
+  // build.
   const bool state_epoch_changed = have_state_epoch_ && state.state_epoch != last_state_epoch_;
   have_state_epoch_ = true;
   last_state_epoch_ = state.state_epoch;
-  if (state_epoch_changed) {
-    if (!first_solve_after_build_) {
-      ClearDuals();
-    }
-    initial_solve_pending_ = true;
+  if (state_epoch_changed && !first_solve_after_build_) {
+    ClearDuals();
   }
 
   // How far the warm start moves: one node a tick, or on a node grid the
   // index difference since the iterates' solve. Going back, or by the horizon
-  // or more, leaves nothing to shift: a cold seed on the current budget.
+  // or more, leaves nothing to shift: a cold seed.
   bool cold_seeded = first_solve_after_build_ || state_epoch_changed;
   int shift = 1;
   if (!cold_seeded && ctx.on_node_grid && have_node_index_) {
@@ -460,8 +450,6 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     }
   }
 
-  const bool initial_solve = initial_solve_pending_;
-  ApplyBudget();
   const auto t0 = std::chrono::steady_clock::now();
   bool converged = false;
   try {
@@ -485,24 +473,11 @@ MPCSolveError MPCHandlerCore::SolveImpl(const PhaseContext& ctx, const MPCStateS
     return MPCSolveError::kSolverDiverged;
   }
 
-  PackSolution(ocp, ctx, state, out, converged, initial_solve, dur_ns);
+  PackSolution(ocp, ctx, state, out, converged, dur_ns);
   out.cold_start = cold_seeded;
   out.horizon_offset_ns =
       ctx.on_node_grid ? static_cast<std::int64_t>(std::llround(ctx.horizon_offset * 1e9)) : 0;
-  if (converged) {
-    initial_solve_pending_ = false;
-  }
   return MPCSolveError::kNoError;
-}
-
-void MPCHandlerCore::ApplyBudget() noexcept {
-  if (initial_solve_pending_) {
-    solver_->max_iters = static_cast<std::size_t>(solver_cfg_.InitialIters());
-    solver_->max_al_iters = static_cast<std::size_t>(solver_cfg_.max_al_iters);
-  } else {
-    solver_->max_iters = static_cast<std::size_t>(solver_cfg_.max_iters);
-    solver_->max_al_iters = static_cast<std::size_t>(solver_cfg_.OnlineAlIters());
-  }
 }
 
 bool MPCHandlerCore::SolutionFinite() const noexcept {
@@ -571,7 +546,6 @@ void MPCHandlerCore::DiscardIterates() noexcept {
   }
   ClearDuals();
   first_solve_after_build_ = true;
-  initial_solve_pending_ = true;
   have_node_index_ = false;
 }
 
@@ -680,7 +654,6 @@ void MPCHandlerCore::PackRiccatiGain(std::size_t k, MPCSolution& out) const noex
 
 void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const PhaseContext& ctx,
                                   const MPCStateSnapshot& state, MPCSolution& out, bool converged,
-                                  bool initial_solve,
                                   std::uint64_t solve_duration_ns) const noexcept {
   const auto& results = solver_->results_;
   const auto& xs = results.xs;
@@ -696,7 +669,6 @@ void MPCHandlerCore::PackSolution(const OCPHandlerBase& ocp, const PhaseContext&
   // The solver returned finite iterates (the caller rejected NaN), so a
   // non-converged solve is a budget-exhausted, still-usable one.
   MarkSolved(out, converged);
-  out.initial_solve = initial_solve;
   out.iterations = static_cast<int>(results.num_iters);
   out.residuals.prim_inf = results.prim_infeas;
   out.residuals.dual_inf = results.dual_infeas;

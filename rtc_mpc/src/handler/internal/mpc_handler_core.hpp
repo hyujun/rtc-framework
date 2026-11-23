@@ -87,10 +87,6 @@ class MPCHandlerCore {
 
   [[nodiscard]] bool Initialised() const noexcept { return initialised_; }
 
-  /// @return true until a solve converges after `Init`, a rebuild or a
-  ///         rejected solve: the next solve runs on the standing budget.
-  [[nodiscard]] bool InitialSolvePending() const noexcept { return initial_solve_pending_; }
-
   [[nodiscard]] int horizon_length() const noexcept { return horizon_length_; }
 
   [[nodiscard]] int nq() const noexcept { return nq_; }
@@ -167,10 +163,6 @@ class MPCHandlerCore {
   ///        cannot be packed is zeroed, never left stale.
   void PackRiccatiGain(std::size_t k, MPCSolution& out) const noexcept;
 
-  /// @brief Set the solver's iteration ceilings for this solve: the standing
-  ///        budget while `initial_solve_pending_`, else the online one.
-  void ApplyBudget() noexcept;
-
   /// @brief Pack xs/us/lams/K_riccati + metadata (status, residuals, the
   ///        provenance of @p state, the node modes and schedule ids of
   ///        @p ctx's horizon) into @p out after a successful solve. Every
@@ -180,13 +172,12 @@ class MPCHandlerCore {
   ///        Non-allocating.
   void PackSolution(const OCPHandlerBase& ocp, const PhaseContext& ctx,
                     const MPCStateSnapshot& state, MPCSolution& out, bool converged,
-                    bool initial_solve, std::uint64_t solve_duration_ns) const noexcept;
+                    std::uint64_t solve_duration_ns) const noexcept;
 
   // ── State ────────────────────────────────────────────────────────────
   bool initialised_{false};
   bool first_solve_after_build_{true};
   std::size_t cleared_multipliers_{0};  // by the OCP after the last shift
-  bool initial_solve_pending_{true};    // no solve converged since build / rebuild / rejection
   int last_node_shift_{0};              // nodes the last solve's warm start moved by
   bool have_node_index_{false};         // last_node_index_ names the iterates' node grid index
   std::int64_t last_node_index_{0};

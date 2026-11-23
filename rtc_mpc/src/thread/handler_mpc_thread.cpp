@@ -59,7 +59,6 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   time_base_s_ = 0.0;
   last_phase_t_ = 0.0;
   last_attempted_sequence_ = 0;
-  last_attempt_returned_iterates_ = false;
   require_fresh_state_ = handler_ != nullptr && handler_->solver_config().require_fresh_state;
 
   record_pending_ = false;  // the records restart with the counters
@@ -69,12 +68,10 @@ void HandlerMPCThread::Configure(const RobotModelHandler& model_handler,
   last_phase_id_.store(-1, std::memory_order_relaxed);
   total_solves_.store(0, std::memory_order_relaxed);
   failed_solves_.store(0, std::memory_order_relaxed);
-  initial_solve_ticks_.store(0, std::memory_order_relaxed);
   deadline_misses_.store(0, std::memory_order_relaxed);
   withheld_.store(0, std::memory_order_relaxed);
   cold_withheld_.store(0, std::memory_order_relaxed);
   repeated_skips_.store(0, std::memory_order_relaxed);
-  standing_repeats_.store(0, std::memory_order_relaxed);
   null_handler_hit_.store(false, std::memory_order_relaxed);
   has_prev_out_ = false;
 }
@@ -148,19 +145,10 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
   // One solve per observation: decided before any work, recorded at the
   // attempt so a withheld or failed solve is not retried on the same state.
   if (require_fresh_state_ && state.sequence == last_attempted_sequence_) {
-    if (!(handler_->InitialSolvePending() && last_attempt_returned_iterates_)) {
-      repeated_skips_.fetch_add(1, std::memory_order_relaxed);
-      return false;
-    }
-    standing_repeats_.fetch_add(1, std::memory_order_relaxed);
+    repeated_skips_.fetch_add(1, std::memory_order_relaxed);
+    return false;
   }
   last_attempted_sequence_ = state.sequence;
-  last_attempt_returned_iterates_ = false;
-  // The standing solve's ticks are counted apart from the online ones in the
-  // overrun split, whether or not the solve then succeeds.
-  if (handler_->InitialSolvePending()) {
-    MarkStandingTick();
-  }
 
   // ── Copy snapshot → Eigen scratch via Map (zero-alloc view) ───────────
   const int nq = model_->nq();
@@ -240,13 +228,9 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
     StashRecord(SolveOutcome::kFailed, static_cast<int>(err), nullptr, state, entry);
     return false;
   }
-  last_attempt_returned_iterates_ = true;
 
   const MPCSolverConfig& cfg = handler_->solver_config();
-  if (out.initial_solve) {
-    initial_solve_ticks_.fetch_add(1, std::memory_order_relaxed);
-    MarkStandingTick();
-  } else if (cfg.publish_deadline_ms > 0.0) {
+  if (cfg.publish_deadline_ms > 0.0) {
     const auto elapsed = std::chrono::steady_clock::now() - entry;
     if (std::chrono::duration<double, std::milli>(elapsed).count() > cfg.publish_deadline_ms) {
       deadline_misses_.fetch_add(1, std::memory_order_relaxed);
@@ -254,7 +238,7 @@ bool HandlerMPCThread::Solve(const MPCStateSnapshot& state, MPCSolution& out) {
       return false;
     }
   }
-  if (out.cold_start && !out.initial_solve && !out.converged) {
+  if (out.cold_start && !out.converged) {
     cold_withheld_.fetch_add(1, std::memory_order_relaxed);
     StashRecord(SolveOutcome::kColdWithheld, 0, &out, state, entry);
     return false;
@@ -290,7 +274,6 @@ void HandlerMPCThread::StashRecord(SolveOutcome outcome, int err, const MPCSolut
   if (out != nullptr) {
     r.iterations = out->iterations;
     r.converged = out->converged;
-    r.initial_solve = out->initial_solve;
     r.cold_start = out->cold_start;
     r.prim_inf = out->residuals.prim_inf;
     r.consumed_prim = ConsumedPrimInf(*out, PeriodNs());

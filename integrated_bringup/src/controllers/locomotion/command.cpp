@@ -145,7 +145,7 @@ void LocomotionController::StoreMpcCounters() noexcept {
     c.failed = t->FailedSolves();
     c.deadline_miss = t->DeadlineMissCount();
     c.withheld = t->WithheldCount();
-    c.overrun = t->OnlineOverrunCount();
+    c.overrun = t->OverrunCount();
   }
   mpc_counters_.Store(c);
 }
