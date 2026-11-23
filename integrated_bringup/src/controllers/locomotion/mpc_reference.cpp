@@ -216,6 +216,20 @@ void LocomotionController::BuildMpc(const YAML::Node& cfg) {
     Fail("command.sample_rate_hz must be at most " + std::to_string(kMaxCommandRateHz) +
          " (the command filter's wall timer)");
   }
+  // Lock-step: the filter steps on the RT tick, so its period must be a whole
+  // number of ticks (the Bessel stage assumes a fixed period).
+  cmd_step_ticks_ = 0;
+  if (mpc_lockstep_) {
+    const double ticks = 1e9 / (command.sample_rate_hz * static_cast<double>(tick_dt_ns_));
+    const double whole = std::round(ticks);
+    if (!(whole >= 1.0) || std::abs(ticks - whole) > 1e-6) {
+      Fail(
+          "sync.mode lockstep needs the control rate to be a whole multiple of "
+          "command.sample_rate_hz (" +
+          std::to_string(ticks) + " ticks a step)");
+    }
+    cmd_step_ticks_ = static_cast<std::int64_t>(whole);
+  }
   phase_->SetCommand(command_filter_.output());
 
   mpc_manager_.Init(m, layout, reduced_model_.get());
@@ -368,6 +382,14 @@ void LocomotionController::LogMpcTick() noexcept {
       mpc_timing_logger_.Log(s);
     }
   });
+  const std::uint64_t nonfinite = cmd_nonfinite_outputs_.load(std::memory_order_relaxed);
+  if (nonfinite > cmd_nonfinite_reported_) {
+    RCLCPP_WARN(logger_,
+                "[locomotion] the command filter put out a non-finite value on %lu tick(s); the "
+                "planner kept the previous command",
+                static_cast<unsigned long>(nonfinite - cmd_nonfinite_reported_));
+    cmd_nonfinite_reported_ = nonfinite;
+  }
   const std::uint64_t failed = mpc_thread_->FailedSolves();
   if (failed > mpc_failed_reported_) {
     RCLCPP_WARN(logger_, "[locomotion] %lu MPC solve(s) failed (total %lu, last error %d)",
@@ -434,6 +456,11 @@ void LocomotionController::LockstepTick(const ControllerState& state) noexcept {
       it >= mpc_trigger_iter_ + static_cast<std::uint64_t>(mpc_delivery_ticks_)) {
     WaitForSolve();
   }
+  // The command filter on the tick clock, every cmd_step_ticks_ ticks, with or
+  // without a usable state (the input decays to rest on its own schedule).
+  if (cmd_step_ticks_ > 0 && it % static_cast<std::uint64_t>(cmd_step_ticks_) == 0) {
+    StepCommandOnTick();
+  }
   if (fault_latched_tick_ || !(source_ok_ && reference_latched_)) {
     return;  // no plan to follow, nothing to send; the grid keeps its origin
   }
@@ -456,6 +483,9 @@ void LocomotionController::LockstepTick(const ControllerState& state) noexcept {
     if (fault_latched_tick_) {
       return;
     }
+  }
+  if (cmd_step_ticks_ > 0 && phase_ != nullptr) {
+    phase_->SetCommand(cmd_latest_);  // the planner reads it at this solve, no other
   }
   WriteMpcState();
   mpc_channel_.RequestSolve();

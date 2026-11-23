@@ -151,6 +151,10 @@
 //       delivery_ticks: L           # 1..N; 0 = N (one period)
 //       wait_timeout_s: s           # > 0; the tick's wait for a solve past this latches
 //                                   # the fault mpc_wait
+//                                   # Under lockstep the command filter steps on the RT
+//                                   # tick every tick_rate / command.sample_rate_hz ticks
+//                                   # (an integer, else refused) on the tick clock, and
+//                                   # the planner reads it on the trigger tick.
 // With mpc.enabled the planner's sections are read too: command.* (the
 // command filter: its base_height is the stance height), gait.*, swing.*,
 // terrain.*, and reference.* (its q_default names the body joints and the
@@ -528,9 +532,13 @@ class LocomotionController final : public rtc::RTControllerInterface {
   /// The sample before any message (and after an activation): stale, at rest,
   /// tagged with the configured input.
   [[nodiscard]] RawVelocityCommandSample RestCommandSample() const noexcept;
-  void StepCommand() noexcept;
-  void PushCommand(const rtc::mpc::FilteredCommand& cmd,
-                   const LocomotionCommandSource& source) noexcept;
+  void StepCommand() noexcept;  ///< the wall timer's step (free_run)
+  /// Lock-step: one filter step on the RT tick, every `cmd_step_ticks_` ticks,
+  /// on the tick clock (the input's age too); the planner gets the latest
+  /// output on the trigger tick only.
+  void StepCommandOnTick() noexcept;
+  void PushCommand(const rtc::mpc::FilteredCommand& cmd, const LocomotionCommandSource& source,
+                   bool to_planner) noexcept;
   void StartCommandTimer() noexcept;  ///< activation: the filter reset, the timer up
   void StopCommandTimer() noexcept;   ///< from PauseMpc and StopMpcThread
   void StoreMpcCounters() noexcept;   ///< the 1 Hz timer (and the thread's stop: zeros)
@@ -706,6 +714,15 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::uint64_t mpc_grid_origin_{0};  ///< the first latched tick of the stream
   double mpc_wait_us_{0.0};           ///< this tick's wait
   std::uint64_t mpc_wait_count_{0};
+  // The command filter on the tick (lock-step; header): its period in ticks,
+  // the raw sample's sequence the tick saw last and the tick-clock stamp it
+  // first saw it at, the latest output for the trigger tick.
+  std::int64_t cmd_step_ticks_{0};  ///< 0 = the wall timer steps the filter (free_run)
+  std::uint64_t cmd_seen_sequence_{0};
+  std::int64_t cmd_seen_tick_ns_{std::numeric_limits<std::int64_t>::min()};
+  rtc::mpc::FilteredCommand cmd_latest_{};
+  std::atomic<std::uint64_t> cmd_nonfinite_outputs_{0};  ///< RT tick writes, the 1 Hz log reads
+  std::uint64_t cmd_nonfinite_reported_{0};              ///< the 1 Hz log's last count
   std::atomic<bool> in_compute_{false};  ///< the RT tick is inside Compute (deactivate waits on it)
   // RT tick state.
   rtc::mpc::WbcReference wbc_ref_{};

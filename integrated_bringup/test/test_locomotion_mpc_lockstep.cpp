@@ -17,6 +17,8 @@
 
 #include "locomotion_mpc_stub.hpp"
 
+#include <geometry_msgs/msg/twist.hpp>
+
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
@@ -253,6 +255,77 @@ TEST_F(LocomotionMpcLockstepTest, AStaleTickOnTheGridSkipsTheTriggerAndKeepsTheG
   // The next trigger is the next grid tick, not the next good tick.
   ASSERT_TRUE(TickUntil([this, trigger] { return ctrl_->LastDiag().mpc_trigger_tick != trigger; }));
   EXPECT_EQ(ctrl_->LastDiag().mpc_trigger_tick, skipped_grid + static_cast<std::uint64_t>(n_));
+}
+
+// ── The command filter on the tick ──────────────────────────────────────────
+
+/// A Twist straight into the subscription's slot (as the executor would).
+void SendTwist(LocomotionController& ctrl, double v_x) {
+  geometry_msgs::msg::Twist twist;
+  twist.linear.x = v_x;
+  integrated_bringup::LocomotionControllerTestAccess::OnTwist(ctrl, twist);
+}
+
+// The filter steps every K = tick rate / sample_rate_hz ticks (5 at 500 Hz /
+// 100 Hz) on the RT tick, its input's age on the tick clock: a command decays
+// to rest after t_stale of TICKS without a message, however fast the ticks
+// run on the wall clock (the free-run timer would still see it as fresh).
+TEST_F(LocomotionMpcLockstepTest, TheCommandFilterStepsOnTheTickClock) {
+  BringUpLockstep();
+  ASSERT_TRUE(ctrl_->VelocityCommandSubscribed());
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->Source() == Source::kStand; }));
+  const auto seq0 = ctrl_->LastCommand().sequence;
+  const auto planner0 = stub_->horizon_command_sequence.load();
+  // A publisher at 20 Hz of ticks (every 25 ticks) for a second of ticks —
+  // well past the Bessel settling, never stale.
+  const int kTicks = 500;
+  for (int i = 0; i < kTicks; ++i) {
+    if (i % 25 == 0) {
+      SendTwist(*ctrl_, 0.3);
+    }
+    static_cast<void>(Tick());
+  }
+  const auto cmd = ctrl_->LastCommand();
+  EXPECT_EQ(cmd.sequence - seq0, static_cast<std::uint64_t>(kTicks / 5)) << "one step per 5 ticks";
+  EXPECT_TRUE(cmd.valid);
+  EXPECT_TRUE(cmd.fresh);
+  EXPECT_NEAR(cmd.v_x, 0.3, 0.02) << "the Bessel stage settled on the command";
+  EXPECT_EQ(cmd.nonfinite_count, 0U);
+  // The planner read the filter's output on the trigger ticks: the command
+  // sequence it carries is a step's, the latest one no later than the last
+  // trigger (a free-run timer would hand it any step's).
+  const auto planner_seq = stub_->horizon_command_sequence.load();
+  EXPECT_GT(planner_seq, planner0);
+  EXPECT_LE(planner_seq, cmd.sequence);
+  EXPECT_GE(planner_seq + static_cast<std::uint64_t>(n_ / 5) + 1, cmd.sequence)
+      << "no older than the last trigger's step";
+  EXPECT_NEAR(stub_->horizon_base_vx.load(), cmd.v_x, 0.02);
+
+  // No message for t_stale (0.5 s) of ticks, then the Bessel decay (another
+  // half second of ticks) — a few wall milliseconds in all.
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int i = 0; i < 700; ++i) {
+    static_cast<void>(Tick());
+  }
+  const auto wall_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0)
+          .count();
+  const auto stale = ctrl_->LastCommand();
+  EXPECT_FALSE(stale.fresh) << "stale on the tick clock after " << wall_ms << " wall ms";
+  EXPECT_GT(stale.stale_count, 0U);
+  EXPECT_NEAR(stale.v_x, 0.0, 1e-3) << "decayed to rest";
+  EXPECT_TRUE(stale.valid);
+}
+
+TEST_F(LocomotionMpcLockstepTest, ACommandRateOffTheTickGridIsRefusedUnderLockstep) {
+  YAML::Node cfg = LockstepConfig();
+  cfg["command"]["sample_rate_hz"] = 300.0;  // 500 / 300 ticks a step
+  auto ctrl = MakeController();
+  EXPECT_THROW(ctrl->LoadConfig(cfg), std::invalid_argument);
+  YAML::Node free_run = MpcConfig();
+  free_run["command"]["sample_rate_hz"] = 300.0;
+  auto other = MakeController();
+  EXPECT_NO_THROW(other->LoadConfig(free_run)) << "the wall timer takes any rate";
 }
 
 // Control: the free-run thread publishes on the wall clock; the rig's ticks

@@ -125,6 +125,11 @@ void LocomotionController::ServiceRequests() noexcept {
     serviced_generation_ = generation;
     activation_seen_ = true;
     tick_count_ = 0;
+    // The command filter on the tick: the activation reset it (StartCommandTimer);
+    // the tick's view of the raw slot starts over with it.
+    cmd_seen_sequence_ = 0;
+    cmd_seen_tick_ns_ = std::numeric_limits<std::int64_t>::min();
+    cmd_latest_ = command_filter_.output();
     RestartReference();
     if (source_) {
       source_->Reset();
