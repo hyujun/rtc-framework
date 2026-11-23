@@ -117,6 +117,7 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `layout_profile` | `""` (`enable_mpc`) | CPU layout profile 이름. `mpc_par_sim` 은 sim 에 없는 driver 의 slot 을 MPC worker 로 쓴다. 모르는 이름은 거부 |
 | `command_input` | `twist` | `locomotion_controller` 의 속도 명령 메시지: `twist` (`g1/cmd_vel`) 또는 `joy` (`g1/joy`, `sensor_msgs/Joy` — [rtc_teleop_input](../rtc_teleop_input/README.md) 이 낸다). `sim_g1_loco` 만 |
 | `mpc_threads` | `""` (YAML 1) | `locomotion_controller` 의 `mpc.solver.num_threads`. profile 의 worker 가 N − 1 개 미만이면 거부 (`sim_g1_loco` 만) |
+| `mpc_sync` | `lockstep` | `locomotion_controller` 의 `mpc.sync.mode`: `lockstep` (RT tick 이 solve 를 trigger · 대기, sim 의 `sync_timeout_armed_ms` 4000 을 함께 둔다) 또는 `free_run` (실기의 벽시계). overlay 로는 못 바꾼다 (`sim_g1_loco` 만) |
 | `mpc_engine` | `""` (YAML) | `mock` / `handler` (`demo_wbc_controller` 의 MPC 엔진). `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2` 에는 없다 |
 | `sim_overlay` | `""` | 출하 씬을 건드리지 않고 바꾸는 overlay (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2`). [Scene overlay](#scene-overlay-sim_overlay--출하-씬을-건드리지-않고-바꾸기) |
 | `sim_lanes` | `false` | clock 위상 · 공 접촉 측정 lane 을 켜고 `<session>/sim/` 에 쓴다 (`sim_ur5e_p1b` · `sim_iiwa7_leap` · `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2`) |

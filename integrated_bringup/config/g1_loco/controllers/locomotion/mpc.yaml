@@ -99,7 +99,7 @@ locomotion_controller:
     period_nodes: 2
     max_policy_age_s: 0.35            # [s] 5 periods (0.070)
     sync:
-      mode: free_run                  # the launches set lockstep for the sim (mpc_sync)
+      mode: free_run                  # the robot's clock; sim_g1_loco defaults to lockstep (mpc_sync)
       delivery_ticks: 0               # 0 = one period (35 ticks at 500 Hz)
       wait_timeout_s: 2.0             # [s] a tick's wait for a solve past this is the fault mpc_wait
     riccati:

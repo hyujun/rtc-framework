@@ -9,6 +9,7 @@
 - `use_sim_time_sync: true` 인 controller manager 는 state 가 도착하면 eventfd 로 깨어난다 (round-trip 약 1 ms → 0.35 ms). **tick 은 state 메시지가 아니라 sim step 마다 한 번**이다. group 마다 state 를 따로 발행하므로 CM 은 `sim_sync_tick_devices` 의 state 가 전부 새로 도착했을 때 한 번 tick 한다.
 - 메시지마다 tick 하던 시기에는 group 이 2 개인 씬 (ur5e_p1b) 에서 step 500 Hz 당 838 Hz 로 돌았고, `state.dt` 를 적분하는 법칙이 sim 보다 약 1.67 배 빨리 흘렀다. 그 시기의 sim 측정 (궤적 시간 · 서보 지연 · 포구 기준 오프셋) 은 이 오차를 품고 있다.
 - `control_rate` 와 `physics_timestep` 이 다르면 기동 FATAL 인 이유: lock-step 에서 step 하나가 tick 하나이므로 physics 가 더 빠르면 `dt` 적분이 sim 시간과 어긋난다.
+- **MPC 도 lock-step 이 sim 의 기본인 이유** (#1168, `sim_g1_loco` `mpc_sync:=lockstep`): MPC thread 가 벽시계로 혼자 돌면 plan 의 나이 · 주기 · 명령 필터의 slew 가 전부 호스트 속도와 rtf 의 함수가 되어 (rtf 0.1 에서 PASS 한 예산이 rtf 1 에서 plan 을 잃었다) sim 이 알고리즘과 PC 를 섞어 판정했다. lock-step 은 RT tick 이 solve 를 trigger 하고 L tick 뒤에 쓰므로 plan 나이가 정확히 L × tick 이고, sim 은 그 tick 을 기다려 (`sync_timeout_armed_ms`) rtf 가 solve 를 따라 내려간다 — sim 은 알고리즘만 닫고 solve 시간은 제어 PC 의 soak 이 닫는다. 실기의 시계가 아니므로 CM 이 sim lock-step 일 때만 configure 되고, 출하 YAML 은 free_run 이다.
 
 ## 스레딩 모델 (기록 시점)
 

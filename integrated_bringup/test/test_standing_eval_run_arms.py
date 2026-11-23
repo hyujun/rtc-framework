@@ -785,7 +785,7 @@ def test_a_scenario_that_cannot_run_is_refused_before_the_first_run(tmp_path, ex
 @pytest.mark.parametrize(
     ("arm", "mpc_layout", "expected"),
     [
-        ("servo", False, []),  # no MPC: nothing to sync
+        ("servo", False, ["mpc_sync:=lockstep"]),  # no MPC: the launch still wires the sim's wait
         ("loco", True, ["enable_mpc:=true", "mpc_sync:=lockstep", "sim_overlay:=mpc_off"]),
         ("mpc", False, ["enable_mpc:=true", "mpc_sync:=lockstep"]),
         ("walk", False, ["enable_mpc:=true", "mpc_sync:=lockstep"]),
@@ -802,12 +802,29 @@ def test_mpc_sync_follows_the_thread_pool_arguments():
     assert got == ["enable_mpc:=true", *POOL, "mpc_sync:=free_run"]
 
 
-def test_lockstep_without_the_mpc_is_refused(monkeypatch, capsys, tmp_path):
-    argv = ["--out", str(tmp_path), "--runtime-yaml", "x", "--logging-root", "y", "-k", "0"]
-    with pytest.raises(SystemExit):
-        run_arms.main([*argv, "--mpc-sync", "lockstep"])
-    assert "needs the MPC" in capsys.readouterr().err
-    assert run_arms.main([*argv, "--mpc-sync", "lockstep", "--mpc-layout"]) == 0
+def test_lockstep_is_the_default_and_needs_no_mpc_arm(monkeypatch, tmp_path):
+    # the sim launch defaults to lockstep; the tools follow it for every arm
+    # (sim time is the right axis with or without the MPC), free_run opts out
+    seen = {}
+    monkeypatch.setattr(
+        run_arms, "run_once", lambda arm, k, args: seen.update(sync=args.mpc_sync) or {}
+    )
+    argv = [
+        "--out",
+        str(tmp_path),
+        "--runtime-yaml",
+        "x",
+        "--logging-root",
+        "y",
+        "-k",
+        "1",
+        "--arms",
+        "servo",
+    ]
+    run_arms.main(argv)
+    assert seen["sync"] == "lockstep"
+    run_arms.main([*argv, "--mpc-sync", "free_run"])
+    assert seen["sync"] == "free_run"
 
 
 class _FakeSim:
@@ -882,9 +899,9 @@ def test_the_twist_script_gets_the_sim_clock_under_lockstep(monkeypatch, tmp_pat
 
     monkeypatch.setattr(run_arms.subprocess, "Popen", lambda cmd, **kw: seen.append(cmd) or Proc())
     monkeypatch.setattr(run_arms, "read_events", lambda path: [{"event": "start", "wall": 1.0}])
-    for sync, flags in ((None, ["--rtf", "1.0"]), ("lockstep", ["--clock", "sim"])):
+    for sync, flags in (("free_run", ["--rtf", "1.0"]), ("lockstep", ["--clock", "sim"])):
         args = _args(mpc_sync=sync, run_out=tmp_path, push=None, push_body=None)
         assert run_arms._twist_start(args)[0]
         cmd = seen[-1]
         assert flags[0] in cmd and cmd[cmd.index(flags[0]) + 1] == flags[1]
-        assert ("--rtf" in cmd) == (sync is None)
+        assert ("--rtf" in cmd) == (sync == "free_run")

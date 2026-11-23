@@ -64,24 +64,30 @@ slots) and mpc_threads:=N. A pool needs mpc_main's SCHED_FIFO (realtime
 rights on the host); without them activation is refused. The tool refuses up
 front a count the profile cannot seat on this host and a ``--launch`` that
 declares no ``mpc_threads`` (the argument would be ignored and the run would
-still be recorded as N threads). ``--rtf R`` runs the sim at R × real time
-(``max_rtf:=R``): settle, lead and the recording are sim seconds scaled by
-1 / R (the sim stamps its sensor messages with the wall clock, so the
-recorder's duration, its wall limit and its JSON's times are wall seconds), so
-a host slower than the control PCs gives the MPC the solve time per simulated
-second that a fast one would. ``max_rtf`` is a ceiling: check the sim reached
-it (the CM's timing lines report sim seconds per wall interval).
+still be recorded as N threads). ``--rtf R`` caps the sim at R × real time
+(``max_rtf:=R``). Under ``--mpc-sync free_run`` it is also the tools' clock:
+settle, lead and the recording are sim seconds scaled by 1 / R (the sim stamps
+its sensor messages with the wall clock, so the recorder's duration, its wall
+limit and its JSON's times are wall seconds), so a host slower than the control
+PCs gives the MPC the solve time per simulated second that a fast one would —
+and 1.43 × the solves per simulated second at R 0.7, a slack the robot does not
+have. ``max_rtf`` is a ceiling: check the sim reached it (the CM's timing lines
+report sim seconds per wall interval).
 
-``--mpc-sync {free_run,lockstep}`` passes mpc_sync:=<value> to every arm launched
-with the MPC and records it in run.json (default: not passed — the YAML's
-free_run). ``lockstep`` needs the MPC (``--mpc-layout``, or a walk / mpc arm) and
-runs the tools on SIM time: the simulator's real-time factor then follows the
-solve, so ``--rtf``'s fixed wall = 1 / R conversions are gone — settle, lead,
-the event scripts' sleeps and the recording length count ``/sim/time`` seconds
-(SimClock; the command script gets ``--clock sim``, the recorder
-``--sim-time-topic`` and a ``sim_t`` column), and ``walk_gate.py --probe`` no
-longer applies. A sim that stops publishing ``/sim/time`` raises instead of
-hanging the batch.
+``--mpc-sync {lockstep,free_run}`` (default ``lockstep``, the sim launch's
+default) passes mpc_sync:=<value> to every arm (the launch accepts it with the
+MPC off) and records it in run.json. Under ``lockstep`` the simulator's
+real-time factor follows the solve, so the tools run on SIM time instead of
+``--rtf``'s fixed wall = 1 / R conversions — for every arm, with or without the
+MPC: settle, lead, the event scripts' sleeps and the recording length count
+``/sim/time`` seconds (SimClock; the command script gets ``--clock sim``, the
+recorder ``--sim-time-topic`` and a ``sim_t`` column), and ``walk_gate.py
+--probe`` no longer applies. The wall bound of every such wait is sim seconds /
+``--min-rtf`` (default 0.1) + a margin: a sim slower than that floor, or one that
+stops publishing ``/sim/time``, raises (naming the floor) instead of hanging the
+batch — raise ``--min-rtf``'s denominator on a host whose solve drags the factor
+below it. ``free_run`` is the robot's clocking (the MPC thread on the wall clock)
+and the old wall × R tools.
 
 ``--source inekf`` runs every arm on the estimated base (sim_overlay:=
 estimator_inekf); an arm that already runs with an overlay gets the two merged
@@ -200,7 +206,8 @@ def launch_args(
         if under_mpc and mpc_threads is not None
         else []
     )
-    sync = [f"mpc_sync:={mpc_sync}"] if under_mpc and mpc_sync is not None else []
+    # Every arm: the launch wires the simulator's wait from it with the MPC off too.
+    sync = [f"mpc_sync:={mpc_sync}"] if mpc_sync is not None else []
     return (
         (["enable_mpc:=true"] if under_mpc else [])
         + pool
@@ -350,14 +357,22 @@ class SimClock:
 
     `sleep(s)` returns once ``/sim/time`` has advanced by `s` since the call
     (polling a small rclpy node's subscription), and raises SimClockTimeout when
-    ``10 × s + 5`` wall seconds pass first. `now` and `epoch` stay the wall
-    clocks: the marks' offsets and the recorder's axis. `poll` / `wall` are the
-    test seams: ``poll(timeout_s)`` returns the latest sim time (None before
-    the first message).
+    ``s / min_rtf + 5`` wall seconds pass first (the sim slower than the
+    `min_rtf` floor, or gone). `now` and `epoch` stay the wall clocks: the
+    marks' offsets and the recorder's axis. `poll` / `wall` are the test seams:
+    ``poll(timeout_s)`` returns the latest sim time (None before the first
+    message).
     """
 
-    def __init__(self, topic: str = SIM_TIME_TOPIC, poll=None, wall=time.monotonic) -> None:
+    def __init__(
+        self,
+        topic: str = SIM_TIME_TOPIC,
+        poll=None,
+        wall=time.monotonic,
+        min_rtf: float = 0.1,
+    ) -> None:
         self._topic = topic
+        self._min_rtf = min_rtf
         self._wall = wall
         self._latest: float | None = None
         self._node = None
@@ -382,7 +397,8 @@ class SimClock:
         return self._latest
 
     def sleep(self, seconds: float) -> None:
-        deadline = self._wall() + 10.0 * seconds + 5.0
+        bound = seconds / self._min_rtf + 5.0
+        deadline = self._wall() + bound
         # Elapsed = the sum of the forward steps: a /sim/reset (the reentry arm)
         # sets the sim time back to 0 and must not stall the sleep.
         elapsed = 0.0
@@ -398,8 +414,8 @@ class SimClock:
             if self._wall() > deadline:
                 raise SimClockTimeout(
                     f"{self._topic} advanced {elapsed:.3f} s of "
-                    f"the {seconds:.3f} s asked within {10.0 * seconds + 5.0:.1f} wall s "
-                    "(is the simulator running?)"
+                    f"the {seconds:.3f} s asked within {bound:.1f} wall s (the sim below the "
+                    f"--min-rtf floor {self._min_rtf}, or not running?)"
                 )
 
     def now(self) -> float:
@@ -974,7 +990,7 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                 note["error"] = "no sensor topic"
                 return note
             if lockstep:
-                clock = SimClock()
+                clock = SimClock(min_rtf=args.min_rtf)
             sleep = clock.sleep if clock is not None else time.sleep
             sleep(args.settle * wall)
             note["switch_ok"] = switch_step(arm, args, note)
@@ -1018,7 +1034,12 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                 str(out / "stance.json"),
             ]
             if lockstep:  # the recorder counts sim seconds and adds the sim_t column
-                recorder_cmd += ["--sim-time-topic", SIM_TIME_TOPIC]
+                recorder_cmd += [
+                    "--sim-time-topic",
+                    SIM_TIME_TOPIC,
+                    "--min-rtf",
+                    str(args.min_rtf),
+                ]
             if event_arm:
                 # The recorder in the background for the whole script; the
                 # script's marks window the CSV afterwards.
@@ -1051,7 +1072,14 @@ def run_once(arm: str, k: int, args: argparse.Namespace) -> dict:
                     note["twist_events"] = read_events(out / "twist.log")
                 note["windows"] = window_metrics(out / "stance.csv", note["events"], args.z_ref)
             else:
-                rec = sh(recorder_cmd, timeout=args.duration * (20 if lockstep else 4) * wall + 60)
+                rec = sh(
+                    recorder_cmd,
+                    timeout=(
+                        args.duration / args.min_rtf + 60
+                        if lockstep
+                        else args.duration * 4 * wall + 60
+                    ),
+                )
                 note["recorder_rc"] = rec.returncode
                 (out / "recorder.log").write_text(rec.stdout + rec.stderr)
             note["active_controller_end"] = active_controller()
@@ -1103,10 +1131,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--mpc-sync",
-        choices=("free_run", "lockstep"),
-        default=None,
-        help="mpc_sync:= for every MPC-launched arm (default: not passed); lockstep runs "
-        "the tools on /sim/time (module docstring)",
+        choices=("lockstep", "free_run"),
+        default="lockstep",
+        help="mpc_sync:= for every arm; lockstep (default) runs the tools on /sim/time, "
+        "free_run on wall x rtf (module docstring)",
+    )
+    p.add_argument(
+        "--min-rtf",
+        type=float,
+        default=0.1,
+        help="lockstep: the sim's real-time floor the tools wait for — a sim-second wait is "
+        "bounded by seconds / this + a margin (module docstring)",
     )
     p.add_argument("-k", type=int, default=5, help="runs per arm")
     p.add_argument("--launch", default="sim_g1_loco.launch.py")
@@ -1228,10 +1263,6 @@ def main(argv: list[str] | None = None) -> int:
         p.error(f"--stop-window must be in (0, {script[-1].length_s}] s")
     if not 0.0 < args.estop_at < walking_s:
         p.error(f"--estop-at must be in (0, {walking_s}) s — inside the walking part")
-    if args.mpc_sync == "lockstep" and not (
-        args.mpc_layout or any(a in ("mpc", "mpc_fb", *WALK_ARMS) for a in args.arms)
-    ):
-        p.error("--mpc-sync lockstep needs the MPC: pass --mpc-layout (or an mpc / walk arm)")
     if args.mpc_threads is not None:
         check_mpc_threads(p, args.mpc_threads, args.launch)
     if args.push is not None:

@@ -30,8 +30,10 @@ exceeds a few periods.
 ``--sim-time-topic`` (a ``std_msgs/Float64`` of the simulator's time, the
 ``/sim/time`` a lock-step run publishes) adds a ``sim_t`` column (the latest sim
 time at each sample, NaN before the first message) and makes ``--duration``
-count SIM seconds, with a wall bound of ``20 × duration + 30`` s as the safety
-net (reported in the JSON). Without it the recording is the wall-stamped one.
+count SIM seconds — forward steps only, so a simulator reset does not stall it —
+with a wall bound of ``duration / --min-rtf + 30`` s (default floor 0.05) as the
+safety net (reported in the JSON). Without it the recording is the wall-stamped
+one.
 
 Every sensor name is an argument: the tool knows nothing about any robot.
 """
@@ -59,9 +61,10 @@ from rtc_tools.analysis.ros_stop import StopFlag, spin_until_stopped, stop_handl
 CONTACT_FORCE_OFFSET = 1  # <contact data="found force ..."> → force at values[1:4]
 
 
-def wall_bound_s(duration: float) -> float:
-    """The wall-clock safety net of a sim-time recording [s]."""
-    return 20.0 * duration + 30.0
+def wall_bound_s(duration: float, min_rtf: float = 0.05) -> float:
+    """The wall-clock safety net of a sim-time recording [s]: the duration at
+    the sim's real-time floor `min_rtf` plus a margin."""
+    return duration / min_rtf + 30.0
 
 
 class StanceRecorder(Node):
@@ -161,7 +164,7 @@ class StanceRecorder(Node):
             if self._sim_elapsed >= self._args.duration:
                 return True
             self._wall_bound_hit = time.monotonic() - self._start_wall > wall_bound_s(
-                self._args.duration
+                self._args.duration, self._args.min_rtf
             )
             return self._wall_bound_hit
         if self._samples and self._samples[-1].t - self._samples[0].t >= self._args.duration:
@@ -215,7 +218,13 @@ def _parser() -> argparse.ArgumentParser:
         "--sim-time-topic",
         default=None,
         help="std_msgs/Float64 sim time (/sim/time): adds a sim_t column and makes --duration "
-        "count sim seconds, bounded by 20 × duration + 30 wall s",
+        "count sim seconds, bounded by duration / --min-rtf + 30 wall s",
+    )
+    parser.add_argument(
+        "--min-rtf",
+        type=float,
+        default=0.05,
+        help="--sim-time-topic: the sim's real-time floor the wall bound assumes",
     )
     parser.add_argument("--settle", type=float, default=1.0, help="window opens after this [s]")
     parser.add_argument("--force-threshold", type=float, default=5.0, help="load floor [N]")
@@ -289,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.sim_time_topic:
         record.update(
             sim_time_topic=args.sim_time_topic,
-            wall_bound_s=wall_bound_s(args.duration),
+            wall_bound_s=wall_bound_s(args.duration, args.min_rtf),
             wall_bound_hit=wall_bound_hit,
         )
     text = json.dumps(record, indent=2)
