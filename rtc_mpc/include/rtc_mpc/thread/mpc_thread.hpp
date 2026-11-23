@@ -33,6 +33,19 @@
 ///   a smaller team runs and spawns fresh, unpinned ones for the next full
 ///   one, so a default-sized region would undo the pinning.
 ///
+/// Trigger (`MpcThreadLaunchConfig::trigger`):
+/// - `kPeriodic` (default): the base's clock_nanosleep schedule at
+///   `target_frequency_hz`, overruns counted by the base.
+/// - `kExternal`: the loop sleeps on a @ref SolveTriggerChannel and runs one
+///   tick per request (several requests behind one wake collapse into one
+///   solve of the latest id), answering each with the channel's completion
+///   after the publish. The consumer's tick triggers and waits on that channel
+///   (the simulator's lock-step). A request that arrives while the loop is
+///   paused is answered without a solve; a stop nudges the channel. No
+///   overrun bookkeeping (the period is the consumer's), jitter not
+///   meaningful. `target_frequency_hz` still names the nominal period the
+///   publish rules read (`PeriodNs`).
+///
 /// Lifecycle:
 ///   1. Construct subclass.
 ///   2. @ref Init with the @ref MPCSolutionManager and launch config.
@@ -42,6 +55,7 @@
 #include "rtc_base/threading/periodic_rt_thread.hpp"
 #include "rtc_base/threading/thread_config.hpp"
 #include "rtc_mpc/manager/mpc_solution_manager.hpp"
+#include "rtc_mpc/thread/solve_trigger_channel.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 
 #include <sys/types.h>
@@ -55,11 +69,23 @@ namespace rtc::mpc {
 /// Configuration struct for launching an MPC thread. Populated by the
 /// caller (typically from `rtc::SystemThreadConfigs::mpc`) and passed into
 /// @ref MPCThread::Init.
+/// @brief What wakes the MPC loop for a solve (the file comment).
+enum class SolveTrigger : std::uint8_t {
+  kPeriodic,  ///< the base's fixed-frequency schedule
+  kExternal,  ///< one tick per SolveTriggerChannel request
+};
+
 struct MpcThreadLaunchConfig {
   /// Main solve thread scheduling / affinity.
   rtc::ThreadConfig main{};
-  /// Target solve frequency in Hz.
+  /// Target solve frequency in Hz — the schedule under `kPeriodic`, the
+  /// nominal period under `kExternal`.
   double target_frequency_hz{20.0};
+  SolveTrigger trigger{SolveTrigger::kPeriodic};
+  /// The channel a `kExternal` loop sleeps on; owned by the consumer and
+  /// outliving the thread. Required under `kExternal` (Init refuses without
+  /// it), ignored under `kPeriodic`.
+  SolveTriggerChannel* channel{nullptr};
   /// Solver threads, this one included — must equal the handler's
   /// `MPCSolverConfig::num_threads`. 1 = no pool.
   int solver_threads{1};
@@ -159,6 +185,18 @@ class MPCThread : public rtc::PeriodicRtThread {
     return launch_config_;
   }
 
+  /// @brief Whether the loop runs one tick per channel request.
+  [[nodiscard]] bool ExternalTrigger() const noexcept {
+    return launch_config_.trigger == SolveTrigger::kExternal;
+  }
+
+  // PeriodicRtThread hooks of the external trigger: sleep on the channel
+  // (kPeriodic: the base's schedule), wake the channel on a stop, no jitter.
+  WaitResult WaitForNextTick() noexcept override;
+  void OnRequestStop() noexcept override;
+
+  [[nodiscard]] bool JitterMeaningful() const noexcept override { return !ExternalTrigger(); }
+
   /// @brief Write this thread's OpenMP ICVs (dynamic off, default team size
   ///        1). Loop thread only; no allocation. For a code path that may
   ///        have run something writing ICVs on this thread (a handler rebuilt
@@ -169,6 +207,12 @@ class MPCThread : public rtc::PeriodicRtThread {
   MPCSolutionManager* manager_{nullptr};
   MpcThreadLaunchConfig launch_config_{};
   bool initialised_{false};
+
+  // External trigger: the stop seen from the channel wait (set by
+  // OnRequestStop on the stopping thread, cleared by Start), and the request
+  // id the current tick answers (loop thread only).
+  std::atomic<bool> stop_nudged_{false};
+  std::uint64_t in_flight_id_{0};
 
   // Scratch solution buffer reused across ticks (trivially copyable POD).
   MPCSolution scratch_{};

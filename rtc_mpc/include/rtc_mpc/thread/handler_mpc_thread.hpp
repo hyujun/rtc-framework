@@ -182,6 +182,13 @@ class HandlerMPCThread final : public MPCThread {
     return deadline_misses_.load(std::memory_order_relaxed);
   }
 
+  /// @return solves past `publish_deadline_ms` that were published anyway
+  ///         because the loop runs on an external trigger (the consumer
+  ///         waits for the solve; the deadline is counted, not enforced).
+  [[nodiscard]] std::uint64_t UnenforcedDeadlineCount() const noexcept {
+    return unenforced_deadlines_.load(std::memory_order_relaxed);
+  }
+
   /// @return budget-exhausted solves not published because the primal
   ///        residual of the segment the consumer reads exceeded the handler's
   ///        `publish_prim_tol` (@ref ConsumedPrimInf) — not failed solves
@@ -200,13 +207,27 @@ class HandlerMPCThread final : public MPCThread {
     return cold_withheld_.load(std::memory_order_relaxed);
   }
 
-  /// @return the largest `node_prim_inf` over nodes `0 … n` of @p sol,
-  ///         `n = ⌈period / dt_node⌉ + 1` (a period within 1e-9 of a whole
-  ///         number of nodes counts as that number) clamped to its horizon —
-  ///         the nodes a consumer samples before the next plan can arrive.
-  ///         +inf for a solution without a valid horizon or node spacing.
-  [[nodiscard]] static double ConsumedPrimInf(const MPCSolution& sol,
-                                              std::uint64_t period_ns) noexcept;
+  /// @return the largest `node_prim_inf` over the nodes a consumer samples
+  ///         from @p sol: from `⌊offset / dt_node⌋` (the node at or before the
+  ///         delivery, @p offset_ns after the observation; 0 without a delay)
+  ///         to `⌈(offset + period) / dt_node⌉ + 1` (one past the node the
+  ///         period after it ends on; a time within 1e-9 of a whole number of
+  ///         nodes counts as that number), clamped to its horizon. +inf for a
+  ///         solution without a valid horizon or node spacing.
+  [[nodiscard]] static double ConsumedPrimInf(const MPCSolution& sol, std::uint64_t period_ns,
+                                              std::uint64_t offset_ns = 0) noexcept;
+
+  /// @brief The delivery delay the consumer runs with (the manager's
+  ///        `SetDeliveryDelayNs`): the publish rule reads the nodes from the
+  ///        delivery on, not from the observation. Off-RT, before
+  ///        @ref MPCThread::Start.
+  void SetConsumedWindowOffsetNs(std::uint64_t offset_ns) noexcept {
+    consumed_offset_ns_ = offset_ns;
+  }
+
+  [[nodiscard]] std::uint64_t ConsumedWindowOffsetNs() const noexcept {
+    return consumed_offset_ns_;
+  }
 
   /// @return ticks skipped because their snapshot was already attempted
   ///         (`require_fresh_state`).
@@ -266,6 +287,9 @@ class HandlerMPCThread final : public MPCThread {
   double time_base_s_{0.0};
   double last_phase_t_{0.0};
 
+  // The consumed window's start (loop thread reads; set before Start).
+  std::uint64_t consumed_offset_ns_{0};
+
   // Repeated-observation rule (loop thread only; the switch set at Configure).
   bool require_fresh_state_{false};
   std::uint64_t last_attempted_sequence_{0};  // 0: none (sequences start at 1)
@@ -287,6 +311,7 @@ class HandlerMPCThread final : public MPCThread {
   std::atomic<std::uint64_t> total_solves_{0};
   std::atomic<std::uint64_t> failed_solves_{0};
   std::atomic<std::uint64_t> deadline_misses_{0};
+  std::atomic<std::uint64_t> unenforced_deadlines_{0};
   std::atomic<std::uint64_t> withheld_{0};
   std::atomic<std::uint64_t> cold_withheld_{0};
   std::atomic<std::uint64_t> repeated_skips_{0};

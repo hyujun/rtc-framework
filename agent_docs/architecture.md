@@ -84,7 +84,7 @@ CM RT loop · MPC thread · hand comm thread · rt_callback 이 **같은** gener
 | Execution context | Scheduler | RT? | 허용 연산 |
 |---|---|---|---|
 | `rt_control` loop (`ControlLoop`, `Compute`, mailbox drain, inline `WriteCommand`) | SCHED_FIFO | **RT** | RT-1~10 전면 구속. alloc/throw/log/lock 금지 |
-| MPC thread (`MPCThread::OnTick` → `HandlerMPCThread::Solve`), 포구 계획기 (`CatchingPlannerThread::OnTick` → `PlannerCycle::Run`, 같은 `mpc` role), `HandCommLoop::OnTick` 이하 | SCHED_FIFO, dedicated core | **RT** | 동일. 계획기의 대기는 eventfd `poll` |
+| MPC thread (`MPCThread::OnTick` → `HandlerMPCThread::Solve`), 포구 계획기 (`CatchingPlannerThread::OnTick` → `PlannerCycle::Run`, 같은 `mpc` role), `HandCommLoop::OnTick` 이하 | SCHED_FIFO, dedicated core | **RT** | 동일. 계획기의 대기와 MPC thread 의 external trigger (`SolveTriggerChannel`) 대기는 eventfd `poll` |
 | MPC OpenMP worker (`mpc_worker_<i>`, worker profile) | mpc_main 상속 | **RT** | MPC thread 와 동일. 병렬 영역 안 throw 는 terminate |
 | DeviceBackend state/motor/sensor 구독 콜백 (`cb_group_rt_callback_`) | SCHED_FIFO | **RT** | **mailbox-only** — SeqLock/atomic store, memcpy, steady_clock 캡처까지 |
 | `nrt_publish_thread` (`NrtPublishLoopEntry` → `PublishNonRtSnapshot`) | SCHED_OTHER | 비-RT | ROS publish 포함 자유. executor 콜백이 **아님** (std::jthread + eventfd) |

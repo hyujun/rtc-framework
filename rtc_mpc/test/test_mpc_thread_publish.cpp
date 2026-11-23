@@ -34,6 +34,7 @@
 #include "rtc_mpc/model/robot_model_handler.hpp"
 #include "rtc_mpc/phase/phase_manager_base.hpp"
 #include "rtc_mpc/thread/handler_mpc_thread.hpp"
+#include "rtc_mpc/thread/solve_trigger_channel.hpp"
 #include "rtc_mpc/types/mpc_solution_types.hpp"
 #include "test_utils/panda_fixture.hpp"
 
@@ -239,6 +240,23 @@ class MpcThreadPublishTest : public ::testing::Test {
     return raw;
   }
 
+  /// Start a thread on an external trigger (@p channel, nominal 20 Hz) over a
+  /// stub handler with @p cfg; returns the stub.
+  StubHandler* StartExternal(HandlerMPCThread& thread, const MPCSolverConfig& cfg,
+                             rtc::mpc::SolveTriggerChannel& channel) {
+    auto stub = std::make_unique<StubHandler>(model_handler_.nq(), model_handler_.nv(), cfg);
+    StubHandler* raw = stub.get();
+    thread.Configure(model_handler_, std::move(stub), std::make_unique<StubPhaseManager>());
+    rtc::mpc::MpcThreadLaunchConfig launch{};
+    launch.main.cpu_core = -1;
+    launch.main.sched_policy = 0;
+    launch.target_frequency_hz = 20.0;
+    launch.trigger = rtc::mpc::SolveTrigger::kExternal;
+    launch.channel = &channel;
+    thread.Init(mgr_, launch);
+    return raw;
+  }
+
   /// Start a thread at @p hz over a stub handler and a recording phase manager.
   StubHandler* StartRecording(HandlerMPCThread& thread, const MPCSolverConfig& cfg, double hz,
                               RecordingPhaseManager*& recorder) {
@@ -374,6 +392,26 @@ TEST(MpcThreadConsumedSegment, TheSegmentEndsOneNodePastThePeriod) {
   sol->dt_node = 0.0;
   EXPECT_EQ(HandlerMPCThread::ConsumedPrimInf(*sol, ns(0.035)),
             std::numeric_limits<double>::infinity());
+}
+
+// With a delivery offset the segment starts at the node at or before the
+// delivery and ends one node past the period after it: the nodes before the
+// delivery are never sampled.
+TEST(MpcThreadConsumedSegment, TheSegmentStartsAtTheDelivery) {
+  auto sol = std::make_unique<MPCSolution>();
+  sol->horizon_length = 8;
+  sol->dt_node = 0.035;
+  for (int k = 0; k <= 8; ++k) {
+    sol->node_prim_inf[static_cast<std::size_t>(k)] = 1.0 + k;
+  }
+  sol->node_prim_inf[0] = 50.0;  // a bad node 0 is not read once delivered past it
+  sol->node_prim_inf[1] = 40.0;
+  const auto ns = [](double s) { return static_cast<std::uint64_t>(s * 1e9 + 0.5); };
+  EXPECT_EQ(HandlerMPCThread::ConsumedPrimInf(*sol, ns(0.070), 0), 50.0);          // nodes 0-3
+  EXPECT_EQ(HandlerMPCThread::ConsumedPrimInf(*sol, ns(0.070), ns(0.070)), 6.0);   // nodes 2-5
+  EXPECT_EQ(HandlerMPCThread::ConsumedPrimInf(*sol, ns(0.070), ns(0.035)), 40.0);  // nodes 1-4
+  EXPECT_EQ(HandlerMPCThread::ConsumedPrimInf(*sol, ns(0.070), ns(0.050)), 40.0);  // ⌊1.43⌋ = 1
+  EXPECT_EQ(HandlerMPCThread::ConsumedPrimInf(*sol, ns(0.070), ns(10.0)), 9.0);    // clamped: 8
 }
 
 // An overrun is one count: the base's OverrunCount.
@@ -688,6 +726,119 @@ TEST_F(MpcThreadPublishTest, AThreadWithoutAHandlerRecordsFailures) {
   EXPECT_EQ(r.outcome, SolveOutcome::kFailed);
   EXPECT_EQ(r.err, -1);
   EXPECT_EQ(CountOf(r, SolveOutcome::kFailed), thread.FailedSolves());
+}
+
+// ── External trigger (SolveTriggerChannel) ──────────────────────────────────
+//
+// The loop sleeps on the channel and runs one tick per request, answering it
+// after the publish; the periodic loop is the control that solves on its own.
+
+TEST_F(MpcThreadPublishTest, AnExternalTriggerRunsOneSolvePerRequest) {
+  rtc::mpc::SolveTriggerChannel channel;
+  ASSERT_TRUE(channel.Open());
+  channel.Arm();
+  HandlerMPCThread thread;
+  StubHandler* stub = StartExternal(thread, MPCSolverConfig{}, channel);
+  thread.Start();
+  std::this_thread::sleep_for(50ms);
+  EXPECT_EQ(stub->calls.load(), 0U) << "no request, no solve";
+  for (std::uint64_t m = 1; m <= 5; ++m) {
+    channel.RequestSolve();
+    ASSERT_EQ(channel.WaitIdle(2'000'000'000), rtc::mpc::SolveTriggerChannel::WaitStatus::kIdle);
+    EXPECT_EQ(stub->calls.load(), m);
+    EXPECT_EQ(Published(), m) << "the answer comes after the publish";
+  }
+  std::this_thread::sleep_for(50ms);
+  EXPECT_EQ(stub->calls.load(), 5U) << "nothing solves between requests";
+  thread.StopAndJoin();
+  EXPECT_EQ(thread.TotalSolves(), 5U);
+}
+
+// Requests behind a solve in progress collapse into one more solve; a request
+// while the loop is paused is answered without a solve; a stop during the
+// channel wait joins at once.
+TEST_F(MpcThreadPublishTest, AnExternalTriggerCoalescesAndHonoursPauseAndStop) {
+  rtc::mpc::SolveTriggerChannel channel;
+  ASSERT_TRUE(channel.Open());
+  channel.Arm();
+  HandlerMPCThread thread;
+  StubHandler* stub = StartExternal(thread, MPCSolverConfig{}, channel);
+  stub->sleep_us = 30000;
+  thread.Start();
+  channel.RequestSolve();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return stub->calls.load() >= 1U; }));
+  channel.RequestSolve();  // three during the solve in progress
+  channel.RequestSolve();
+  channel.RequestSolve();
+  ASSERT_EQ(channel.WaitIdle(2'000'000'000), rtc::mpc::SolveTriggerChannel::WaitStatus::kIdle);
+  EXPECT_EQ(stub->calls.load(), 2U) << "one solve answers the three";
+  EXPECT_EQ(channel.CoalescedRequests(), 2U);
+
+  stub->sleep_us = 0;
+  thread.Pause();
+  channel.RequestSolve();  // slipped in: answered, not solved
+  ASSERT_EQ(channel.WaitIdle(2'000'000'000), rtc::mpc::SolveTriggerChannel::WaitStatus::kIdle);
+  thread.Resume();
+  std::this_thread::sleep_for(50ms);
+  EXPECT_EQ(stub->calls.load(), 2U) << "no ghost solve across the pause";
+  channel.RequestSolve();
+  ASSERT_EQ(channel.WaitIdle(2'000'000'000), rtc::mpc::SolveTriggerChannel::WaitStatus::kIdle);
+  EXPECT_EQ(stub->calls.load(), 3U);
+
+  const auto t0 = std::chrono::steady_clock::now();
+  thread.StopAndJoin();  // the loop is asleep on the channel
+  EXPECT_LT(std::chrono::steady_clock::now() - t0, 500ms);
+}
+
+// A failed solve answers its request too, and the deadline is a count, not a
+// gate: a solve past it is published.
+TEST_F(MpcThreadPublishTest, AnExternalTriggerAnswersFailuresAndCountsTheDeadline) {
+  rtc::mpc::SolveTriggerChannel channel;
+  ASSERT_TRUE(channel.Open());
+  channel.Arm();
+  MPCSolverConfig cfg;
+  cfg.publish_deadline_ms = 2.0;
+  HandlerMPCThread thread;
+  StubHandler* stub = StartExternal(thread, cfg, channel);
+  stub->sleep_us = 6000;
+  thread.Start();
+  channel.RequestSolve();
+  ASSERT_EQ(channel.WaitIdle(2'000'000'000), rtc::mpc::SolveTriggerChannel::WaitStatus::kIdle);
+  EXPECT_EQ(Published(), 1U) << "late, published anyway";
+  EXPECT_EQ(thread.UnenforcedDeadlineCount(), 1U);
+  EXPECT_EQ(thread.DeadlineMissCount(), 0U);
+
+  stub->error = static_cast<int>(MPCSolveError::kSolverDiverged);
+  channel.RequestSolve();
+  ASSERT_EQ(channel.WaitIdle(2'000'000'000), rtc::mpc::SolveTriggerChannel::WaitStatus::kIdle)
+      << "a failed solve still answers";
+  EXPECT_EQ(thread.FailedSolves(), 1U);
+  EXPECT_EQ(Published(), 1U);
+  thread.StopAndJoin();
+}
+
+// Control: the periodic loop solves without any request.
+TEST_F(MpcThreadPublishTest, ThePeriodicLoopSolvesWithoutARequest) {
+  HandlerMPCThread thread;
+  StubHandler* stub = Start(thread, MPCSolverConfig{}, 100.0);
+  thread.Start();
+  EXPECT_TRUE(rtc::testing::WaitUntil([&] { return stub->calls.load() >= 5U; }));
+  thread.StopAndJoin();
+}
+
+// An external trigger without a channel is refused at Init: Start is a no-op.
+TEST_F(MpcThreadPublishTest, AnExternalTriggerWithoutAChannelIsRefused) {
+  HandlerMPCThread thread;
+  auto stub =
+      std::make_unique<StubHandler>(model_handler_.nq(), model_handler_.nv(), MPCSolverConfig{});
+  thread.Configure(model_handler_, std::move(stub), std::make_unique<StubPhaseManager>());
+  rtc::mpc::MpcThreadLaunchConfig launch{};
+  launch.main.cpu_core = -1;
+  launch.main.sched_policy = 0;
+  launch.trigger = rtc::mpc::SolveTrigger::kExternal;
+  thread.Init(mgr_, launch);
+  thread.Start();
+  EXPECT_FALSE(thread.Running());
 }
 
 }  // namespace

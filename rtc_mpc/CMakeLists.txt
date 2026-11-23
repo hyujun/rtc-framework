@@ -50,6 +50,7 @@ add_library(rtc_mpc STATIC
   src/thread/mpc_thread.cpp
   src/thread/mock_mpc_thread.cpp
   src/thread/handler_mpc_thread.cpp
+  src/thread/solve_trigger_channel.cpp
   src/model/robot_model_handler.cpp
   src/model/wb_layout.cpp
   src/dynamics/kinodynamic_dynamics.cpp
@@ -214,6 +215,7 @@ if(BUILD_TESTING)
   add_mpc_gtest(test_wb_layout)
   add_mpc_gtest(test_mpc_layout_alloc_gate)
   add_mpc_gtest(test_mpc_solve_record_alloc_gate)
+  add_mpc_gtest(test_solve_trigger_channel)
   add_mpc_gtest(test_mpc_solution_manager)
   add_mpc_gtest(test_mpc_state_epoch_threads)
   add_mpc_gtest(test_policy_sampler)
