@@ -256,7 +256,7 @@ P-core / E-core 가 섞인 Intel CPU 에서는 코어 slot 이 **P-core 의 prim
 | Raptor Lake-P | NUC 13 Pro (i5-1340P · i7-1360P · i7-1370P) | 감지 OK, P-core 자동 고정 |
 | Meteor Lake | NUC 14 Pro (Core Ultra 7 155H / 165H) | 감지 OK. `check_rt_setup.sh` 의 "지원 예정" WARN 은 감지 단계 안내이며 실패가 아니다 |
 | Arrow Lake-H | NUC 15 Pro+ (Core Ultra 7 265H / 9 285H) | 위와 동일 |
-| Panther Lake-H | Core Ultra 7 356H | 감지 OK (HT 없음이 설계). CPUID 경로로 감지돼 LP-E 를 E 로 센다 — 위와 같은 WARN |
+| Panther Lake-H | Core Ultra 7 356H | 감지 OK (HT 없음이 설계). CPUID 또는 CPPC `highest_perf` 경로로 감지돼 LP-E 를 E 로 센다 — 위와 같은 WARN |
 | NUC 13 Pro, BIOS HT off | - | `check_rt_setup.sh` FAIL. HT 를 켠다 |
 | AMD · 일반 Intel | - | hybrid 분기 없이 물리 코어 순서 |
 
@@ -270,6 +270,8 @@ P-core / E-core 가 섞인 Intel CPU 에서는 코어 slot 이 **P-core 의 prim
 - [ ] **E-core / LP E-core: Enabled 유지** - OS · IRQ 가 쓴다
 
 **`RTC_FORCE_HYBRID_GENERATION`** 은 컨테이너처럼 sysfs 를 못 읽는 환경에서 세대 판정만 덮어쓰는 테스트·CI 용 환경변수다 (`raptor_lake_p` · `meteor_lake` · `arrow_lake_h` · `raptor_lake_p_ht_off` · `none`). **production 에서는 반드시 unset** 한다. 값이 남아 있으면 `check_rt_setup.sh` 가 WARN 한다.
+
+감지는 sysfs `types/` → CPUID leaf 0x1A (shell 만) → CPPC `highest_perf` (Intel 만) → `cpuinfo_max_freq` 순으로 시도한다. `no_turbo=1` 이면 `cpuinfo_max_freq` 가 base 클럭으로 바뀌어 등급 차가 사라지고, cset shield 안의 셸에서는 CPUID 가 격리 코어에 닿지 못한다 — 그때도 `highest_perf` 는 등급을 구분한다.
 
 hybrid 감지 확인:
 

@@ -584,6 +584,150 @@ test_platform_label_panther_lake_h_mobile() {
   expect_eq "PTL.num_p_physical"      "4"                          "$NUM_P_PHYSICAL"
 }
 
+# ── CPPC clustering — Panther Lake-H with turbo off ─────────────────────────
+# Field values (Core Ultra 7 356H, 6.12 RT kernel, no types/): no_turbo=1 made
+# cpuinfo_max_freq the base clocks 1.7 / 1.6 / 1.5 GHz (11 % spread, under the
+# 15 % guard) while acpi_cppc/highest_perf kept 52 / 37 / 33. CPUID is skipped
+# under a mock root, as it is on the host inside a cset shield (taskset cannot
+# reach the shielded CPUs). $1 = 1 writes highest_perf, 0 leaves it out.
+_mock_ptl_turbo_off() {
+  local root="$1" with_cppc="$2" i perf
+  mock_reset "$root"
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" "$i" "$i" 1700000
+  done
+  for i in 4 5 6 7 8 9 10 11; do
+    mock_add_cpu "$root" "$i" "$i" 1600000
+  done
+  for i in 12 13 14 15; do
+    mock_add_cpu "$root" "$i" "$i" 1500000
+  done
+  (( with_cppc == 1 )) || return 0
+  for i in $(seq 0 15); do
+    if (( i < 4 )); then perf=52; elif (( i < 12 )); then perf=37; else perf=33; fi
+    mkdir -p "$root/devices/system/cpu/cpu${i}/acpi_cppc"
+    echo "$perf" >"$root/devices/system/cpu/cpu${i}/acpi_cppc/highest_perf"
+  done
+}
+
+test_cppc_fallback_panther_lake_turbo_off() {
+  local root="$TMP/ptl_cppc"
+  _mock_ptl_turbo_off "$root" 1
+  mock_write_cpuinfo "$TMP/ptl_cppc_cpuinfo" "false" "6" "204"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/ptl_cppc_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "PTLCppc.is_hybrid"       "1"                    "$IS_HYBRID"
+  expect_eq "PTLCppc.detect_source"   "cppc_cluster"         "$HYBRID_DETECT_SOURCE"
+  expect_eq "PTLCppc.p_core_ids"      "0 1 2 3"              "$P_CORE_PHYSICAL_IDS"
+  expect_eq "PTLCppc.num_e_total"     "12"                   "$((NUM_E_CORES + NUM_LPE_CORES))"
+  expect_eq "PTLCppc.generation"      "raptor_lake_p_ht_off" "$NUC_GENERATION"
+  expect_eq "PTLCppc.no_ht_by_design" "1"                    "$PLATFORM_NO_HT_BY_DESIGN"
+}
+
+# Same host without acpi_cppc: cpuinfo_max_freq alone reads it as homogeneous —
+# the failure the CPPC path exists for.
+test_cppc_fallback_panther_lake_turbo_off_no_cppc() {
+  local root="$TMP/ptl_nocppc"
+  _mock_ptl_turbo_off "$root" 0
+  mock_write_cpuinfo "$TMP/ptl_nocppc_cpuinfo" "false" "6" "204"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/ptl_nocppc_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "PTLNoCppc.is_hybrid"     "0"                    "$IS_HYBRID"
+  expect_eq "PTLNoCppc.detect_source" "none"                 "$HYBRID_DETECT_SOURCE"
+}
+
+# Meteor Lake (NUC 14 Pro class) with acpi_cppc present: CPPC now fires before
+# cpuinfo_max_freq and must give the split test_freq_fallback_meteor_lake gives.
+# highest_perf in hybrid perf units: favoured P 65, other P 61, E 38, LP-E 25.
+test_cppc_fallback_meteor_lake_same_split() {
+  local root="$TMP/mtl_cppc" i cpu perf f
+  mock_reset "$root"
+  for i in 0 1 2 3 4 5; do
+    if (( i < 2 )); then perf=65; f=5100000; else perf=61; f=4800000; fi
+    for cpu in $((i*2)) $((i*2+1)); do
+      mock_add_cpu "$root" "$cpu" "$i" "$f"
+      mkdir -p "$root/devices/system/cpu/cpu${cpu}/acpi_cppc"
+      echo "$perf" >"$root/devices/system/cpu/cpu${cpu}/acpi_cppc/highest_perf"
+    done
+  done
+  for i in 0 1 2 3 4 5 6 7 8 9; do
+    cpu=$((12+i))
+    if (( i < 8 )); then perf=38; f=3800000; else perf=25; f=2500000; fi
+    mock_add_cpu "$root" "$cpu" $((6+i)) "$f"
+    mkdir -p "$root/devices/system/cpu/cpu${cpu}/acpi_cppc"
+    echo "$perf" >"$root/devices/system/cpu/cpu${cpu}/acpi_cppc/highest_perf"
+  done
+  mock_write_cpuinfo "$TMP/mtl_cppc_cpuinfo" "false" "6" "170"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/mtl_cppc_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "MTLCppc.detect_source"   "cppc_cluster"         "$HYBRID_DETECT_SOURCE"
+  expect_eq "MTLCppc.num_p_physical"  "6"                    "$NUM_P_PHYSICAL"
+  expect_eq "MTLCppc.p_core_has_smt"  "1"                    "$P_CORE_HAS_SMT"
+  expect_eq "MTLCppc.num_e_cores"     "8"                    "$NUM_E_CORES"
+  expect_eq "MTLCppc.num_lpe_cores"   "2"                    "$NUM_LPE_CORES"
+  expect_eq "MTLCppc.generation"      "meteor_lake"          "$NUC_GENERATION"
+}
+
+# Non-hybrid Intel with Turbo Boost Max 3.0 (favoured cores 53 vs 51): Intel
+# passes the vendor guard, so only the 15 % spread guard keeps it non-hybrid.
+test_cppc_intel_itmt_stays_homogeneous() {
+  local root="$TMP/itmt_cppc" i
+  mock_reset "$root"
+  for i in 0 1 2 3 4 5 6 7; do
+    if (( i < 2 )); then
+      mock_add_cpu "$root" "$i" "$i" 5300000
+    else
+      mock_add_cpu "$root" "$i" "$i" 5100000
+    fi
+    mkdir -p "$root/devices/system/cpu/cpu${i}/acpi_cppc"
+    echo $(( i < 2 ? 53 : 51 )) >"$root/devices/system/cpu/cpu${i}/acpi_cppc/highest_perf"
+  done
+  mock_write_cpuinfo "$TMP/itmt_cppc_cpuinfo" "false" "6" "165"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/itmt_cppc_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "ITMTCppc.is_hybrid"      "0"                    "$IS_HYBRID"
+  expect_eq "ITMTCppc.detect_source"  "none"                 "$HYBRID_DETECT_SOURCE"
+}
+
+# AMD reports preferred-core rankings in highest_perf. A homogeneous part whose
+# rankings spread past 15 % must stay non-hybrid (the CPPC path is Intel-only).
+test_cppc_ignored_on_amd() {
+  local root="$TMP/amd_cppc" i
+  local -a perf=(231 226 216 206 196 186 176 166)
+  mock_reset "$root"
+  for i in 0 1 2 3 4 5 6 7; do
+    mock_add_cpu "$root" "$i" "$i" 4650000
+    mkdir -p "$root/devices/system/cpu/cpu${i}/acpi_cppc"
+    echo "${perf[$i]}" >"$root/devices/system/cpu/cpu${i}/acpi_cppc/highest_perf"
+  done
+  {
+    echo "processor	: 0"
+    echo "vendor_id	: AuthenticAMD"
+    echo "cpu family	: 25"
+    echo "model		: 97"
+    echo "flags		: fpu vme de pse tsc msr pae"
+  } >"$TMP/amd_cppc_cpuinfo"
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/amd_cppc_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "AMDCppc.is_hybrid"       "0"                    "$IS_HYBRID"
+  expect_eq "AMDCppc.detect_source"   "none"                 "$HYBRID_DETECT_SOURCE"
+}
+
 # ── ppd_resets_governor: PPD overwrites the governor only under an active
 #    pstate driver, and a masked unit is the only state that stops it ──────
 test_ppd_resets_governor() {
@@ -1866,6 +2010,11 @@ test_platform_label_raptor_lake_s_desktop
 test_platform_label_raptor_lake_p_mobile
 test_platform_label_arrow_lake_s_desktop
 test_platform_label_panther_lake_h_mobile
+test_cppc_fallback_panther_lake_turbo_off
+test_cppc_fallback_panther_lake_turbo_off_no_cppc
+test_cppc_fallback_meteor_lake_same_split
+test_cppc_intel_itmt_stays_homogeneous
+test_cppc_ignored_on_amd
 test_platform_label_unknown_model
 test_platform_label_amd_vendor
 test_platform_label_missing_fields
@@ -1906,6 +2055,7 @@ test_same_core_id_soc
 test_rank_source_priority
 test_rank_inconsistent_sysfs
 
+test_ppd_resets_governor
 test_slot_to_logical_cpu
 test_mask_to_cpus
 test_classify_external_rt_ok
@@ -2055,7 +2205,6 @@ test_external_driver_slots_per_tier() {
   expect_eq "drvslot.arm.11"  "4" "$(get_arm_driver_slot 11)"
   expect_eq "drvslot.hand.11" "5" "$(get_hand_driver_slot 11)"
   expect_eq "drvslot.arm.12"  "4" "$(get_arm_driver_slot 12)"
-test_ppd_resets_governor
   expect_eq "drvslot.hand.12" "5" "$(get_hand_driver_slot 12)"
   expect_eq "drvslot.arm.16"  "4" "$(get_arm_driver_slot 16)"
   expect_eq "drvslot.hand.16" "5" "$(get_hand_driver_slot 16)"

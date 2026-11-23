@@ -347,7 +347,8 @@ check_hybrid_cpu() {
   # not a functional failure. `/sys/.../cpu/types/{intel_core,intel_atom}` is
   # only created on kernel >= 6.9 built with the nuc-profile options; on older
   # or minimally-configured RT kernels the dir is missing, so detection relies
-  # on the CPUID 0x1A fallback (needs `cpuid`) or freq clustering.
+  # on the CPUID 0x1A fallback (needs `cpuid`), CPPC highest_perf clustering
+  # (Intel) or freq clustering.
   if [[ "$IS_HYBRID" -eq 1 ]]; then
     case "${HYBRID_DETECT_SOURCE:-none}" in
       sysfs_types)
@@ -358,6 +359,14 @@ check_hybrid_cpu() {
         _warn "Hybrid 감지 경로: CPUID leaf 0x1A fallback (sysfs types/ 미노출 — 감지는 정상)"
         _fix "primary(sysfs) 경로 복구: 커널 >= 6.9 + nuc 프로파일 재빌드 (sudo ${SCRIPT_DIR}/build_rt_kernel.sh --profile nuc)"
         _fix "  └ nuc 프로파일이 SCHED_MC_PRIO / SCHED_CLUSTER / INTEL_HFI_THERMAL 활성화 (types/ 노출은 kernel >= 6.9 도 필요)"
+        _fix "  └ 이미 6.9+ nuc 커널인데 이 경고면 그 커널이 이 CPU 의 types/ 를 노출하지 않는 것 — 감지는 정상이라 조치 불필요"
+        _category_update "hybrid_cpu" "WARN"
+        ;;
+      cppc_cluster)
+        # CPUID 가 못 닿을 때 (cset shield 안의 셸은 taskset 으로 격리 코어에 못 간다)
+        # 또는 cpuid 미설치일 때 여기까지 온다. highest_perf 는 no_turbo 와 무관해 정확하다.
+        _warn "Hybrid 감지 경로: ACPI CPPC highest_perf clustering fallback (sysfs types/ 미노출 — 감지는 정상)"
+        _fix "primary(sysfs) 경로 복구: 커널 >= 6.9 + nuc 프로파일 재빌드 (sudo ${SCRIPT_DIR}/build_rt_kernel.sh --profile nuc)"
         _fix "  └ 이미 6.9+ nuc 커널인데 이 경고면 그 커널이 이 CPU 의 types/ 를 노출하지 않는 것 — 감지는 정상이라 조치 불필요"
         _category_update "hybrid_cpu" "WARN"
         ;;
@@ -994,15 +1003,6 @@ check_cpu_frequency() {
     fi
   fi
 
-  # Turbo / Boost 는 어느 쪽도 결함이 아니다 — 켜면 MPC solve 가 빨라지고, 끄면 열
-  # 쓰로틀링 jitter 를 피한다. 제어 PC 에서 재서 고르는 값이라 상태만 보고한다
-  # (기준: docs/rt-optimization.md §6 BIOS 체크리스트).
-  local turbo_file="/sys/devices/system/cpu/intel_pstate/no_turbo"
-  if [[ -f "$turbo_file" ]]; then
-    local no_turbo
-    no_turbo=$(cat "$turbo_file" 2>/dev/null || echo "unknown")
-    if [[ "$no_turbo" == "1" ]]; then
-      _pass "Intel Turbo Boost: 비활성 (OS no_turbo=1 — 측정으로 고른 값이어야 한다)"
   # power-profiles-daemon (Ubuntu 데스크톱 기본) 은 시작할 때마다 governor 를 powersave 로
   # 쓴다 (조건: rt_common.sh::ppd_resets_governor). 위 서비스와 부팅 순서가 정해져 있지 않아
   # 늦게 뜬 쪽이 이긴다 — 지금 performance 여도 다음 부팅에 되돌아갈 수 있다.
@@ -1013,6 +1013,15 @@ check_cpu_frequency() {
     _category_update "cpu_frequency" "WARN"
   fi
 
+  # Turbo / Boost 는 어느 쪽도 결함이 아니다 — 켜면 MPC solve 가 빨라지고, 끄면 열
+  # 쓰로틀링 jitter 를 피한다. 제어 PC 에서 재서 고르는 값이라 상태만 보고한다
+  # (기준: docs/rt-optimization.md §6 BIOS 체크리스트).
+  local turbo_file="/sys/devices/system/cpu/intel_pstate/no_turbo"
+  if [[ -f "$turbo_file" ]]; then
+    local no_turbo
+    no_turbo=$(cat "$turbo_file" 2>/dev/null || echo "unknown")
+    if [[ "$no_turbo" == "1" ]]; then
+      _pass "Intel Turbo Boost: 비활성 (OS no_turbo=1 — 측정으로 고른 값이어야 한다)"
     else
       _pass "Intel Turbo Boost: 활성 (기본값 — 열 쓰로틀링 jitter 가 보이면 no_turbo=1 과 비교)"
       _fix "비교: echo 1 | sudo tee ${turbo_file}  (재부팅 시 원복) — docs/rt-optimization.md §6"

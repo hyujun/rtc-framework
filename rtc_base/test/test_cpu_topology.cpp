@@ -111,6 +111,14 @@ class MockSysfs {
       WriteFile(topo / "thread_siblings_list", thread_siblings_list);
   }
 
+  // Write cpuN/acpi_cppc/highest_perf — the firmware capability that the
+  // CPPC clustering path reads instead of cpuinfo_max_freq.
+  void SetHighestPerf(int cpu, int highest_perf) {
+    const fs::path d = root_ / "devices/system/cpu" / ("cpu" + std::to_string(cpu)) / "acpi_cppc";
+    fs::create_directories(d);
+    WriteFile(d / "highest_perf", std::to_string(highest_perf));
+  }
+
   // Finalize: write types/intel_core/cpus and types/intel_atom/cpus.
   // Call once after all AddPCore / AddECore.
   void WriteTypes() {
@@ -492,6 +500,7 @@ TEST(CpuTopologyClassifier, HybridDetectSourceToString) {
   EXPECT_EQ(rtc::HybridDetectSourceToString(rtc::HybridDetectSource::SYSFS_TYPES), "sysfs_types");
   EXPECT_EQ(rtc::HybridDetectSourceToString(rtc::HybridDetectSource::CPUFREQ_CLUSTER),
             "cpufreq_cluster");
+  EXPECT_EQ(rtc::HybridDetectSourceToString(rtc::HybridDetectSource::CPPC_CLUSTER), "cppc_cluster");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -882,6 +891,137 @@ TEST_P(CpuTopologyTest, ClusterByMaxFreq_Thresholds) {
   auto [p2, e2] = ClusterByMaxFreq(tmp_root_ / "homogeneous/devices/system/cpu", online2);
   EXPECT_TRUE(p2.empty());
   EXPECT_TRUE(e2.empty());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CPPC clustering — Panther Lake-H (Core Ultra 7 356H) with turbo off. Values
+// read on a field PC: intel_pstate/no_turbo = 1 rewrote cpuinfo_max_freq to
+// the base clocks 1.7 / 1.6 / 1.5 GHz (11 % spread, under the 15 % guard),
+// while acpi_cppc/highest_perf kept 52 / 37 / 33. No types/ on its 6.12
+// kernel. Without the CPPC path this host read as non-hybrid.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+void BuildPantherLakeTurboOff(MockSysfs& m, bool with_cppc) {
+  for (int cpu = 0; cpu < 4; ++cpu) {
+    m.AddPCore(cpu, cpu, -1, /*freq*/ 1700000);
+    if (with_cppc)
+      m.SetHighestPerf(cpu, 52);
+  }
+  for (int cpu = 4; cpu < 16; ++cpu) {
+    m.AddECore(cpu, cpu, /*freq*/ cpu < 12 ? 1600000 : 1500000);
+    if (with_cppc)
+      m.SetHighestPerf(cpu, cpu < 12 ? 37 : 33);
+  }
+}
+}  // namespace
+
+TEST_P(CpuTopologyTest, CppcFallback_PantherLake_TurboOff) {
+  MockSysfs m(tmp_root_, SiblingLists());
+  BuildPantherLakeTurboOff(m, /*with_cppc=*/true);
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, 6, 0xCC);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_TRUE(t.is_hybrid);
+  EXPECT_EQ(t.detect_source, rtc::HybridDetectSource::CPPC_CLUSTER);
+  EXPECT_FALSE(t.p_core_has_smt);
+  EXPECT_EQ(t.num_p_physical, 4);
+  EXPECT_EQ(t.p_core_physical_ids, (std::vector<int>{0, 1, 2, 3}));
+  EXPECT_EQ(t.num_e_cores + t.num_lpe_cores, 12);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::RAPTOR_LAKE_P_HT_OFF);
+  EXPECT_EQ(t.platform_label, "Panther Lake mobile");
+  EXPECT_TRUE(t.platform_no_ht_by_design);
+  ASSERT_GE(t.physical_core_slots.size(), 4u);
+  EXPECT_EQ(t.physical_core_slots[1], 1);
+  EXPECT_EQ(t.physical_core_slots[3], 3);
+}
+
+// The same host without acpi_cppc — the cpuinfo_max_freq path alone cannot
+// split base clocks this close, which is why CPPC goes first.
+TEST_P(CpuTopologyTest, CppcFallback_PantherLake_TurboOff_NoCppcReadsHomogeneous) {
+  MockSysfs m(tmp_root_, SiblingLists());
+  BuildPantherLakeTurboOff(m, /*with_cppc=*/false);
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, 6, 0xCC);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_FALSE(t.is_hybrid);
+  EXPECT_EQ(t.detect_source, rtc::HybridDetectSource::NONE);
+}
+
+// AMD reports preferred-core rankings in highest_perf. A homogeneous part
+// whose rankings spread past 15 % must stay non-hybrid: the CPPC path is
+// Intel-only, and the equal cpuinfo_max_freq keeps the freq path out too.
+TEST_P(CpuTopologyTest, CppcIgnoredOnAmd) {
+  MockSysfs m(tmp_root_, SiblingLists());
+  const int perf[] = {231, 226, 216, 206, 196, 186, 176, 166};
+  for (int cpu = 0; cpu < 8; ++cpu) {
+    m.AddRawCpu(cpu, cpu, std::to_string(cpu), std::to_string(cpu), /*freq*/ 4650000);
+    m.SetHighestPerf(cpu, perf[cpu]);
+  }
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, 25, 0x61, "AuthenticAMD");
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_FALSE(t.is_hybrid);
+  EXPECT_EQ(t.detect_source, rtc::HybridDetectSource::NONE);
+  EXPECT_EQ(t.physical_core_slots.size(), 8u);
+}
+
+// Meteor Lake (NUC 14 Pro class) with acpi_cppc present: the CPPC path now
+// fires before cpuinfo_max_freq and must give the same split and generation
+// as FreqFallback_MeteorLake_185H. highest_perf in hybrid perf units (P-core
+// ~78.7 MHz/unit, E-core 100 MHz/unit): two favoured P-cores at 5.1 GHz = 65,
+// the rest at 4.8 GHz = 61, E 3.8 GHz = 38, LP-E 2.5 GHz = 25.
+TEST_P(CpuTopologyTest, CppcFallback_MeteorLake_SameSplitAsFreq) {
+  MockSysfs m(tmp_root_, SiblingLists());
+  for (int core = 0; core < 6; ++core) {
+    m.AddPCore(core, core * 2, core * 2 + 1, /*freq*/ core < 2 ? 5100000 : 4800000);
+    m.SetHighestPerf(core * 2, core < 2 ? 65 : 61);
+    m.SetHighestPerf(core * 2 + 1, core < 2 ? 65 : 61);
+  }
+  for (int i = 0; i < 8; ++i) {
+    m.AddECore(6 + i, 12 + i, /*freq*/ 3800000);
+    m.SetHighestPerf(12 + i, 38);
+  }
+  for (int cpu = 20; cpu < 22; ++cpu) {
+    m.AddECore(cpu - 6, cpu, /*freq*/ 2500000);
+    m.SetHighestPerf(cpu, 25);
+  }
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, 6, 0xAA);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_EQ(t.detect_source, rtc::HybridDetectSource::CPPC_CLUSTER);
+  EXPECT_EQ(t.num_p_physical, 6);
+  EXPECT_EQ(t.num_p_logical, 12);
+  EXPECT_TRUE(t.p_core_has_smt);
+  EXPECT_EQ(t.num_e_cores, 8);
+  EXPECT_EQ(t.num_lpe_cores, 2);
+  EXPECT_EQ(t.generation, rtc::NucGeneration::METEOR_LAKE);
+}
+
+// Non-hybrid Intel with Turbo Boost Max 3.0: two favoured cores one or two
+// bins above the rest (5.3 vs 5.1 GHz, highest_perf 53 vs 51). Intel passes
+// the vendor guard, so only the 15 % spread guard keeps it non-hybrid.
+TEST_P(CpuTopologyTest, CppcFallback_IntelItmtStaysHomogeneous) {
+  MockSysfs m(tmp_root_, SiblingLists());
+  for (int cpu = 0; cpu < 8; ++cpu) {
+    m.AddRawCpu(cpu, cpu, std::to_string(cpu), std::to_string(cpu),
+                /*freq*/ cpu < 2 ? 5300000 : 5100000);
+    m.SetHighestPerf(cpu, cpu < 2 ? 53 : 51);
+  }
+  const auto cpuinfo = m.WriteCpuinfo(/*has_hybrid_flag=*/false, 6, 0xA5);
+
+  ScopedUnsetEnv clear{"RTC_FORCE_HYBRID_GENERATION"};
+  const auto t = rtc::DetectCpuTopology(tmp_root_.string(), cpuinfo.string(), nullptr);
+
+  EXPECT_FALSE(t.is_hybrid);
+  EXPECT_EQ(t.detect_source, rtc::HybridDetectSource::NONE);
 }
 
 INSTANTIATE_TEST_SUITE_P(SiblingSource, CpuTopologyTest, ::testing::Bool(),
