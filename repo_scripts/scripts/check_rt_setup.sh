@@ -1003,6 +1003,16 @@ check_cpu_frequency() {
     no_turbo=$(cat "$turbo_file" 2>/dev/null || echo "unknown")
     if [[ "$no_turbo" == "1" ]]; then
       _pass "Intel Turbo Boost: 비활성 (OS no_turbo=1 — 측정으로 고른 값이어야 한다)"
+  # power-profiles-daemon (Ubuntu 데스크톱 기본) 은 시작할 때마다 governor 를 powersave 로
+  # 쓴다 (조건: rt_common.sh::ppd_resets_governor). 위 서비스와 부팅 순서가 정해져 있지 않아
+  # 늦게 뜬 쪽이 이긴다 — 지금 performance 여도 다음 부팅에 되돌아갈 수 있다.
+  local ppd_state
+  if ppd_state=$(ppd_resets_governor); then
+    _warn "power-profiles-daemon: ${ppd_state} — 시작할 때마다 governor 를 powersave 로 되돌림"
+    _fix "sudo ${SCRIPT_DIR}/setup_cpu_governor.sh  (PPD mask 포함)"
+    _category_update "cpu_frequency" "WARN"
+  fi
+
     else
       _pass "Intel Turbo Boost: 활성 (기본값 — 열 쓰로틀링 jitter 가 보이면 no_turbo=1 과 비교)"
       _fix "비교: echo 1 | sudo tee ${turbo_file}  (재부팅 시 원복) — docs/rt-optimization.md §6"

@@ -2548,3 +2548,26 @@ lttng_modules_compat_verdict() {
     echo "incompatible ${kver} ${req}"
   fi
 }
+
+# ─── power-profiles-daemon vs the performance governor ──────────────────────
+# Print the PPD unit state ("enabled" / "disabled" / …) and return 0 when PPD
+# will overwrite the governor: power-profiles-daemon 0.21 writes "powersave" to
+# every policy's scaling_governor each time it starts (probe_epp in its
+# intel_pstate and amd_pstate drivers), but only while that pstate driver runs
+# in active mode. Returns 1 (prints nothing) when PPD is absent or masked, or
+# no pstate driver is active. "disabled" still counts — D-Bus activation
+# starts it. Consumers: setup_cpu_governor.sh (masks it), check_rt_setup.sh
+# (WARNs). Uses $RTC_SYSFS_ROOT (default /sys) for the pstate status files.
+ppd_resets_governor() {
+  local cpu_root="${RTC_SYSFS_ROOT:-/sys}/devices/system/cpu"
+  local state active=0 drv
+  for drv in intel_pstate amd_pstate; do
+    [[ "$(_rt_read_trim "$cpu_root/$drv/status")" == "active" ]] && active=1
+  done
+  (( active == 1 )) || return 1
+  state=$(systemctl is-enabled power-profiles-daemon.service 2>/dev/null || true)
+  case "$state" in
+    "" | not-found | masked | masked-runtime) return 1 ;;
+  esac
+  echo "$state"
+}

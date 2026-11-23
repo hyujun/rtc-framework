@@ -8,7 +8,8 @@
 #   1. 모든 CPU의 현재 governor 확인 및 performance 전환
 #   2. cpupower 도구 설치 (미설치 시)
 #   3. 재부팅 시 자동 적용을 위한 systemd oneshot 서비스 생성
-#   4. Intel P-state 드라이버 및 Turbo Boost 상태 보고
+#   4. power-profiles-daemon mask (시작할 때마다 governor 를 powersave 로 되돌린다)
+#   5. Intel P-state 드라이버 및 Turbo Boost 상태 보고
 #
 # 원본: setup_nvidia_rt.sh Stage 10 / install.sh setup_cpu_governor()
 #
@@ -20,6 +21,7 @@
 # 검증:
 #   cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 #   systemctl status cpu-governor-performance
+#   systemctl is-enabled power-profiles-daemon   # masked
 
 set -euo pipefail
 
@@ -40,6 +42,7 @@ usage() {
   echo "Description:"
   echo "  모든 CPU governor를 performance로 설정하고,"
   echo "  재부팅 시 자동 적용되도록 systemd 서비스를 등록한다."
+  echo "  governor 를 powersave 로 되돌리는 power-profiles-daemon 은 mask 한다."
   echo ""
   echo "  powersave governor는 클럭을 동적으로 낮춰"
   echo "  RT 제어 루프 jitter를 증가시키므로,"
@@ -51,6 +54,7 @@ usage() {
   echo "Verification:"
   echo "  cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor"
   echo "  systemctl status cpu-governor-performance"
+  echo "  systemctl is-enabled power-profiles-daemon   # masked"
   echo ""
   exit 0
 }
@@ -184,9 +188,32 @@ UNIT
   fi
 }
 
+# ── power-profiles-daemon mask ─────────────────────────────────────────────
+# PPD (Ubuntu 데스크톱 기본) 은 pstate 드라이버가 active 모드이면 시작할 때마다 모든 policy
+# 의 governor 를 powersave 로 쓴다 (조건: rt_common.sh::ppd_resets_governor). 위 서비스와
+# 부팅 순서가 정해져 있지 않아 늦게 뜬 쪽이 이긴다 — 현장 PC 에서 서비스 9.87 s, PPD
+# 10.11 s 로 매 부팅 powersave 로 돌아갔다. After= 로는 못 막는다: probe 는 D-Bus 이름을
+# 잡은 뒤 (systemd 가 started 로 보는 시점 이후) 돌고, 런타임 probe 요청에도 다시 돈다.
+# D-Bus 활성화로도 뜨므로 disable 이 아니라 mask 한다. 잃는 것은 GNOME 의 "전원 모드"
+# 메뉴뿐이다.
+mask_power_profiles_daemon() {
+  local unit="power-profiles-daemon.service" state
+  if ! state=$(ppd_resets_governor); then
+    info "power-profiles-daemon: governor 를 덮어쓰지 않음 (없음 · mask 됨 · pstate 비활성) — 건너뜀"
+    return 0
+  fi
+  if systemctl mask --now "$unit" >/dev/null 2>&1; then
+    success "power-profiles-daemon mask (${state} → masked) — 부팅마다 governor 를 powersave 로 되돌리던 원인"
+    info "  되돌리기: sudo systemctl unmask --now ${unit}"
+  else
+    warn "power-profiles-daemon mask 실패 — 재부팅하면 governor 가 powersave 로 돌아갈 수 있다"
+  fi
+}
+
 # ── Intel P-state 및 Turbo Boost 상태 확인 ──────────────────────────────────
 # Intel P-state 드라이버가 로드된 시스템에서 Turbo Boost 상태를 보고한다.
-# Turbo Boost는 RT 안정성에 영향을 줄 수 있으므로 비활성화를 권장한다.
+# 어느 쪽도 결함이 아니다 — 켜면 MPC solve 가 빨라지고, 끄면 열 쓰로틀링 jitter 를 피한다.
+# 제어 PC 에서 재서 고르는 값이다 (docs/rt-optimization.md §6, check_rt_setup.sh 와 같은 기준).
 check_intel_pstate() {
   if [[ ! -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
     return 0
@@ -198,10 +225,9 @@ check_intel_pstate() {
   turbo_state=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || echo "unknown")
 
   if [[ "$turbo_state" == "0" ]]; then
-    info "  Turbo Boost: 활성 (RT jitter 증가 가능, 비활성화 권장)"
-    info "  비활성화: echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo"
+    info "  Turbo Boost: 활성 (기본값 — 열 쓰로틀링 jitter 가 보이면 no_turbo=1 과 비교)"
   elif [[ "$turbo_state" == "1" ]]; then
-    success "  Turbo Boost: 비활성 (RT 안정성 최적)"
+    info "  Turbo Boost: 비활성 — P-core 가 base 클럭에 묶인다 (측정으로 고른 값이어야 한다)"
   else
     warn "  Turbo Boost 상태 확인 불가"
   fi
@@ -243,7 +269,12 @@ systemctl enable cpu-governor-performance.service 2>/dev/null || warn "서비스
 
 echo ""
 
-# 4단계: Intel P-state / Turbo Boost 확인
+# 4단계: governor 를 되돌리는 power-profiles-daemon 차단
+mask_power_profiles_daemon
+
+echo ""
+
+# 5단계: Intel P-state / Turbo Boost 확인
 check_intel_pstate
 
 echo ""

@@ -584,6 +584,53 @@ test_platform_label_panther_lake_h_mobile() {
   expect_eq "PTL.num_p_physical"      "4"                          "$NUM_P_PHYSICAL"
 }
 
+# ── ppd_resets_governor: PPD overwrites the governor only under an active
+#    pstate driver, and a masked unit is the only state that stops it ──────
+test_ppd_resets_governor() {
+  local root="$TMP/ppd" out rc
+  mock_reset "$root"
+  mkdir -p "$root/devices/system/cpu/intel_pstate"
+  # systemctl answers for the host — stub it with the state under test.
+  systemctl() { echo "$_MOCK_PPD_STATE"; }
+
+  echo "passive" >"$root/devices/system/cpu/intel_pstate/status"
+  _MOCK_PPD_STATE="enabled"
+  rc=0; out=$(RTC_SYSFS_ROOT="$root" ppd_resets_governor) || rc=$?
+  expect_eq "PPD.passive.rc"   "1"        "$rc"
+
+  echo "active" >"$root/devices/system/cpu/intel_pstate/status"
+  rc=0; out=$(RTC_SYSFS_ROOT="$root" ppd_resets_governor) || rc=$?
+  expect_eq "PPD.enabled.rc"   "0"        "$rc"
+  expect_eq "PPD.enabled.out"  "enabled"  "$out"
+
+  _MOCK_PPD_STATE="disabled"   # D-Bus activation still starts it
+  rc=0; out=$(RTC_SYSFS_ROOT="$root" ppd_resets_governor) || rc=$?
+  expect_eq "PPD.disabled.rc"  "0"        "$rc"
+
+  _MOCK_PPD_STATE="masked"
+  rc=0; out=$(RTC_SYSFS_ROOT="$root" ppd_resets_governor) || rc=$?
+  expect_eq "PPD.masked.rc"    "1"        "$rc"
+
+  _MOCK_PPD_STATE="masked-runtime"
+  rc=0; out=$(RTC_SYSFS_ROOT="$root" ppd_resets_governor) || rc=$?
+  expect_eq "PPD.masked_rt.rc" "1"        "$rc"
+
+  # amd_pstate in active mode is the other driver PPD forces powersave under.
+  echo "passive" >"$root/devices/system/cpu/intel_pstate/status"
+  mkdir -p "$root/devices/system/cpu/amd_pstate"
+  echo "active" >"$root/devices/system/cpu/amd_pstate/status"
+  _MOCK_PPD_STATE="enabled"
+  rc=0; out=$(RTC_SYSFS_ROOT="$root" ppd_resets_governor) || rc=$?
+  expect_eq "PPD.amd_active.rc" "0"       "$rc"
+
+  _MOCK_PPD_STATE=""           # unit not installed
+  rc=0; out=$(RTC_SYSFS_ROOT="$root" ppd_resets_governor) || rc=$?
+  expect_eq "PPD.absent.rc"    "1"        "$rc"
+
+  unset -f systemctl
+  unset _MOCK_PPD_STATE
+}
+
 # ── Test 14: unknown silicon (e.g. future CPU) — empty label, no crash ─────
 test_platform_label_unknown_model() {
   local root="$TMP/unknown"
@@ -2008,6 +2055,7 @@ test_external_driver_slots_per_tier() {
   expect_eq "drvslot.arm.11"  "4" "$(get_arm_driver_slot 11)"
   expect_eq "drvslot.hand.11" "5" "$(get_hand_driver_slot 11)"
   expect_eq "drvslot.arm.12"  "4" "$(get_arm_driver_slot 12)"
+test_ppd_resets_governor
   expect_eq "drvslot.hand.12" "5" "$(get_hand_driver_slot 12)"
   expect_eq "drvslot.arm.16"  "4" "$(get_arm_driver_slot 16)"
   expect_eq "drvslot.hand.16" "5" "$(get_hand_driver_slot 16)"
