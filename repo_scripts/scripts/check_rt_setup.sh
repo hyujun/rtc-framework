@@ -319,10 +319,11 @@ check_hybrid_cpu() {
       # Two distinct cases share the (no P-HT, no LP-E) fingerprint:
       #   (a) Raptor/Alder-class chip with BIOS Hyper-Threading disabled →
       #       fixable in BIOS. FAIL with the existing actionable message.
-      #   (b) Lion Cove silicon (Arrow Lake-S/H/U, Lunar Lake) where HT is
+      #   (b) Lion Cove / Cougar Cove silicon (Arrow Lake-S/H/U, Lunar Lake,
+      #       Panther Lake) where HT is
       #       absent by design. PASS — there is no BIOS toggle to enable.
       if [[ "${PLATFORM_NO_HT_BY_DESIGN:-0}" -eq 1 ]]; then
-        _pass "Hybrid: ${platform_id} (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E, HT not applicable — Lion Cove silicon)"
+        _pass "Hybrid: ${platform_id} (${NUM_P_PHYSICAL}P + ${NUM_E_CORES}E, HT not applicable — P-cores have no HT by design)"
         _warn "Phase 3 지원 예정 — 현재 Stage A는 감지만 수행"
         _category_update "hybrid_cpu" "WARN"
         _category_set_detail "hybrid_cpu" "${platform_id} (silicon has no HT, Phase 3 pending)"

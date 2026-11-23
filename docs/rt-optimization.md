@@ -253,12 +253,13 @@ P-core / E-core 가 섞인 Intel CPU 에서는 코어 slot 이 **P-core 의 prim
 | Raptor Lake-P | NUC 13 Pro (i5-1340P · i7-1360P · i7-1370P) | 감지 OK, P-core 자동 고정 |
 | Meteor Lake | NUC 14 Pro (Core Ultra 7 155H / 165H) | 감지 OK. `check_rt_setup.sh` 의 "지원 예정" WARN 은 감지 단계 안내이며 실패가 아니다 |
 | Arrow Lake-H | NUC 15 Pro+ (Core Ultra 7 265H / 9 285H) | 위와 동일 |
+| Panther Lake-H | Core Ultra 7 356H | 감지 OK (HT 없음이 설계). CPUID 경로로 감지돼 LP-E 를 E 로 센다 — 위와 같은 WARN |
 | NUC 13 Pro, BIOS HT off | - | `check_rt_setup.sh` FAIL. HT 를 켠다 |
 | AMD · 일반 Intel | - | hybrid 분기 없이 물리 코어 순서 |
 
 **BIOS 체크리스트 (Intel NUC)**
 
-- [ ] **Hyper-Threading: Enabled** - slot 변환이 P-core 의 primary / sibling 구분에 의존한다. 설계상 HT 가 없는 CPU (Arrow Lake-S/H/U · Lunar Lake) 는 해당 없고 PASS 로 처리된다.
+- [ ] **Hyper-Threading: Enabled** - slot 변환이 P-core 의 primary / sibling 구분에 의존한다. 설계상 HT 가 없는 CPU (Arrow Lake-S/H/U · Lunar Lake · Panther Lake) 는 해당 없고 PASS 로 처리된다.
 - [ ] **Intel Turbo Boost: Enabled**
 - [ ] **C-states: C1/C2 이하로 제한** (또는 GRUB 에 `intel_idle.max_cstate=1 processor.max_cstate=1`)
 - [ ] **Speed Shift (HWP): Enabled** (`intel_pstate=active`)

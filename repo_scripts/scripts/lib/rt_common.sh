@@ -1942,7 +1942,8 @@ _rt_read_cpu_vendor_family_model() {
 # Outputs (globals):
 #   _RT_PLATFORM_LABEL           — human-friendly string, "" if unknown
 #   _RT_PLATFORM_NO_HT_BY_DESIGN — 1 if silicon design lacks Hyper-Threading
-#                                  (Lion Cove cores: Arrow/Lunar Lake);
+#                                  (Lion Cove / Cougar Cove P-cores:
+#                                  Arrow / Lunar / Panther Lake);
 #                                  0 otherwise. Used by check_rt_setup.sh to
 #                                  distinguish "BIOS disabled HT" (FAIL) from
 #                                  "silicon has no HT to begin with" (PASS).
@@ -1968,6 +1969,8 @@ _rt_lookup_platform_label() {
          _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xC5
     181) _RT_PLATFORM_LABEL="Arrow Lake-U mobile"
          _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xB5
+    204) _RT_PLATFORM_LABEL="Panther Lake mobile"
+         _RT_PLATFORM_NO_HT_BY_DESIGN=1 ;;                   # 0xCC (Core Ultra 3xxH)
     *)   _RT_PLATFORM_LABEL="" ;;
   esac
 }

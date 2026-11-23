@@ -552,6 +552,38 @@ test_platform_label_arrow_lake_s_desktop() {
   expect_eq "ALS.num_e_cores"         "16"                         "$NUM_E_CORES"
 }
 
+# ── Test 13b: Panther Lake-H mobile (no HT by silicon design) ──────────────
+# Core Ultra 7 356H: 4 P-cores (Cougar Cove, no HT) + 8 E + 4 LP-E. On 6.12
+# the hybrid types/ sysfs is absent and the CPUID 0x1A fallback reports every
+# Atom-class core as E, so the fingerprint is (no P-HT, no LP-E) — the same as
+# a Raptor Lake with BIOS HT off. Model 0xCC (204) must flag
+# platform_no_ht_by_design=1 so the verifier does not ask for a BIOS HT toggle.
+test_platform_label_panther_lake_h_mobile() {
+  local root="$TMP/ptl_h"
+  mock_reset "$root"
+  local i
+  for i in 0 1 2 3; do
+    mock_add_cpu "$root" "$i" "$i" 4000000
+  done
+  for i in 4 5 6 7 8 9 10 11 12 13 14 15; do
+    mock_add_cpu "$root" "$i" "$i" 3700000
+  done
+  mock_set_types "$root" "0-3" "4-15"
+  mock_write_cpuinfo "$TMP/ptl_h_cpuinfo" "true" "6" "204"  # 0xCC
+
+  RTC_SYSFS_ROOT="$root" RTC_PROC_CPUINFO="$TMP/ptl_h_cpuinfo" \
+    RTC_FORCE_HYBRID_GENERATION="" RTC_HYBRID_SANITY=0 \
+    detect_hybrid_capability
+
+  expect_eq "PTL.is_hybrid"           "1"                          "$IS_HYBRID"
+  expect_eq "PTL.p_core_has_smt"      "0"                          "$P_CORE_HAS_SMT"
+  expect_eq "PTL.generation"          "raptor_lake_p_ht_off"       "$NUC_GENERATION"
+  expect_eq "PTL.cpu_model"           "204"                        "$CPU_MODEL"
+  expect_eq "PTL.platform_label"      "Panther Lake mobile"        "$PLATFORM_LABEL"
+  expect_eq "PTL.no_ht_by_design"     "1"                          "$PLATFORM_NO_HT_BY_DESIGN"
+  expect_eq "PTL.num_p_physical"      "4"                          "$NUM_P_PHYSICAL"
+}
+
 # ── Test 14: unknown silicon (e.g. future CPU) — empty label, no crash ─────
 test_platform_label_unknown_model() {
   local root="$TMP/unknown"
@@ -1786,6 +1818,7 @@ test_container_no_freq_files
 test_platform_label_raptor_lake_s_desktop
 test_platform_label_raptor_lake_p_mobile
 test_platform_label_arrow_lake_s_desktop
+test_platform_label_panther_lake_h_mobile
 test_platform_label_unknown_model
 test_platform_label_amd_vendor
 test_platform_label_missing_fields
