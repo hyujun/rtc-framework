@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <span>
 
 namespace integrated_bringup {
@@ -73,8 +74,9 @@ RawVelocityCommandSample LocomotionController::RestCommandSample() const noexcep
 // thread's copy, and of the diagnostic log's): the timer, and
 // StartCommandTimer on the same executor thread before the timer exists.
 void LocomotionController::PushCommand(const mpc::FilteredCommand& cmd,
-                                       const LocomotionCommandSource& source) noexcept {
-  if (phase_ != nullptr) {
+                                       const LocomotionCommandSource& source,
+                                       bool to_planner) noexcept {
+  if (to_planner && phase_ != nullptr) {
     phase_->SetCommand(cmd);
   }
   command_out_.Store(LocomotionCommandOut{cmd, source});
@@ -107,7 +109,26 @@ void LocomotionController::StepCommand() noexcept {
                          "planner keeps the previous command");
     return;
   }
-  PushCommand(out, raw.source);
+  PushCommand(out, raw.source, /*to_planner=*/true);
+}
+
+void LocomotionController::StepCommandOnTick() noexcept {
+  const RawVelocityCommandSample raw = raw_command_.Load();
+  // The input's age on the tick clock: the tick that first saw this sample.
+  if (raw.sequence != cmd_seen_sequence_) {
+    cmd_seen_sequence_ = raw.sequence;
+    cmd_seen_tick_ns_ = raw.sequence == 0 ? std::numeric_limits<std::int64_t>::min()
+                                          : static_cast<std::int64_t>(mpc_t_ns_);
+  }
+  const mpc::FilteredCommand& out =
+      command_filter_.Step(raw.twist, cmd_seen_tick_ns_, static_cast<std::int64_t>(mpc_t_ns_));
+  if (!(std::isfinite(out.v_x) && std::isfinite(out.v_y) && std::isfinite(out.omega_z) &&
+        std::isfinite(out.base_height))) {
+    cmd_nonfinite_outputs_.fetch_add(1, std::memory_order_relaxed);  // RT-3: the 1 Hz log says
+    return;
+  }
+  cmd_latest_ = out;
+  PushCommand(out, raw.source, /*to_planner=*/false);  // the planner on the trigger tick
 }
 
 void LocomotionController::StartCommandTimer() noexcept {
@@ -124,7 +145,13 @@ void LocomotionController::StartCommandTimer() noexcept {
   // callback runs on this thread too, so this is the slot's one writer now).
   const RawVelocityCommandSample rest = RestCommandSample();
   raw_command_.Store(rest);
-  PushCommand(command_filter_.output(), rest.source);
+  PushCommand(command_filter_.output(), rest.source, /*to_planner=*/true);
+  if (cmd_step_ticks_ > 0) {
+    // Lock-step: the RT tick steps the filter (StepCommandOnTick); no timer.
+    // Its tick-side state starts from the reset (ServiceRequests sees this
+    // activation before the first step).
+    return;
+  }
   const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::duration<double>(1.0 / cfg.sample_rate_hz));
   command_cb_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);

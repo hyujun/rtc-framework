@@ -139,6 +139,32 @@ TEST_F(LocomotionAlloc, TheMpcPathAllocatesNothing) {
   EXPECT_EQ(worst, 0U);
 }
 
+// The MPC lock-step in the tick: the trigger (the state write, the request),
+// the delivery (the wait on the channel, the plan taken), the command filter's
+// step and the plain ticks between — all under the gate, on the stub.
+TEST_F(LocomotionAlloc, TheMpcLockstepPathAllocatesNothing) {
+  YAML::Node cfg = MpcConfig();
+  cfg["mpc"]["sync"]["mode"] = "lockstep";
+  rclcpp::NodeOptions opts;
+  opts.automatically_declare_parameters_from_overrides(true);
+  opts.parameter_overrides({rclcpp::Parameter("cm_sim_time_sync", true)});
+  Configure(cfg, opts, "test_locomotion_mpc_lockstep_alloc");
+  ASSERT_TRUE(ctrl_->MpcLockstep());
+  StandingStub* const s = SpawnStandingStub(*ctrl_);
+  ASSERT_NE(s, nullptr);
+  Activate();
+  MakeStanding();
+  ASSERT_TRUE(TickUntil(
+      [this] { return ctrl_->Source() == LocomotionController::ReferenceSource::kStand; }));
+  std::size_t worst = 0;
+  for (int k = 0; k < 2 * 35 + 7; ++k) {  // two periods: triggers, deliveries, command steps
+    worst = std::max(worst, GatedTick(false));
+  }
+  EXPECT_EQ(ctrl_->Source(), LocomotionController::ReferenceSource::kStand);
+  EXPECT_GE(ctrl_->LastDiag().mpc_wait_count, 2U) << "the deliveries waited under the gate";
+  EXPECT_EQ(worst, 0U);
+}
+
 // The inekf source in the tick: the start on the activation tick, nominal
 // steps, a held then stale IMU (degraded, the latch), the reset and the
 // re-latch, a restart of the estimate after the latch (the epoch fault), the
