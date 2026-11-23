@@ -33,6 +33,8 @@ namespace urtc = rtc;
 /// Node parameter carrying the launch's thread-layout profile id (issue #350).
 /// Owned by the launches; the CM only forwards it to each controller's node.
 constexpr const char* kRtLayoutProfileParam = "rt_layout_profile";
+/// The per-controller node parameter the CM sets to its own `use_sim_time_sync`.
+constexpr const char* kCmSimTimeSyncParam = "cm_sim_time_sync";
 
 namespace {
 
@@ -1040,6 +1042,22 @@ bool RtControllerNode::DeclareAndLoadParameters() {
     if (has_parameter(kRtLayoutProfileParam)) {
       ctrl_lc_node->declare_parameter<std::string>(
           kRtLayoutProfileParam, get_parameter(kRtLayoutProfileParam).as_string());
+    }
+
+    // Whether this CM's RT tick runs in simulation lock-step (its own
+    // `use_sim_time_sync`), as a fact the controller can read but never set —
+    // a controller mode that blocks the tick on a solver (the locomotion
+    // controller's MPC lock-step) is admissible only here, and must be refused
+    // on real hardware. Always declared, so a controller reads false where the
+    // CM runs real time and "undeclared" where no CM built the node (a test
+    // rig) — both read as "not sim-synced" (fail-closed, unlike the layout
+    // profile above, whose absence keeps the default on purpose). Read-only:
+    // neither the controller nor `ros2 param set` can turn it true.
+    {
+      rcl_interfaces::msg::ParameterDescriptor fact;
+      fact.read_only = true;
+      fact.description = "the controller manager's use_sim_time_sync (set by the CM only)";
+      ctrl_lc_node->declare_parameter<bool>(kCmSimTimeSyncParam, use_sim_time_sync_, fact);
     }
 
     // PreConfigure: stores node_ + parses yaml so GetTopicConfig() is valid
