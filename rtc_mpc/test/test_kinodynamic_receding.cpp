@@ -1,7 +1,8 @@
 /// @file test_kinodynamic_receding.cpp
 /// @brief The kinodynamic MPC tick after tick, through the handler core, on
-///        the public G1 with the shipped walk: the standing solve (its budget,
-///        then the online one), the receding walk window (one stride, the
+///        the public G1 with the shipped walk: every solve on one budget
+///        (`max_iters`, `max_al_iters`; a cold start differs from a warm one
+///        by its seed only), the receding walk window (one stride, the
 ///        state rolled out from the previous plan) against the out-of-tree
 ///        probe's measurements, and the multipliers of the rows a node's mode
 ///        makes inactive (every tick, +0.0 bit for bit).
@@ -14,9 +15,10 @@
 /// its converged ticks): with 50 iterations and 20 AL iterations a tick, on
 /// the window led by kWalkLead, 15 of 40 ticks converged in 1675 iterations
 /// (median 50 a tick); with 10 and 1, on the window without the lead, the
-/// tick primal residual had median 0.540 and maximum 3.24. Gates: converged
+/// tick primal residual had median 0.540 and maximum 3.24 with a converged
+/// tick 0, and 0.424 / 1.83 re-measured 2026-11-23 on one budget (#1168). Gates: converged
 /// ticks ≥ 0.9 × 15, Σ iterations ≤ 2 × 1675, median ≤ 2 × 50, converged
-/// ticks' prim ≤ the tolerance; online prim median ≤ 2 × 0.540 (the maximum
+/// ticks' prim ≤ the tolerance; online prim median ≤ 2 × 0.424 (the maximum
 /// is reported — see that test). RK2 is reported (no control).
 ///
 /// On the led window the double-support → single-support switches fall on
@@ -27,10 +29,10 @@
 /// bind — what the OCP's ClearInactiveMultipliers clears. The report prints
 /// the flips; TheRecedingWalkWindowsScheduleFlips holds the premise.
 ///
-/// The shipped online iteration cap is held to the standing window: through
-/// the phase manager with a zero command, every online tick converges within
-/// it (the solver reports a solve converged in N iterations only with a cap
-/// of at least N + 1).
+/// The shipped iteration cap is held to the stance window: through the phase
+/// manager with a zero command, every tick after the cold first one has its
+/// consumed segment within the publish tolerance (one AL iteration never
+/// reports convergence, so only the residual is gated).
 ///
 /// The same window through the locomotion phase manager (its node grid: node
 /// times from the grid index, the warm start shifted by the index difference)
@@ -107,8 +109,8 @@ constexpr double kT0 = 20.0;
 // switches (every 0.55 s) miss the node grid in this window and nothing flips.
 constexpr double kWalkLead = 0.010;
 
-/// The tolerances and budgets these gates were registered with (the online
-/// pair then shipped; the walk window's bounds below are measured on it).
+/// The tolerances and the one budget these gates were registered with (the
+/// walk window's bounds below are measured on it).
 MPCSolverConfig RegisteredSolver() {
   MPCSolverConfig s;
   s.prim_tol = 1e-4;
@@ -116,8 +118,6 @@ MPCSolverConfig RegisteredSolver() {
   s.mu_init = 1e-2;
   s.max_iters = 50;
   s.max_al_iters = 20;
-  s.max_initial_iters = 300;
-  s.max_online_al_iters = 20;
   return s;
 }
 
@@ -143,7 +143,7 @@ struct PlanSlice {
 struct Tick {
   int iterations{0};
   bool converged{false};
-  bool initial{false};
+  bool cold{false};  ///< the solve was cold-seeded
   double prim{0.0};
   double ms{0.0};
   std::size_t cleared{0};   ///< multipliers the OCP cleared after the shift
@@ -264,8 +264,8 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
   }
 
   /// Ticks 0 … kTicks of the shipped walk from the stand pose, each tick's
-  /// state the previous solution's node 1. Tick 0 is the cold start (the
-  /// standing solve); `solver` sets both budgets; `lead` is the window's
+  /// state the previous solution's node 1. Tick 0 is the cold start;
+  /// `solver` is the one budget; `lead` is the window's
   /// warm-up lead (ShippedWalkWindow).
   std::vector<Tick> Run(const MPCSolverConfig& solver, std::vector<Capture>* captures = nullptr,
                         KinodynamicOCP::QuadraticCostDerivatives derivatives =
@@ -309,7 +309,7 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
       }
       tick.iterations = out->iterations;
       tick.converged = out->converged;
-      tick.initial = out->initial_solve;
+      tick.cold = out->cold_start;
       tick.prim = out->residuals.prim_inf;
       tick.cleared = core.ClearedMultipliers();
       tick.inactive_nonzero = InactiveNonZero(core, ocp);
@@ -325,9 +325,9 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
     for (std::size_t n = 0; n < ticks.size(); ++n) {
       const Tick& t = ticks[n];
       std::printf(
-          "[report] %s tick %2zu: it %3d conv %d initial %d prim %.3g %.1f ms, cleared %zu, "
+          "[report] %s tick %2zu: it %3d conv %d cold %d prim %.3g %.1f ms, cleared %zu, "
           "mode flips %d, modes %s\n",
-          name, n, t.iterations, t.converged ? 1 : 0, t.initial ? 1 : 0, t.prim, t.ms, t.cleared,
+          name, n, t.iterations, t.converged ? 1 : 0, t.cold ? 1 : 0, t.prim, t.ms, t.cleared,
           t.mode_flips, t.modes.c_str());
     }
   }
@@ -429,8 +429,7 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
     int shift{0};
     int iterations{0};
     bool converged{false};
-    bool cold{false};     ///< the solve was cold-seeded
-    bool initial{false};  ///< the solve ran on the standing budget
+    bool cold{false};  ///< the solve was cold-seeded
     double prim{0.0};
     double dual{0.0};
     double consumed{0.0};  ///< over the nodes a consumer at GridRun's period reads
@@ -458,7 +457,7 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
   };
 
   /// The shipped walk through the phase manager (@p stance: the stance
-  /// window instead): a standing solve on the window, then one tick per entry
+  /// window instead): a cold first solve on the window, then one tick per entry
   /// of @p shifts (the grid index moving by it), each tick 0.4·dt into its
   /// node interval, the state the previous solution's node at the shift.
   /// Each tick's solve is appended to @p captures when given; @p kinematics
@@ -532,7 +531,6 @@ class KinodynamicReceding : public ::testing::TestWithParam<const char*> {
       r.iterations = out->iterations;
       r.converged = out->converged;
       r.cold = out->cold_start;
-      r.initial = out->initial_solve;
       r.prim = out->residuals.prim_inf;
       r.dual = out->residuals.dual_inf;
       r.consumed = rtc::mpc::HandlerMPCThread::ConsumedPrimInf(*out, period_ns);
@@ -617,12 +615,13 @@ bool AllPlusZero(const Eigen::VectorXd& v) {
   return true;
 }
 
-// ── Standing solve ──────────────────────────────────────────────────────────
+// ── First solve ─────────────────────────────────────────────────────────────
 
-// From the stand pose on a stance window the first solve runs on the standing
-// budget and converges (probe: 1 iteration; from a moving base 3); the next
-// tick runs on the online budget.
-TEST_P(KinodynamicReceding, TheStandingSolveConvergesThenTheOnlineBudgetRuns) {
+// From the stand pose on a stance window the first solve is cold-seeded and
+// the next is warm, both on the one budget (`max_iters`, `max_al_iters`): the
+// ceilings never change, and a stance window has no inactive multiplier.
+// (Replaces the standing-solve test of the two-budget contract, #1168.)
+TEST_P(KinodynamicReceding, TheFirstSolveIsColdAndTheNextIsWarmOnTheSameBudget) {
   const auto h = tu::StanceHorizon(handler_, stand_);
 
   struct Case {
@@ -638,52 +637,49 @@ TEST_P(KinodynamicReceding, TheStandingSolveConvergesThenTheOnlineBudgetRuns) {
     KinodynamicOCP ocp(cfg_);
     Core core;
     const PhaseContext ctx = Context(h.get());
-    ASSERT_EQ(core.Init(RegisteredSolver(), handler_, {}, ctx, ocp),
-              rtc::mpc::MPCInitError::kNoError);
-    ASSERT_TRUE(core.InitialSolvePending());
+    const MPCSolverConfig solver = RegisteredSolver();
+    ASSERT_EQ(core.Init(solver, handler_, {}, ctx, ocp), rtc::mpc::MPCInitError::kNoError);
     auto out = std::make_unique<MPCSolution>();
     const auto t0 = std::chrono::steady_clock::now();
     ASSERT_EQ(core.Solve(ctx, state, ocp, *out), MPCSolveError::kNoError) << c.name;
     const double ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("[report] %s standing solve (%s): %d iterations, %.1f ms\n", GetParam(), c.name,
-                out->iterations, ms);
-    EXPECT_TRUE(out->initial_solve) << c.name;
-    EXPECT_EQ(core.solver()->max_iters, 300U) << c.name;
-    EXPECT_EQ(core.solver()->max_al_iters, 20U) << c.name;
+    std::printf("[report] %s first solve (%s): %d iterations, converged %d, %.1f ms\n", GetParam(),
+                c.name, out->iterations, out->converged ? 1 : 0, ms);
+    EXPECT_TRUE(out->cold_start) << c.name;
+    EXPECT_EQ(core.solver()->max_iters, solver.max_iters) << c.name;
+    EXPECT_EQ(core.solver()->max_al_iters, solver.max_al_iters) << c.name;
     EXPECT_TRUE(out->converged) << c.name;
     EXPECT_LE(out->iterations, 10) << c.name;
-    EXPECT_FALSE(core.InitialSolvePending()) << c.name;
 
     state.sequence = 1;
     ASSERT_EQ(core.Solve(ctx, state, ocp, *out), MPCSolveError::kNoError) << c.name;
-    EXPECT_FALSE(out->initial_solve) << c.name;
-    EXPECT_EQ(core.solver()->max_iters, 50U) << c.name;
-    EXPECT_EQ(core.solver()->max_al_iters, 20U) << c.name;
+    EXPECT_FALSE(out->cold_start) << c.name;
+    EXPECT_EQ(core.solver()->max_iters, solver.max_iters) << c.name;
+    EXPECT_EQ(core.solver()->max_al_iters, solver.max_al_iters) << c.name;
     EXPECT_EQ(core.ClearedMultipliers(), 0U) << "a stance window has no inactive multiplier";
   }
 }
 
-// The shipped online budget and period on the standing window, through the
-// phase manager (zero command, the stance gait, the state the previous plan's
-// node at the shift): the standing solve converges, then every online tick's
-// consumed segment passes the shipped publish rule (one AL iteration never
-// reports convergence). A guard against gross failures only: the window sits
-// orders below the rule on any budget, so the real-time sim judges the budget.
+// The shipped budget and period on the stance window, through the phase
+// manager (zero command, the stance gait, the state the previous plan's node
+// at the shift): the first solve is cold, then every tick's consumed segment passes the shipped
+// publish rule (one AL iteration never reports convergence). A guard against gross failures only:
+// the window sits orders below the rule on any budget, so the real-time sim judges the budget.
 // Semi-implicit Euler (the shipped integrator) only.
-TEST_P(KinodynamicReceding, TheShippedOnlineBudgetKeepsTheStandingWindowPublishable) {
+TEST_P(KinodynamicReceding, TheShippedBudgetKeepsTheStanceWindowPublishable) {
   if (std::string_view(GetParam()) != "semi_implicit_euler") {
     GTEST_SKIP() << "the shipped integrator only";
   }
   MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = tu::kShippedOnlineMaxIters;
-  solver.max_online_al_iters = tu::kShippedOnlineAlIters;
+  solver.max_al_iters = tu::kShippedOnlineAlIters;
   const std::vector<GridTickReport> ticks =
       GridRun(solver, std::vector<int>(kTicks, tu::kShippedPeriodNodes), /*stance=*/true, nullptr,
               KinodynamicOCP::StageKinematics::kShared, tu::kShippedPeriodNodes);
   ASSERT_EQ(ticks.size(), static_cast<std::size_t>(kTicks + 1));
   ReportGrid(GetParam(), "stance window, shipped online budget", ticks);
-  EXPECT_TRUE(ticks[0].converged) << "the standing solve";
+  EXPECT_TRUE(ticks[0].cold) << "the first solve is cold-seeded (unconverged on 6 / 1)";
   double worst = 0.0;
   double horizon_worst = 0.0;
   int most = 0;
@@ -697,7 +693,7 @@ TEST_P(KinodynamicReceding, TheShippedOnlineBudgetKeepsTheStandingWindowPublisha
   std::printf(
       "[report] %s stance window, budget %d / %d every %d nodes: consumed max %.3g (rule %.3g), "
       "whole horizon max %.3g, last %.3g, most %d iterations\n",
-      GetParam(), solver.max_iters, solver.max_online_al_iters, tu::kShippedPeriodNodes, worst,
+      GetParam(), solver.max_iters, solver.max_al_iters, tu::kShippedPeriodNodes, worst,
       tu::kShippedPublishPrimTol, horizon_worst, ticks.back().prim, most);
 }
 
@@ -710,12 +706,11 @@ TEST_P(KinodynamicReceding, TheRecedingWalkWindowsScheduleFlips) {
   EXPECT_GT(ScheduleFlips(kWalkLead), 0) << "lead " << kWalkLead;
 }
 
-// 50 iterations and 20 AL iterations a tick (the standing budget the same, so
-// every tick runs as the probe's did), on the window led by kWalkLead; every
+// 50 iterations and 20 AL iterations a tick (the registered budget, so every
+// tick runs as the probe's did), on the window led by kWalkLead; every
 // tick's inactive-row multipliers are +0.0 after the solve.
 TEST_P(KinodynamicReceding, TheWalkWindowRecedesWithinThePreregisteredBounds) {
-  MPCSolverConfig solver = RegisteredSolver();
-  solver.max_initial_iters = 50;
+  const MPCSolverConfig solver = RegisteredSolver();
   const std::vector<Tick> ticks =
       Run(solver, nullptr, KinodynamicOCP::QuadraticCostDerivatives::kStructured, kWalkLead);
   ASSERT_EQ(ticks.size(), static_cast<std::size_t>(kTicks + 1));
@@ -757,41 +752,43 @@ TEST_P(KinodynamicReceding, TheWalkWindowRecedesWithinThePreregisteredBounds) {
   }
 }
 
-// The online budget (10 iterations, 1 AL iteration a tick) after a standing
-// solve that converged: the tick primal residual — what a publish rule on the
-// residual would read — has a median within twice the probe's. The maximum is
-// reported, not gated: the first probe's bound (2 × 1.25) was registered with
-// a tick 0 of 50 iterations and 1 AL iteration, which the standing solve
-// replaces (it runs until converged); from the converged tick 0 the
-// semi-implicit Euler run peaks at 3.2 on a tick where the next phase enters
-// the horizon's end — the publish rule's question, not this gate's. This test
-// runs the window without kWalkLead: it does not need a flip, and on the led
-// window RK2's standing solve does not converge in its budget.
+// The 10 iterations / 1 AL iteration budget on every tick, the cold first
+// one included (it does not converge): the tick primal residual — what a
+// publish rule on the residual would read — has a median within twice the
+// measured one (re-registered 2026-11-23 on #1168, see the gate). The maximum
+// is reported, not gated: the first probe's bound (2 × 1.25) was registered
+// with a tick 0 of 50 iterations and 1 AL iteration; the semi-implicit Euler
+// run peaks at 1.83 on a tick where the next phase enters the horizon's end —
+// the publish rule's question, not this gate's. This test runs the window
+// without kWalkLead: it does not need a flip.
 TEST_P(KinodynamicReceding, TheOnlineBudgetKeepsThePrimalResidualBounded) {
   MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 10;
-  solver.max_online_al_iters = 1;
+  solver.max_al_iters = 1;
   const std::vector<Tick> ticks = Run(solver);
   ASSERT_EQ(ticks.size(), static_cast<std::size_t>(kTicks + 1));
   Report(GetParam(), ticks);
-  ASSERT_TRUE(ticks[0].converged) << "the standing solve converges first";
+  EXPECT_TRUE(ticks[0].cold) << "tick 0 is cold-seeded and, on 10 / 1, unconverged";
   std::vector<double> prims;
-  int initial = 0;
+  int cold = 0;
   for (std::size_t n = 1; n < ticks.size(); ++n) {
     prims.push_back(ticks[n].prim);
-    initial += ticks[n].initial ? 1 : 0;
+    cold += ticks[n].cold ? 1 : 0;
   }
   const double med = Median(prims);
   const double worst = *std::max_element(prims.begin(), prims.end());
-  std::printf(
-      "[report] %s online (10 / 1): standing tick %d iterations; prim median %.3g, max %.3g\n",
-      GetParam(), ticks[0].iterations, med, worst);
-  EXPECT_EQ(initial, 0) << "every tick after the converged one is online";
+  std::printf("[report] %s online (10 / 1): tick 0 %d iterations; prim median %.3g, max %.3g\n",
+              GetParam(), ticks[0].iterations, med, worst);
+  EXPECT_EQ(cold, 0) << "every tick after the first is warm";
   for (std::size_t n = 0; n < ticks.size(); ++n) {
     EXPECT_EQ(ticks[n].inactive_nonzero, 0) << "tick " << n;
   }
   if (std::string_view(GetParam()) == "semi_implicit_euler") {
-    EXPECT_LE(med, 2 * 0.540);
+    // Re-registered 2026-11-23 (#1168, one budget): the old bound was 2 × 0.540,
+    // measured with a converged tick 0 (the standing solve). Tick 0 is now the
+    // same 10 / 1 solve as the rest and does not converge; the median over
+    // ticks 1 … 40 measured 0.424 (maximum 1.83).
+    EXPECT_LE(med, 2 * 0.424);
     std::printf("[report] %s online prim max %.3g against the first probe's 2 x 1.25 (not gated)\n",
                 GetParam(), worst);
   }
@@ -814,10 +811,10 @@ TEST_P(KinodynamicReceding, TheWarmStartShiftsByTheGridIndexBitForBit) {
   Core core;
   MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 10;
-  solver.max_online_al_iters = 1;
+  solver.max_al_iters = 1;
   ASSERT_EQ(core.Init(solver, handler_, {}, ctx, ocp), rtc::mpc::MPCInitError::kNoError);
   auto out = std::make_unique<MPCSolution>();
-  for (int n = 0; n < 4; ++n) {  // the standing solve, then three online ticks
+  for (int n = 0; n < 4; ++n) {  // the cold solve, then three warm ticks
     if (n > 0) {
       snap = NodeOne(*out, static_cast<std::uint64_t>(n));
       ctx = GridTick(m, snap, m.grid().Time(++index));
@@ -895,11 +892,11 @@ TEST_P(KinodynamicReceding, TheWarmStartShiftsByTheGridIndexBitForBit) {
 TEST_P(KinodynamicReceding, OnTheGridTheWalkRecedesWithoutAModeFlip) {
   MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 10;
-  solver.max_online_al_iters = 1;
+  solver.max_al_iters = 1;
   const std::vector<GridTickReport> ticks = GridRun(solver, std::vector<int>(kTicks, 1));
   ASSERT_EQ(ticks.size(), static_cast<std::size_t>(kTicks + 1));
   ReportGrid(GetParam(), "grid 1/dt", ticks);
-  ASSERT_TRUE(ticks[0].converged) << "the standing solve converges first";
+  EXPECT_TRUE(ticks[0].cold) << "tick 0 is cold-seeded";
   std::vector<double> prims;
   std::vector<double> consumed;
   int flips = 0;
@@ -919,7 +916,7 @@ TEST_P(KinodynamicReceding, OnTheGridTheWalkRecedesWithoutAModeFlip) {
         << "tick " << n;
   }
   std::printf(
-      "[report] %s grid 1/dt online (10 / 1): standing %d iterations; prim median %.3g max %.3g; "
+      "[report] %s grid 1/dt online (10 / 1): tick 0 %d iterations; prim median %.3g max %.3g; "
       "consumed (nodes 0-2) median %.3g max %.3g; flips %d cleared %zu leaks %d\n",
       GetParam(), ticks[0].iterations, Median(prims), *std::max_element(prims.begin(), prims.end()),
       Median(consumed), *std::max_element(consumed.begin(), consumed.end()), flips, cleared, leaks);
@@ -934,7 +931,7 @@ TEST_P(KinodynamicReceding, OnTheGridTheWalkRecedesWithoutAModeFlip) {
 TEST_P(KinodynamicReceding, OnTheGridAnOverrunShiftsTwoNodesWithoutAModeLeak) {
   MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 10;
-  solver.max_online_al_iters = 1;
+  solver.max_al_iters = 1;
   constexpr std::array<int, 5> kPattern = {1, 1, 0, 2, 1};
   std::vector<int> shifts;
   for (std::size_t n = 0; n < 50; ++n) {
@@ -976,8 +973,7 @@ TEST_P(KinodynamicReceding, AGridIndexThatGoesBackOrJumpsColdSeeds) {
   Core core;
   MPCSolverConfig solver = RegisteredSolver();
   solver.max_iters = 3;
-  solver.max_initial_iters = 3;
-  solver.max_online_al_iters = 1;
+  solver.max_al_iters = 1;
   ASSERT_EQ(core.Init(solver, handler_, {}, ctx, ocp), rtc::mpc::MPCInitError::kNoError);
   auto out = std::make_unique<MPCSolution>();
   ASSERT_EQ(core.Solve(ctx, snap, ocp, *out), MPCSolveError::kNoError);
@@ -1008,28 +1004,12 @@ TEST_P(KinodynamicReceding, AGridIndexThatGoesBackOrJumpsColdSeeds) {
 
 // ── One budget for every solve (P0 of #1168) ─────────────────────────────────
 
-/// The shipped budget as one budget: every solve on the online pair (6
-/// iterations, 1 AL iteration), the standing one included. `max_initial_iters
-/// 0` makes the standing solve's ceiling `max_iters`; one AL iteration never
-/// reports convergence, so the pending standing flag stays up and the budget
-/// stays the same either way.
+/// The shipped budget: every solve on the one pair (6 iterations, 1 AL
+/// iteration). One AL iteration never reports convergence.
 MPCSolverConfig SingleBudget() {
   MPCSolverConfig s = RegisteredSolver();
   s.max_iters = tu::kShippedOnlineMaxIters;
-  s.max_al_iters = 1;
-  s.max_initial_iters = 0;
-  s.max_online_al_iters = tu::kShippedOnlineAlIters;
-  return s;
-}
-
-/// The budget shipped today: the standing solve on 300 iterations and 20 AL
-/// iterations until it converges, then the online pair.
-MPCSolverConfig ShippedLineage() {
-  MPCSolverConfig s = RegisteredSolver();
-  s.max_iters = tu::kShippedOnlineMaxIters;
-  s.max_al_iters = 20;
-  s.max_initial_iters = 300;
-  s.max_online_al_iters = tu::kShippedOnlineAlIters;
+  s.max_al_iters = tu::kShippedOnlineAlIters;
   return s;
 }
 
@@ -1077,11 +1057,11 @@ double P99(std::vector<double> v) {
 
 /// The floor of ε (re-registered on #1168 after the first measurement): a
 /// converged window's consecutive plans jump by their convergence noise (1e-4
-/// rad in stance), which does not measure "the same class as today's plan".
-/// A decade under the WBC's joint tracking error.
+/// rad in stance), which does not measure "the same class as the later
+/// plans". A decade under the WBC's joint tracking error.
 constexpr PlanDistance kEpsFloor{1e-3, 1e-2, 1e-3};
 
-/// ε of a lineage: the p99 over its online solves of the jump a consumer
+/// ε of a run: the p99 over its solves from @p from of the jump a consumer
 /// sees between consecutive plans — plan k's node j + 2 against plan k + 1's
 /// node j over the consumed nodes — floored by kEpsFloor.
 PlanDistance ConsecutiveJumpP99(const std::vector<PlanSlice>& plans, std::size_t from, double mg) {
@@ -1101,27 +1081,29 @@ PlanDistance ConsecutiveJumpP99(const std::vector<PlanSlice>& plans, std::size_t
   return eps;
 }
 
-// The question PR 0-ii of #1168 rests on, registered on that issue before it
-// was measured: with one budget for every solve — the shipped online pair —
-// does a cold start reach a plan the shipped publish rule (consumed nodes'
-// primal residual ≤ publish_prim_tol) lets through within the plan-age cap,
-// and is that plan as close to today's lineage (the standing solve on 300 /
-// 20, then the online pair) as today's consecutive plans are to each other?
+// The re-registered gate of PR 0-ii of #1168. The question it rested on,
+// registered on that issue before it was measured: with one budget for every
+// solve — the shipped pair — does a cold start reach a plan the shipped
+// publish rule (consumed nodes' primal residual ≤ publish_prim_tol, a cold
+// unconverged solve withheld) lets through within the plan-age cap, and is
+// that plan as close to the plans after it as those are to each other? The
+// first version also compared it with the budget shipped then (a standing
+// solve on 300 iterations / 20 AL iterations until converged, then the online
+// pair); that comparison was measured once on the issue before the standing
+// budget was deleted and cannot be re-run after it.
 // Five scenarios, each 40 solves of a two-node period from the stand pose:
 // stance cold (A), stance from a moving base (B), the walk window cold at
 // v_x 0.5 (C1) and 0 (C0), and a re-seed 20 solves into the walk (D, the
-// state arriving with a new state_epoch). Pass: the first publishable index
-// k* ≤ 2 (A, B) or ≤ 3 (C1, C0, D after the re-seed; (k+1)·70 ms within the
-// 0.35 s cap with a solve to spare), and at k* the distance to today's plan
-// at the same index is within ε, the p99 of today's consecutive-plan jump in
-// that scenario floored by kEpsFloor. D is judged by k* alone: today's
-// re-seed solve (71 iterations, 0.9 s on the dev PC) outlives the plan-age
-// cap, so today has no consumed plan there to be compared with; its time is
-// reported. Must fail: the cold seed after one iteration (max_iters 1, index
-// 0) is farther than ε from today's plan on the walk scenarios — else the
-// distance has no power. Times are this host's and are reported only. The
-// first registration (no floor, D under the distance too) failed on A, B and
-// D and was re-registered on the issue before this run (PROC-6 pair).
+// state arriving with a new state_epoch). Pass: (i) the first publishable
+// index k* ≤ 2 (A, B) or ≤ 3 (C1, C0, D after the re-seed; (k+1)·70 ms within
+// the 0.35 s cap with a solve to spare); (ii) the plan at k* is as close to
+// its successor (plan k* + 1's node j against its node j + 2, over nodes
+// 0..3) as the run's later plans are to theirs: within ε, the p99 of the
+// consecutive jumps from k* + 1 to the end, floored by kEpsFloor. D is judged
+// by (i) alone ((ii) is reported there, as before). Must fail: the cold seed
+// after one iteration (max_iters 1, index 0) is farther than ε from the run's
+// plan at index 1 on the walk scenarios — else the distance has no power.
+// Times are this host's and are reported only.
 TEST_P(KinodynamicReceding, OneBudgetReachesAPublishablePlanFromColdWithinTheRegisteredBounds) {
   if (std::string_view(GetParam()) != "semi_implicit_euler") {
     GTEST_SKIP() << "the shipped integrator only";
@@ -1157,28 +1139,20 @@ TEST_P(KinodynamicReceding, OneBudgetReachesAPublishablePlanFromColdWithinTheReg
     opts.base_v0 = sc.base_v0;
     opts.reseed_at = sc.reseed_at;
     std::vector<PlanSlice> one_plans;
-    std::vector<PlanSlice> today_plans;
     opts.plans = &one_plans;
     const std::vector<GridTickReport> one = GridRun(SingleBudget(), shifts, opts);
-    opts.plans = &today_plans;
-    const std::vector<GridTickReport> today = GridRun(ShippedLineage(), shifts, opts);
     ASSERT_EQ(one.size(), static_cast<std::size_t>(kTicks + 1)) << sc.name;
-    ASSERT_EQ(today.size(), static_cast<std::size_t>(kTicks + 1)) << sc.name;
 
     const std::size_t origin = sc.reseed_at > 0 ? static_cast<std::size_t>(sc.reseed_at) : 0;
     for (std::size_t n = 0; n < one.size(); ++n) {
       const GridTickReport& t = one[n];
-      const GridTickReport& s = today[n];
-      const PlanDistance d = Distance(one_plans[n], today_plans[n], 0, mg);
       std::printf(
-          "[report] P0 %s solve %2zu: one budget: cold %d conv %d it %d prim %.3g dual %.3g "
-          "consumed %.3g %s %.1f ms | today: initial %d conv %d it %3d consumed %.3g %.1f ms | "
-          "dq %.3g dv %.3g dlam %.3g\n",
+          "[report] P0 %s solve %2zu: cold %d conv %d it %d prim %.3g dual %.3g consumed %.3g %s "
+          "%.1f ms\n",
           sc.name, n, t.cold ? 1 : 0, t.converged ? 1 : 0, t.iterations, t.prim, t.dual, t.consumed,
           !(t.cold && !t.converged) && t.consumed <= tu::kShippedPublishPrimTol ? "PUB"
                                                                                 : "withheld",
-          t.ms, s.initial ? 1 : 0, s.converged ? 1 : 0, s.iterations, s.consumed, s.ms, d.q, d.v,
-          d.lambda);
+          t.ms);
     }
 
     // (i) the first publishable index from the origin (the re-seed tick in D),
@@ -1195,22 +1169,23 @@ TEST_P(KinodynamicReceding, OneBudgetReachesAPublishablePlanFromColdWithinTheReg
     ASSERT_GE(k_star, 0) << sc.name << ": no publishable plan in " << kTicks + 1 << " solves";
     EXPECT_LE(k_star, sc.k_bound) << sc.name;
 
-    // (ii) at k*, within ε of today's plan at the same index (reported for D).
-    const PlanDistance eps = ConsecutiveJumpP99(today_plans, origin + 1, mg);
+    // (ii) at k*, within ε of the jump the later plans make to their successors.
     const std::size_t at = origin + static_cast<std::size_t>(k_star);
-    const PlanDistance d = Distance(one_plans[at], today_plans[at], 0, mg);
+    ASSERT_LT(at + 2, one_plans.size()) << sc.name;
+    const PlanDistance eps = ConsecutiveJumpP99(one_plans, at + 1, mg);
+    const PlanDistance d = Distance(one_plans[at], one_plans[at + 1], tu::kShippedPeriodNodes, mg);
     if (sc.distance) {
       EXPECT_LE(d.q, eps.q) << sc.name;
       EXPECT_LE(d.v, eps.v) << sc.name;
       EXPECT_LE(d.lambda, eps.lambda) << sc.name;
     }
     std::printf(
-        "[report] P0 %s: k* %d (bound %d); at k*: dq %.3g dv %.3g dlam %.3g; eps (today's "
-        "consecutive jump p99, floored) q %.3g v %.3g lambda %.3g%s; today's origin solve: %d "
-        "iterations %.1f ms conv %d\n",
+        "[report] P0 %s: k* %d (bound %d); jump to the successor at k*: dq %.3g dv %.3g dlam "
+        "%.3g; eps (later consecutive jumps p99, floored) q %.3g v %.3g lambda %.3g%s; origin "
+        "solve: %d iterations %.1f ms conv %d\n",
         sc.name, k_star, sc.k_bound, d.q, d.v, d.lambda, eps.q, eps.v, eps.lambda,
-        sc.distance ? "" : " (reported, not gated)", today[origin].iterations, today[origin].ms,
-        today[origin].converged ? 1 : 0);
+        sc.distance ? "" : " (reported, not gated)", one[origin].iterations, one[origin].ms,
+        one[origin].converged ? 1 : 0);
 
     // Must fail: the cold seed after one iteration is not within ε on the walk.
     if (sc.walk) {
@@ -1220,7 +1195,7 @@ TEST_P(KinodynamicReceding, OneBudgetReachesAPublishablePlanFromColdWithinTheReg
       opts.plans = &seed_plans;
       const std::vector<GridTickReport> seed = GridRun(one_iter, std::vector<int>{}, opts);
       ASSERT_EQ(seed.size(), 1U) << sc.name;
-      const PlanDistance ds = Distance(seed_plans[0], today_plans[0], 0, mg);
+      const PlanDistance ds = Distance(seed_plans[0], one_plans[1], tu::kShippedPeriodNodes, mg);
       std::printf("[report] P0 %s control (1 iteration, index 0): dq %.3g dv %.3g dlam %.3g\n",
                   sc.name, ds.q, ds.v, ds.lambda);
       EXPECT_FALSE(ds.Within(eps)) << sc.name << ": the distance cannot tell a cold seed";
@@ -1328,7 +1303,7 @@ class SolverThreadIcvs {
 MPCSolverConfig MeasuredOnlineBudget() {
   MPCSolverConfig s = RegisteredSolver();
   s.max_iters = 3;
-  s.max_online_al_iters = 1;
+  s.max_al_iters = 1;
   return s;
 }
 
@@ -1348,8 +1323,8 @@ TEST(StageParallelComparison, TwoNonFiniteSolvesAreNotTheSameSolve) {
 }
 
 // The stage loops (evaluation and derivatives) split across threads; the
-// Riccati recursion stays serial. Every tick of the walk window — the standing
-// solve, the online ticks, and the mode changes the window crosses — must
+// Riccati recursion stays serial. Every tick of the walk window — the cold
+// first solve, the warm ticks, and the mode changes the window crosses — must
 // reproduce the serial solve exactly, for every thread count the layout can
 // give the solver. The window is the one led by kWalkLead, so it crosses mode
 // flips. The threads here are unpinned: equivalence does not depend on
@@ -1385,7 +1360,7 @@ TEST_P(KinodynamicReceding, StageParallelSolvesReproduceTheSerialSolveBitForBit)
 // The OCP built with the shared stage kinematics (one ODE and one frame
 // kinematics evaluation per stage) against the per-residual build, through
 // the handler core on the grid: the stance window and the walk window, 40
-// ticks each on the registered budgets (the standing solve, then the online
+// ticks each on the registered budget (the cold first solve, then the warm
 // ticks), the shared build serial and on two solver threads. Every tick's
 // solve — iterates, multipliers, gains, residuals, iterations — is the same
 // bits as the serial per-residual solve (which the stage-parallel test above
@@ -1428,8 +1403,9 @@ TEST_P(KinodynamicReceding, SharedStageKinematicsReproduceThePerResidualSolveBit
 
 // The quality frame a non-bit-identical backend would be judged by, run live
 // against the serial solve in the same process: the consumed segment's
-// residual (nodes 0-2) by median and p95, and the standing solve's
-// convergence and iteration count. Bit-identical solves meet it trivially;
+// residual (nodes 0-2) by median and p95, and the cold first solve's
+// iteration count (its convergence on 3 / 1 is not a claim: the bit-level
+// tests above hold the solves equal). Bit-identical solves meet it trivially;
 // it is kept so the bound exists before such a backend does.
 TEST_P(KinodynamicReceding, AStageParallelSolveMeetsTheSerialQualityFrame) {
   const SolverThreadIcvs icvs;
@@ -1445,7 +1421,7 @@ TEST_P(KinodynamicReceding, AStageParallelSolveMeetsTheSerialQualityFrame) {
   ASSERT_FALSE(ser_ticks.empty());
   const auto consumed = [](const std::vector<Capture>& c) {
     std::vector<double> r;
-    for (std::size_t k = 1; k < c.size(); ++k) {  // online ticks
+    for (std::size_t k = 1; k < c.size(); ++k) {  // warm ticks
       r.push_back(std::max({c[k].node_prim_inf[0], c[k].node_prim_inf[1], c[k].node_prim_inf[2]}));
     }
     return r;
@@ -1468,13 +1444,12 @@ TEST_P(KinodynamicReceding, AStageParallelSolveMeetsTheSerialQualityFrame) {
   EXPECT_GE(med_p, 0.9 * std::max(med_s, kFloor) - kFloor);
   EXPECT_LE(med_p, 1.1 * std::max(med_s, kFloor));
   EXPECT_LE(p95(rp), 2.0 * std::max(p95(rs), kFloor));
-  EXPECT_TRUE(ser_ticks.front().converged && par_ticks.front().converged);
-  EXPECT_LE(par_ticks.front().prim, serial.prim_tol);
+  EXPECT_TRUE(ser_ticks.front().cold && par_ticks.front().cold);
   const int it_s = ser_ticks.front().iterations;
   const int it_p = par_ticks.front().iterations;
   EXPECT_LE(std::abs(it_p - it_s), std::max(5, static_cast<int>(std::ceil(0.1 * it_s))));
   std::printf(
-      "[report] %s quality: consumed median %.3g vs %.3g, p95 %.3g vs %.3g, standing "
+      "[report] %s quality: consumed median %.3g vs %.3g, p95 %.3g vs %.3g, tick 0 "
       "iterations %d vs %d\n",
       GetParam(), med_p, med_s, p95(rp), p95(rs), it_p, it_s);
 }
