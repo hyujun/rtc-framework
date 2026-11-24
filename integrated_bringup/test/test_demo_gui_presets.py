@@ -7,6 +7,7 @@ must equal the active hand DoF, or the hand target is rejected rather than
 publishing a RobotTarget with mismatched joint_names / joint_target lengths.
 """
 
+import json
 import math
 from pathlib import Path
 
@@ -188,21 +189,31 @@ def test_each_p2_side_mirrors_from_the_other():
             assert ROBOT_PROFILES[profile.mirror_robot].mirror_robot == key
 
 
-def test_the_mirror_maps_one_simulators_mid_pose_onto_the_others():
-    """The sign vector checked against both hands' models at once: the two
-    scenes' mid-range initial_qpos (each pinned to that profile's mid_pose
-    preset above) are each other's mirror. A joint whose mid is 0 cannot tell
-    the sign apart; the hardware's sign is the driver's own."""
+def _shipped_presets(robot):
+    path = _CONFIG / robot / "demo_gui" / "hand_presets.json"
+    return json.loads(path.read_text()) if path.exists() else None
 
-    def mid(robot):
-        scope, hand_dof = _p2(robot)
-        return {"mid_pose": default_presets_for(hand_dof, scope)["mid_pose"]}
 
-    to_left, skipped = config.mirror_presets(mid("p2"), P2_MIRROR_SIGNS, "right", "left")
+def test_the_mirror_follows_the_hardware_postures():
+    """The sign vector against the rig's postures as they are shipped now
+    (whatever they hold): a pair recorded as each other's mirror — the same
+    magnitude on every joint — is reproduced exactly, and on every other
+    same-named pair each joint clear of zero points the way the mirror says.
+    A joint near zero cannot tell the sign apart."""
+    right, left = _shipped_presets("p2"), _shipped_presets("p2_left")
+    if right is None or left is None:
+        pytest.skip("a p2 hand ships no postures")
+    mirrored, skipped = config.mirror_presets(right, P2_MIRROR_SIGNS, "right", "left")
     assert not skipped
-    assert to_left["mid_pose"]["positions_deg"] == mid("p2_left")["mid_pose"]["positions_deg"]
-    to_right, _ = config.mirror_presets(mid("p2_left"), P2_MIRROR_SIGNS, "left", "right")
-    assert to_right["mid_pose"]["positions_deg"] == mid("p2")["mid_pose"]["positions_deg"]
+    pairs = sorted(set(right) & set(left))
+    assert pairs, "the two hands ship no preset of the same name"
+    for name in pairs:
+        src, rec, mir = (p[name]["positions_deg"] for p in (right, left, mirrored))
+        if all(abs(abs(a) - abs(b)) <= 0.01 for a, b in zip(src, rec, strict=True)):
+            assert mir == pytest.approx(rec, abs=0.01), name
+        for joint, (a, b) in enumerate(zip(mir, rec, strict=True)):
+            if abs(a) >= 0.5 and abs(b) >= 0.5:
+                assert a * b > 0, f"{name} joint {joint}: mirrored {a} vs recorded {b}"
 
 
 def test_mirror_presets_tags_copies_and_round_trips():
@@ -217,7 +228,8 @@ def test_mirror_presets_tags_copies_and_round_trips():
     mirrored, skipped = config.mirror_presets(source, P2_MIRROR_SIGNS, "right", "left")
     assert not skipped
     pose = mirrored["pose"]
-    assert pose["positions_deg"] == [-10.0, -20.0, 0.0, 5.0, 0.0, -30.0, 1.5, -2.0, -3.0, -4.0]
+    src = source["pose"]["positions_deg"]
+    assert pose["positions_deg"] == [s * v for s, v in zip(P2_MIRROR_SIGNS, src, strict=True)]
     # no -0.0 in the file
     assert all(math.copysign(1.0, v) > 0 for v in pose["positions_deg"] if v == 0.0)
     assert pose[config.PRESET_SIDE_KEY] == "left"

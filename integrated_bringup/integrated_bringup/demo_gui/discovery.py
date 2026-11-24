@@ -153,13 +153,16 @@ _P2_LEFT_HAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 # Right → left joint sign of the proto2 pair, per motor slot (the roster order
-# above): the left description flexes seven of the ten joints toward the other
-# side (its URDF limits and MJCF ctrlrange), so a pose of one hand is the other
-# hand's pose times this vector — and back, the signs being ±1. A mirrored
-# preset is a starting point drawn from the models, not a measured pose: the
-# hardware's own signs are the driver's joint_direction_signs
-# (docs/hand-joint-controller.md).
-P2_MIRROR_SIGNS: tuple[float, ...] = (-1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0)
+# above): a pose of one hand is the other hand's pose times this vector — and
+# back, the signs being ±1. Read off the hardware rig's postures
+# (config/{p2,p2_left}/demo_gui/hand_presets.json: the pairs recorded as each
+# other's mirror differ in exactly these signs, and every other pair agrees in
+# direction): every joint but thumb_pip_link02 flips. The hand descriptions in
+# this repository flip cmc_02 the other way (their mid poses keep its sign), so
+# in the simulator a mirrored cmc_02 / thumb_mcp target is the model's mirror
+# image until those descriptions follow the rig. The rig's driver signs
+# (joint_direction_signs) are +1 on both hands.
+P2_MIRROR_SIGNS: tuple[float, ...] = (-1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0)
 
 
 def short_joint_labels(joint_names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -744,7 +747,7 @@ ROBOT_PROFILES: dict[str, RobotProfile] = {
         arm_group="p2_left",
         extra_switchable_controllers=("hand_joint_controller",),
         # Its own preset, sequence and settings files: the right hand's joint
-        # targets point the other way on seven of the ten joints.
+        # targets point the other way on most of the ten joints.
         preset_scope="p2_left",
         side="left",
         mirror_robot="p2",

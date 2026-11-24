@@ -100,6 +100,7 @@
           # joint to the side it flexes toward: zero is the extended hand, and
           # the side each joint flexes toward is the left URDF's (the left hand
           # mirrors seven of the right hand's ten joint signs — see the URDF
-          # header; the GUI's right → left preset mirror carries the same map).
+          # header; the GUI's preset mirror follows the hardware rig instead,
+          # demo_gui/discovery.py P2_MIRROR_SIGNS).
           position_lower: [-3.14159265, -3.14159265, -3.14159265, -3.14159265, -3.14159265, -3.14159265, -3.14159265, -3.14159265, -3.14159265, -3.14159265]
           position_upper: [3.14159265, 3.14159265, 3.14159265, 3.14159265, 3.14159265, 3.14159265, 3.14159265, 3.14159265, 3.14159265, 3.14159265]
