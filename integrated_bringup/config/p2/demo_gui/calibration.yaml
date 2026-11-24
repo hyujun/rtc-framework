@@ -1,0 +1,21 @@
+# config/p2/demo_gui/calibration.yaml — the driver calibration the shipped hand
+# postures beside this file were recorded under (right hand, hardware rig, 2026-11).
+# A preset is a joint position AFTER the driver's offset, so under other signs or
+# offsets the same numbers point elsewhere. demo_controller_gui warns and
+# tools/demo_postures/promote.py refuses when the driver in use differs from this
+# record; after a recalibration, re-record the postures and update this file in the
+# same commit. Guide: integrated_bringup/docs/demo-controller-gui.md §Shipped postures.
+driver_config: udp_hand_node_p2.yaml
+joint_names:
+  - cmc_01_joint
+  - cmc_02_joint
+  - thumb_mcp_joint
+  - thumb_pip_link02_joint
+  - index_mcp_rotate_joint
+  - index_mcp_joint
+  - index_pip_joint
+  - middle_mcp_joint
+  - middle_pip_joint
+  - ring_mcp_joint
+joint_direction_signs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+joint_position_offsets_deg: [0.0, 0.0, 0.0, 0.0, -17.0, 0.0, 0.0, 0.0, 0.0, 0.0]

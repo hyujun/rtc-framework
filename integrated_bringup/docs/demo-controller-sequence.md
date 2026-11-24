@@ -7,7 +7,7 @@ ros2 run integrated_bringup demo_controller_sequence --robot p2 --mode loop --du
 ros2 run integrated_bringup demo_controller_sequence --robot p2_left --mode loop --duration 9h
 ```
 
-preset 과 sequence 는 GUI (`demo_controller_gui`) 의 Sequence 탭에서 만든 파일 (`<logging_data>/hand_presets_<robot>.json` · `demo_gui_sequences_<robot>.json`) 을 그대로 읽는다. CLI 는 이 파일을 고쳐 쓰지 않는다.
+preset 과 sequence 는 GUI (`demo_controller_gui`) 의 Sequence 탭에서 만든 파일 (`<logging_data>/hand_presets_<robot>.json` · `demo_gui_sequences_<robot>.json`) 을 그대로 읽는다. CLI 는 이 파일을 고쳐 쓰지 않는다. 출하 posture 가 있는 robot 에서는 작업 사본이 정본과 다르거나 드라이버 보정이 정본의 기록과 다르면 `note:` 한 줄을 띄운다. 실행은 그래도 작업 사본으로 한다 ([demo-controller-gui.md](demo-controller-gui.md) §출하 posture).
 
 ## 매일의 절차
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import stat
 import tempfile
 from dataclasses import dataclass
 
@@ -144,16 +145,35 @@ def load_toggle_settings(path: str) -> dict:
         return default_toggle_settings()
 
 
+def _file_mode(path: str) -> int:
+    """The mode to write ``path`` with: the one it has, else what ``open``
+    would give a new file under the process umask (mkstemp's own 0600 would
+    make every rewrite private to its owner)."""
+    with contextlib.suppress(OSError):
+        return stat.S_IMODE(os.stat(path).st_mode)
+    umask = 0o022
+    with contextlib.suppress(OSError, ValueError), open("/proc/self/status") as status:
+        for line in status:
+            if line.startswith("Umask:"):
+                umask = int(line.split()[1], 8)
+    return 0o666 & ~umask
+
+
 def atomic_write_json(path: str, data: object, prefix: str) -> None:
     """Write ``data`` to ``path`` through a temporary file in the same
     directory, so a crash mid-write leaves the previous file intact."""
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
+    mode = _file_mode(path)
     file_descriptor, temporary_path = tempfile.mkstemp(
         dir=directory, prefix=prefix, suffix=".json"
     )
     try:
         with os.fdopen(file_descriptor, "w") as json_file:
+            # A filesystem that refuses chmod (vfat, some FUSE / CIFS mounts)
+            # still gets the file, with whatever mode it gives.
+            with contextlib.suppress(OSError):
+                os.fchmod(json_file.fileno(), mode)
             json.dump(data, json_file, indent=2)
             json_file.write("\n")
         os.replace(temporary_path, path)
