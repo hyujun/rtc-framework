@@ -49,6 +49,7 @@ their own modules.
 
 import argparse
 import contextlib
+import copy
 import functools
 import json
 import math
@@ -83,6 +84,7 @@ from rtc_msgs.msg import (
 )
 from rtc_msgs.srv import ClearEstop, GraspCommand, LaunchBall, ResetFault, SwitchController
 
+from ..demo_sequence.files import FileProblem
 from .ball_launch import (
     BALL_PREDICTION_TOPIC,
     BALL_TRUTH_TOPIC,
@@ -259,10 +261,24 @@ from .sequence import (
     clamp_tolerance,
     load_sequence_file,
     moved,
+    normalize_sequence_file,
     resolve_steps,
     save_sequence_file,
     step_problem,
     with_all_times,
+)
+from .shipped import (
+    REFUSED,
+    SEED,
+    Choice,
+    ShippedProfile,
+    check_calibration,
+    choose,
+    load_shipped,
+    read_seed_hash,
+    read_working,
+    validate_sequence,
+    write_seed_hash,
 )
 from .task_frame import TaskFrameSelector
 from .vtcp import (
@@ -663,6 +679,10 @@ class DemoControllerGUI(Node):
         # Hand presets (loaded from JSON). Path + defaults are hand-scoped so a
         # 10-DoF roster saved for one hand can't be loaded against a 16-DoF hand
         # (issue #137 finding 3).
+        # The robot's shipped postures (demo_gui.shipped) seed the working copy
+        # below; a copy the operator has edited is kept. None = none ships.
+        self._shipped_notes: list[str] = []
+        self._shipped_presets, self._shipped_sequence = self._load_shipped(robot)
         self._preset_path = _resolve_preset_path(self._profile.preset_token())
         self._presets = self._load_presets()
         self._toggle_settings_path = os.path.join(
@@ -671,9 +691,18 @@ class DemoControllerGUI(Node):
         )
         self._toggle_settings = load_toggle_settings(self._toggle_settings_path)
         toggle = self._toggle_settings["preset_toggle"]
+        stored = (toggle["close_preset"], toggle["open_preset"])
         toggle["close_preset"], toggle["open_preset"] = resolve_preset_pair(
             self._presets, toggle["close_preset"], toggle["open_preset"]
         )
+        for which, before, after in zip(
+            ("close", "open"), stored, (toggle["close_preset"], toggle["open_preset"]), strict=True
+        ):
+            if before and before != after:
+                self.get_logger().warn(
+                    f"preset toggle: {which} preset '{before}' is not in the preset file — "
+                    f"using '{after or '(none)'}'"
+                )
         self._preset_toggle = PresetToggleState()
         self._toggle_in_flight = False
         self._toggle_rearm_after = None
@@ -687,7 +716,7 @@ class DemoControllerGUI(Node):
             os.path.dirname(self._preset_path),
             f"demo_gui_sequences_{self._profile.preset_token()}.json",
         )
-        self._sequence: SequenceFile = load_sequence_file(self._sequence_path)
+        self._sequence: SequenceFile = self._load_sequence()
         self._sequence_runner = SequenceRunner()
         self._sequence_ctrl = ""  # controller the playing run sends to
         self._sequence_after = None
@@ -1156,6 +1185,8 @@ class DemoControllerGUI(Node):
     # ---- Preset persistence -----------------------------------------------------
 
     def _load_presets(self) -> dict:
+        if self._shipped_presets is not None:
+            return self._load_presets_from_shipped(self._shipped_presets)
         scope = self._profile.preset_token()
         try:
             with open(self._preset_path) as f:
@@ -1203,6 +1234,115 @@ class DemoControllerGUI(Node):
         defaults = default_presets_for(self._shape.hand_dof, scope)
         self._save_presets_to_file(defaults)
         return defaults
+
+    # ---- Shipped postures (demo_gui.shipped) -------------------------------------
+
+    def _shipped_of(self, robot: str) -> tuple[dict | None, dict | None]:
+        """(presets, sequence) ``robot`` ships in the installed package; (None,
+        None) when none ships or the shipped files are unusable (logged)."""
+        try:
+            config_dir = os.path.join(get_package_share_directory("integrated_bringup"), "config")
+        except PackageNotFoundError:
+            return None, None
+        prof = ROBOT_PROFILES[robot]
+        shipped_profile = ShippedProfile(
+            robot,
+            prof.side,
+            prof.hand_group,
+            tuple(prof.shape.hand_motor_names),
+            prof.shape.arm_dof,
+        )
+        try:
+            return load_shipped(config_dir, shipped_profile)
+        except FileProblem as exc:
+            self.get_logger().error(f"shipped postures of '{robot}' not used — {exc}")
+            return None, None
+
+    def _load_shipped(self, robot: str) -> tuple[dict | None, dict | None]:
+        presets, sequence = self._shipped_of(robot)
+        if presets is None:
+            return None, None
+        config_dir = os.path.join(get_package_share_directory("integrated_bringup"), "config")
+        warning = check_calibration(config_dir, robot, self._profile.side)
+        if warning:
+            # The postures are joint positions after the driver's offsets: under
+            # another calibration the same numbers point elsewhere.
+            self.get_logger().warn(warning)
+            self._shipped_notes.append("WARNING: " + warning)
+        return presets, sequence
+
+    def _apply_shipped_choice(
+        self, path: str, choice: Choice, working: object, shipped: object, prefix: str
+    ) -> object:
+        """Carry out the load rule's ``choice`` on working file ``path``; the
+        data the GUI runs on."""
+        log = self.get_logger()
+        if choice.action != SEED:
+            if choice.seed_hash:
+                with contextlib.suppress(OSError):
+                    write_seed_hash(path, choice.seed_hash)
+            if choice.differs:
+                log.warn(
+                    f"{path}: {choice.reason}. Promote it (tools/demo_postures/promote.py) "
+                    "or delete it to reseed from the shipped copy"
+                )
+                self._shipped_notes.append(
+                    f"{os.path.basename(path)}: edited, differs from shipped"
+                )
+            return working
+        if choice.set_aside and os.path.exists(path):
+            aside = refused_preset_path(path)
+            try:
+                os.replace(path, aside)
+            except OSError as exc:
+                log.error(f"{path}: {choice.reason}, and left in place ({exc})")
+                return copy.deepcopy(shipped)
+            log.error(f"{path}: {choice.reason} — moved to {aside}")
+        try:
+            atomic_write_json(path, shipped, prefix=prefix)
+            write_seed_hash(path, choice.seed_hash)
+        except OSError as exc:
+            log.error(f"{path}: could not be seeded from the shipped copy ({exc})")
+        else:
+            log.info(f"{path}: {choice.reason} — seeded from the shipped copy")
+        return copy.deepcopy(shipped)
+
+    def _load_presets_from_shipped(self, shipped: dict) -> dict:
+        scope = self._profile.preset_token()
+        dof = self._shape.hand_dof
+        state, working = read_working(self._preset_path, self._profile.side)
+        if state == REFUSED:
+            refused = presets_refused_for_side(working, self._profile.side)
+            self.get_logger().error(
+                f"{self._preset_path}: presets {refused} are tagged for another hand "
+                f"than '{self._profile.side}'"
+            )
+        # A roster written before anything shipped was never edited.
+        stale = (default_presets_for(dof), default_presets_for(dof, scope))
+        choice = choose(state, working, read_seed_hash(self._preset_path), shipped, stale)
+        return self._apply_shipped_choice(
+            self._preset_path, choice, working, shipped, prefix=".hand_presets_"
+        )
+
+    def _load_sequence(self) -> SequenceFile:
+        shipped = self._shipped_sequence
+        path = self._sequence_path
+        if shipped is None or self._shipped_presets is None:
+            return load_sequence_file(path)
+        state, working = read_working(path, sequence=True)
+        choice = choose(state, working, read_seed_hash(path), shipped)
+        if choice.action == SEED:
+            # Seeded only when every step plays on the presets in use (an
+            # edited preset file may have dropped one).
+            try:
+                validate_sequence(
+                    shipped, "the shipped sequence", self._presets, self._shape.hand_dof
+                )
+            except FileProblem as exc:
+                self.get_logger().warn(f"{path}: not seeded — {exc}")
+                return load_sequence_file(path)
+        data = self._apply_shipped_choice(path, choice, working, shipped, ".demo_gui_sequences_")
+        return normalize_sequence_file(data)
 
     def _save_presets_to_file(self, presets: dict | None = None):
         if presets is None:
@@ -4643,7 +4783,7 @@ class DemoControllerGUI(Node):
         # Preset file path display
         tk.Label(
             preset_frame,
-            text=f"Preset file: {self._preset_path}",
+            text="\n".join([f"Preset file: {self._preset_path}", *self._shipped_notes]),
             bg="#1e1e2e",
             fg="#585b70",
             font=("Segoe UI", 7, "italic"),
@@ -7053,9 +7193,20 @@ class DemoControllerGUI(Node):
         other = self._mirror_profile()
         token = other.preset_token()
         source_path = _resolve_preset_path(token)
+        shipped_sequence = None
         try:
             with open(source_path) as f:
                 source = json.load(f)
+        except FileNotFoundError as exc:
+            # The other hand has no working copy here: it would start on its
+            # shipped one, so that is what it has.
+            source, shipped_sequence = self._shipped_of(self._profile.mirror_robot)
+            if source is None:
+                messagebox.showwarning(
+                    "Import Mirrored", f"No presets of '{self._profile.mirror_robot}': {exc}"
+                )
+                return
+            source_path = f"the shipped presets of '{self._profile.mirror_robot}'"
         except (OSError, json.JSONDecodeError) as exc:
             messagebox.showwarning(
                 "Import Mirrored", f"No presets of '{self._profile.mirror_robot}': {exc}"
@@ -7096,6 +7247,8 @@ class DemoControllerGUI(Node):
             os.path.dirname(self._preset_path), f"demo_gui_sequences_{token}.json"
         )
         sequence = load_sequence_file(sequence_path)
+        if shipped_sequence is not None and not os.path.exists(sequence_path):
+            sequence = normalize_sequence_file(shipped_sequence)
         if sequence.steps and messagebox.askyesno(
             "Import Mirrored",
             f"Also replace this hand's sequence ({len(self._sequence.steps)} step(s)) with "
