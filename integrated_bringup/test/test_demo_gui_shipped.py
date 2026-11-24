@@ -18,7 +18,6 @@ import yaml
 from integrated_bringup.demo_gui import shipped as s
 from integrated_bringup.demo_gui.app import DemoControllerGUI
 from integrated_bringup.demo_gui.config import default_presets_for
-from integrated_bringup.demo_gui.discovery import ROBOT_PROFILES
 from integrated_bringup.demo_sequence.files import FileProblem
 
 _CONFIG = Path(__file__).resolve().parents[1] / "config"
@@ -265,17 +264,7 @@ def _shipped_dirs():
 def test_every_shipped_copy_plays_on_its_robot(robot):
     # Properties only — the values are the rig's and change with it. The
     # limits are read from the robot's _base.yaml as it is now.
-    prof = ROBOT_PROFILES[robot]
-    presets, _ = s.load_shipped(
-        str(_CONFIG),
-        s.ShippedProfile(
-            robot,
-            prof.side,
-            prof.hand_group,
-            tuple(prof.shape.hand_motor_names),
-            prof.shape.arm_dof,
-        ),
-    )
+    presets, _ = s.load_shipped(str(_CONFIG), s.ShippedProfile.for_robot(robot))
     assert presets, f"config/{robot}/{s.SHIPPED_DIR} ships no {s.PRESETS_FILE}"
     # The record of the calibration is readable (whether it matches the driver
     # is the GUI's warning and promote's refusal, not a test).

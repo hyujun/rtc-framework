@@ -1244,16 +1244,8 @@ class DemoControllerGUI(Node):
             config_dir = os.path.join(get_package_share_directory("integrated_bringup"), "config")
         except PackageNotFoundError:
             return None, None
-        prof = ROBOT_PROFILES[robot]
-        shipped_profile = ShippedProfile(
-            robot,
-            prof.side,
-            prof.hand_group,
-            tuple(prof.shape.hand_motor_names),
-            prof.shape.arm_dof,
-        )
         try:
-            return load_shipped(config_dir, shipped_profile)
+            return load_shipped(config_dir, ShippedProfile.for_robot(robot))
         except FileProblem as exc:
             self.get_logger().error(f"shipped postures of '{robot}' not used — {exc}")
             return None, None

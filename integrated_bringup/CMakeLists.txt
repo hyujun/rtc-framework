@@ -2769,6 +2769,8 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_demo_gui_preset_toggle test/test_demo_gui_preset_toggle.py)
   ament_add_pytest_test(test_demo_gui_sequence test/test_demo_gui_sequence.py)
   ament_add_pytest_test(test_demo_gui_shipped test/test_demo_gui_shipped.py)
+  # tools/demo_postures/promote.py (logic in demo_gui.promote) on tmp trees.
+  ament_add_pytest_test(test_demo_postures_promote test/test_demo_postures_promote.py)
   ament_add_pytest_test(test_demo_sequence test/test_demo_sequence.py)
   # The CLI's rclpy side against a fake stack: opens participants, so it holds
   # the package's domain and its lock (end of this block).

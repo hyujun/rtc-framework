@@ -392,6 +392,20 @@ class ShippedProfile:
     hand_joint_names: tuple[str, ...]
     arm_dof: int = 0
 
+    @classmethod
+    def for_robot(cls, robot: str) -> ShippedProfile:
+        """The GUI's ``--robot`` profile of ``robot`` (KeyError if none)."""
+        from .discovery import ROBOT_PROFILES
+
+        prof = ROBOT_PROFILES[robot]
+        return cls(
+            robot,
+            prof.side,
+            prof.hand_group,
+            tuple(prof.shape.hand_motor_names),
+            prof.shape.arm_dof,
+        )
+
 
 def load_shipped(config_dir: str, prof: ShippedProfile) -> tuple[dict | None, dict | None]:
     """(presets, sequence) shipped for the robot, each None when it does not
