@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
@@ -269,6 +270,25 @@ def test_every_shipped_copy_plays_on_its_robot(robot):
     # The record of the calibration is readable (whether it matches the driver
     # is the GUI's warning and promote's refusal, not a test).
     s.read_calibration(str(_CONFIG / robot / s.SHIPPED_DIR / s.CALIBRATION_FILE))
+
+
+def test_working_notes_say_when_the_run_plays_another_copy(tmp_path):
+    # A copy of a shipped robot's files: the shipped side is read as installed.
+    robot = _shipped_dirs()[0]
+    config = tmp_path / "config"
+    shutil.copytree(_CONFIG / robot, config / robot)
+    presets, sequence = s.load_shipped(str(config), s.ShippedProfile.for_robot(robot))
+    p_path, q_path = tmp_path / "p.json", tmp_path / "q.json"
+    p_path.write_text(json.dumps(presets))
+    q_path.write_text(json.dumps(sequence))
+    assert s.working_notes(str(config), robot, str(p_path), str(q_path)) == []
+    edited = dict(presets)
+    edited.pop(next(iter(edited)))
+    p_path.write_text(json.dumps(edited))
+    notes = s.working_notes(str(config), robot, str(p_path), str(q_path))
+    assert len(notes) == 1 and "p.json differs from the shipped copy" in notes[0]
+    # Nothing shipped → nothing to say.
+    assert s.working_notes(str(tmp_path / "none"), robot, str(p_path), str(q_path)) == []
 
 
 # ── The GUI's half, on tmp files ─────────────────────────────────────────────

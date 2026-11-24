@@ -322,6 +322,7 @@ ros2 run integrated_bringup demo_controller_gui --robot p2_left      # proto2 �
 - 컨트롤러가 publish 하는 joint span 이 프로파일과 어긋나면 `/rosout` 에 WARN 이 한 번 나옵니다. 맞는 `--robot` 으로 다시 실행합니다.
 - `--session <dir>` 은 `demo_dualarm_controller` 의 상태 판독이 따라갈 세션 디렉토리입니다. 그 컨트롤러가 없는 프로파일에서는 쓰이지 않습니다.
 - 새 로봇은 `integrated_bringup/demo_gui/discovery.py` 의 `ROBOT_PROFILES` 에 항목을 추가합니다.
+- 손 posture 정본 (`config/<robot>/demo_gui/`) · promote: [demo-controller-gui.md](docs/demo-controller-gui.md) §출하 posture.
 - 이 GUI 에는 E-STOP **버튼이 없습니다**. 소프트웨어 E-STOP 은 CLI `ros2 service call /rtc_cm/trigger_estop std_srvs/srv/Trigger "{}"` 나 [rtc_teleop_input](../rtc_teleop_input/README.md) 의 E-STOP 버튼 · 패드 B 로 올리고, 헤더의 `Clear E-STOP` 이 사유 (`operator_request`) 를 되돌려 풉니다. `g1_loco` · `b7_loco` sim 은 해제 뒤 `demo_joint_controller` 로 돌아옵니다 (`estop_on_clear`, [rtc_controller_manager/README.md](../rtc_controller_manager/README.md) "운영자 E-STOP"); 다른 profile 은 직전 컨트롤러가 재개합니다.
 
 컨트롤러별 게인 패널입니다 (라디오에는 프로파일이 전환 가능한 컨트롤러만 뜹니다).
@@ -502,7 +503,7 @@ integrated_bringup/
 │   ├── demo_gui/    # demo_controller_gui 모듈
 │   └── demo_sequence/  # headless sequence CLI
 ├── scripts/         # ros2 run 진입점
-├── tools/           # 포구 평가 · 식별 도구
+├── tools/           # 포구 평가 · 식별 · posture promote 도구
 ├── docs/            # 사용자 참조 문서
 └── test/
 ```

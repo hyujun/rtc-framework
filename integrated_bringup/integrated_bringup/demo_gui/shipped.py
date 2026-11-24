@@ -431,3 +431,30 @@ def load_shipped(config_dir: str, prof: ShippedProfile) -> tuple[dict | None, di
     sequence = read_json(s_path, "shipped sequence file")
     validate_sequence(sequence, s_path, presets, len(prof.hand_joint_names))
     return presets, sequence
+
+
+def working_notes(config_dir: str, robot: str, preset_path: str, sequence_path: str) -> list[str]:
+    """What an unattended run should say about its working copy against the
+    shipped one: the run plays the working copy either way (the CLI writes
+    nothing), so these are notes, not refusals. Empty when nothing ships."""
+    try:
+        presets, sequence = load_shipped(config_dir, ShippedProfile.for_robot(robot))
+    except (FileProblem, KeyError) as exc:
+        return [f"the shipped postures of '{robot}' are unusable: {exc}"]
+    if presets is None:
+        return []
+    notes = []
+    where = shipped_dir(config_dir, robot)
+    for path, ship in ((preset_path, presets), (sequence_path, sequence)):
+        if ship is None:
+            continue
+        try:
+            working = read_json(path, "working file")
+        except FileProblem:
+            continue  # the run's own loading has already refused it
+        if content_hash(working) != content_hash(ship):
+            notes.append(f"{path} differs from the shipped copy in {where}")
+    calibration = check_calibration(config_dir, robot, ShippedProfile.for_robot(robot).side)
+    if calibration:
+        notes.append(calibration)
+    return notes

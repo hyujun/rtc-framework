@@ -84,6 +84,22 @@ def check_args(args: argparse.Namespace) -> str:
     return ""
 
 
+def shipped_notes(robot: str, inputs) -> list[str]:
+    """The working copy against the robot's shipped postures — notes only: the
+    run plays the working copy, as it always has (demo_gui.shipped)."""
+    from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
+
+    from ..demo_gui.shipped import working_notes
+
+    try:
+        share = get_package_share_directory("integrated_bringup")
+    except PackageNotFoundError:
+        return []
+    return working_notes(
+        os.path.join(share, "config"), robot, inputs.preset_path, inputs.sequence_path
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if problem := check_args(args):
@@ -109,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     except FileProblem as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    for line in shipped_notes(args.robot, inputs):
+        print(f"note: {line}", file=sys.stderr)
     # The disk checks watch where the stack writes, which --logging-root (the
     # preset files) need not be.
     stack_root, problem = env.logging_root(None)

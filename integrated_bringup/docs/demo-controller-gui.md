@@ -156,9 +156,36 @@ proto2 손 하나가 bringup 의 전부인 프로파일입니다 — device grou
 - **`tracking` 이 아닌 동안 컨트롤러는 모든 `joint_goal` 을 거부합니다** (reject 로 셉니다). 그래서 GUI 는 마지막으로 읽은 mode 가 `damping` · `damping_feedforward` 이면 `Send Command` 를 끄고 이유 (`mode is damping: joint goals are refused`) 를 버튼 아래에 보이며, preset 전송 · 단축키 토글 · hand step 도 같은 사유로 보류합니다. mode 를 아직 읽지 못했으면 막지 않습니다.
 - **End-Effector Pose** 는 컨트롤러가 `/hand_joint_controller/transforms` 로 보내는 `palm → index_virtual_axis_actual` 입니다 (`tcp_parent`/`tcp_child`; 엄지 · 중지 · 약지의 `*_virtual_axis_actual` 도 같은 메시지에 실리지만 readout 은 검지 하나를 따릅니다).
 - **Grasp 탭**의 `▶ Grasp` / `■ Release` 는 꺼집니다 — `grasp_command` 서비스가 없습니다 (`config.py` `NO_GRASP_COMMAND_CONTROLLERS`).
-- **preset · 단축키 설정 파일**은 `hand_presets_p2.json` · `demo_gui_settings_p2.json` 입니다 (`preset_scope="p2"`; hand group 토큰 `p2_right` 는 `b7_loco` 와 같아 이름을 나눕니다). 기본 preset 은 이 손의 것 (`open_flat` · `mid_pose` = sim 의 `initial_qpos`) 입니다 — 관절 수가 같은 UR5e 손의 기본값은 굽힘 방향이 반대인 관절이 있어 쓰지 않습니다 (`config.default_presets_for` 의 scope 별 roster). 예전에 그 기본값이 그대로 쓰인 파일은 시작할 때 한 번 교체되고, 저장 · 수정 · 삭제한 적이 있는 파일은 그대로 둡니다. `p2_left` 는 `hand_presets_p2_left.json` · `demo_gui_sequences_p2_left.json` · `demo_gui_settings_p2_left.json` 을 따로 갖습니다 (관절 일곱의 굽힘 방향이 반대라 오른손 preset 은 왼손에서 틀린 자세다).
-- **손 tag 와 거울 import.** 두 프로파일에서 저장한 preset 에는 `side` (`right` / `left`) 가 붙고, 다른 손 tag 의 preset 이 하나라도 든 preset 파일은 시작할 때 **거부**되어 `<파일>.refused` (이미 있으면 `.refused.<n>`) 로 옮겨지고 기본값으로 시작합니다 (tag 없는 예전 파일 · 기본 roster 는 양쪽에서 받습니다). `Import Mirrored` 버튼이 다른 손의 preset 파일을 읽어 관절마다 `discovery.P2_MIRROR_SIGNS` 를 곱하고 이 손 tag 를 붙여 합칩니다 (같은 이름은 덮을지 묻습니다). sequence 는 preset 이름만 담으므로, 이어서 다른 손의 sequence 를 그대로 가져올지 묻습니다 — 같은 이름의 거울 preset 위에서 그 sequence 가 이 손으로 재생됩니다. 거울은 두 모델의 부호에서 온 출발점이고, 실기 부호는 드라이버의 `joint_direction_signs` 가 정합니다 ([hand-joint-controller.md](hand-joint-controller.md)). preset 에 `hand_joint_controller` 가 적혀도 단축키 토글이 통과합니다 — 이 프로파일이 그 컨트롤러의 gain 스키마를 등록하기 때문입니다.
+- **preset · 단축키 설정 파일**은 `hand_presets_p2.json` · `demo_gui_settings_p2.json` 입니다 (`preset_scope="p2"`; hand group 토큰 `p2_right` 는 `b7_loco` 와 같아 이름을 나눕니다). 정본 (아래 §출하 posture) 이 없을 때의 기본 preset 은 이 손의 것 (`open_flat` · `mid_pose` = sim 의 `initial_qpos`) 입니다 — 관절 수가 같은 UR5e 손의 기본값은 굽힘 방향이 반대인 관절이 있어 쓰지 않습니다 (`config.default_presets_for` 의 scope 별 roster). 예전에 그 기본값이 그대로 쓰인 파일은 시작할 때 한 번 교체되고, 저장 · 수정 · 삭제한 적이 있는 파일은 그대로 둡니다. `p2_left` 는 `hand_presets_p2_left.json` · `demo_gui_sequences_p2_left.json` · `demo_gui_settings_p2_left.json` 을 따로 갖습니다 (관절 일곱의 굽힘 방향이 반대라 오른손 preset 은 왼손에서 틀린 자세다).
+- **손 tag 와 거울 import.** 두 프로파일에서 저장한 preset 에는 `side` (`right` / `left`) 가 붙고, 다른 손 tag 의 preset 이 하나라도 든 preset 파일은 시작할 때 **거부**되어 `<파일>.refused` (이미 있으면 `.refused.<n>`) 로 옮겨지고 기본값으로 시작합니다 (tag 없는 예전 파일 · 기본 roster 는 양쪽에서 받습니다). `Import Mirrored` 버튼이 다른 손의 preset 파일을 읽어 관절마다 `discovery.P2_MIRROR_SIGNS` 를 곱하고 이 손 tag 를 붙여 합칩니다 (같은 이름은 덮을지 묻습니다). sequence 는 preset 이름만 담으므로, 이어서 다른 손의 sequence 를 그대로 가져올지 묻습니다 — 같은 이름의 거울 preset 위에서 그 sequence 가 이 손으로 재생됩니다. 거울은 두 모델의 부호에서 온 출발점이고, 실기 부호는 드라이버의 `joint_direction_signs` 가 정합니다 ([hand-joint-controller.md](hand-joint-controller.md)). 다른 손에 작업 사본이 없으면 그 손의 정본을 읽습니다. 출하 posture 는 양손을 실기에서 따로 찍은 것이라 거울 부호와 맞지 않습니다. preset 에 `hand_joint_controller` 가 적혀도 단축키 토글이 통과합니다 — 이 프로파일이 그 컨트롤러의 gain 스키마를 등록하기 때문입니다.
 
+
+## 출하 posture (`config/<robot>/demo_gui/`)
+
+실기에서 검증한 손 posture 는 repo 에 정본으로 둡니다 (지금 출하하는 robot 은 그 디렉토리가 있는 `config/<robot>/`). GUI 는 logging root 의 작업 사본 (`hand_presets_<scope>.json` · `demo_gui_sequences_<scope>.json`) 에서 돌고, 정본은 작업 사본을 채우는 데 씁니다 (`demo_gui.shipped`).
+
+- **정본 파일**: `hand_presets.json` (GUI 와 같은 형식, 모든 preset 에 그 손의 `side` tag), `sequence.json` (선택), `calibration.yaml` (찍을 때 드라이버의 `joint_direction_signs` · `joint_position_offsets_deg`). preset 은 드라이버 offset 이 적용된 뒤의 관절 위치라, 다른 보정에서는 같은 숫자가 다른 자세입니다.
+- **시작할 때의 규칙** (preset 과 sequence 각각):
+  - 작업 사본이 없으면 정본으로 채우고, 옆에 정본의 hash 를 `<파일>.seed` 로 남깁니다.
+  - 읽을 수 없거나 다른 손 tag 가 든 사본은 `<파일>.refused` (이미 있으면 `.refused.<n>`) 로 옮긴 뒤 채웁니다.
+  - 정본이 생기기 전의 기본 roster 그대로인 사본은 정본으로 바꿉니다.
+  - 채운 뒤 손대지 않은 사본 (hash 가 `.seed` 와 같다) 은 정본이 바뀌면 (pull) 새 정본으로 바뀝니다.
+  - 저장 · 수정 · 삭제한 사본은 그대로 둡니다. 정본과 다르면 경고 로그를 남기고 Preset 패널의 파일 경로 아래에 한 줄로 알립니다. 목록을 비운 것도 편집입니다.
+  - sequence 는 모든 step 의 preset 이 지금 preset 에 있을 때만 채웁니다.
+  - 정본이 없거나 검사를 통과하지 못하면 (error 로그) 예전처럼 기본 preset 으로 시작합니다.
+- **보정 확인**: 설치된 드라이버 YAML (`calibration.yaml` 의 `driver_config`) 의 부호 · offset 이 기록과 다르면 시작할 때 경고하고 Preset 패널에 표시합니다. 그 상태의 posture 는 찍힌 자세가 아닙니다.
+- **정본 갱신 (promote)**: GUI 에서 고친 작업 사본을 정본으로 올립니다. workspace 를 source 한 셸의 checkout 에서:
+
+  ```bash
+  python3 integrated_bringup/tools/demo_postures/promote.py --robot p2 --robot p2_left --check   # 차이만 보기
+  python3 integrated_bringup/tools/demo_postures/promote.py --robot p2 --robot p2_left
+  ```
+
+  작업 사본을 release 로 검사합니다: 모든 preset 의 side tag, 관절 수, 유한값, `_base.yaml` 의 위치 한계 안, sequence 의 preset 참조, 그리고 사용 중 드라이버의 보정이 `calibration.yaml` 과 같은지. 하나라도 걸리면 아무것도 쓰지 않습니다 (exit 1). 쓰는 곳은 이 checkout 의 `config/<robot>/demo_gui/` 이고 설치본이 아니므로, `git diff` 로 보고 commit 합니다. 보정을 바꿨으면 posture 를 다시 찍고 `calibration.yaml` 을 같은 commit 에서 고칩니다. `--logging-root <dir>` 로 다른 작업 사본을 고릅니다.
+- **정본 파일을 처음 추가하면** 패키지를 한 번 다시 빌드해야 설치본에 보입니다 (symlink install 은 파일 단위). 그 뒤의 내용 갱신은 빌드 없이 반영됩니다.
+- **정본으로 되돌리기**: GUI 를 닫고 작업 사본과 `.seed` 를 지운 뒤 다시 시작합니다.
+- **공개 경계**: 정본에는 관절 이름 · 각도 · 보정값만 둡니다. 손 description 의 내부 (URDF · MJCF · mesh) 는 이 디렉토리에 넣지 않습니다.
+- 출하 한계 (`_base.yaml`) 보다 손 description 의 한계가 좁은 동안 sim 은 그 한계로 clamp 합니다. 그래서 정본 posture 가 sim 에서 그대로 재현되지 않을 수 있습니다.
 
 ## 기타 기능
 
