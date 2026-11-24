@@ -1,0 +1,200 @@
+{
+  "steps": [
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "close_index_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "close_middle_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "close_ring_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "close_mid_ring_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "close_indx_mid_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "close_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "tip_index_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "tip_middle_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "tip_ring_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "kp_index_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "kp_index_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "kp_index_03",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "kp_middle_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "kp_middle_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "kp_middle_03",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "kp_ring_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "kp_ring_02",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "kp_ring_03",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "close_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "close_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    },
+    {
+      "preset": "open_01",
+      "time_s": 0.7,
+      "dwell_s": 0.0
+    }
+  ],
+  "tolerance_deg": 15.0
+}
