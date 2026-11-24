@@ -24,7 +24,7 @@
     communication_mode: "bulk"        # "2" 는 bulk 전용
 
     # -- CAN FD 링크 (한 손) --
-    can_interface: "can1"             # 네이티브 CAN (Jetson Thor mttcan). sil_mode=firmware 는 vcan0 강제
+    can_interface: "can0"             # 네이티브 CAN (실기 PC). can1 인 PC 는 로컬로 고친다. sil_mode=firmware 는 vcan0 강제
     hand_sides: ["right"]             # 손 하나 — 목록 모드지만 per-hand 토픽을 절대 이름으로 둘 수 있다
     cmd_ack: "none"                   # 현 펌웨어 (PDO 형, echo 없음)
     req_mode: "auto"                  # 한 손 → per_hand
@@ -67,9 +67,10 @@
       - "middle_mcp_joint"
       - "middle_pip_joint"
       - "ring_mcp_joint"
-    # 수신 sign·pos + offset, 송신 sign·(cmd − offset), feedforward sign·ff. 실기 보정 전 초기값:
-    # offset 0, 부호 +1. 확정 절차는 integrated_bringup/docs/hand-joint-controller.md 의 실기 절.
-    joint_position_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # 수신 sign·pos + offset, 송신 sign·(cmd − offset), feedforward sign·ff. 실기에서 확정한
+    # 값이다 (2026-11, 이 손 한 개체): 부호 +1, offset 은 index_mcp_rotate_joint 만 0 이 아니다.
+    # 개체별 보정값이라 다른 손이면 다시 잰다 — 절차는 integrated_bringup/docs/hand-joint-controller.md 의 실기 절.
+    joint_position_offsets_deg: [0.0, 0.0, 0.0, 0.0, -17.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     joint_direction_signs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
     # -- Failure Detector (50Hz non-RT jthread) --
