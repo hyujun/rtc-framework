@@ -178,8 +178,20 @@ def main(argv: list[str], default_src_root: str) -> int:
     if args.check:
         print("check passed — nothing written")
         return EXIT_OK
+    written: list[str] = []
     for plan in plans:
         for path, data in plan.writes:
-            atomic_write_json(path, data, prefix=".promote_")
+            try:
+                atomic_write_json(path, data, prefix=".promote_")
+            except OSError as exc:
+                # Each file is replaced whole, but the set is not: say which
+                # ones are new so the tree can be restored with git.
+                print(
+                    f"refused: writing {path} failed ({exc}); already written: "
+                    f"{written or 'nothing'} — restore them with git checkout",
+                    file=sys.stderr,
+                )
+                return EXIT_REFUSED
+            written.append(path)
     print("written to the source tree — review with git diff and commit")
     return EXIT_OK

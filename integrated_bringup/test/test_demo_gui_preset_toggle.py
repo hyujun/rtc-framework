@@ -125,18 +125,29 @@ def test_atomic_save_leaves_valid_json(tmp_path):
 def test_atomic_save_writes_the_mode_a_plain_open_would(tmp_path):
     # mkstemp creates 0600: without the chmod every save of a file other
     # tools read (a promoted, committed copy) would turn it private.
-    umask = os.umask(0o022)
+    # 027, not the common 022: a mode from a hard-coded fallback would differ.
+    umask = os.umask(0o027)
     try:
         path = tmp_path / "new.json"
         atomic_write_json(str(path), {"a": 1}, prefix=".t_")
-        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
         # A file that exists keeps the mode it has.
-        path.chmod(0o600)
+        path.chmod(0o604)
         atomic_write_json(str(path), {"a": 2}, prefix=".t_")
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.stat().st_mode) == 0o604
         assert json.loads(path.read_text()) == {"a": 2}
     finally:
         os.umask(umask)
+
+
+def test_atomic_save_survives_a_filesystem_that_refuses_chmod(tmp_path, monkeypatch):
+    def refuse(*_args):
+        raise PermissionError("chmod not supported")
+
+    monkeypatch.setattr(os, "fchmod", refuse)
+    path = tmp_path / "f.json"
+    atomic_write_json(str(path), {"a": 1}, prefix=".t_")
+    assert json.loads(path.read_text()) == {"a": 1}
 
 
 class _Widget:

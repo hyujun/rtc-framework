@@ -153,6 +153,21 @@ def test_one_refused_robot_writes_none(trees, capsys):
     _refused(trees, capsys, "--robot", "p2", "--robot", "p2_left", match="does not exist")
 
 
+def test_a_failed_write_is_a_refusal_that_names_what_was_written(trees, capsys, monkeypatch):
+    calls = []
+
+    def write(path, data, prefix):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        Path(path).write_text(json.dumps(data))
+
+    monkeypatch.setattr(promote, "atomic_write_json", write)
+    assert _run(trees, "--robot", "p2") == promote.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "disk full" in err and calls[0] in err
+
+
 def test_the_tool_writes_into_its_own_checkout():
     # The entry point hands main() the config dir next to it, not the share.
     text = _TOOL.read_text()

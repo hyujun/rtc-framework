@@ -277,7 +277,23 @@ def test_working_notes_say_when_the_run_plays_another_copy(tmp_path):
     robot = _shipped_dirs()[0]
     config = tmp_path / "config"
     shutil.copytree(_CONFIG / robot, config / robot)
-    presets, sequence = s.load_shipped(str(config), s.ShippedProfile.for_robot(robot))
+    # The record is rewritten from the copied driver: the notes about the
+    # working copy are under test, not whether the shipped files agree today.
+    prof = s.ShippedProfile.for_robot(robot)
+    cal_path = config / robot / s.SHIPPED_DIR / s.CALIBRATION_FILE
+    driver = s.read_calibration(str(cal_path)).driver_config
+    in_use = s.driver_calibration(str(config / robot / driver), prof.side)
+    cal_path.write_text(
+        yaml.safe_dump(
+            {
+                "driver_config": driver,
+                "joint_names": list(in_use.joint_names),
+                "joint_direction_signs": list(in_use.joint_direction_signs),
+                "joint_position_offsets_deg": list(in_use.joint_position_offsets_deg),
+            }
+        )
+    )
+    presets, sequence = s.load_shipped(str(config), prof)
     p_path, q_path = tmp_path / "p.json", tmp_path / "q.json"
     p_path.write_text(json.dumps(presets))
     q_path.write_text(json.dumps(sequence))
@@ -289,6 +305,45 @@ def test_working_notes_say_when_the_run_plays_another_copy(tmp_path):
     assert len(notes) == 1 and "p.json differs from the shipped copy" in notes[0]
     # Nothing shipped → nothing to say.
     assert s.working_notes(str(tmp_path / "none"), robot, str(p_path), str(q_path)) == []
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        None,
+        {"devices": None},
+        {"devices": {"g": {"joint_state_names": ["j0"], "joint_limits": None}}},
+        {"devices": {"g": {"joint_state_names": [1], "joint_limits": {}}}},
+    ],
+)
+def test_a_malformed_base_yaml_is_a_file_problem(tmp_path, params):
+    # Never another exception: the GUI starts on its defaults after a
+    # FileProblem, and an operator's typo must not stop it from starting.
+    base = tmp_path / "_base.yaml"
+    base.write_text(yaml.safe_dump({"/**": params}))
+    with pytest.raises(FileProblem):
+        s.hand_limits_deg(str(base), "g", ("j0",))
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"joint_direction_signs": 1.0},
+        {"joint_direction_signs": ["x", 1.0]},
+        {"joint_position_offsets_deg": [None, 0.0]},
+        {"joint_state_names": "j0"},
+    ],
+)
+def test_a_malformed_driver_yaml_is_a_file_problem(tmp_path, extra):
+    path = _driver(tmp_path, {"joint_state_names": ["j0", "j1"], **extra})
+    with pytest.raises(FileProblem):
+        s.driver_calibration(path, "right")
+
+
+def test_an_unhashable_goal_type_is_a_file_problem():
+    bad = _preset([1.0, 2.0], controller="c", robot_goal_type=[], robot_target=[0.0] * 6)
+    with pytest.raises(FileProblem, match="robot_goal_type"):
+        s.validate_presets({"a": bad}, "f", "right", 2, None, arm_dof=6)
 
 
 # ── The GUI's half, on tmp files ─────────────────────────────────────────────
@@ -396,3 +451,8 @@ def test_the_gui_seeds_the_sequence_only_when_it_plays(tmp_path):
     gui._presets = {"b": SHIPPED["b"]}
     assert gui._load_sequence().steps == ()
     assert not Path(gui._sequence_path).exists()
+    # Unreadable and not seedable: still moved aside, so a save cannot
+    # overwrite it.
+    Path(gui._sequence_path).write_text("{")
+    assert gui._load_sequence().steps == ()
+    assert Path(gui._sequence_path + ".refused").read_text() == "{"

@@ -1332,6 +1332,12 @@ class DemoControllerGUI(Node):
                 )
             except FileProblem as exc:
                 self.get_logger().warn(f"{path}: not seeded — {exc}")
+                if choice.set_aside and os.path.exists(path):
+                    # Unreadable either way: keep it from the next save.
+                    aside = refused_preset_path(path)
+                    with contextlib.suppress(OSError):
+                        os.replace(path, aside)
+                        self.get_logger().error(f"{path}: {choice.reason} — moved to {aside}")
                 return load_sequence_file(path)
         data = self._apply_shipped_choice(path, choice, working, shipped, ".demo_gui_sequences_")
         return normalize_sequence_file(data)

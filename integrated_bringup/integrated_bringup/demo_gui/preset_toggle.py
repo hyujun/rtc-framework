@@ -170,7 +170,10 @@ def atomic_write_json(path: str, data: object, prefix: str) -> None:
     )
     try:
         with os.fdopen(file_descriptor, "w") as json_file:
-            os.fchmod(json_file.fileno(), mode)
+            # A filesystem that refuses chmod (vfat, some FUSE / CIFS mounts)
+            # still gets the file, with whatever mode it gives.
+            with contextlib.suppress(OSError):
+                os.fchmod(json_file.fileno(), mode)
             json.dump(data, json_file, indent=2)
             json_file.write("\n")
         os.replace(temporary_path, path)

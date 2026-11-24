@@ -85,7 +85,8 @@ def _ros_parameters(path: str) -> dict:
             doc = yaml.safe_load(handle)
     except (OSError, yaml.YAMLError) as exc:
         raise FileProblem(f"{path} cannot be read: {exc}") from None
-    params = doc.get("/**", {}).get("ros__parameters") if isinstance(doc, dict) else None
+    block = doc.get("/**") if isinstance(doc, dict) else None
+    params = block.get("ros__parameters") if isinstance(block, dict) else None
     if not isinstance(params, dict):
         raise FileProblem(f"{path} has no '/**: ros__parameters' block")
     return params
@@ -97,11 +98,13 @@ def hand_limits_deg(
     """(lower, upper) [deg] per joint of ``joint_names``, from the device
     group's ``joint_limits`` in a profile's ``_base.yaml`` (the YAML side of
     the limits; the CM may narrow them further to the URDF's)."""
-    device = _ros_parameters(base_yaml).get("devices", {}).get(group)
+    devices = _ros_parameters(base_yaml).get("devices")
+    device = devices.get(group) if isinstance(devices, dict) else None
     if not isinstance(device, dict):
         raise FileProblem(f"{base_yaml} has no device group '{group}'")
     names = device.get("joint_state_names")
-    limits = device.get("joint_limits", {})
+    limits = device.get("joint_limits")
+    limits = limits if isinstance(limits, dict) else {}
     lower, upper = limits.get("position_lower"), limits.get("position_upper")
     if not (
         isinstance(names, list)
@@ -110,6 +113,8 @@ def hand_limits_deg(
         and len(names) == len(lower) == len(upper)
     ):
         raise FileProblem(f"{base_yaml} '{group}': joint names and position limits do not match")
+    if not all(isinstance(n, str) for n in names):
+        raise FileProblem(f"{base_yaml} '{group}': a joint name is not a string")
     by_name = dict(zip(names, zip(lower, upper, strict=True), strict=True))
     missing = [n for n in joint_names if n not in by_name]
     if missing:
@@ -165,7 +170,7 @@ def validate_presets(
 
 def _check_robot_fields(preset: Mapping, where: str, arm_dof: int) -> None:
     goal_type = preset.get("robot_goal_type")
-    if goal_type not in ROBOT_GOAL_TYPES:
+    if not isinstance(goal_type, str) or goal_type not in ROBOT_GOAL_TYPES:
         raise FileProblem(f"{where}: robot_goal_type {goal_type!r} is not joint or task")
     length = ROBOT_GOAL_TYPES[goal_type] or arm_dof
     target = preset.get("robot_target")
@@ -327,15 +332,21 @@ def driver_calibration(driver_yaml: str, side: str) -> Calibration:
         return value if value else params.get(name)
 
     names = key("joint_state_names")
-    if not isinstance(names, list) or not names:
+    if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
         raise FileProblem(f"{driver_yaml} has no joint_state_names")
-    signs = key("joint_direction_signs") or [1.0] * len(names)
-    offsets = key("joint_position_offsets_deg") or [0.0] * len(names)
+
+    def numbers(name: str, default: float) -> tuple[float, ...]:
+        raw = key(name) or [default] * len(names)
+        values = [_number(v) for v in raw] if isinstance(raw, list) else [None]
+        if None in values:
+            raise FileProblem(f"{driver_yaml}: {name} is not a list of numbers")
+        return tuple(values)
+
     return Calibration(
         os.path.basename(driver_yaml),
         tuple(names),
-        tuple(float(x) for x in signs),
-        tuple(float(x) for x in offsets),
+        numbers("joint_direction_signs", 1.0),
+        numbers("joint_position_offsets_deg", 0.0),
     )
 
 
