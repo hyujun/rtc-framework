@@ -1197,7 +1197,7 @@ class DemoControllerGUI(Node):
                 else []
             )
             if refused:
-                # One preset of the other hand points seven joints the wrong
+                # One preset of the other hand points most joints the wrong
                 # way: refuse the whole file, but keep it (set aside, not
                 # overwritten by the defaults written below).
                 aside = refused_preset_path(self._preset_path)
