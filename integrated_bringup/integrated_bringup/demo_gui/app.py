@@ -226,6 +226,7 @@ from .param_readout import CachedParamReadout
 from .preset_speed import describe_plan, hand_speed_params, plan_hand_speed
 from .preset_toggle import (
     PresetToggleState,
+    atomic_write_json,
     format_keysym,
     is_text_input_widget,
     load_toggle_settings,
@@ -1207,10 +1208,8 @@ class DemoControllerGUI(Node):
         if presets is None:
             presets = self._presets
         try:
-            os.makedirs(os.path.dirname(self._preset_path), exist_ok=True)
-            with open(self._preset_path, "w") as f:
-                json.dump(presets, f, indent=2)
-        except OSError as e:
+            atomic_write_json(self._preset_path, presets, prefix=".hand_presets_")
+        except (OSError, TypeError, ValueError) as e:
             self.get_logger().error(f"Failed to save presets: {e}")
 
     # ── /rtc_cm/* + per-controller parameter helpers ─────────────────────

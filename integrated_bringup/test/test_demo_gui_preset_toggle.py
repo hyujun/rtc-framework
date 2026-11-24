@@ -2,6 +2,8 @@
 
 import inspect
 import json
+import os
+import stat
 import threading
 from types import MethodType, SimpleNamespace
 
@@ -10,6 +12,7 @@ import pytest
 from integrated_bringup.demo_gui.app import DemoControllerGUI
 from integrated_bringup.demo_gui.preset_toggle import (
     PresetToggleState,
+    atomic_write_json,
     format_keysym,
     is_text_input_widget,
     load_toggle_settings,
@@ -117,6 +120,23 @@ def test_atomic_save_leaves_valid_json(tmp_path):
     with path.open() as settings_file:
         assert json.load(settings_file)["preset_toggle"]["keysym"] == "space"
     assert list(tmp_path.glob(".demo_gui_settings_*.json")) == []
+
+
+def test_atomic_save_writes_the_mode_a_plain_open_would(tmp_path):
+    # mkstemp creates 0600: without the chmod every save of a file other
+    # tools read (a promoted, committed copy) would turn it private.
+    umask = os.umask(0o022)
+    try:
+        path = tmp_path / "new.json"
+        atomic_write_json(str(path), {"a": 1}, prefix=".t_")
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+        # A file that exists keeps the mode it has.
+        path.chmod(0o600)
+        atomic_write_json(str(path), {"a": 2}, prefix=".t_")
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert json.loads(path.read_text()) == {"a": 2}
+    finally:
+        os.umask(umask)
 
 
 class _Widget:
