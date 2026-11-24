@@ -30,6 +30,7 @@
 #include "hand_joint_test_rig.hpp"
 #include "integrated_bringup/support/controller_log_registration.hpp"
 #include "rtc_base/testing/isolated_session_dir.hpp"
+#include "rtc_controllers/params/dynamics_feedforward_params.hpp"
 #include "rtc_urdf_bridge/closed_chain_handle.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -1030,7 +1031,9 @@ TEST(HandJointModes, TheModeParsesFromTheYamlAndATypoIsRefused) {
 // ── The shipped p2 / p2_left YAML ───────────────────────────────────────────
 
 // One hand per profile: the right hand's p2 (group p2_right) and the left
-// hand's p2_left (group p2_left) ship the same controller values.
+// hand's p2_left (group p2_left). The tuned values are each rig's and change
+// with it, so these tests hold what the controller needs of them, not the
+// values themselves.
 class HandJointShipped : public ::testing::TestWithParam<std::pair<const char*, const char*>> {};
 
 TEST_P(HandJointShipped, TheYamlParsesAndNamesOneGroup) {
@@ -1044,7 +1047,11 @@ TEST_P(HandJointShipped, TheYamlParsesAndNamesOneGroup) {
   const auto parsed = ParseHandJointConfig(cfg);
   EXPECT_EQ(parsed.mode, HandJointMode::kTracking) << "the shipped mode is spelled out";
   EXPECT_TRUE(parsed.ff.enabled);
-  EXPECT_DOUBLE_EQ(parsed.ff.gravity_gain, 1.0);
+  // A shipped gravity gain must compensate (> 0; 0 would leave the hand to
+  // sag) and stay in the range the runtime parameter accepts.
+  EXPECT_TRUE(std::isfinite(parsed.ff.gravity_gain));
+  EXPECT_GT(parsed.ff.gravity_gain, 0.0);
+  EXPECT_LE(parsed.ff.gravity_gain, rtc::params::kDynamicsFeedforwardGainMax);
   EXPECT_DOUBLE_EQ(parsed.ff.inertia_gain, 1.0) << "the inertia term ships on, spelled out";
   EXPECT_TRUE(cfg["dynamics_feedforward"]["inertia_gain"]);
   // The bound covers the sum of the gravity and the inertia term.
