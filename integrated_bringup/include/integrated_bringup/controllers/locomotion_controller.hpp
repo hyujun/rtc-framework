@@ -162,6 +162,7 @@
 //     max_policy_age_s: s (≥ 0) # a plan older than this is dropped (0 = the horizon only)
 //     riccati: {enabled: bool, ...}   # rtc_mpc MPCSolutionManager
 //     sanity: {joint_delta_rad, base_speed, wrench_scale}   # all > 0, below
+//     activation_height: config | measured   # optional; absent = config (below)
 //     ocp_type / solver / kinodynamic / max_stale_solutions   # rtc_mpc MPCFactory · manager
 //     sync:         # optional; absent = free_run
 //       mode: free_run | lockstep   # lockstep: the RT tick triggers the solve every
@@ -216,6 +217,18 @@
 // activation resets the filter (the height back to command.base_height). The
 // key is accepted without mpc.enabled and does nothing (the plan is the
 // command's only consumer), so a profile may keep it while the MPC is off.
+//
+// mpc.activation_height: measured — the activation's first reference latch
+// (not a later one: a fault reset, an E-STOP edge and a lost plan keep the
+// commanded height) resets the filter once more, to the measured base height
+// (the state's world z, the frame the planner's height is in) clamped into
+// [command.h_min, command.h_max]: the robot keeps the height the controller
+// before this one left it at instead of moving to command.base_height. The
+// filter keeps its one writer — under lock-step the RT tick resets it; under
+// free_run the tick hands the height to the wall timer, which resets the
+// filter before its next step (so the timer then runs without a command topic
+// too, and a solve started in the first timer period still plans at
+// command.base_height).
 // Each step also hands the output and the phase manager's gait to the RT tick
 // through a wait-free triple buffer, for the diagnostic log only (the RT tick
 // never reads the phase manager or a SeqLock the timer writes).
@@ -313,13 +326,14 @@ struct LocomotionMpcConfig {
   int period_nodes{1};
   double max_policy_age_s{0.0};  ///< checked here; the plan sampler reads it from `node`
   bool riccati_enabled{false};
-  double sanity_joint_delta_rad{0.0};  ///< [rad]
-  double sanity_base_speed{0.0};       ///< [m/s]
-  double sanity_wrench_scale{0.0};     ///< × the robot's weight
-  bool lockstep{false};                ///< `sync.mode: lockstep` (header comment)
-  int delivery_ticks{0};               ///< `sync.delivery_ticks`; 0 = one period
-  double wait_timeout_s{2.0};          ///< `sync.wait_timeout_s`
-  YAML::Node node;                     ///< the whole section (factory and manager keys)
+  bool activation_height_measured{false};  ///< `activation_height: measured` (header comment)
+  double sanity_joint_delta_rad{0.0};      ///< [rad]
+  double sanity_base_speed{0.0};           ///< [m/s]
+  double sanity_wrench_scale{0.0};         ///< × the robot's weight
+  bool lockstep{false};                    ///< `sync.mode: lockstep` (header comment)
+  int delivery_ticks{0};                   ///< `sync.delivery_ticks`; 0 = one period
+  double wait_timeout_s{2.0};              ///< `sync.wait_timeout_s`
+  YAML::Node node;                         ///< the whole section (factory and manager keys)
 };
 
 /// @brief The controller's own sections of its YAML (Pass 1, schema only).
@@ -575,6 +589,9 @@ class LocomotionController final : public rtc::RTControllerInterface {
   /// on the tick clock (the input's age too); the planner gets the latest
   /// output on the trigger tick only.
   void StepCommandOnTick() noexcept;
+  /// RT tick, the activation's first latch under `mpc.activation_height:
+  /// measured` (header): the measured base height to the command filter.
+  void LatchActivationHeight() noexcept;
   void PushCommand(const rtc::mpc::FilteredCommand& cmd, const LocomotionCommandSource& source,
                    bool to_planner) noexcept;
   void StartCommandTimer() noexcept;  ///< activation: the filter reset, the timer up
@@ -770,6 +787,10 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::uint64_t cmd_seen_sequence_{0};
   std::int64_t cmd_seen_tick_ns_{std::numeric_limits<std::int64_t>::min()};
   rtc::mpc::FilteredCommand cmd_latest_{};
+  // mpc.activation_height: measured (header). The RT tick's flag, and the
+  // height it hands the wall timer under free_run (NaN = nothing to apply).
+  bool height_latch_pending_{false};
+  std::atomic<double> pending_height_{std::numeric_limits<double>::quiet_NaN()};
   std::atomic<std::uint64_t> cmd_nonfinite_outputs_{0};  ///< RT tick writes, the 1 Hz log reads
   std::uint64_t cmd_nonfinite_reported_{0};              ///< the 1 Hz log's last count
   std::atomic<bool> in_compute_{false};  ///< the RT tick is inside Compute (deactivate waits on it)

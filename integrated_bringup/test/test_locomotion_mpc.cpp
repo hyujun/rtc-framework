@@ -867,6 +867,34 @@ TEST_F(LocomotionCommandTest, AnActivationResetsTheCommand) {
   EXPECT_NEAR(ctrl_->LastCommand().v_x, 0.3, 0.02);
 }
 
+// mpc.activation_height: measured under free_run: the tick hands the height
+// to the wall timer, the filter's one writer.
+TEST_F(LocomotionCommandTest, AMeasuredActivationHeightReachesTheFilterThroughTheTimer) {
+  YAML::Node cfg = MpcConfig();
+  cfg["mpc"]["activation_height"] = "measured";
+  BringUpSpinning(cfg);
+  const double stands = state_.devices[kBody].base_pose[2];
+  ASSERT_NE(stands, cfg["command"]["base_height"].as<double>());
+  ReachStand();
+  const auto twist = Twist(0.3);
+  SpinFor(600ms, &twist);
+  const auto cmd = ctrl_->LastCommand();
+  EXPECT_EQ(cmd.base_height, stands);
+  EXPECT_NEAR(cmd.v_x, 0.3, 0.02) << "the command path runs on";
+  EXPECT_EQ(ctrl_->LastDiag().cmd_h, stands);
+}
+
+TEST_F(LocomotionCommandTest, AMeasuredActivationHeightNeedsNoCommandTopic) {
+  YAML::Node cfg = MpcConfig();
+  cfg.remove("velocity_command");
+  cfg["mpc"]["activation_height"] = "measured";
+  BringUpSpinning(cfg);
+  EXPECT_FALSE(ctrl_->VelocityCommandSubscribed());
+  SpinFor(300ms);
+  EXPECT_EQ(ctrl_->LastCommand().base_height, state_.devices[kBody].base_pose[2])
+      << "the timer runs for the height alone";
+}
+
 TEST_F(LocomotionCommandTest, TheStatusTopicCarriesTheSourceThePlanAndTheCommand) {
   BringUpSpinning();
   ReachStand();

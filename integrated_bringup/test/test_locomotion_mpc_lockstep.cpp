@@ -317,6 +317,96 @@ TEST_F(LocomotionMpcLockstepTest, TheCommandFilterStepsOnTheTickClock) {
   EXPECT_TRUE(stale.valid);
 }
 
+// mpc.activation_height: measured — the activation's first latch puts the
+// command at the height the robot stands at; the planner plans at it.
+YAML::Node MeasuredHeightConfig() {
+  YAML::Node cfg = LockstepConfig();
+  cfg["mpc"]["activation_height"] = "measured";
+  return cfg;
+}
+
+TEST_F(LocomotionMpcLockstepTest, TheActivationHeightKeyIsChecked) {
+  ExpectRefused(
+      LockstepConfig(), [](YAML::Node& c) { c["mpc"]["activation_height"] = "latched"; },
+      "unknown source");
+  ExpectRefused(
+      LockstepConfig(), [](YAML::Node& c) { c["mpc"]["activation_height"] = YAML::Node(); },
+      "no value");
+  EXPECT_FALSE(ParseLocomotionControllerConfig(LockstepConfig()).mpc.activation_height_measured)
+      << "absent = config";
+  YAML::Node config = LockstepConfig();
+  config["mpc"]["activation_height"] = "config";
+  EXPECT_FALSE(ParseLocomotionControllerConfig(config).mpc.activation_height_measured);
+  EXPECT_TRUE(
+      ParseLocomotionControllerConfig(MeasuredHeightConfig()).mpc.activation_height_measured);
+}
+
+TEST_F(LocomotionMpcLockstepTest, AConfiguredActivationHeightIsTheCommandsBaseHeight) {
+  YAML::Node cfg = LockstepConfig();
+  cfg["mpc"]["activation_height"] = "config";
+  BringUpLockstep(cfg);
+  const double configured = cfg["command"]["base_height"].as<double>();
+  ASSERT_NE(state_.devices[kBody].base_pose[2], configured) << "the rig stands elsewhere";
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->Source() == Source::kStand; }));
+  EXPECT_EQ(ctrl_->LastCommand().base_height, configured);
+  EXPECT_EQ(ctrl_->LastDiag().cmd_h, configured);
+}
+
+TEST_F(LocomotionMpcLockstepTest, AMeasuredActivationHeightIsWhereTheRobotStands) {
+  const YAML::Node cfg = MeasuredHeightConfig();
+  BringUpLockstep(cfg);
+  const double stands = state_.devices[kBody].base_pose[2];
+  ASSERT_NE(stands, cfg["command"]["base_height"].as<double>());
+  ASSERT_GT(stands, cfg["command"]["h_min"].as<double>());
+  ASSERT_LT(stands, cfg["command"]["h_max"].as<double>());
+  EXPECT_EQ(ctrl_->LastCommand().base_height, cfg["command"]["base_height"].as<double>())
+      << "before the first tick: the activation's reset";
+  static_cast<void>(Tick());  // the latch
+  EXPECT_EQ(ctrl_->LastCommand().base_height, stands);
+  EXPECT_EQ(ctrl_->LastCommand().sequence, 0U) << "a reset, not a step";
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->Source() == Source::kStand; }));
+  EXPECT_EQ(ctrl_->LastCommand().base_height, stands) << "the steps keep it";
+  EXPECT_EQ(ctrl_->LastDiag().cmd_h, stands);
+}
+
+// Only the activation's latch: an E-STOP edge restarts the reference with the
+// robot elsewhere and the commanded height stays.
+TEST_F(LocomotionMpcLockstepTest, ALaterLatchKeepsTheCommandedHeight) {
+  BringUpLockstep(MeasuredHeightConfig());
+  const double stands = state_.devices[kBody].base_pose[2];
+  ASSERT_TRUE(TickUntil([this] { return ctrl_->Source() == Source::kStand; }));
+  ctrl_->TriggerEstop();
+  static_cast<void>(Tick());
+  state_.devices[kBody].base_pose[2] = stands - 0.004;
+  ctrl_->ClearEstop();
+  for (int i = 0; i < 2 * static_cast<int>(n_); ++i) {
+    static_cast<void>(Tick());
+  }
+  EXPECT_EQ(ctrl_->LastCommand().base_height, stands);
+}
+
+TEST_F(LocomotionMpcLockstepTest, AMeasuredActivationHeightIsClampedIntoTheCommandRange) {
+  const YAML::Node cfg = MeasuredHeightConfig();
+  BringUpLockstep(cfg);
+  const double h_max = cfg["command"]["h_max"].as<double>();
+  state_.devices[kBody].base_pose[2] = h_max + 0.2;
+  static_cast<void>(Tick());
+  EXPECT_EQ(ctrl_->LastCommand().base_height, h_max);
+}
+
+// A second activation latches again, at where the robot stands then.
+TEST_F(LocomotionMpcLockstepTest, EachActivationLatchesItsOwnHeight) {
+  BringUpLockstep(MeasuredHeightConfig());
+  const double first = state_.devices[kBody].base_pose[2];
+  static_cast<void>(Tick());
+  ASSERT_EQ(ctrl_->LastCommand().base_height, first);
+  Deactivate();
+  state_.devices[kBody].base_pose[2] = first - 0.006;
+  Activate();
+  static_cast<void>(Tick());
+  EXPECT_EQ(ctrl_->LastCommand().base_height, first - 0.006);
+}
+
 TEST_F(LocomotionMpcLockstepTest, ACommandRateOffTheTickGridIsRefusedUnderLockstep) {
   YAML::Node cfg = LockstepConfig();
   cfg["command"]["sample_rate_hz"] = 300.0;  // 500 / 300 ticks a step
