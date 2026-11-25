@@ -2188,29 +2188,32 @@ test_external_driver_slots_per_tier() {
   # test_layout_tier_tables_per_tier (아래) 와 test_thread_layout_equivalence.py
   # (ncpu 1..17+24 마다 python/manifest 의 tier id 일치) 가 각각 독립으로 박는다.
   # 여기서 남는 역할은 degraded→공유→전용 전이 두 곳(5→6, 7→8)의 고정이다.
-  expect_eq "drvslot.arm.4"   "0" "$(get_arm_driver_slot 4)"
-  expect_eq "drvslot.hand.4"  "0" "$(get_hand_driver_slot 4)"
-  expect_eq "drvslot.arm.5"   "0" "$(get_arm_driver_slot 5)"
-  expect_eq "drvslot.hand.5"  "0" "$(get_hand_driver_slot 5)"
-  expect_eq "drvslot.arm.6"   "4" "$(get_arm_driver_slot 6)"
-  expect_eq "drvslot.hand.6"  "4" "$(get_hand_driver_slot 6)"
-  expect_eq "drvslot.arm.7"   "4" "$(get_arm_driver_slot 7)"
-  expect_eq "drvslot.hand.7"  "4" "$(get_hand_driver_slot 7)"
-  expect_eq "drvslot.arm.8"   "4" "$(get_arm_driver_slot 8)"
-  expect_eq "drvslot.hand.8"  "5" "$(get_hand_driver_slot 8)"
-  expect_eq "drvslot.arm.9"   "4" "$(get_arm_driver_slot 9)"
-  expect_eq "drvslot.hand.9"  "5" "$(get_hand_driver_slot 9)"
-  expect_eq "drvslot.arm.10"  "4" "$(get_arm_driver_slot 10)"
-  expect_eq "drvslot.hand.10" "5" "$(get_hand_driver_slot 10)"
-  expect_eq "drvslot.arm.11"  "4" "$(get_arm_driver_slot 11)"
-  expect_eq "drvslot.hand.11" "5" "$(get_hand_driver_slot 11)"
-  expect_eq "drvslot.arm.12"  "4" "$(get_arm_driver_slot 12)"
-  expect_eq "drvslot.hand.12" "5" "$(get_hand_driver_slot 12)"
-  expect_eq "drvslot.arm.16"  "4" "$(get_arm_driver_slot 16)"
-  expect_eq "drvslot.hand.16" "5" "$(get_hand_driver_slot 16)"
-  expect_eq "drvslot.arm.24"  "4" "$(get_arm_driver_slot 24)"
-  expect_eq "drvslot.hand.24" "5" "$(get_hand_driver_slot 24)"
+  # 슬롯 값 자체는 layout 이 바꾸는 튜닝이다 — 박지 않고 관계만 본다: 슬롯은 그 호스트에
+  # 존재하는 코어이고, degraded tier 는 OS 코어에 접히며, 전용 tier 는 RT 집합과 OS 코어
+  # 밖의 자기 코어를 갖는다. 공유 여부 (degraded↔전용) 는 아래 테스트가 갖는다.
+  local n slot role os
+  os=$(get_os_cores)
+  for n in 4 5 6 7 8 9 10 11 12 16 24; do
+    for role in arm hand; do
+      slot=$("get_${role}_driver_slot" "$n")
+      if [[ ! "$slot" =~ ^[0-9]+$ ]] || (( slot >= n )); then
+        fail "[drvslot.${role}.${n}] slot '${slot}' 은 ${n} 코어 호스트의 코어가 아니다"
+        continue
+      fi
+      if (( n < 6 )); then
+        expect_eq "drvslot.${role}.${n}.folds_onto_os" "$os" "$slot"
+      elif _csv_has "$slot" "$(get_rt_cores "$n")" || [[ "$slot" == "$os" ]]; then
+        fail "[drvslot.${role}.${n}] slot ${slot} 이 RT 집합 ($(get_rt_cores "$n")) 또는 OS 코어와 겹친다"
+      else
+        pass
+      fi
+    done
+  done
 }
+
+# 쉼표 목록 $2 에 정수 $1 이 있는가.
+_csv_has() { [[ ",$2," == *",$1,"* ]]; }
+
 
 test_external_driver_slots_share_a_core_only_on_the_degraded_tiers() {
   # 6-7 tier 의 print_thread_layout 은 "arm_driver + hand_driver (shared)" 를
@@ -2833,47 +2836,37 @@ test_inferred_profile_says_so_when_only_mpc_is_missing() {
 # get_cm_shield_cpus / get_rt_cores_with_siblings 만 덮여 있었다).
 
 test_layout_tier_tables_per_tier() {
-  local n
-  # ≤5 (degraded) — nrt 가 OS Core 0 을 공유한다.
-  for n in 1 4 5; do
-    expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
-    expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "0"     "$(get_nrt_cores "$n")"
-  done
-  # 6-7 — v5 부터 nrt 3 레인은 aux slot 2 (rt_callback 슬롯) 위다.
-  for n in 6 7; do
-    expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
-    expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "2"     "$(get_nrt_cores "$n")"
-  done
-  # 8-9 — arm/hand 전용 슬롯.
-  for n in 8 9; do
-    expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
-    expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "2"     "$(get_nrt_cores "$n")"
-  done
-  # 10+ — #380 이 mpc_worker 슬롯을 회수한 뒤로 RT 집합은 tier 와 무관하게
-  # rt_control + rt_callback + mpc_main 셋이다. 이 행들이 다시 넓어지면 shield 가
-  # 아무도 안 쓰는 코어를 격리한다는 뜻이므로 tier 마다 따로 박는다.
-  for n in 10 11 12 13 14 15 16 17 24; do
-    expect_eq "mpc.${n}" "3"     "$(get_mpc_cores "$n")"
-    expect_eq "rt.${n}"  "1,2,3" "$(get_rt_cores "$n")"
-    expect_eq "nrt.${n}" "2"     "$(get_nrt_cores "$n")"
-  done
-  # v5 는 nrt 를 RT 집합의 부분집합으로 만든다 (aux slot = rt_callback slot).
-  # 이 관계가 깨지면 get_cm_shield_cpus 의 union 이 다시 넓어지므로 함께 박는다.
-  for n in 6 8 10 12 16 24; do
-    expect_eq "nrt_subset_of_rt.${n}" "2" "$(get_role_slot rt_callback "$n")"
-  done
-  # OS slot 은 모든 tier 공통 (v4.1) — shield 가 절대 덮으면 안 되는 코어.
-  for n in 1 4 6 8 10 12 16 24; do
-    expect_eq "os.${n}" "0" "$(get_os_cores)"
-  done
-  # get_mpc_main_core 는 파생이므로 첫 항목과 항상 같아야 한다.
-  for n in 4 8 12 16; do
-    expect_eq "mpcmain.${n}" "3" "$(get_mpc_main_core "$n")"
+  # 코어 번호는 layout 이 바꾸는 값이라 박지 않고 tier 마다 관계로 본다 (생성물끼리의 대조가
+  # 아니라 서로 독립인 함수 사이의 관계 — 틀린 표는 여기서 깨진다):
+  #  - mpc ⊂ rt, mpc_main == mpc 의 첫 항목 (파생이므로)
+  #  - OS 코어는 rt 밖 (shield 가 절대 덮으면 안 된다)
+  #  - nrt: degraded (≤5) 는 OS 코어에 접히고, 6+ 는 rt 집합의 부분집합 (v5 — 이 관계가
+  #    깨지면 get_cm_shield_cpus 의 union 이 다시 넓어진다), rt_callback 슬롯과 같다
+  #  - rt 집합은 tier 가 올라가도 넓어지지 않는다 (#380 — 아무도 안 쓰는 코어를 격리한다)
+  local n os c mpc rt nrt prev_rt=""
+  os=$(get_os_cores)
+  for n in 1 4 5 6 7 8 9 10 11 12 13 14 15 16 17 24; do
+    mpc=$(get_mpc_cores "$n"); rt=$(get_rt_cores "$n"); nrt=$(get_nrt_cores "$n")
+    for c in ${mpc//,/ }; do
+      _csv_has "$c" "$rt" && pass || fail "[mpc_in_rt.${n}] mpc 코어 ${c} 가 rt 집합 (${rt}) 밖"
+    done
+    _csv_has "$os" "$rt" && fail "[os_not_in_rt.${n}] OS 코어 ${os} 가 rt 집합 (${rt}) 에 있다" || pass
+    expect_eq "mpcmain.${n}" "${mpc%%,*}" "$(get_mpc_main_core "$n")"
+    if (( n <= 5 )); then
+      expect_eq "nrt_folds_onto_os.${n}" "$os" "$nrt"
+    else
+      for c in ${nrt//,/ }; do
+        _csv_has "$c" "$rt" && pass || fail "[nrt_subset_of_rt.${n}] nrt 코어 ${c} 가 rt 집합 (${rt}) 밖"
+      done
+      expect_eq "nrt_on_rt_callback_slot.${n}" "$(get_role_slot rt_callback "$n")" "$nrt"
+    fi
+    if (( n >= 10 )) && [[ -n "$prev_rt" ]]; then
+      expect_eq "rt_flat_above_10.${n}" "$prev_rt" "$rt"
+    fi
+    (( n >= 10 )) && prev_rt=$rt
   done
 }
+
 
 test_layout_worker_roles_absent_on_every_tier() {
   # #380 이 mpc_worker 를 manifest 에서 지웠다. 이 테스트는 그 전에 "worker 는 10
