@@ -5,8 +5,8 @@
 /// produce:
 ///
 ///   1. One task is the old problem. A single universe-base task must give the
-///      single-task overloads' output BIT FOR BIT — on the golden table's
-///      universe scenarios (so, transitively, the recorded table), and on
+///      single-task overloads' output BIT FOR BIT — on the shared
+///      universe scenarios, and on
 ///      closed-loop runs with every option, on a 9-DoF and a 6-DoF model (the
 ///      cost products take a different Eigen kernel below 20 = rows + 2·nv).
 ///   2. The relative task is the motion of one frame seen from another. Its
@@ -18,7 +18,7 @@
 ///      equivalent uncapped problem, the input checks against untouched
 ///      outputs.
 ///
-/// The registered-base scenarios of the golden table are NOT replayed: their
+/// The registered-base scenarios of the shared set are NOT replayed: their
 /// base (panda_link1) moves with joint 1, and the SE3 overload takes its base
 /// as fixed in the world for the tick (it rotates the reference into the world
 /// and keeps rf.J), where the relative task's J_rel carries the base's motion.
@@ -84,7 +84,7 @@ using test::Sci;
   return in;
 }
 
-// ── 1a. The golden table's universe scenarios ───────────────────────────────
+// ── 1a. The shared universe scenarios ───────────────────────────────
 
 class ClikMultiFrameGoldenTest : public test::clik_golden::ClikGoldenScenarioTest {};
 

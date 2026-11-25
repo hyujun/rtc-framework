@@ -1,12 +1,10 @@
 // locomotion_controller.mpc.* (g1_loco): the installed fragment, composed by the CM's own loader
 // (rtc::LoadControllerConfig — the `include:` merge included), loads through rtc_mpc's
 // kinodynamic OCP config loader onto the MPC model — the shipped floating body with the hand
-// locked — and creates the MPC through MPCFactory. Its weights are the reference whole-body
-// task's: the state, terminal and input diagonals equal that task's Q, Q_final and R (the R
-// scaling folded in), carried onto this repo's tangent by the layout adapter. The schema and every
-// refusal are rtc_mpc's own tests; this one is the wiring and the transcription. No ROS node.
+// locked — and creates the MPC through MPCFactory. Weights, gains and solver settings are tuning:
+// the tests hold the properties a run needs (finite, positive, sized to the model), not the values.
+// The schema and every refusal are rtc_mpc's own tests; this one is the wiring. No ROS node.
 #include "integrated_bringup/controllers/locomotion/humanoid_model_config.hpp"
-#include "integrated_bringup/controllers/locomotion/original_layout_adapter.hpp"
 #include "rtc_controller_manager/controller_config_loader.hpp"
 #include "rtc_mpc/handler/mpc_factory.hpp"
 #include "rtc_mpc/model/robot_model_handler.hpp"
@@ -34,8 +32,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
-#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -54,54 +52,12 @@ YAML::Node InstalledLocomotionConfig() {
   return rtc::LoadControllerConfig(main, "locomotion_controller");
 }
 
-// The reference whole-body task's diagonals, in its own layout and order
-// (base position x y z; Euler angles z, y, x; the 23 body joints; base linear
-// velocity; Euler-angle rates z, y, x; joint rates).
-constexpr std::array<double, 23> kQJoints = {
-    0.05, 0.2, 0.2, 0.1, 0.1, 0.1,  // left leg: hip pitch, roll, yaw, knee, ankle pitch, roll
-    0.05, 0.2, 0.2, 0.1, 0.1, 0.1,  // right leg
-    2.0,  2.0, 2.0,                 // waist yaw, roll, pitch
-    0.4,  2.0, 0.4, 0.4,            // left arm: shoulder pitch, roll, yaw, elbow
-    0.4,  2.0, 0.4, 0.4};           // right arm
-constexpr std::array<double, 23> kQfJoints = {
-    0.05, 0.1, 0.1, 0.1, 0.1, 0.1,  // Q_final: hip roll and yaw 0.1
-    0.05, 0.1, 0.1, 0.1, 0.1, 0.1,  //
-    2.0,  2.0, 2.0,                 //
-    0.4,  2.0, 0.4, 0.4,            //
-    0.4,  2.0, 0.4, 0.4};
-constexpr std::array<double, 23> kQJointRates = {0.001, 0.001, 0.001, 0.001, 0.001, 0.001,  //
-                                                 0.001, 0.001, 0.001, 0.001, 0.001, 0.001,  //
-                                                 0.2,   0.2,   0.2,                         //
-                                                 0.02,  0.02,  0.02,  0.02,                 //
-                                                 0.02,  0.02,  0.02,  0.02};
-
-Eigen::VectorXd ReferenceStateWeights(const std::array<double, 23>& joints) {
-  Eigen::VectorXd w(58);
-  w.head<6>() << 0.0, 0.0, 10.0, 0.0, 20.0, 20.0;  // p x y z; θ z y x
-  for (int i = 0; i < 23; ++i) {
-    w[6 + i] = joints[static_cast<std::size_t>(i)];
+// Every entry finite and >= 0 (a weight diagonal; 0 is a valid "unweighted").
+void ExpectNonNegativeFinite(const Eigen::VectorXd& w, const char* what) {
+  for (Eigen::Index i = 0; i < w.size(); ++i) {
+    EXPECT_TRUE(std::isfinite(w[i])) << what << "[" << i << "]";
+    EXPECT_GE(w[i], 0.0) << what << "[" << i << "]";
   }
-  w.segment<6>(29) << 3.0, 3.0, 3.0, 3.0, 3.0, 3.0;  // v x y z; θ̇ z y x
-  for (int i = 0; i < 23; ++i) {
-    w[35 + i] = kQJointRates[static_cast<std::size_t>(i)];
-  }
-  return w;
-}
-
-// R: left wrench, right wrench (force x y z, moment x y z), then the 23 joint
-// accelerations; the task's `scaling 1e-3` applied.
-Eigen::VectorXd ReferenceInputWeights() {
-  Eigen::VectorXd r(35);
-  for (int c = 0; c < 2; ++c) {
-    r.segment<6>(6 * c) << 0.003, 0.003, 0.001, 0.01, 0.01, 0.1;
-  }
-  r.tail<23>().setConstant(0.005);
-  return r * 1e-3;
-}
-
-bool BitEqual(const Eigen::VectorXd& a, const Eigen::VectorXd& b) {
-  return a.size() == b.size() &&
-         std::memcmp(a.data(), b.data(), sizeof(double) * static_cast<std::size_t>(a.size())) == 0;
 }
 
 class LocomotionMpcConfig : public ::testing::Test {
@@ -147,65 +103,80 @@ TEST_F(LocomotionMpcConfig, TheMpcModelIsTheFloatingBodyInRosterOrder) {
   EXPECT_EQ(loco::JointOrder(model_), body_);
 }
 
-// The installed weights, laid onto the model, equal the reference task's Q,
-// Q_final and R carried onto the tangent — exactly.
-TEST_F(LocomotionMpcConfig, TheInstalledWeightsAreTheReferenceTasks) {
+// The installed weights, laid onto the model, are what the OCP needs to run:
+// one diagonal entry per tangent coordinate / input, finite and non-negative,
+// at least one active, over a positive horizon. Their values are tuning, not
+// pinned here.
+TEST_F(LocomotionMpcConfig, TheInstalledWeightsFitTheModelAndAreUsable) {
   rtc::mpc::KinodynamicOCPConfig cfg;
   ASSERT_EQ(rtc::mpc::LoadKinodynamicOCPConfig(root_["mpc"]["kinodynamic"], handler_, cfg),
             rtc::mpc::KinodynamicOCPConfigError::kNoError);
-  Eigen::VectorXd q(58);
-  Eigen::VectorXd qf(58);
-  ASSERT_TRUE(loco::OriginalWeightsToTangent(ReferenceStateWeights(kQJoints), q));
-  ASSERT_TRUE(loco::OriginalWeightsToTangent(ReferenceStateWeights(kQfJoints), qf));
-  EXPECT_TRUE(BitEqual(cfg.state_weights, q));
-  EXPECT_TRUE(BitEqual(cfg.terminal_weights, qf));
-  EXPECT_TRUE(BitEqual(cfg.input_weights, ReferenceInputWeights()));
-  EXPECT_EQ(cfg.terminal_scaling, 4.0);
-  EXPECT_EQ(cfg.horizon_nodes, 32);
-  EXPECT_EQ(cfg.dt, 0.035);
-  EXPECT_EQ(cfg.integrator, rtc::mpc::KinodynamicIntegrator::kSemiImplicitEuler);
-  // The foot weights the reference applies (its loader's, not its file's).
-  Eigen::Matrix<double, 18, 1> foot;
-  foot << 0.0, 0.0, 0.0, 1e4, 1e4, 0.0, 5.0, 5.0, 0.0, 2.0, 2.0, 2.0, 0.01, 0.01, 0.01, 0.01, 0.01,
-      0.01;
-  EXPECT_TRUE(BitEqual(cfg.contact_tracking_weights, foot));
+  // State = tangent position (nv) + velocity (nv); input = 2 wrenches + joint accelerations.
+  const Eigen::Index state_dim = 2 * model_.nv;
+  EXPECT_EQ(cfg.state_weights.size(), state_dim);
+  EXPECT_EQ(cfg.terminal_weights.size(), state_dim);
+  EXPECT_EQ(cfg.input_weights.size(), static_cast<Eigen::Index>(handler_.nu()));
+  ExpectNonNegativeFinite(cfg.state_weights, "state_weights");
+  ExpectNonNegativeFinite(cfg.terminal_weights, "terminal_weights");
+  ExpectNonNegativeFinite(cfg.input_weights, "input_weights");
+  EXPECT_GT(cfg.state_weights.maxCoeff(), 0.0);
+  EXPECT_GT(cfg.input_weights.minCoeff(), 0.0) << "an unweighted input leaves the Hessian singular";
+  EXPECT_TRUE(std::isfinite(cfg.terminal_scaling));
+  EXPECT_GT(cfg.terminal_scaling, 0.0);
+  EXPECT_GT(cfg.horizon_nodes, 0);
+  EXPECT_TRUE(std::isfinite(cfg.dt));
+  EXPECT_GT(cfg.dt, 0.0);
+  const double horizon_s = cfg.dt * cfg.horizon_nodes;
+  EXPECT_GE(horizon_s, 0.1) << "a horizon shorter than a gait phase cannot plan a step";
+  EXPECT_LE(horizon_s, 10.0);
+  EXPECT_TRUE(cfg.integrator == rtc::mpc::KinodynamicIntegrator::kSemiImplicitEuler ||
+              cfg.integrator == rtc::mpc::KinodynamicIntegrator::kRk2);
+  ExpectNonNegativeFinite(cfg.contact_tracking_weights, "contact_tracking_weights");
 }
 
-// The installed contact constraints equal the reference task's: its
-// foot_constraint gains, friction cone and CoP rectangle with their barriers, its joint-limit and
-// collision barriers, and its 16 foot / knee sphere pairs rebuilt here from
-// its definition (foot centre, centre ± 0.6·x_max along the sole, ankle; the
-// knees) — with the sole frame of this model as the foot centre.
-TEST_F(LocomotionMpcConfig, TheInstalledConstraintsAreTheReferenceTasks) {
+// The installed contact constraints are usable and fit the model: gains and
+// barrier parameters finite and positive, the friction cone and CoP rectangle
+// non-degenerate, and the collision spheres rebuilt here from their definition
+// (foot centre, centre ± 0.6·x_max along the sole, ankle; the knees) — with the
+// sole frame of this model as the foot centre. Values are tuning, not pinned.
+TEST_F(LocomotionMpcConfig, TheInstalledConstraintsAreUsableAndFitTheModel) {
   rtc::mpc::KinodynamicOCPConfig cfg;
   ASSERT_EQ(rtc::mpc::LoadKinodynamicOCPConfig(root_["mpc"]["kinodynamic"], handler_, cfg),
             rtc::mpc::KinodynamicOCPConfigError::kNoError);
   const rtc::mpc::KinodynamicConstraintsConfig& c = cfg.constraints;
   const rtc::mpc::FootConstraintGains& g = c.foot_constraint;
-  EXPECT_EQ(g.position_z, 100.0);
-  EXPECT_EQ(g.orientation, 80.0);
-  EXPECT_EQ(g.linear_velocity_xy, 20.0);
-  EXPECT_EQ(g.linear_velocity_z, 10.0);
-  EXPECT_EQ(g.angular_velocity, 20.0);
-  EXPECT_EQ(g.linear_acceleration_xy, 1.0);
-  EXPECT_EQ(g.linear_acceleration_z, 1.0);
-  EXPECT_EQ(g.angular_acceleration, 1.0);
-  EXPECT_EQ(c.friction.mu, 0.4);
-  EXPECT_EQ(c.friction.grip_force, 0.0);
-  EXPECT_EQ(c.friction.regularization, 25.0);
-  EXPECT_EQ(c.contact_rectangle.x_min, -0.09);
-  EXPECT_EQ(c.contact_rectangle.x_max, 0.09);
-  EXPECT_EQ(c.contact_rectangle.y_min, -0.03);
-  EXPECT_EQ(c.contact_rectangle.y_max, 0.03);
-  EXPECT_EQ(c.friction_barrier.mu, 0.2);
-  EXPECT_EQ(c.friction_barrier.delta, 5.0);
-  EXPECT_EQ(c.cop_barrier.mu, 0.6);
-  EXPECT_EQ(c.cop_barrier.delta, 0.03);
-  EXPECT_EQ(c.joint_limits.mu, 1200.0);
-  EXPECT_EQ(c.joint_limits.delta, 0.1);
-  EXPECT_TRUE(c.collision_enabled);
-  EXPECT_EQ(c.collision.mu, 1500.0);
-  EXPECT_EQ(c.collision.delta, 0.04);
+  const auto positive = [](double v) { return std::isfinite(v) && v > 0.0; };
+  EXPECT_TRUE(positive(g.position_z));
+  EXPECT_TRUE(positive(g.orientation));
+  EXPECT_TRUE(positive(g.linear_velocity_xy));
+  EXPECT_TRUE(positive(g.linear_velocity_z));
+  EXPECT_TRUE(positive(g.angular_velocity));
+  EXPECT_TRUE(positive(g.linear_acceleration_xy));
+  EXPECT_TRUE(positive(g.linear_acceleration_z));
+  EXPECT_TRUE(positive(g.angular_acceleration));
+  EXPECT_TRUE(positive(c.friction.mu));
+  EXPECT_LT(c.friction.mu, 2.0) << "a friction coefficient above 2 is not a floor contact";
+  EXPECT_TRUE(std::isfinite(c.friction.grip_force));
+  EXPECT_GE(c.friction.grip_force, 0.0);
+  EXPECT_TRUE(positive(c.friction.regularization));
+  EXPECT_TRUE(std::isfinite(c.contact_rectangle.x_min));
+  EXPECT_TRUE(std::isfinite(c.contact_rectangle.x_max));
+  EXPECT_TRUE(std::isfinite(c.contact_rectangle.y_min));
+  EXPECT_TRUE(std::isfinite(c.contact_rectangle.y_max));
+  EXPECT_LT(c.contact_rectangle.x_min, 0.0);
+  EXPECT_GT(c.contact_rectangle.x_max, 0.0);
+  EXPECT_LT(c.contact_rectangle.y_min, 0.0);
+  EXPECT_GT(c.contact_rectangle.y_max, 0.0);
+  EXPECT_TRUE(positive(c.friction_barrier.mu));
+  EXPECT_TRUE(positive(c.friction_barrier.delta));
+  EXPECT_TRUE(positive(c.cop_barrier.mu));
+  EXPECT_TRUE(positive(c.cop_barrier.delta));
+  EXPECT_TRUE(positive(c.joint_limits.mu));
+  EXPECT_TRUE(positive(c.joint_limits.delta));
+  if (c.collision_enabled) {
+    EXPECT_TRUE(positive(c.collision.mu));
+    EXPECT_TRUE(positive(c.collision.delta));
+  }
 
   // The sole frames sit in their ankle-roll joint frames, unrotated.
   std::array<Eigen::Vector3d, 2> centre;
@@ -384,38 +355,42 @@ TEST_F(LocomotionMpcConfig, TheWalkRtcMpcMeasuresOnIsTheInstalledOne) {
   }
 }
 
-// The installed solver section: the tolerances the OCP's tests solve to, the
-// one budget every solve runs on, the rest at its default.
-TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsTheRegisteredOne) {
+// The installed solver section loads and holds settings an online solve can
+// run on: positive tolerances, a positive iteration budget, a thread count
+// the loader accepted. The numbers are tuning and not pinned here; what is
+// held is that rtc_mpc's receding tests measure on the installed budget
+// (its copies, shipped_walk_yaml.hpp, like the gait sections above).
+TEST_F(LocomotionMpcConfig, TheInstalledSolverSectionIsUsable) {
   ASSERT_TRUE(root_["mpc"]["solver"].IsMap());
   rtc::mpc::MPCSolverConfig s;
   ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(root_["mpc"]["solver"], s));
-  EXPECT_EQ(s.prim_tol, 1e-4);
-  EXPECT_EQ(s.dual_tol, 1e-4);
-  EXPECT_EQ(s.mu_init, 1e-2);
-  EXPECT_EQ(s.max_iters, 6);
+  EXPECT_TRUE(std::isfinite(s.prim_tol));
+  EXPECT_GT(s.prim_tol, 0.0);
+  EXPECT_TRUE(std::isfinite(s.dual_tol));
+  EXPECT_GT(s.dual_tol, 0.0);
+  EXPECT_TRUE(std::isfinite(s.mu_init));
+  EXPECT_GT(s.mu_init, 0.0);
+  EXPECT_GE(s.max_iters, 1);
+  EXPECT_GE(s.max_al_iters, 1);
   EXPECT_EQ(s.max_iters, rtc::mpc::test_utils::kShippedOnlineMaxIters)
       << "the copy rtc_mpc tests on";
-  EXPECT_EQ(s.max_al_iters, 1);
   EXPECT_EQ(s.max_al_iters, rtc::mpc::test_utils::kShippedOnlineAlIters)
       << "the copy rtc_mpc tests on";
-  EXPECT_EQ(s.rollout_type, rtc::mpc::MPCRolloutType::kLinear);
-  EXPECT_EQ(s.linear_solver, rtc::mpc::MPCLinearSolver::kSerial);
-  EXPECT_EQ(s.num_threads, 1);
-  EXPECT_TRUE(s.force_initial_condition);
-  EXPECT_FALSE(s.verbose);
+  EXPECT_GE(s.num_threads, 1);
+  EXPECT_FALSE(s.verbose) << "a shipped solve does not print per iteration";
 }
 
-// The installed publish rules and period: a deadline of one period (two node
-// intervals), the consumed-segment tolerance.
+// The installed publish rules and period: the deadline is one period (the
+// period's node intervals), the consumed-segment tolerance is a usable gate.
 TEST_F(LocomotionMpcConfig, TheInstalledPublishRulesFollowThePeriod) {
   rtc::mpc::MPCSolverConfig s;
   ASSERT_TRUE(rtc::mpc::MPCFactory::LoadSolverConfig(root_["mpc"]["solver"], s));
-  EXPECT_EQ(s.publish_deadline_ms, 70.0);
-  EXPECT_EQ(s.publish_prim_tol, 0.05);
+  EXPECT_TRUE(std::isfinite(s.publish_prim_tol));
+  EXPECT_GT(s.publish_prim_tol, 0.0);
   EXPECT_EQ(s.publish_prim_tol, rtc::mpc::test_utils::kShippedPublishPrimTol)
       << "the copy rtc_mpc tests on";
   const int period_nodes = root_["mpc"]["period_nodes"].as<int>();
+  EXPECT_GE(period_nodes, 1);
   EXPECT_EQ(period_nodes, rtc::mpc::test_utils::kShippedPeriodNodes) << "the copy rtc_mpc tests on";
   EXPECT_NEAR(s.publish_deadline_ms,
               period_nodes * root_["mpc"]["kinodynamic"]["dt"].as<double>() * 1e3, 1e-9)

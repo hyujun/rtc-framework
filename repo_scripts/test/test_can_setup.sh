@@ -40,6 +40,19 @@ done
 printf '#!/bin/bash\nexit 0\n' >"$STUB_BIN/candump"
 chmod +x "$STUB_BIN"/*
 
+# ── host tools without can-utils ─────────────────────────────────────────────
+# The scripts need the host's bash · cat · install · ... but whether can-utils
+# is there must be the stub's call alone: on a host that has
+# /usr/bin/candump, a PATH through /usr/bin makes "can-utils absent" (case 9)
+# find it and skip apt. So PATH holds links to the host's tools, minus can-utils.
+HOST_BIN="$TMP/hostbin"
+mkdir -p "$HOST_BIN"
+for tool in /usr/bin/* /bin/*; do
+  name="${tool##*/}"
+  case "$name" in candump | cansend) continue ;; esac
+  [[ -x "$tool" && ! -d "$tool" && ! -e "$HOST_BIN/$name" ]] && ln -s "$tool" "$HOST_BIN/$name"
+done
+
 # ── fake sysfs ───────────────────────────────────────────────────────────────
 sys_reset() { rm -rf "$TMP/sys"; mkdir -p "$TMP/sys/class/net"; }
 # sys_add_iface NAME TYPE MTU FLAGS
@@ -55,7 +68,7 @@ run_script() {
   # run_script <script> [args...] → stdout+stderr in $OUT, exit code in $RC
   : >"$CMD_LOG"
   set +e
-  OUT="$(env -i PATH="$STUB_BIN:/usr/bin:/bin" HOME="$TMP" RTC_ETC_ROOT="$TMP/etc" \
+  OUT="$(env -i PATH="$STUB_BIN:$HOST_BIN" HOME="$TMP" RTC_ETC_ROOT="$TMP/etc" \
     RTC_SYSFS_ROOT="$TMP/sys" bash "$@" 2>&1)"
   RC=$?
   set -e

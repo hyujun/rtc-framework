@@ -6,7 +6,7 @@
 /// the finite-difference acceleration (v_ref − v_prev)/dt the command implies.
 /// Each bound is paired with a premise — the same scenario without the rows
 /// breaks it — so a green run is not a scenario that never came near the
-/// limit. "kNone ⇒ bit-identical" is test_clik_golden.cpp's job.
+/// limit. "kNone ⇒ bit-identical" is not asserted here.
 
 #include <gtest/gtest.h>
 

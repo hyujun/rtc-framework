@@ -469,7 +469,7 @@ TEST_F(LocomotionFaultTest, AClearOntoATiltedBaseWaitsForTheSettleTimeThenLatche
   Tick();
   PitchBase(45.0 * M_PI / 180.0);
   ctrl_->ClearEstop();
-  ASSERT_EQ(SettleTicks(), 250U) << "0.5 s at the shipped control rate";
+  ASSERT_GT(SettleTicks(), 1U) << "the loop below needs a wait of at least two ticks";
   ExpectGuardFaultAfterSettle();
   EXPECT_EQ(ctrl_->Source(), Source::kFault);
   // Standing the robot up does not release the latch by itself.

@@ -3370,6 +3370,8 @@ void RunInfeasibleFamily(const ArmModel& arm, const MpcSegmentCoreLimits& lim,
   constexpr double kDeadlineUs = 1e-3 * static_cast<double>(kDeadlineNs);
   std::vector<double> pair_off, pair_on, warm_run_us;
   int cut = 0;
+  int cut_main = 0;
+  int cut_cold_retry = 0;
   int pair_over = 0;
   double pair_excess_us = 0.0;
   Eigen::Matrix3d w_p;
@@ -3462,7 +3464,22 @@ void RunInfeasibleFamily(const ArmModel& arm, const MpcSegmentCoreLimits& lim,
       tally[2].Add(ok, r, w, false);
       if (r.reason == MpcSegmentCoreReason::kDeadline) {
         ++cut;
-        EXPECT_EQ(r.cut_site, rtc::catching::MpcSegmentCutSite::kColdRetry) << key << " " << i;
+        // The deadline contract. Where the cut lands depends on how long the
+        // work before the QP took against the real deadline: past it already
+        // (kMain, the warm run never ran) or inside it with the warm run
+        // failing past it (kColdRetry). Under parallel ctest load either
+        // happens; the deterministic cut-site law is pinned on a step clock
+        // by test_catching_mpc_segment_core.cpp (the cut-site tests).
+        using Site = rtc::catching::MpcSegmentCutSite;
+        EXPECT_TRUE(r.cut_site == Site::kMain || r.cut_site == Site::kColdRetry)
+            << key << " " << i << ": cut_site " << static_cast<int>(r.cut_site);
+        if (r.cut_site == Site::kMain) {
+          ++cut_main;
+          EXPECT_EQ(r.iterations, 0) << key << " " << i << ": cut at kMain, yet the warm run ran";
+        } else {
+          ++cut_cold_retry;
+          EXPECT_GT(r.iterations, 0) << key << " " << i << ": cut at kColdRetry, no warm run";
+        }
         EXPECT_FALSE(r.cold_retried) << key << " " << i;
         // Cut only past the deadline, which started with the clock of `w`.
         EXPECT_GE(w, kDeadlineUs) << key << " " << i << ": cut before its deadline";
@@ -3494,6 +3511,8 @@ void RunInfeasibleFamily(const ArmModel& arm, const MpcSegmentCoreLimits& lim,
   }
   const std::string dl = key + ".eps_" + rtc::testing::mpc_warm_up::EpsKey(eps) + ".deadline";
   ::testing::Test::RecordProperty(dl + ".cut", cut);
+  ::testing::Test::RecordProperty(dl + ".cut_at_main", cut_main);
+  ::testing::Test::RecordProperty(dl + ".cut_at_cold_retry", cut_cold_retry);
   ::testing::Test::RecordProperty(dl + ".pair_over_bound", pair_over);
   RecordMicros(dl + ".pair_excess_us.max", pair_excess_us);
   RecordMicros(dl + ".pair_off_us.p99", Percentile(pair_off, 0.99));

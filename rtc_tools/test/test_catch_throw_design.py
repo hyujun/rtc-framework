@@ -196,7 +196,12 @@ def test_closest_approaches_are_closest_approach_of_every_flight():
             batch.time_s, batch.position_m[:, i], batch.velocity_m_s[:, i], target
         )
         assert distance[i] == pytest.approx(want[0], abs=1e-9)
-        assert at[i] == pytest.approx(want[1], abs=1e-9)
+        # The time of a minimum is ill-conditioned: distance is flat there, so
+        # two searches whose norms round differently stop up to
+        # sqrt(2 eps d / d'') apart (d'' ≈ |v|^2 / d) -- 1e-9 .. 7e-9 s for
+        # these flights, and 2e-9 s was seen between two numpy builds. Hold the
+        # time to over 10x the worst of that, still 5e-5 of one 2 ms step.
+        assert at[i] == pytest.approx(want[1], abs=1e-7)
         assert np.linalg.norm(velocity[i]) == pytest.approx(want[2], abs=1e-9)
     # one target per flight
     targets = np.array([[0.1, -0.1, 1.5], [0.0, 0.3, 1.4], [0.4, 0.0, 1.6], [0.5, 0.5, 1.0]])

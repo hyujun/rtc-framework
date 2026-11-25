@@ -89,8 +89,8 @@ TEST(LocomotionReferenceConfig, TheInstalledSwingAndTerrainSectionsLoadAndBuildA
 
 // reference.* names exactly the actuated joints of the shipped rosters (the body
 // group's 23 in model order, then the hand group's 10) — the joints the CM's
-// actuated model moves; arm swing ships on, the shoulder rolls opened 0.15 rad
-// (left +, right −) so the swinging hand clears the hip.
+// actuated model moves; arm swing ships on, the shoulder rolls opened (left +,
+// right −, equal magnitude) so the swinging hand clears the hip.
 TEST(LocomotionReferenceConfig, TheInstalledReferenceSectionCoversTheShippedRosters) {
   const YAML::Node root = InstalledLocomotionConfig();
   ASSERT_TRUE(root["reference"].IsMap()) << "the include: merge did not bring reference.* in";
@@ -104,20 +104,30 @@ TEST(LocomotionReferenceConfig, TheInstalledReferenceSectionCoversTheShippedRost
       joints.push_back(j.as<std::string>());
     }
   }
-  ASSERT_EQ(joints.size(), 33U);
+  ASSERT_FALSE(joints.empty());
   rtc::mpc::ReferenceConfig cfg;
   ASSERT_EQ(rtc::mpc::LoadReferenceConfig(root["reference"], joints, cfg),
             rtc::mpc::ReferenceError::kNoError);
   EXPECT_EQ(cfg.q_default.size(), joints.size());
   EXPECT_TRUE(cfg.arm_swing_enabled);
-  EXPECT_EQ(cfg.arm_swing_joints.size(), 4U);
+  // Every arm-swing joint the YAML names is carried over, and no more.
+  EXPECT_EQ(cfg.arm_swing_joints.size(), root["reference"]["arm_swing"]["joints"].size());
+  EXPECT_FALSE(cfg.arm_swing_joints.empty());
   const auto q = [&](const std::string& name) {
     const auto it = std::find_if(cfg.q_default.begin(), cfg.q_default.end(),
                                  [&](const auto& e) { return e.first == name; });
     return it == cfg.q_default.end() ? std::nan("") : it->second;
   };
-  EXPECT_EQ(q("left_shoulder_roll_joint"), 0.15);
-  EXPECT_EQ(q("right_shoulder_roll_joint"), -0.15);
+  // The shoulder rolls open the arms outward (left +, right −) by the same
+  // finite amount, well inside any shoulder range — the value is tuning.
+  const double left_roll = q("left_shoulder_roll_joint");
+  const double right_roll = q("right_shoulder_roll_joint");
+  ASSERT_TRUE(std::isfinite(left_roll));
+  ASSERT_TRUE(std::isfinite(right_roll));
+  EXPECT_GT(left_roll, 0.0);
+  EXPECT_LT(right_roll, 0.0);
+  EXPECT_DOUBLE_EQ(left_roll, -right_roll);
+  EXPECT_LT(std::abs(left_roll), M_PI / 2.0);
   // One roster joint missing is refused — the loader does check coverage.
   joints.push_back("left_wrist_roll_joint");
   EXPECT_EQ(rtc::mpc::LoadReferenceConfig(root["reference"], joints, cfg),

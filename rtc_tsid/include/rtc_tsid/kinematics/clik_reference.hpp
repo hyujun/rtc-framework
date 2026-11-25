@@ -598,8 +598,8 @@ class ClikReferenceGenerator {
 
  private:
   // Shared stages of Compute(). Each keeps the floating-point accumulation
-  // order of the original single-function Compute(), which the golden-vector
-  // regression (test/test_clik_golden.cpp) pins bit-for-bit.
+  // order of the original single-function Compute(); test_clik_multiframe compares the
+  // overloads bit for bit in the same run.
   [[nodiscard]] bool PreconditionsHold(const PinocchioCache& cache, int tcp_frame_idx,
                                        int base_frame_idx, const Eigen::VectorXd& q_posture_des,
                                        double dt) const noexcept;

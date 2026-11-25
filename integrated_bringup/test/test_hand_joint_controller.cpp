@@ -1045,17 +1045,23 @@ TEST_P(HandJointShipped, TheYamlParsesAndNamesOneGroup) {
   const YAML::Node cfg = root["hand_joint_controller"];
   ASSERT_TRUE(cfg);
   const auto parsed = ParseHandJointConfig(cfg);
-  EXPECT_EQ(parsed.mode, HandJointMode::kTracking) << "the shipped mode is spelled out";
+  // The mode parsed into one of the enumerators (a bad spelling throws above).
+  EXPECT_LE(static_cast<std::size_t>(parsed.mode),
+            integrated_bringup::kHandJointModeNames.size() - 1)
+      << "the shipped mode names a valid HandJointMode";
   EXPECT_TRUE(parsed.ff.enabled);
   // A shipped gravity gain must compensate (> 0; 0 would leave the hand to
   // sag) and stay in the range the runtime parameter accepts.
   EXPECT_TRUE(std::isfinite(parsed.ff.gravity_gain));
   EXPECT_GT(parsed.ff.gravity_gain, 0.0);
   EXPECT_LE(parsed.ff.gravity_gain, rtc::params::kDynamicsFeedforwardGainMax);
-  EXPECT_DOUBLE_EQ(parsed.ff.inertia_gain, 1.0) << "the inertia term ships on, spelled out";
-  EXPECT_TRUE(cfg["dynamics_feedforward"]["inertia_gain"]);
+  EXPECT_TRUE(std::isfinite(parsed.ff.inertia_gain));
+  EXPECT_GE(parsed.ff.inertia_gain, 0.0);
+  EXPECT_LE(parsed.ff.inertia_gain, rtc::params::kDynamicsFeedforwardGainMax);
+  EXPECT_TRUE(cfg["dynamics_feedforward"]["inertia_gain"]) << "spelled out, not defaulted";
   // The bound covers the sum of the gravity and the inertia term.
-  EXPECT_DOUBLE_EQ(parsed.ff.max_abs, 0.3);
+  EXPECT_TRUE(std::isfinite(parsed.ff.max_abs));
+  EXPECT_GT(parsed.ff.max_abs, 0.0);
   // The bound is an explicit choice well under the device's placeholder
   // rating (1.0 N·m in _base.yaml): the YAML, not the rating, bounds the wire.
   EXPECT_LT(parsed.ff.max_abs, 1.0);

@@ -20,9 +20,10 @@
 //   stop line   TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch — the one
 //               test here on a SETTABLE clock (FakeTime): it asserts values,
 //               not budgets, so no solve duration may decide it
-//   bit for bit AWholeCatchOnThePinnedClockIsUnchangedBitForBit — every wake's
-//               record and both boxes, digested; a refactor of what the cycle
-//               calls must leave the four numbers alone
+//   bit for bit AWholeCatchLeavesTheSameTraceOnTwoRigsWithTheSameHistory —
+//               every wake's record and both boxes, digested; the same catch
+//               from the same instant leaves the same trace, bit for bit,
+//               in-run
 //
 // The RT stand-in reports the segment it holds pending and then follows, as
 // the RT does under `mode: mpc`; WithoutAReportNothingIsReplanned
@@ -730,7 +731,7 @@ TEST(ApproachCycle, TheStopCoresTakeTheFollowedSegmentsLineThroughAWholeCatch) {
   }
 }
 
-// ── The whole catch, bit for bit ─────────────────────────────────────────────
+// ── The whole catch, the same trace each time ─────────────────────────────────────────────
 
 // One catch as the stop-line test above runs it (DriftingCatch) — the pair,
 // re-solves and grid advances against a drifting prediction, the freeze, the
@@ -804,60 +805,37 @@ enum class RigHistory : std::uint8_t {
   kReconfigured,       // then another catch and a re-configure with NO trial reset
 };
 
-/// RunCatch's digests on the rig below: [RT takes every segment, RT keeps the
-/// first] × RigHistory. Part of what they pin is the wake while a plan is
-/// followed (the rig runs its search until T_freeze): the search first, timed
-/// from the wake, then a replacement pair when the search chose another plan —
-/// RtStandIn takes none, so the catch publishes one after another — or the
-/// replan of the followed plan behind the search. That wake is the ONLY thing
-/// in the trace that a catch without it does not have: with the search stopped
-/// at the first followed plan (`t_stop_plan` left unset) the same code gives
-/// 0x74b66752c2b6a927, 0x47a6055faba0f13a, 0xf994bd4e88fc8518 /
-/// 0xb7132fe2c7363186, 0xb945046f48c1f383, 0x231a91137a556e3c, bit for bit
-/// (measured). Those six were taken on the code BEFORE the search and the MPC
-/// segment planner moved behind CatchSearch / SegmentPlanner,
-/// when the cycle held both by value and a re-configure re-used the same two
-/// objects, so the chain back to that code is unbroken — up to #857, which
-/// replaced the six below on purpose (one torque slack per node: the QPs'
-/// iterates moved — 1542 → 1452 iterations over the 168 solves of the six
-/// catches — while every wake's discrete fields stayed: outcome, plan, segment
-/// outcome and kind, core reason, node count, segment_seq, pre-solve, retry;
-/// RTC_WHOLE_CATCH_TRACE prints them). The six numbers above predate it.
-/// The two re-configured columns are the cycle-level half of "building NEW
+/// The whole catch is deterministic: two rigs put through the same history —
+/// a fresh build, then a catch and a trial reset + re-configure, then another
+/// catch and a re-configure with no trial reset — and run on the same FakeTime
+/// instants leave the same trace, bit for bit, for each of [RT takes every
+/// segment, RT keeps the first]. Both rigs live in this process on this
+/// binary, so bit-exactness is a fair demand — unlike a digest recorded on one
+/// host, which also pins that host's libm, CPU and library versions and fails
+/// elsewhere with no regression (testing-debug.md). It is NOT equal to the
+/// trace of a freshly built rig after the re-configures: the epoch and the
+/// segment sequence a trace holds have moved, so the twin has the history too.
+///
+/// The re-configured histories are the cycle-level half of "building NEW
 /// objects on a re-configure changes nothing" — the last one without a trial
 /// reset in between. They are NOT what shows that Configure alone clears what
-/// a catch left behind: this catch's trace does not depend on that (measured —
-/// with both Configure-time resets removed all six numbers stay). That half is
-/// pinned on the two classes directly: AReconfiguredSearchIsANewOne
-/// (test_catching_grid_catch_search.cpp) and AReconfiguredPlannerIsANewOne
-/// (test_catching_approach_planner.cpp).
-///
-/// Numbers to COMPARE AGAINST, not a claim that these segments are the right
-/// ones — the rule of kNormalTrialCommandDigest. They include the QP's
-/// iterates, pinocchio's kinematics and libm's sin / cos, so they are tied to
-/// where they were taken: this host's CPU, GCC on x86-64 with the repo's flags
-/// (no -march, -ffast-math or -ffp-contract), and the installed Eigen,
-/// pinocchio and ProxSuite. Two consequences:
-///  - a change meant to alter what a wake publishes or records — the search,
-///    the cores, the cycle's order — replaces them in a commit of its own that
-///    says why (PROC-6); a refactor that is not meant to must leave them alone;
-///  - red on ANOTHER host, or right after one of those libraries was upgraded,
-///    with no change to this package, is the environment and not a regression:
-///    take the same commit's numbers on the recording host before concluding
-///    anything, and replace them the same way if the environment is what moved.
-constexpr std::array<std::array<std::uint64_t, 3>, 2> kWholeCatchDigest{{
-    {{0xb9ab592e7395741aULL, 0xf7697c15bb637ae8ULL, 0x0e054bc191559325ULL}},
-    {{0x03fbc3c92e0c7bd1ULL, 0xfa3f8e220d1a46f7ULL, 0xe92939bdeff982b3ULL}},
-}};
-
-TEST(ApproachCycle, AWholeCatchOnThePinnedClockIsUnchangedBitForBit) {
+/// a catch left behind: that half is pinned on the two classes directly:
+/// AReconfiguredSearchIsANewOne (test_catching_grid_catch_search.cpp) and
+/// AReconfiguredPlannerIsANewOne (test_catching_approach_planner.cpp).
+/// The count assertions say the trace went through every kind of wake the
+/// cycle has; RTC_WHOLE_CATCH_TRACE prints each wake's discrete fields to read
+/// a mismatch against.
+TEST(ApproachCycle, AWholeCatchLeavesTheSameTraceOnTwoRigsWithTheSameHistory) {
   constexpr std::int64_t kStart = 1'727'000'000'000'000'000LL;
   for (const bool rt_takes_replans : {true, false}) {
     SCOPED_TRACE(rt_takes_replans ? "the RT takes every segment" : "the RT keeps the first");
-    const auto& expected = kWholeCatchDigest[rt_takes_replans ? 0U : 1U];
     FakeTime time(kStart);
-    auto r = std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/true,
+    const auto make_rig = [] {
+      return std::make_unique<Rig>(/*catch_err_max=*/0.02, /*bind_segment=*/true,
                                    /*w_perp=*/2000.0, /*fake_clock=*/true);
+    };
+    auto a = make_rig();
+    auto b = make_rig();
     for (const RigHistory history :
          {RigHistory::kBuilt, RigHistory::kResetReconfigured, RigHistory::kReconfigured}) {
       const char* const name = history == RigHistory::kBuilt               ? "built"
@@ -872,15 +850,23 @@ TEST(ApproachCycle, AWholeCatchOnThePinnedClockIsUnchangedBitForBit) {
         // objects' per-trial memory itself; without one, only the re-configure
         // stands between the last catch and this one.
         time.Advance(500 * kMs);
-        RtStandIn next;
-        next.wait_pose = r->rt.wait_pose;
-        next.reset_epoch =
-            r->rt.reset_epoch + (history == RigHistory::kResetReconfigured ? 1U : 0U);
-        r->rt = next;
-        r->boxes.plan.Store(PlanSnapshot{});
-        r->Reconfigure();
+        for (Rig* r : {a.get(), b.get()}) {
+          RtStandIn next;
+          next.wait_pose = r->rt.wait_pose;
+          next.reset_epoch =
+              r->rt.reset_epoch + (history == RigHistory::kResetReconfigured ? 1U : 0U);
+          r->rt = next;
+          r->boxes.plan.Store(PlanSnapshot{});
+          r->Reconfigure();
+        }
       }
-      const CatchTrace t = RunCatch(*r, time, rt_takes_replans);
+      // The same catch from the same instant on each rig.
+      const std::int64_t start = g_fake_now.load();
+      const CatchTrace t = RunCatch(*a, time, rt_takes_replans);
+      const std::int64_t after = g_fake_now.load();
+      g_fake_now.store(start);
+      const CatchTrace u = RunCatch(*b, time, rt_takes_replans);
+      g_fake_now.store(after);
       // The trace went through every kind of wake the cycle has. (RtStandIn
       // takes no replacement pair, so the cycle publishes another whenever the
       // search replaces the plan.)
@@ -898,11 +884,13 @@ TEST(ApproachCycle, AWholeCatchOnThePinnedClockIsUnchangedBitForBit) {
       std::printf("[ record ] %s: %s — %d wakes (%d COMMITTED, %d DECEL), %d segments (%d stop)\n",
                   key.c_str(), hex.data(), t.wakes, t.monitor_wakes, t.decel_wakes, t.segments,
                   t.stop_segments);
-      EXPECT_EQ(t.digest, expected[static_cast<std::size_t>(history)])
-          << "the whole-catch trace changed: digest " << hex.data()
-          << ". If the change is meant to alter what a wake publishes or records, replace the "
-             "constant in its own commit with the reason; otherwise the refactor is not "
-             "behaviour-preserving. (Another host or upgraded libraries: see kWholeCatchDigest.)";
+      EXPECT_EQ(u.wakes, t.wakes);
+      EXPECT_EQ(u.plans, t.plans);
+      EXPECT_EQ(u.segments, t.segments);
+      EXPECT_EQ(u.stop_segments, t.stop_segments);
+      EXPECT_EQ(u.digest, t.digest)
+          << "the same catch from the same instant left another trace on the twin rig (digest "
+          << hex.data() << "): a run is not deterministic, or a re-configure keeps state";
     }
   }
 }

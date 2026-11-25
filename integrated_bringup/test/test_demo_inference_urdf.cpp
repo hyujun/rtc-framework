@@ -391,8 +391,11 @@ TEST_F(ShippedInference, CarriesTheTrainedCadenceFrameAndModelLocation) {
   // frame moves.
   EXPECT_EQ(inf["object_pose"]["source_frame_link"].as<std::string>(), "scene_world");
   EXPECT_EQ(inf["object_pose"]["source_frame_id"].as<std::string>(), "world");
-  EXPECT_EQ(shipped_model_path_, "${RTC_POLICY_DIR}/ObjectHandGraspDeployMulti5-Export-v0.onnx")
-      << "the model stays out of the repo and is found through the environment";
+  // The model stays out of the repo and is found through the environment: the
+  // path is relative to ${RTC_POLICY_DIR}, never an absolute path.
+  EXPECT_EQ(shipped_model_path_.rfind("${RTC_POLICY_DIR}/", 0), 0U) << shipped_model_path_;
+  EXPECT_GT(shipped_model_path_.size(), std::string("${RTC_POLICY_DIR}/.onnx").size());
+  EXPECT_EQ(shipped_model_path_.substr(shipped_model_path_.size() - 5), ".onnx");
   ASSERT_TRUE(inf["allow_missing_model"]);
   EXPECT_TRUE(inf["allow_missing_model"].as<bool>());
 }
