@@ -1234,7 +1234,7 @@ struct PinnedPayload {
 /// Integer arithmetic and the closed-form jerk polynomial only:
 /// these do not depend on a solver. A change meant to alter how a payload
 /// WITHOUT that length is read replaces them in a commit of its own that says
-/// why (the rule of kWholeCatchDigest, test_catching_approach_cycle.cpp).
+/// why.
 constexpr std::array<PinnedPayload, 8> kPinnedPayloadDigest{{
     {"stop_only", 0xc20bcbc5bd0ca4a4ULL},
     {"stop_only_full", 0x2d751ec4271f9688ULL},

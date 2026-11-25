@@ -3567,8 +3567,7 @@ struct PinnedSearchDigest {
 
 /// PinnedSearches()' digests on the code BEFORE the continuous solve and the
 /// window after adoption. Numbers to compare against, tied to
-/// where they were taken — the rule of kWholeCatchDigest
-/// (test_catching_approach_cycle.cpp): a change MEANT to alter what a wake
+/// where they were taken: a change MEANT to alter what a wake
 /// leaves, with both switches off and the RT following no plan, replaces them
 /// in a commit of its own that says why.
 constexpr std::array<PinnedSearchDigest, 6> kPinnedSearchDigest{{
