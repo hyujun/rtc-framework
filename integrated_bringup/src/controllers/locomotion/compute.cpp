@@ -169,6 +169,7 @@ void LocomotionController::RestartReference() noexcept {
   pose_guard_mask_ = 0;
   tau_prev_.fill(0.0);
   tau_.fill(0.0);
+  target_seeded_ = false;
   qp_.Reset();
   if (mpc_enabled_) {
     RestartMpcStream();
@@ -326,6 +327,7 @@ void LocomotionController::LatchReference(const ControllerState& state) noexcept
   // The hands are not touched: FillHands holds each from its own first
   // readable tick (header), so the body's latch never moves a hand.
   tau_prev_.fill(0.0);
+  target_seeded_ = false;  // the servo target starts over at the measured state
   qp_.Reset();
   reference_latched_ = true;
 }
@@ -375,19 +377,25 @@ void LocomotionController::FillOutput(const ControllerState& state,
 
   const bool commanding = mode_ == Mode::kNominal || mode_ == Mode::kDegraded;
   if (commanding) {
+    if (target_wbc_) {
+      UpdateServoTarget();
+    }
     body.num_channels = static_cast<int>(nb_);
     bool finite = true;
     for (std::size_t i = 0; i < nb_; ++i) {
-      const double q_cmd = ref_.q_des(static_cast<Eigen::Index>(7 + i));
+      const double q_cmd =
+          target_wbc_ ? target_q_[i] : ref_.q_des(static_cast<Eigen::Index>(7 + i));
       body.commands[i] = q_cmd;
       body.feedforward[i] = tau_[i];
       finite = finite && std::isfinite(q_cmd) && std::isfinite(tau_[i]);
     }
     if (!finite) {
       Latch(FaultCause::kNonFinite);
+      target_seeded_ = false;
       FillDamping(state, body);
     }
   } else {
+    target_seeded_ = false;  // the next commanding tick starts from the measurement
     FillDamping(state, body);
   }
   for (int i = 0; i < body.num_channels; ++i) {
@@ -398,6 +406,47 @@ void LocomotionController::FillOutput(const ControllerState& state,
     body.trajectory_velocities[ui] = 0.0;
   }
   FillHands(state, out);
+}
+
+void LocomotionController::UpdateServoTarget() noexcept {
+  // Without a valid state this tick (degraded on the source) the target is held:
+  // the measurement it would be pulled toward is not this tick's.
+  if (!source_ok_) {
+    if (!target_seeded_) {
+      for (std::size_t i = 0; i < nb_; ++i) {
+        target_q_[i] = qp_state_.q(static_cast<Eigen::Index>(7 + i));
+        target_v_[i] = 0.0;
+      }
+      target_seeded_ = true;
+    }
+    return;
+  }
+  // The QP's joint acceleration when it solved this tick; a missed solve holds
+  // the torque, and the target then coasts at its velocity.
+  const bool solved = mode_ == Mode::kNominal && last_solve_ != nullptr && last_solve_->tau_valid;
+  const double dt = target_dt_;
+  const double keep = target_seeded_ ? target_keep_ : 0.0;
+  for (std::size_t i = 0; i < nb_; ++i) {
+    const double q = qp_state_.q(static_cast<Eigen::Index>(7 + i));
+    const double v = qp_state_.v(static_cast<Eigen::Index>(6 + i));
+    const double a = solved ? last_solve_->a_opt(static_cast<Eigen::Index>(6 + i)) : 0.0;
+    // The intended state now: the measurement plus the kept share of the gap.
+    const double q_now = q + keep * (target_q_[i] - q);
+    const double v_now = v + keep * (target_v_[i] - v);
+    // One tick ahead under the QP's acceleration — the target the servo holds
+    // until the next tick — inside the joint's range.
+    double q_next = q_now + v_now * dt + 0.5 * a * dt * dt;
+    double v_next = v_now + a * dt;
+    const double lo = joint_lo_[i];
+    const double hi = joint_hi_[i];
+    if (lo <= hi && (q_next < lo || q_next > hi)) {
+      q_next = std::clamp(q_next, lo, hi);
+      v_next = 0.0;
+    }
+    target_q_[i] = q_next;
+    target_v_[i] = v_next;
+  }
+  target_seeded_ = true;
 }
 
 void LocomotionController::FillDamping(const ControllerState& state,

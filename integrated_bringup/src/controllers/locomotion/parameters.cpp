@@ -188,9 +188,16 @@ LocomotionControllerConfig ParseLocomotionControllerConfig(const YAML::Node& cfg
   out.estimator = locomotion::ParseEstimatorConfig(cfg["estimator"], root + ".estimator");
 
   const std::string pd = root + ".pd_feedforward";
-  CheckKeys(cfg["pd_feedforward"], pd, {"kp", "kd"});
+  CheckKeys(cfg["pd_feedforward"], pd, {"kp", "kd", "target", "target_time_constant_s"});
+  const YAML::Node target = cfg["pd_feedforward"]["target"];
+  if (!target.IsScalar() || (target.Scalar() != "plan" && target.Scalar() != "wbc")) {
+    Refuse(pd + ".target", "expected \"plan\" or \"wbc\", got " + Spelling(target));
+  }
+  out.pd_target_wbc = target.Scalar() == "wbc";
   out.pd_kp = ReadGains(cfg["pd_feedforward"], "kp", pd);
   out.pd_kd = ReadGains(cfg["pd_feedforward"], "kd", pd);
+  out.pd_target_time_constant_s =
+      ReadPositive(cfg["pd_feedforward"], "target_time_constant_s", pd, /*zero_ok=*/true);
 
   const std::string fault = root + ".fault";
   CheckKeys(cfg["fault"], fault, {"max_source_bad_ticks", "damping_kd", "pose_guard"});

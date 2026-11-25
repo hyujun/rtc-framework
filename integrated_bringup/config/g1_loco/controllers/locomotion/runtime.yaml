@@ -18,6 +18,16 @@ locomotion_controller:
   pd_feedforward:
     kp: [60, 60, 60, 60, 60, 60,  60, 60, 60, 60, 60, 60,  60, 60, 60,  30, 30, 30, 30,  30, 30, 30, 30]
     kd: [4, 4, 4, 4, 4, 4,  4, 4, 4, 4, 4, 4,  4, 4, 4,  1.5, 1.5, 1.5, 1.5,  1.5, 1.5, 1.5, 1.5]
+    # The position target (locomotion_controller.hpp, "The servo target"):
+    # plan = the reference's pose; wbc = the QP's own joint state, integrated
+    # from its acceleration and pulled toward the measurement with
+    # target_time_constant_s [s] (0 = the one-tick prediction q + v dt + ½ a dt²).
+    # On the g1_loco sim (2026-11-25, plant with armature) wbc fell on the
+    # first step in place with every gain set and τ tried (0 · 0.05 · 0.2 s)
+    # where plan stepped: the servo's pull toward the plan's posture is still
+    # load-bearing with this QP.
+    target: plan
+    target_time_constant_s: 0.0
 
   # Latched fault: feedforward −damping_kd·v (clamped to max_torque), position
   # target = the measured q, the gains above unchanged — a slow settle, not a
