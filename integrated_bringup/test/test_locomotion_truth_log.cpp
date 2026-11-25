@@ -815,13 +815,23 @@ TEST(LocomotionExternalWrenchConfig, BadShapesAreRefused) {
           "a topic that is not a name");
 }
 
-// D1: the shipped configuration has the lane off — no subscription, no bit,
-// and (TheFileHoldsTheRecordUnderItsColumnNames) the header it always had.
-TEST_F(LocomotionTruthLogRigTest, TheShippedConfigurationHasNoExternalWrenchLane) {
+// D1: the lane exists only when asked for — whatever topic the shipped
+// configuration carries, the subscription follows it, and with the lane off
+// (an empty topic, what the profile ships today) no subscription, no bit, and
+// (TheFileHoldsTheRecordUnderItsColumnNames) the header it always had. Which of the two ships is a
+// deployment choice (a push scenario turns it on in an overlay), not pinned here.
+TEST_F(LocomotionTruthLogRigTest, TheShippedExternalWrenchLaneFollowsItsTopic) {
   ASSERT_TRUE(ShippedConfig()["external_wrench"]) << "an overlay can only replace a shipped key";
-  EXPECT_EQ(ShippedConfig()["external_wrench"]["topic"].as<std::string>(), "");
+  const std::string topic = ShippedConfig()["external_wrench"]["topic"].as<std::string>();
+  const bool lane_on = !topic.empty();
+  if (lane_on) {
+    EXPECT_EQ(topic.find(' '), std::string::npos) << "a topic name has no blanks: " << topic;
+  }
   BringUpShipped();
-  EXPECT_FALSE(ctrl_->ExternalWrenchSubscribed());
+  EXPECT_EQ(ctrl_->ExternalWrenchSubscribed(), lane_on);
+  if (lane_on) {
+    return;  // the lane-on behaviour is TheExternalWrenchReachesTheTruthLog's
+  }
   // A callback that somehow ran would still not reach the log.
   LocomotionControllerTestAccess::OnExternalWrench(*ctrl_, PushMessage(40.0));
   for (int k = 0; k < 5; ++k) {

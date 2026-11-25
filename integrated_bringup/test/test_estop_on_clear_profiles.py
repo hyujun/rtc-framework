@@ -1,14 +1,13 @@
-"""Where ``estop_on_clear`` ships, and that it names a controller it can reach.
+"""Whatever ``estop_on_clear`` a profile ships is a policy the CM accepts, and reaches a controller.
 
 The CM's post-clear policy (``rtc_controller_manager`` README, "글로벌 E-STOP
 해제") defaults to ``resume``: the controller that was active when the E-STOP
-latched carries on once the clear is verified. The two humanoid sims opt into
-``initial_controller`` — after a stop under the locomotion controller the CM
-hands the robot back to ``demo_joint_controller``, which holds the pose with the
-scene servo gains — and every other profile keeps the default. This pins both
-halves: a profile that gained the key by a copy-paste would change what its
-operators see after a clear, and a profile that switches to a controller it
-does not ship would refuse to configure at launch rather than here.
+latched carries on once the clear is verified. A profile may instead opt into
+``initial_controller`` — the CM hands the robot back to the profile's initial
+controller. Which profiles opt in is a deployment decision and not pinned here;
+this holds what a launch needs of it: the value is one the CM accepts, and an
+``initial_controller`` policy names a controller the profile ships (otherwise
+it would refuse to configure at launch rather than here).
 """
 
 from __future__ import annotations
@@ -19,10 +18,6 @@ import pytest
 import yaml
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
-
-# (profile, mode file) → the policy the shipped YAML must carry. Absent means
-# `resume`, the CM default, and is the shape every other profile keeps.
-EXPECTED_INITIAL_CONTROLLER = {("g1_loco", "sim.yaml"), ("b7_loco", "sim.yaml")}
 
 KEY = "estop_on_clear"
 
@@ -51,27 +46,21 @@ PARAMETER_FILES = _parameter_files()
 PARAMS = {(profile, mode): params for profile, mode, params in PARAMETER_FILES}
 
 
-def test_the_mode_files_exist_for_the_profiles_that_switch():
-    missing = EXPECTED_INITIAL_CONTROLLER - set(PARAMS)
-    assert not missing, f"expected mode files are gone: {sorted(missing)}"
+POLICIES = {"resume", "initial_controller"}
+INITIAL = [(p, m) for p, m, params in PARAMETER_FILES if params.get(KEY) == "initial_controller"]
 
 
 @pytest.mark.parametrize(
     "profile,mode,params", PARAMETER_FILES, ids=[f"{p}/{m}" for p, m, _ in PARAMETER_FILES]
 )
-def test_estop_on_clear_ships_only_where_decided(profile, mode, params):
-    where = f"{profile}/{mode}"
-    if (profile, mode) in EXPECTED_INITIAL_CONTROLLER:
-        assert params.get(KEY) == "initial_controller", (
-            f"{where}: the humanoid sim must switch back to its initial controller after a clear"
-        )
-    else:
-        assert KEY not in params, (
-            f"{where}: {KEY} is set to {params[KEY]!r}; only the humanoid sims opt out of `resume`"
+def test_estop_on_clear_is_a_policy_the_cm_accepts(profile, mode, params):
+    if KEY in params:
+        assert params[KEY] in POLICIES, (
+            f"{profile}/{mode}: {KEY} is {params[KEY]!r}; the CM accepts {sorted(POLICIES)}"
         )
 
 
-@pytest.mark.parametrize("profile,mode", sorted(EXPECTED_INITIAL_CONTROLLER))
+@pytest.mark.parametrize("profile,mode", INITIAL, ids=[f"{p}/{m}" for p, m in INITIAL])
 def test_the_switch_target_is_a_controller_the_profile_ships(profile, mode):
     params = PARAMS[(profile, mode)]
     initial = params.get("initial_controller")

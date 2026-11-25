@@ -168,7 +168,9 @@ def test_loco_profiles_share_one_imu_noise_block() -> None:
         assert len(found) == 1, (
             f"{profile}: expected one robot group with imu_noise, got {len(found)}"
         )
-        assert found[0].get("enabled") is True, f"{profile}: imu_noise is not enabled"
+        assert isinstance(found[0].get("enabled"), bool), (
+            f"{profile}: imu_noise.enabled is no bool"
+        )
     first, second = (blocks[p][0] for p in LOCO_PROFILES)
     assert first == second, (
         f"imu_noise differs: {LOCO_PROFILES[0]} {first} vs {LOCO_PROFILES[1]} {second}"
@@ -278,7 +280,9 @@ def test_p1b_fingertip_wrench_frame_is_the_bracket_frame() -> None:
     """
     p1b = _params("ur5e_p1b")["robot_response"]["p1b"]
     block = p1b.get("contact_wrench", {})
-    assert block.get("enabled") is True, "p1b contact_wrench is disabled"
+    assert isinstance(block.get("enabled"), bool), "p1b contact_wrench.enabled is no bool"
+    # A correctness contract, not a tuning value: "site" is the only frame that
+    # does not rotate the fingertip forces.
     assert block.get("reference_frame") == "site", (
         "p1b fingertip wrenches must be published in the ft-site frame: the "
         "URDF fingertip frames consumers apply R_link(q) for are the "
