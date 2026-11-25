@@ -29,13 +29,16 @@ from typing import TYPE_CHECKING
 
 from ..demo_gui.sequence import (
     DEFAULT_TOLERANCE_DEG,
+    MAX_NEXT_AT_PCT,
     MAX_TIME_S,
     MAX_TOLERANCE_DEG,
+    MIN_NEXT_AT_PCT,
     MIN_TIME_S,
     MIN_TOLERANCE_DEG,
     ResolvedStep,
     SequenceStep,
     resolve_steps,
+    settle_problem,
 )
 
 if TYPE_CHECKING:  # demo_gui.shipped imports this module
@@ -84,6 +87,25 @@ def parse_presets(data: object, path: str, side: str) -> dict:
     return data
 
 
+def _next_at_pct(raw: dict, where: str, preset: str) -> int:
+    """The step's switch point: absent = 100. The shipped form is unique, so a
+    present value is a whole number in [1, 99] — not a bool, not 50.0, and not
+    an explicit 100 (it is written by leaving the key out)."""
+    if "next_at_pct" not in raw:
+        return MAX_NEXT_AT_PCT
+    value = raw["next_at_pct"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise FileProblem(f"{where} '{preset}': next_at_pct {value!r} is not a whole number")
+    if value == MAX_NEXT_AT_PCT:
+        raise FileProblem(f"{where} '{preset}': next_at_pct 100 — omit next_at_pct for 100")
+    if not MIN_NEXT_AT_PCT <= value < MAX_NEXT_AT_PCT:
+        raise FileProblem(
+            f"{where} '{preset}': next_at_pct {value} is outside "
+            f"[{MIN_NEXT_AT_PCT}, {MAX_NEXT_AT_PCT - 1}]"
+        )
+    return value
+
+
 def parse_sequence(data: object, path: str) -> tuple[tuple[SequenceStep, ...], float]:
     """(steps, tolerance [deg]); every value the GUI would clamp is refused."""
     if not isinstance(data, dict) or not isinstance(data.get("steps"), list):
@@ -107,9 +129,11 @@ def parse_sequence(data: object, path: str) -> tuple[tuple[SequenceStep, ...], f
             raise FileProblem(
                 f"{where} '{preset}': dwell_s {raw.get('dwell_s')!r} is outside [0, {MAX_TIME_S}] s"
             )
-        steps.append(SequenceStep(preset, time_s, dwell_s))
+        steps.append(SequenceStep(preset, time_s, dwell_s, _next_at_pct(raw, where, preset)))
     if not steps:
         raise FileProblem(f"sequence file {path} has no steps")
+    if problem := settle_problem(steps):
+        raise FileProblem(f"sequence file {path}: {problem}")
     raw_tol = data.get("tolerance_deg", DEFAULT_TOLERANCE_DEG)
     tolerance = _number(raw_tol)
     if tolerance is None or not MIN_TOLERANCE_DEG <= tolerance <= MAX_TOLERANCE_DEG:

@@ -54,6 +54,11 @@ ESTOP_TOPIC = "/system/estop_status"
 LINK_TOPICS = {"p2": "/p2/right/link_status", "p2_left": "/p2/left/link_status"}
 GRAPH_PERIOD_S = 0.5
 PARAM_PERIOD_S = 1.0
+# Asked on its own: a controller that does not declare it (an older build)
+# would otherwise empty the mode / cap answer too. It gates the start only, so
+# it is asked once mode / cap are known and then every RETARGET_PERIOD_S.
+RETARGET_PARAM = "continuous_retarget"
+RETARGET_PERIOD_S = 10.0
 PARAM_TIMEOUT_S = 1.0
 LOOP_PERIOD_S = 0.02
 # Every subscription is depth 1, so at most one sample per topic plus the three
@@ -104,6 +109,9 @@ class SequenceIo(Node):
         self._link: bool | None = None
         self._mode: str | None = None
         self._cap: float | None = None
+        self._retarget: bool | None = None
+        self._ask_retarget = False  # the request in flight is RETARGET_PARAM's
+        self._retarget_at = -1e9
         self._graph = {
             "cm": 0,
             "param": 0,
@@ -201,6 +209,7 @@ class SequenceIo(Node):
             goal_matched=self._goal_pub.get_subscription_count(),
             mode=self._mode,
             cap=self._cap,
+            retarget=self._retarget,
             other_hand=g["other"],
             driver_nodes=g["driver"],
             driver_calibration=self._driver.calibration,
@@ -223,11 +232,15 @@ class SequenceIo(Node):
             self._driver.reset()  # a restarted driver is read again
 
     def _poll_params(self, now: float) -> None:
-        """``mode`` and the speed cap, read once a second (a set mode is the
-        operator's; the cap is read-only but a restarted stack re-reads it)."""
+        """``mode`` and the speed cap once a second (a set mode is the
+        operator's; the cap is read-only but a restarted stack re-reads it), and
+        ``continuous_retarget`` in their place every RETARGET_PERIOD_S."""
         if self._get_future is not None:
             if self._get_future.done():
-                self._take_params(self._get_future.result())
+                if self._ask_retarget:
+                    self._take_retarget(self._get_future.result())
+                else:
+                    self._take_params(self._get_future.result())
                 self._get_future = None
             elif now > self._get_deadline:
                 self._get.remove_pending_request(self._get_future)
@@ -236,7 +249,13 @@ class SequenceIo(Node):
         if now - self._param_at < PARAM_PERIOD_S or not self._get.service_is_ready():
             return
         self._param_at = now
-        request = GetParameters.Request(names=["mode", "max_traj_velocity"])
+        self._ask_retarget = (
+            self._mode is not None and now - self._retarget_at >= RETARGET_PERIOD_S
+        )
+        if self._ask_retarget:
+            self._retarget_at = now
+        names = [RETARGET_PARAM] if self._ask_retarget else ["mode", "max_traj_velocity"]
+        request = GetParameters.Request(names=names)
         self._get_future = self._get.call_async(request)
         self._get_deadline = now + PARAM_TIMEOUT_S
 
@@ -250,6 +269,13 @@ class SequenceIo(Node):
         mode, cap = values
         self._mode = mode.string_value if mode.type == ParameterType.PARAMETER_STRING else None
         self._cap = cap.double_value if cap.type == ParameterType.PARAMETER_DOUBLE else None
+
+    def _take_retarget(self, response) -> None:
+        """True / False as declared; None when it is not (the controller restarts
+        every goal from rest) or not a boolean."""
+        values = list(getattr(response, "values", []) or [])
+        ok = len(values) == 1 and values[0].type == ParameterType.PARAMETER_BOOL
+        self._retarget = values[0].bool_value if ok else None
 
     def _poll_driver(self, now: float) -> None:
         """The driver's calibration, until it has been read (one or two

@@ -274,6 +274,11 @@ if(BUILD_TESTING)
   ament_add_gtest(test_joint_command_tail test/test_joint_command_tail.cpp)
   target_link_libraries(test_joint_command_tail rtc_controllers)
 
+  # Velocity-continuous retarget planner (header-only): closed-form cap and
+  # limit checks against a dense sampling of the quintic it returns.
+  ament_add_gtest(test_continuous_retarget test/test_continuous_retarget.cpp)
+  target_link_libraries(test_continuous_retarget rtc_controllers)
+
   ament_add_gtest(test_quintic_blend_trajectory test/test_quintic_blend_trajectory.cpp)
   target_link_libraries(test_quintic_blend_trajectory rtc_controllers)
 

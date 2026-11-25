@@ -247,8 +247,10 @@ from .pull import (
     build_render,
 )
 from .sequence import (
+    MAX_NEXT_AT_PCT,
     MAX_TIME_S,
     MAX_TOLERANCE_DEG,
+    MIN_NEXT_AT_PCT,
     MIN_TIME_S,
     MIN_TOLERANCE_DEG,
     MODE_LOOP,
@@ -257,6 +259,7 @@ from .sequence import (
     SequenceRunner,
     SequenceStep,
     clamp_dwell,
+    clamp_next_at_pct,
     clamp_time,
     clamp_tolerance,
     load_sequence_file,
@@ -264,6 +267,7 @@ from .sequence import (
     normalize_sequence_file,
     resolve_steps,
     save_sequence_file,
+    settle_problem,
     step_problem,
     with_all_times,
 )
@@ -721,6 +725,7 @@ class DemoControllerGUI(Node):
         self._sequence_ctrl = ""  # controller the playing run sends to
         self._sequence_after = None
         self._sequence_message = ""  # outcome line while nothing is playing
+        self._sequence_note = ""  # caveat of the playing run, shown beside its status
         self._sequence_toggle_warned = False  # the shortcut's refusal, once per run
         self._sequence_editor_row: int | None = None  # row last loaded into the editor
         self._sequence_painted: tuple[str, str, int] | None = None
@@ -6600,7 +6605,7 @@ class DemoControllerGUI(Node):
 
         tree_frame = tk.Frame(frame, bg="#1e1e2e")
         tree_frame.pack(fill="x", expand=False, padx=4, pady=(0, 4))
-        columns = ("preset", "time", "dwell", "note")
+        columns = ("preset", "time", "dwell", "next", "note")
         self._sequence_tree = ttk.Treeview(
             tree_frame, columns=columns, show="tree headings", height=8, selectmode="browse"
         )
@@ -6608,12 +6613,14 @@ class DemoControllerGUI(Node):
         self._sequence_tree.heading("preset", text="Preset", anchor="w")
         self._sequence_tree.heading("time", text="Time (s)", anchor="center")
         self._sequence_tree.heading("dwell", text="Dwell (s)", anchor="center")
+        self._sequence_tree.heading("next", text="Next %", anchor="center")
         self._sequence_tree.heading("note", text="", anchor="w")
         self._sequence_tree.column("#0", width=40, minwidth=30, anchor="center")
         self._sequence_tree.column("preset", width=200, minwidth=100)
         self._sequence_tree.column("time", width=70, minwidth=50, anchor="center")
         self._sequence_tree.column("dwell", width=70, minwidth=50, anchor="center")
-        self._sequence_tree.column("note", width=360, minwidth=120)
+        self._sequence_tree.column("next", width=60, minwidth=50, anchor="center")
+        self._sequence_tree.column("note", width=300, minwidth=120)
         scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self._sequence_tree.yview)
         self._sequence_tree.configure(yscrollcommand=scroll.set)
         self._sequence_tree.pack(side="left", fill="x", expand=True)
@@ -6654,6 +6661,18 @@ class DemoControllerGUI(Node):
         )
         self._sequence_dwell_spin.set("0.00")
         self._sequence_dwell_spin.pack(side="left", padx=2)
+        label(edit_row, "Next %:")
+        self._sequence_next_spin = ttk.Spinbox(
+            edit_row,
+            from_=MIN_NEXT_AT_PCT,
+            to=MAX_NEXT_AT_PCT,
+            increment=1,
+            format="%.0f",
+            width=5,
+            justify="center",
+        )
+        self._sequence_next_spin.set(f"{MAX_NEXT_AT_PCT}")
+        self._sequence_next_spin.pack(side="left", padx=2)
 
         self._sequence_edit_buttons = []
 
@@ -6678,10 +6697,15 @@ class DemoControllerGUI(Node):
         # ── Every step at once ───────────────────────────────────────────
         bulk_row = tk.Frame(frame, bg="#1e1e2e")
         bulk_row.pack(fill="x", padx=4, pady=2)
-        label(bulk_row, "All steps — apply the Time / Dwell above to every step:", padx=(0, 2))
+        label(
+            bulk_row,
+            "All steps — apply the Time / Dwell / Next % above to every step:",
+            padx=(0, 2),
+        )
         for text, command in (
             ("Set Time (all)", lambda: self._set_all_sequence_times(time=True)),
             ("Set Dwell (all)", lambda: self._set_all_sequence_times(dwell=True)),
+            ("Set Next % (all)", lambda: self._set_all_sequence_times(pct=True)),
         ):
             self._sequence_edit_buttons.append(button(bulk_row, text, command))
 
@@ -6739,7 +6763,9 @@ class DemoControllerGUI(Node):
                 values=(
                     step.preset,
                     f"{step.time_s:.2f}",
-                    f"{step.dwell_s:.2f}",
+                    # A step that hands over early never rests.
+                    f"{step.dwell_s:.2f}" if step.next_at_pct >= MAX_NEXT_AT_PCT else "—",
+                    str(step.next_at_pct),
                     step_problem(step, self._presets, self._shape.hand_dof),
                 ),
             )
@@ -6771,6 +6797,7 @@ class DemoControllerGUI(Node):
             self._sequence_preset_var.set(step.preset)
         self._sequence_time_spin.set(f"{step.time_s:.2f}")
         self._sequence_dwell_spin.set(f"{step.dwell_s:.2f}")
+        self._sequence_next_spin.set(f"{step.next_at_pct}")
 
     def _on_sequence_preset_picked(self, _event=None) -> None:
         """Offer the picked preset's own grasp_time as the step's time."""
@@ -6805,7 +6832,12 @@ class DemoControllerGUI(Node):
         dwell_s = self._sequence_spin_value(self._sequence_dwell_spin, "Dwell", clamp_dwell)
         if dwell_s is None:
             return None
-        return SequenceStep(preset, time_s, dwell_s)
+        pct = self._sequence_spin_value(
+            self._sequence_next_spin, "Next %", clamp_next_at_pct, "{:.0f}"
+        )
+        if pct is None:
+            return None
+        return SequenceStep(preset, time_s, dwell_s, int(pct))
 
     def _commit_sequence(
         self, steps=None, select: int | None = None, tolerance_deg: float | None = None
@@ -6872,11 +6904,13 @@ class DemoControllerGUI(Node):
         steps, at = moved(self._sequence.steps, index, offset)
         self._commit_sequence(steps, at)
 
-    def _set_all_sequence_times(self, *, time: bool = False, dwell: bool = False) -> None:
-        """Give every step the editor's Time and/or Dwell."""
+    def _set_all_sequence_times(
+        self, *, time: bool = False, dwell: bool = False, pct: bool = False
+    ) -> None:
+        """Give every step the editor's Time, Dwell and/or Next %."""
         if self._sequence_edit_refused() or not self._sequence.steps:
             return
-        time_s = dwell_s = None
+        time_s = dwell_s = next_at_pct = None
         if time:
             time_s = self._sequence_spin_value(self._sequence_time_spin, "Time", clamp_time)
             if time_s is None:
@@ -6885,7 +6919,14 @@ class DemoControllerGUI(Node):
             dwell_s = self._sequence_spin_value(self._sequence_dwell_spin, "Dwell", clamp_dwell)
             if dwell_s is None:
                 return
-        self._commit_sequence(with_all_times(self._sequence.steps, time_s, dwell_s))
+        if pct:
+            value = self._sequence_spin_value(
+                self._sequence_next_spin, "Next %", clamp_next_at_pct, "{:.0f}"
+            )
+            if value is None:
+                return
+            next_at_pct = int(value)
+        self._commit_sequence(with_all_times(self._sequence.steps, time_s, dwell_s, next_at_pct))
 
     def _apply_sequence_lock(self) -> None:
         """Editing and Play are off while a run plays; Stop is on only then."""
@@ -6896,6 +6937,7 @@ class DemoControllerGUI(Node):
         for spin in (
             self._sequence_time_spin,
             self._sequence_dwell_spin,
+            self._sequence_next_spin,
             self._sequence_tolerance_spin,
         ):
             spin.config(state=idle_state)
@@ -6947,10 +6989,13 @@ class DemoControllerGUI(Node):
             self._commit_sequence(tolerance_deg=tolerance)
         ctrl = self._active_ctrl
         steps, failure = resolve_steps(self._sequence.steps, self._presets, self._shape.hand_dof)
+        # A controller that restarts every goal from rest gains nothing from
+        # an early handover: it would only cut each move short.
+        blend = ctrl in HAND_JOINT_OWNERS
         failure = (
             failure
             or self._sequence_start_block(ctrl)
-            or runner.start(steps, mode, tolerance, self._shape.hand_motor_names)
+            or runner.start(steps, mode, tolerance, self._shape.hand_motor_names, blend=blend)
         )
         if failure:
             self._sequence_message = f"not started — {failure}"
@@ -6963,6 +7008,18 @@ class DemoControllerGUI(Node):
             f"Posture sequence: playing {len(steps)} steps ({mode}) on {ctrl}, "
             f"tolerance {tolerance:.1f} deg"
         )
+        self._sequence_note = ""
+        notes = []
+        if not blend and any(s.next_at_pct < MAX_NEXT_AT_PCT for s in steps):
+            notes.append(f"next % ignored on {ctrl} (it restarts every goal from rest)")
+        # Once: the last step settles anyway (the runner's rule) — only a loop
+        # can run with no step that checks the hand.
+        if mode == MODE_LOOP and (problem := settle_problem(steps)):
+            notes.append(problem)
+        if notes:
+            note = "; ".join(notes)
+            self._sequence_note = note
+            self.get_logger().warn(f"Posture sequence: {note}")
         self._apply_sequence_lock()
         # One tick chain: a tick left over from the previous run must not
         # run beside the one started here.
@@ -7018,7 +7075,12 @@ class DemoControllerGUI(Node):
         calls this every tick."""
         runner = self._sequence_runner
         running = runner.running
-        text = runner.status(time.monotonic()) if running else (self._sequence_message or "idle")
+        if running:
+            text = runner.status(time.monotonic())
+            if self._sequence_note:
+                text += f" [{self._sequence_note}]"
+        else:
+            text = self._sequence_message or "idle"
         fg = _result_fg(None if running else ok)
         painted = (text, fg, runner.index if running else -1)
         if painted == self._sequence_painted:

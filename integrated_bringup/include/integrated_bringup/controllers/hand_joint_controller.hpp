@@ -76,10 +76,17 @@
 //     feedforward lane stays as in `tracking` (dynamics_feedforward.*: switch,
 //     gains, clamp, hold policy) — the lane under test, with no servo error under it.
 //     There is no trajectory here, so q̈_ref = 0 and the inertia term is 0.
-//   A goal that lands mid-motion restarts the quintic from rest (the
-//   reference velocity steps to 0 for that tick); the inertia term follows the
-//   new quintic and does not feed the step forward — a torque impulse would be
-//   the wrong answer to it, a velocity-continuous retarget the right one.
+//   A goal that lands mid-motion (`continuous_retarget`, YAML key and runtime
+//   parameter, default true) starts the new quintic at the current reference
+//   position AND velocity, acceleration 0, so the reference velocity is
+//   continuous (rtc_controllers trajectory/continuous_retarget.hpp): a joint
+//   moving towards its goal is slowed just enough not to pass it, a reversing
+//   joint travels on and turns unless that would leave its position limits
+//   (then it starts at rest), and the duration grows until every joint's peak
+//   velocity is within its cap. Off, or with the reference at rest, the
+//   quintic is rest-to-rest as before (the reference velocity steps to 0 on a
+//   mid-motion goal). The acceleration steps at a retarget either way; the
+//   inertia term follows the new quintic and does not feed that step forward.
 //   A joint goal while the mode is not `tracking` is drained and refused
 //   (GoalRejectCount) — unlike E-STOP, which discards pending goals silently.
 //   On the tick the mode returns to `tracking` the reference is re-seeded from
@@ -99,6 +106,7 @@
 #include "rtc_controller_interface/controller_log_set.hpp"
 #include "rtc_controller_interface/rt_controller_interface.hpp"
 #include "rtc_controllers/params/dynamics_feedforward_params.hpp"
+#include "rtc_controllers/trajectory/continuous_retarget.hpp"
 #include "rtc_controllers/trajectory/joint_space_trajectory.hpp"
 #include "rtc_urdf_bridge/pinocchio_model_builder.hpp"
 #include "rtc_urdf_bridge/rt_closed_chain_handle.hpp"
@@ -169,6 +177,9 @@ struct HandJointConfig {
   double max_traj_velocity{2.0};                 ///< [rad/s], ≥ trajectory_speed
   rtc::params::DynamicsFeedforwardParams ff;     ///< the `dynamics_feedforward` block
   HandJointMode mode{HandJointMode::kTracking};  ///< `mode` key, default tracking
+  /// `continuous_retarget` key (optional, default true): a goal that lands
+  /// mid-motion keeps the reference velocity (header banner "Modes").
+  bool continuous_retarget{true};
   /// ‖φ‖ above which a closed-chain projection is not trusted for the
   /// fingertip FK (ClosedChainHandFk). The torque hold is the handle's own
   /// `held` / `singular`, not this.
@@ -202,6 +213,8 @@ class HandJointController final : public rtc::RTControllerInterface {
     HandJointMode mode{HandJointMode::kTracking};
     /// k_M of the inertia term k_M · M(q_meas) · q̈_ref. 0 = gravity alone.
     double inertia_gain{0.0};
+    /// A mid-motion goal keeps the reference velocity (else rest-to-rest).
+    bool continuous_retarget{true};
   };
 
   static_assert(std::is_trivially_copyable_v<Gains>, "Gains rides a SeqLock");
@@ -287,6 +300,14 @@ class HandJointController final : public rtc::RTControllerInterface {
   /// The reference acceleration of the last Compute(), device order [rad/s²].
   [[nodiscard]] std::span<const double> LastReferenceAcceleration() const noexcept {
     return {qdd_ref_.data(), static_cast<std::size_t>(std::max(dof_, 0))};
+  }
+
+  /// How the last accepted goal started: its duration and, for a goal that
+  /// landed mid-motion with `continuous_retarget` on, how many joints kept,
+  /// lowered or dropped their velocity (all 0 for a rest-to-rest start).
+  /// RT-owned.
+  [[nodiscard]] const rtc::trajectory::ContinuousRetargetPlan& LastRetarget() const noexcept {
+    return last_retarget_;
   }
 
  protected:
@@ -380,6 +401,11 @@ class HandJointController final : public rtc::RTControllerInterface {
   rtc::trajectory::JointSpaceTrajectory<kHandJointMaxDof> traj_;
   double traj_time_{0.0};
   bool traj_active_{false};
+  /// The previous tick advanced the quintic, so qd_ref_ is the reference's
+  /// velocity now. False after a frozen (unreadable) tick: the reference
+  /// stood still there, and a goal must not inherit the velocity from before.
+  bool ref_advanced_{false};
+  rtc::trajectory::ContinuousRetargetPlan last_retarget_{};
   /// Last valid model gravity term, device order; zero until the first valid tick.
   std::array<double, kHandJointMaxDof> g_dev_{};
   bool have_g_{false};

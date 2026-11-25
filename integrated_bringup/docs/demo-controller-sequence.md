@@ -16,7 +16,7 @@ ros2 run integrated_bringup demo_controller_sequence --robot p2_left --mode loop
 0. 코드를 받고 빌드한다. repo 루트에서 `git pull --ff-only` 뒤 `./build.sh robot` 을 실행한다. posture 가 바뀌지 않은 날 해도 해가 없다. bring-up 은 그 **뒤에** 띄운다 — 드라이버는 보정을 시작할 때 한 번 읽는다.
 1. NUC 마다 `ROS_DOMAIN_ID` 를 다르게 정하고 bring-up 터미널과 CLI 터미널에 같게 둔다 (같은 네트워크의 두 손 stack 은 이름이 같아 서로를 본다 — CLI 는 둘이 보이면 시작하지 않는다).
 2. tmux 를 연다 (SSH 가 끊겨도 run 이 남는다). 한 창에서 bring-up (`enable_logging:=false`, 아래 로그와 디스크), 다른 창에서 CLI.
-3. CLI 는 stack 을 기다렸다가 (기본 60 s, `--startup-timeout`) 계획을 보여 준다: posture 코드, commit, 정본 파일의 실제 경로, 보정 확인, 속도 상한, 손 link 감시 여부, 로그 증가율과 디스크 여유, step 목록. **posture 코드가 그 손에 공지된 코드와 같으면** `start` 를 친다 (`--yes` 는 묻지 않음). 다르면 Ctrl-C 로 끝내고 0단계를 확인한다.
+3. CLI 는 stack 을 기다렸다가 (기본 60 s, `--startup-timeout`) 계획을 보여 준다: posture 코드, commit, 정본 파일의 실제 경로, 보정 확인, 속도 상한, 손 link 감시 여부, 로그 증가율과 디스크 여유, step 목록 (일찍 넘어가는 step 은 `next at NN %`). **posture 코드가 그 손에 공지된 코드와 같으면** `start` 를 친다 (`--yes` 는 묻지 않음). 다르면 Ctrl-C 로 끝내고 0단계를 확인한다.
    - commit 줄은 참고용이다: 정본을 바꾼 마지막 commit 과 날짜이고, 파일이 그 commit 과 다르면 `+ local changes` 가 붙는다. git 이 답하지 못하는 설치 (복사 설치 · git 없는 사본) 에서는 나오지 않는다. 파일을 옮겨 다시 commit 한 사본 (다른 저장소의 mirror) 에서는 같은 posture 라도 hash 가 다르므로 대조에 쓰지 않는다.
 4. 끝: duration 이 지나면 그 cycle 을 마치고 exit 0. 중간에 끝내려면 Ctrl-C 한 번 (cycle 끝에서), 두 번 (즉시).
 
@@ -27,7 +27,7 @@ ROS 를 띄우기 전에 정본을 읽고, 문제가 있으면 원인 한 줄과
 | 상황 | 할 일 |
 |---|---|
 | 정본 파일 (`hand_presets.json` · `sequence.json` · `calibration.yaml`) 이 없음 (`… does not exist`) | 0단계의 빌드. 정본 파일은 처음 추가될 때 빌드해야 설치본에 생긴다 |
-| 정본이 출하 검사에 걸림 (side tag · 관절 수 · 위치 한계 · sequence 의 preset 참조) | 메시지를 그대로 posture 담당자 (GUI PC) 에게 전달 |
+| 정본이 출하 검사에 걸림 (side tag · 관절 수 · 위치 한계 · sequence 의 preset 참조 · `next_at_pct` 가 1–99 정수가 아님 · 100 % step 이 하나도 없음) | 메시지를 그대로 posture 담당자 (GUI PC) 에게 전달 |
 | workspace 를 source 하지 않음 | `source install/setup.bash` |
 
 stack 을 보고 나서는 exit 3 으로 끝난다 (아무것도 보내지 않는다):
@@ -49,7 +49,7 @@ stack 을 보고 나서는 exit 3 으로 끝난다 (아무것도 보내지 않�
 - 손 `joint_states` 가 1 s 넘게 끊김, controller manager · E-STOP publisher 소실, E-STOP
 - 손 전원 차단: driver 의 `link_status` 가 false (손 board 가 꺼져 상태가 오지 않는다). 복구는 전원 확인 뒤 **bring-up 재시작** 과 CLI 재실행 — CLI 는 처음 step 부터 다시 한다
 - `mode` 변경 · active controller 변경 · 다른 publisher 출현
-- 한 step 이 시간 안에 허용오차 (sequence 파일 `tolerance_deg`) 에 들지 못함
+- 한 step 이 시간 안에 허용오차 (sequence 파일 `tolerance_deg`) 에 들지 못함 — 일찍 넘어가는 step 의 바로 다음 step 은 컨트롤러가 이동을 늘일 수 있는 만큼 (≈ 1.95 배) 더 기다린다
 - dwell 중 자세가 목표에서 `max(3 × tolerance, tolerance + 5°)` 넘게 `--hold-abort-after` (기본 1 s) 넘게 벗어남 — 손이 자세를 잡지 못한다는 뜻 (모터 전원). 그보다 짧은 이탈 (관람객이 손을 만짐) 은 멈추지 않고 요약에 기록한다
 - `trajectory_speed` 설정이 거부되거나 1 s 안에 답이 없음 (목표는 보내지 않는다)
 
@@ -57,7 +57,7 @@ stack 을 보고 나서는 exit 3 으로 끝난다 (아무것도 보내지 않�
 
 ## 요약 파일
 
-`<logging_data>/sequence_runs/<YYMMDDTHHMMSS>_<robot>.json` — 시작, 60 s 마다, 끝에 원자적으로 쓴다. 재생한 posture 코드 · commit · 정본 파일의 실제 경로, cycle 수, 보낸 목표 수, step 별 도달 횟수 · 평균/최대 도달 시간 · 최대 최종 오차, dwell 이탈 기록, 종료 사유와 exit code. 마지막 쓰기가 실패하면 exit 4.
+`<logging_data>/sequence_runs/<YYMMDDTHHMMSS>_<robot>.json` — 시작, 60 s 마다, 끝에 원자적으로 쓴다. 재생한 posture 코드 · commit · 정본 파일의 실제 경로, cycle 수, 보낸 목표 수, step 별 도달 횟수 · 평균/최대 도달 시간 · 최대 최종 오차 (일찍 넘어간 step 은 `switched` 횟수 · 전환 순간의 최대 오차 `switch_error_deg_max` · 다음 목표가 예정보다 늦게 나간 시간 `lag_s_mean` / `lag_s_max` — 도달로 세지 않는다), dwell 이탈 기록, 종료 사유와 exit code. 마지막 쓰기가 실패하면 exit 4.
 
 ## 로그와 디스크
 
@@ -80,6 +80,10 @@ controller 의 세션 파일과 손 driver 의 `timing/hand_timing_log.csv` 가 
 | 3 | stack 준비 실패 (아무것도 보내지 않음) |
 | 4 | 최종 요약을 쓰지 못함 |
 | 130 | 즉시 중단 (Ctrl-C 두 번, SIGTERM, 터미널 닫힘) |
+
+## 일찍 넘어가는 step (wave)
+
+sequence 파일의 step 에 `next_at_pct` (1–99) 가 있으면 그 step 은 예상 이동 시간의 그 비율에서 다음 step 으로 넘어간다 (GUI 의 `Next %`, 100 은 키를 생략). controller 의 `continuous_retarget` 이 `true` 일 때만이다 — `false` 이거나 그 파라미터가 없는 controller 면 계획 화면에 `next at % IGNORED` 를 보이고 모든 step 을 도착까지 기다린다 (일찍 보내면 전환마다 멈췄다 출발한다). 그 step 에는 도착 확인 · 도달 timeout · dwell 감시가 없다 — 손이 따라오는지는 100 % step 이 확인하므로 sequence 에 하나 이상 있어야 하고, 관절별 감시는 100 % step 의 자세들이 그 관절을 움직이는 만큼만 된다. 끝낼 때 (duration · Ctrl-C 한 번) 마지막 step 은 끝까지 가서 도착을 확인한다 — 요청이 마지막 step 이 넘어간 뒤에 오면 다음 cycle 끝에서 멈춘다. `lag_s_*` 는 이 CLI 의 수치다 (GUI 는 속도 set 에 왕복이 하나 더 있다).
 
 ## GUI 와 다른 점
 

@@ -44,7 +44,9 @@ def _latched() -> QoSProfile:
 class FakeStack:
     """The CM, the controller's node and the hand driver, as the CLI sees them."""
 
-    def __init__(self, names=ROSTER, driver_params: dict | None = None) -> None:
+    def __init__(
+        self, names=ROSTER, driver_params: dict | None = None, retarget: bool | None = True
+    ) -> None:
         self.cm = Node("integrated_rt_controller")
         self.ctrl = Node("hand_joint_controller", namespace="/hand_joint_controller")
         self.driver = Node("udp_hand_node")
@@ -62,6 +64,8 @@ class FakeStack:
         self.ctrl.declare_parameter("mode", "tracking")
         self.ctrl.declare_parameter("max_traj_velocity", 10.0)
         self.ctrl.declare_parameter("trajectory_speed", 1.0)
+        if retarget is not None:  # None: an older controller that does not declare it
+            self.ctrl.declare_parameter("continuous_retarget", retarget)
         self.ctrl.add_on_set_parameters_callback(self._cap)
         self.goals: list[RobotTarget] = []
         self.ctrl.create_subscription(
@@ -119,6 +123,22 @@ def _until(io, predicate, timeout_s=10.0):
     return obs
 
 
+def test_a_controller_without_continuous_retarget_still_reads_mode_and_cap(io):
+    """Asked on its own: an undeclared continuous_retarget must not empty the
+    mode / cap answer (GetParameters answers nothing for an unknown name)."""
+    stack = FakeStack(retarget=None)
+    try:
+        obs = _until(io, lambda o: assess(o, True).kind == READY)
+        assert assess(obs, True).kind == READY, assess(obs, True).reason
+        assert obs.mode == "tracking" and obs.cap == 10.0
+        deadline = time.monotonic() + 3.0  # both requests answered at least once
+        while time.monotonic() < deadline:
+            io.spin_some(0.05)
+        assert io.observe().retarget is None
+    finally:
+        stack.close()
+
+
 def test_a_complete_stack_reads_as_ready(io):
     stack = FakeStack()
     try:
@@ -128,6 +148,8 @@ def test_a_complete_stack_reads_as_ready(io):
         assert obs.active == "hand_joint_controller" and obs.estop is False
         assert obs.link_pubs == 1 and obs.link is True
         assert obs.mode == "tracking" and obs.cap == 10.0
+        obs = _until(io, lambda o: o.retarget is not None)
+        assert obs.retarget is True
         assert obs.goal_pubs == 1 and obs.goal_matched == 1 and not obs.other_hand
         assert obs.roster_ok and obs.positions == pytest.approx([0.1 * i for i in range(10)])
     finally:

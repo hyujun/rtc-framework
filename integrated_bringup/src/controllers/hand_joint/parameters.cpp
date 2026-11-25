@@ -10,7 +10,9 @@
 namespace integrated_bringup {
 
 // Runtime-tunable: trajectory_speed, dynamics_feedforward.enabled,
-// dynamics_feedforward.gravity_gain, dynamics_feedforward.inertia_gain, mode.
+// dynamics_feedforward.gravity_gain, dynamics_feedforward.inertia_gain, mode,
+// continuous_retarget (read when a goal is applied: a change takes effect on
+// the next goal, never on the move under way).
 // Read-only: max_traj_velocity (a device rating, not a tuning knob).
 //
 // `mode` (tracking / damping / damping_feedforward) is accepted at any time —
@@ -61,6 +63,17 @@ void HandJointController::DeclareGainParametersImpl() {
               "Peak joint velocity of a goal trajectory [rad/s] (read-only)", /*read_only=*/true);
   g.ff_enabled = declare(key + ".enabled", g.ff_enabled,
                          "Feedforward torque lane on/off (off: 0 N·m, command type unchanged)");
+  // Own catch, like inertia_gain: a wrong-typed override must not cost the
+  // declares after it. The YAML value stays in force.
+  try {
+    g.continuous_retarget = declare(
+        "continuous_retarget", g.continuous_retarget,
+        "A goal that lands mid-motion keeps the reference velocity (false: restarts from rest)");
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(logger_,
+                 "[hand_joint] parameter 'continuous_retarget' not declared (%s); keeping %s",
+                 e.what(), g.continuous_retarget ? "true" : "false");
+  }
   // A stored out-of-range value (set while cleaned up) is clamped, not
   // honoured: this function is noexcept and cannot fail the transition.
   const double gain = declare(key + ".gravity_gain", g.gravity_gain,
@@ -135,6 +148,9 @@ rcl_interfaces::msg::SetParametersResult HandJointController::OnGainParametersSe
         dirty = true;
       } else if (name == key + ".enabled") {
         g.ff_enabled = p.as_bool();
+        dirty = true;
+      } else if (name == "continuous_retarget") {
+        g.continuous_retarget = p.as_bool();
         dirty = true;
       } else if (name == key + ".gravity_gain") {
         const double v = p.as_double();
