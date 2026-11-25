@@ -76,6 +76,13 @@ class EstopSubscriptionTest : public ::testing::Test {
 
   void TearDown() override {
     if (exec_) {
+      // A cancel() that lands before spin() has started is lost and the join
+      // never returns. The cases here only query the graph, which needs no
+      // spinning, so a case can end before the spin thread has begun: wait
+      // for it first (rtc_controller_manager's StopSpinner does the same).
+      if (spin_thread_.joinable()) {
+        WaitFor([this] { return exec_->is_spinning(); }, 5s);
+      }
       exec_->cancel();
     }
     if (spin_thread_.joinable()) {

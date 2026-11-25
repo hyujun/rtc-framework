@@ -2777,8 +2777,9 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
   // The ball's VELOCITY is uncertain (0.5 m/s on every axis) and its position
   // is not: the screening's closing-speed window, which reads the position
   // spread along the approach axis, stays open, every candidate is solved, and
-  // every solution breaks the terminal velocity set's chance rows — whatever
-  // the arm does, since no pose makes the ball's speed better known. The
+  // every solution (every solve that ends on an iterate) breaks the terminal
+  // velocity set's chance rows — whatever the arm does, since no pose makes
+  // the ball's speed better known. The
   // samples are ON the lattice instants, so that no position spread grows out
   // of the velocity's between a sample and a candidate.
   for (const bool following : {false, true}) {
@@ -2799,31 +2800,41 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
     Throw unsure = ball;
     unsure.cov = LateralCovariance(unsure, 0.002, 0.001, /*sigma_v=*/0.5);
     const Wake w = RunWake(*rig, unsure, rt, reported, now);
-    EXPECT_FALSE(w.plan.valid) << Table(rig->search, w.stats);
-    EXPECT_EQ(w.stats.nlp.reason, NlpReject::kChance) << Table(rig->search, w.stats);
+    const std::string uncertain = Table(rig->search, w.stats);
+    EXPECT_FALSE(w.plan.valid) << uncertain;
+    EXPECT_EQ(w.stats.nlp.reason, NlpReject::kChance) << uncertain;
     EXPECT_EQ(w.plan.reason, PlanReason::kUncertainty);
-    EXPECT_GE(w.stats.nlp.n_solved, 3) << Table(rig->search, w.stats);
-    EXPECT_EQ(Count(rig->search, NlpReject::kChance), w.stats.nlp.n_solved)
-        << Table(rig->search, w.stats);
     EXPECT_EQ(Count(rig->search, NlpReject::kSpeedWindow), 0);
+    // Every solve ends on an iterate that breaks the chance rows — or on no
+    // iterate, when a QP on the way did not converge. Which QP that is, if
+    // any, is the floating point's: the same binary takes it on a core with
+    // a 48 KiB L1 and not on one with 32 KiB (Eigen blocks its products by
+    // the L1). A solve the SOLVER refused says nothing about the rows.
+    std::set<std::int64_t> refused;    // by the chance rows
+    std::set<std::int64_t> forgotten;  // by the solver
     for (const Candidate& c : rig->search.Candidates()) {
       if (c.reject == NlpReject::kChance) {
         EXPECT_EQ(c.worst_group, DockingRowGroup::kVelocitySet) << c.index;
         EXPECT_GT(c.worst_violation, 0.1) << c.index;  // m/s — no tolerance's doing
+        // What each refused solve ended on is remembered …
+        EXPECT_NE(rig->search.RememberedSolution(c.index), nullptr) << c.index;
+        refused.insert(c.index);
+      } else if (c.reject == NlpReject::kSolverRejected) {
+        EXPECT_TRUE(c.core_reason == MpcDockingReason::kQpFailed ||
+                    c.core_reason == MpcDockingReason::kSolutionNonFinite)
+            << c.index << uncertain;
+        // … what the solver failed on is not.
+        EXPECT_EQ(rig->search.RememberedSolution(c.index), nullptr) << c.index;
+        forgotten.insert(c.index);
       }
     }
+    EXPECT_GE(refused.size(), 3U) << uncertain;
+    EXPECT_EQ(static_cast<int>(refused.size() + forgotten.size()), w.stats.nlp.n_solved)
+        << uncertain;
     // Nothing is published over a followed plan; "no plan" otherwise.
     EXPECT_EQ(w.stats.publish, !following);
     EXPECT_EQ(w.stats.decision,
               following ? SwitchDecision::kHeldNoCandidate : SwitchDecision::kNoCurrent);
-    // What each refused solve ended on is remembered …
-    std::set<std::int64_t> refused;
-    for (const Candidate& c : rig->search.Candidates()) {
-      if (c.reject == NlpReject::kChance) {
-        EXPECT_NE(rig->search.RememberedSolution(c.index), nullptr) << c.index;
-        refused.insert(c.index);
-      }
-    }
     // The same throw at the same instant, its velocity known ten times better.
     Throw sharp = ball;
     sharp.cov = LateralCovariance(sharp, 0.002, 0.001, /*sigma_v=*/0.05);
@@ -2833,7 +2844,7 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
     EXPECT_TRUE(ok.stats.publish);
     // … and is where the next wake starts that candidate: a start from an
     // iterate the rows refused does not keep the candidate refused once the
-    // rows can be met.
+    // rows can be met. A forgotten candidate starts from anything but itself.
     int from_refused = 0;
     for (const Candidate& c : rig->search.Candidates()) {
       if (c.solved && refused.count(c.index) != 0) {
@@ -2841,9 +2852,16 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
         EXPECT_EQ(c.reject, NlpReject::kNone) << c.index << Table(rig->search, ok.stats);
         ++from_refused;
       }
+      if (c.solved && forgotten.count(c.index) != 0) {
+        EXPECT_NE(c.start, NlpCatchSearch::Start::kSameCandidate)
+            << c.index << Table(rig->search, ok.stats);
+      }
     }
     EXPECT_GE(from_refused, 3) << Table(rig->search, ok.stats);
-    EXPECT_EQ(refused.count(ok.stats.nlp.chosen_index), 1U);
+    // The plan is one of the candidates the uncertain wake solved.
+    EXPECT_EQ(refused.count(ok.stats.nlp.chosen_index) + forgotten.count(ok.stats.nlp.chosen_index),
+              1U)
+        << uncertain << Table(rig->search, ok.stats);
   }
 }
 
@@ -3366,20 +3384,25 @@ TEST(NlpCatchSearchAllocation, AWakeAllocatesNothingOutsideTheQpSolvers) {
   }
 }
 
-// ── 9. The search as it is, pinned bit for bit ───────────────────────────────
+// ── 9. The reference wakes, both switches off ────────────────────────────────
 // The search gets a continuous solve per candidate (behind a switch) and a
-// window after adoption (behind another). With both off, a wake on which the
-// RT follows no plan must be the wake it was. These digests were taken BEFORE
-// either existed.
+// window after adoption (behind another). The wakes below, on which the RT
+// follows no plan, take every path a wake has; sections 10 and 12 hold them,
+// bit for bit, against the same wakes run in the same process with a window
+// or a chain. Bit-exact holds only within one binary on one host — Eigen
+// sizes its product blocking from the CPU's L1 at run time, so one binary
+// gives other bits on a core with another L1 — and no digest is compared
+// with a number recorded elsewhere.
 
-// The pinned searches' joint count: a candidate's joint arrays are digested at
-// the width they were recorded with (planner_trace_digest.hpp).
-constexpr int kPinnedNv = static_cast<int>(kDeviceOfModel.size());
+// The joint count a candidate's joint arrays are digested at
+// (planner_trace_digest.hpp): the device's, so that a chain rig's wakes,
+// read through the map, digest as the plain rig's.
+constexpr int kDigestNv = static_cast<int>(kDeviceOfModel.size());
 
 // WakeDigest's values, with every reason by its NAME: a reason added to
 // NlpReject moves the numbers of the ones after it, and that is not a wake
 // behaving differently.
-[[nodiscard]] std::uint64_t PinnedWakeDigest(const NlpCatchSearch& s, const Wake& w) {
+[[nodiscard]] std::uint64_t NamedWakeDigest(const NlpCatchSearch& s, const Wake& w) {
   rtc::testing::ValueDigest h;
   const auto add_reason = [&h](NlpReject r) {
     for (const char* c = NlpRejectName(r); *c != '\0'; ++c) {
@@ -3423,10 +3446,10 @@ constexpr int kPinnedNv = static_cast<int>(kDeviceOfModel.size());
     h.Add(c.ik_reason);
     h.Add(c.rank);
     h.Add(c.rank_key);
-    rtc::testing::AddSegmentJoints(h, c.q0, kPinnedNv);
-    rtc::testing::AddSegmentJoints(h, c.qd0, kPinnedNv);
-    rtc::testing::AddSegmentJoints(h, c.qdd0, kPinnedNv);
-    rtc::testing::AddSegmentJoints(h, c.q_ik, kPinnedNv);
+    rtc::testing::AddSegmentJoints(h, c.q0, kDigestNv);
+    rtc::testing::AddSegmentJoints(h, c.qd0, kDigestNv);
+    rtc::testing::AddSegmentJoints(h, c.qdd0, kDigestNv);
+    rtc::testing::AddSegmentJoints(h, c.q_ik, kDigestNv);
     h.Add(c.start);
     h.Add(c.start_index);
     h.Add(c.core_reason);
@@ -3462,7 +3485,7 @@ constexpr int kPinnedNv = static_cast<int>(kDeviceOfModel.size());
   return h.Value();
 }
 
-struct PinnedSearch {
+struct ReferenceSearch {
   std::string name;
   std::uint64_t digest{0};
   int wakes{0};
@@ -3476,9 +3499,9 @@ struct PinnedSearch {
 // Sequences of wakes on which the RT follows no plan, each on a rig of its own.
 // `chain`: every rig is the chain rig (MakeChain) with that `outside` value —
 // the wakes are then digested as the plain rig's (AsThePlainRigs).
-[[nodiscard]] std::vector<PinnedSearch> PinnedSearches(int follow_window = -1,
-                                                       std::optional<double> chain = std::nullopt) {
-  std::vector<PinnedSearch> all;
+[[nodiscard]] std::vector<ReferenceSearch> ReferenceSearches(
+    int follow_window = -1, std::optional<double> chain = std::nullopt) {
+  std::vector<ReferenceSearch> all;
 
   struct Step {
     std::int64_t after_ns;  // the wake's `now` − kNow
@@ -3500,13 +3523,13 @@ struct PinnedSearch {
     }
     const Throw ball = make_throw(*rig);
     rtc::testing::ValueDigest h;
-    PinnedSearch rec;
+    ReferenceSearch rec;
     rec.name = name;
     for (const Step& step : steps) {
       SetClockStep(step.clock_step_ns);
       const std::int64_t now = kNow + step.after_ns;
       const Wake w = RunWake(*rig, ball, rig->RestingRt(now), NoSegments(), now);
-      h.Add(PinnedWakeDigest(rig->search, AsThePlainRigs(*rig, w)));
+      h.Add(NamedWakeDigest(rig->search, AsThePlainRigs(*rig, w)));
       ++rec.wakes;
       rec.plans += w.plan.valid ? 1 : 0;
       rec.solved += w.stats.nlp.n_solved;
@@ -3560,34 +3583,29 @@ struct PinnedSearch {
   return all;
 }
 
-struct PinnedSearchDigest {
-  const char* name;
-  std::uint64_t digest;
-};
+// Two sets of the reference wakes are the same wakes: name for name, bit for bit.
+void ExpectSameWakes(const std::vector<ReferenceSearch>& got,
+                     const std::vector<ReferenceSearch>& reference) {
+  ASSERT_EQ(got.size(), reference.size());
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    EXPECT_EQ(got[i].name, reference[i].name);
+    EXPECT_EQ(got[i].digest, reference[i].digest) << got[i].name;
+    EXPECT_EQ(got[i].plans, got[i].wakes) << got[i].name << ": every reference wake chooses a plan";
+  }
+}
 
-/// PinnedSearches()' digests on the code BEFORE the continuous solve and the
-/// window after adoption. Numbers to compare against, tied to
-/// where they were taken: a change MEANT to alter what a wake
-/// leaves, with both switches off and the RT following no plan, replaces them
-/// in a commit of its own that says why.
-constexpr std::array<PinnedSearchDigest, 6> kPinnedSearchDigest{{
-    {"axis", 0x40ae1990d0f5baaeULL},
-    {"off_axis", 0x71d9348b3cfd85b8ULL},
-    {"past_the_share", 0xca95114736b6d4daULL},
-    {"budget_cut", 0xf77becbf0de812baULL},
-    {"time_and_switch_terms", 0x116fe3e0def3cbb2ULL},
-    {"stop_line_and_impact", 0x1dbdfb72a66be9e5ULL},
-}};
-
-TEST(NlpCatchSearchPinned, AWakeWithoutAFollowedPlanIsUnchangedBitForBit) {
-  const std::vector<PinnedSearch> runs = PinnedSearches();
-  ASSERT_EQ(runs.size(), kPinnedSearchDigest.size());
+// The reference itself: the same wakes on fresh rigs leave the same bits (no
+// state outside a rig reaches its wakes), the six sequences are six different
+// searches, and between them they take every path a wake has.
+TEST(NlpCatchSearchReference, TheWakesRepeatOnFreshRigsAndTakeEveryPath) {
+  const std::vector<ReferenceSearch> runs = ReferenceSearches();
+  ASSERT_EQ(runs.size(), 6U);
+  ExpectSameWakes(ReferenceSearches(), runs);
   std::set<std::uint64_t> distinct;
   int deadlines = 0;
   int from_memory = 0;
   bool budget_hit = false;
-  for (std::size_t i = 0; i < runs.size(); ++i) {
-    const PinnedSearch& r = runs[i];
+  for (const ReferenceSearch& r : runs) {
     std::array<char, 32> hex{};
     std::snprintf(hex.data(), hex.size(), "0x%016llx", static_cast<unsigned long long>(r.digest));
     RecordProperty("search_digest_" + r.name, hex.data());
@@ -3596,19 +3614,14 @@ TEST(NlpCatchSearchPinned, AWakeWithoutAFollowedPlanIsUnchangedBitForBit) {
         "%d from memory, budget_hit %d\n",
         r.name.c_str(), hex.data(), r.wakes, r.plans, r.solved, r.deadlines, r.from_memory,
         r.budget_hit ? 1 : 0);
-    EXPECT_EQ(r.name, kPinnedSearchDigest[i].name);
-    EXPECT_EQ(r.digest, kPinnedSearchDigest[i].digest)
-        << r.name << ": a wake without a followed plan changed: digest " << hex.data()
-        << " (see kPinnedSearchDigest)";
-    EXPECT_EQ(r.plans, r.wakes) << r.name << ": every pinned wake chooses a plan";
     distinct.insert(r.digest);
     deadlines += r.deadlines;
     from_memory += r.from_memory;
     budget_hit = budget_hit || r.budget_hit;
   }
   EXPECT_EQ(distinct.size(), runs.size());
-  // The pinned wakes went through the paths a wake has: solves started from
-  // memory, solves past their share, a budget that cut the solves.
+  // The reference wakes went through the paths a wake has: solves started
+  // from memory, solves past their share, a budget that cut the solves.
   EXPECT_GT(from_memory, 10);
   EXPECT_GT(deadlines, 0);
   EXPECT_TRUE(budget_hit);
@@ -3637,10 +3650,10 @@ TEST(NlpCatchSearchPinned, AWakeWithoutAFollowedPlanIsUnchangedBitForBit) {
     }
     h.Add(c.ik_run);
     h.Add(c.ik_reason);
-    rtc::testing::AddSegmentJoints(h, c.q0, kPinnedNv);
-    rtc::testing::AddSegmentJoints(h, c.qd0, kPinnedNv);
-    rtc::testing::AddSegmentJoints(h, c.qdd0, kPinnedNv);
-    rtc::testing::AddSegmentJoints(h, c.q_ik, kPinnedNv);
+    rtc::testing::AddSegmentJoints(h, c.q0, kDigestNv);
+    rtc::testing::AddSegmentJoints(h, c.qd0, kDigestNv);
+    rtc::testing::AddSegmentJoints(h, c.qdd0, kDigestNv);
+    rtc::testing::AddSegmentJoints(h, c.q_ik, kDigestNv);
     h.Add(c.source_seq);
     h.Add(c.rank_key);
   }
@@ -3673,26 +3686,21 @@ TEST(NlpCatchSearchPinned, AWakeWithoutAFollowedPlanIsUnchangedBitForBit) {
   return out;
 }
 
-/// FollowingScreeningDigests() on the code BEFORE the window after adoption
-/// existed (the commit that added the follow_window reason and nothing that
-/// sets it) — the reference of "with the window off, screening is what it
-/// was" on the wakes the window is about. The rule of kPinnedSearchDigest.
-constexpr std::array<std::uint64_t, 2> kPinnedFollowingScreening{{
-    0x6a8fefced9fe395aULL,
-    0xdb509a86cb5cbfbbULL,
-}};
-
-TEST(NlpCatchSearchPinned, WithTheWindowOffScreeningAfterAdoptionIsUnchanged) {
+// With the window off, no candidate after adoption is refused for it, and the
+// two wakes' screenings are the same on a fresh rig. (Section 12 holds a chain
+// rig's to these; AWindowWiderThanTheLatticeChangesNothing, a window that
+// removes nothing, to the whole wake.)
+TEST(NlpCatchSearchReference, WithTheWindowOffScreeningAfterAdoptionRepeatsAndRefusesNone) {
   int window_rejects = 0;
   const std::vector<std::uint64_t> got = FollowingScreeningDigests(-1, &window_rejects);
-  ASSERT_EQ(got.size(), kPinnedFollowingScreening.size());
+  ASSERT_EQ(got.size(), 2U);
   for (std::size_t i = 0; i < got.size(); ++i) {
     std::array<char, 32> hex{};
     std::snprintf(hex.data(), hex.size(), "0x%016llx", static_cast<unsigned long long>(got[i]));
     RecordProperty("following_screening_digest_" + std::to_string(i), hex.data());
     std::printf("[ record ] following_screening_digest %zu: %s\n", i, hex.data());
-    EXPECT_EQ(got[i], kPinnedFollowingScreening[i]) << hex.data();
   }
+  EXPECT_EQ(FollowingScreeningDigests(-1), got);
   EXPECT_NE(got[0], got[1]);
   EXPECT_EQ(window_rejects, 0);
 }
@@ -3702,11 +3710,7 @@ TEST(NlpCatchSearchPinned, WithTheWindowOffScreeningAfterAdoptionIsUnchanged) {
 // The window is about wakes on which the RT follows a plan: with a window
 // configured, every wake WITHOUT one is the wake it was — solves and all.
 TEST(NlpCatchSearchWindow, AWakeWithoutAFollowedPlanDoesNotReadTheWindow) {
-  const std::vector<PinnedSearch> runs = PinnedSearches(/*follow_window=*/2);
-  ASSERT_EQ(runs.size(), kPinnedSearchDigest.size());
-  for (std::size_t i = 0; i < runs.size(); ++i) {
-    EXPECT_EQ(runs[i].digest, kPinnedSearchDigest[i].digest) << runs[i].name;
-  }
+  ExpectSameWakes(ReferenceSearches(/*follow_window=*/2), ReferenceSearches());
 }
 
 // A window wider than the lattice removes nothing: the wake after adoption is
@@ -3728,7 +3732,7 @@ TEST(NlpCatchSearchWindow, AWindowWiderThanTheLatticeChangesNothing) {
       EXPECT_TRUE(w.plan.valid);
       EXPECT_TRUE(w.stats.nlp.follow_anchor_set);
       EXPECT_EQ(w.stats.nlp.follow_anchor_index, adopted->index);
-      out.push_back(PinnedWakeDigest(rig->search, w));
+      out.push_back(NamedWakeDigest(rig->search, w));
     }
     return out;
   };
@@ -4211,7 +4215,7 @@ TEST(NlpCatchSearchContinuous, TheFreeCatchInstantNeverCostsMoreThanTheLatticeOn
 // by name, and the continuous solves' own.
 [[nodiscard]] std::uint64_t ContinuousWakeDigest(const NlpCatchSearch& s, const Wake& w) {
   rtc::testing::ValueDigest h;
-  h.Add(PinnedWakeDigest(s, w));
+  h.Add(NamedWakeDigest(s, w));
   h.Add(w.stats.nlp.n_continuous_run);
   h.Add(w.stats.nlp.n_continuous);
   h.Add(w.stats.nlp.n_fallback);
@@ -4306,7 +4310,7 @@ TEST(NlpCatchSearchContinuous, AnUnconvergedOneFallsBackToTheFixedGridSolution) 
     any_used = any_used || c.continuous_used;
   }
   if (!any_used) {
-    EXPECT_EQ(PinnedWakeDigest(rig_on->search, on), PinnedWakeDigest(rig_off->search, off));
+    EXPECT_EQ(NamedWakeDigest(rig_on->search, on), NamedWakeDigest(rig_off->search, off));
   }
   EXPECT_EQ(on.plan.t_c_ns, off.plan.t_c_ns);
   EXPECT_FALSE(on.stats.nlp.chosen_continuous);
@@ -4974,33 +4978,26 @@ TEST(NlpCatchSearchContinuous, AWakeAllocatesNothingOutsideTheQpSolvers) {
 // the other three hold — command, velocity, wait pose (configured and
 // reported), their columns of the followed segment — does not reach the
 // search. The statement here is stronger than "two wakes agree": with ANY
-// value there, the chain rig leaves the wakes the plain rig is pinned to.
+// value there, the chain rig leaves the wakes the plain rig leaves.
 
-// The pinned wakes (no plan followed): solves from memory, solves past their
-// share, a budget that cuts — every path a wake has.
-TEST(NlpCatchSearchChain, WhateverTheOtherJointsHoldTheWakesAreThePinnedOnes) {
+// The reference wakes (no plan followed): solves from memory, solves past
+// their share, a budget that cuts — every path a wake has.
+TEST(NlpCatchSearchChain, WhateverTheOtherJointsHoldTheWakesAreThePlainRigs) {
+  const std::vector<ReferenceSearch> plain = ReferenceSearches();
   for (const double outside : {0.0, 0.37}) {
     SCOPED_TRACE("outside = " + std::to_string(outside));
-    const std::vector<PinnedSearch> runs = PinnedSearches(-1, outside);
-    ASSERT_EQ(runs.size(), kPinnedSearchDigest.size());
-    for (std::size_t i = 0; i < runs.size(); ++i) {
-      EXPECT_EQ(runs[i].name, kPinnedSearchDigest[i].name);
-      EXPECT_EQ(runs[i].digest, kPinnedSearchDigest[i].digest) << runs[i].name;
-      EXPECT_EQ(runs[i].plans, runs[i].wakes) << runs[i].name;
-    }
+    ExpectSameWakes(ReferenceSearches(-1, outside), plain);
   }
 }
 
 // After adoption the start state is the DEVICE's segment, read through the
 // map: its other columns hold anything.
-TEST(NlpCatchSearchChain, WhateverTheOtherColumnsOfTheFollowedSegmentHoldScreeningIsThePinnedOne) {
+TEST(NlpCatchSearchChain, WhateverTheOtherColumnsOfTheFollowedSegmentHoldScreeningIsThePlainRigs) {
+  const std::vector<std::uint64_t> plain = FollowingScreeningDigests(-1);
+  ASSERT_EQ(plain.size(), 2U);
   for (const double outside : {0.0, 0.37}) {
     SCOPED_TRACE("outside = " + std::to_string(outside));
-    const std::vector<std::uint64_t> got = FollowingScreeningDigests(-1, nullptr, outside);
-    ASSERT_EQ(got.size(), kPinnedFollowingScreening.size());
-    for (std::size_t i = 0; i < got.size(); ++i) {
-      EXPECT_EQ(got[i], kPinnedFollowingScreening[i]) << i;
-    }
+    EXPECT_EQ(FollowingScreeningDigests(-1, nullptr, outside), plain);
   }
 }
 
