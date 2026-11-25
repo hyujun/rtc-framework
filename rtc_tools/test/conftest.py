@@ -15,11 +15,29 @@ array). A write into such a view therefore passed every colcon run and broke
 running the suite under the venv by hand). Under a pandas that still has the
 switch, this file turns copy-on-write ON, so that the colcon lane fails where
 the runtime does.
+
+ONE SKIP, ONE MODULE. Several modules end their imports with a module-level
+``pytest.importorskip("mujoco")``: the system python of ``colcon test`` has no
+mujoco, so those modules skip there. ROS Jazzy's ``launch_testing`` plugin
+(3.4.13) imports every ``test_*.py`` from its ``pytest_pycollect_makemodule``
+hook to look for a launch test, and guards the import with ``except
+Exception`` only. ``Skipped`` is a ``BaseException``, so it escapes the hook
+and pytest skips the DIRECTORY being collected: ``colcon test`` reported
+"0 items / 1 skipped", pytest exited 5 and colcon counted that as a pass
+(2026-11-25, every rtc_tools test unrun). So this file builds the plain
+``Module`` first for every test file that is not a launch test, and the
+plugin's hook is never asked for it; a file that defines
+``generate_test_description`` is still left to the plugin, which is what
+collects its tests. And a run over the whole suite that collects nothing exits as a
+failure, not as 5 -- "did not run" is not "passed".
 """
 
 from pathlib import Path
 
 import pandas as pd
+import pytest
+
+_TEST_DIR = Path(__file__).resolve().parent
 
 _XDIST_MISSING = "rtc_tools_xdist_missing"
 _COW_FORCED = False
@@ -49,6 +67,42 @@ def pytest_addoption(parser, pluginmanager):
         dest=_XDIST_MISSING,
         help="ignored: pytest-xdist is not loaded, the tests run one at a time",
     )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pycollect_makemodule(module_path, parent):
+    # firstresult hook: a Module returned here ends the call before the
+    # launch_testing plugin imports the file outside a collector of its own.
+    if module_path.suffix != ".py" or not module_path.name.startswith("test_"):
+        return None
+    # A launch test is the plugin's to collect: as a plain Module it would
+    # yield no test and pass unrun. Read the text, do not import it.
+    if "generate_test_description" in module_path.read_text(encoding="utf-8"):
+        return None
+    return pytest.Module.from_parent(parent, path=module_path)
+
+
+def _covers_the_whole_suite(config) -> bool:
+    if config.getoption("keyword") or config.getoption("markexpr"):
+        return False
+    roots = {Path(str(config.rootpath)).resolve(), _TEST_DIR}
+    return all(Path(arg.split("::")[0]).resolve() in roots for arg in config.args)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if hasattr(session.config, "workerinput"):  # xdist worker: the controller decides
+        return
+    if exitstatus == pytest.ExitCode.NO_TESTS_COLLECTED and _covers_the_whole_suite(
+        session.config
+    ):
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_line(
+                "rtc_tools: the whole suite collected no test -- failing the run "
+                "(see test/conftest.py, ONE SKIP, ONE MODULE)",
+                red=True,
+            )
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def pytest_report_header(config):
