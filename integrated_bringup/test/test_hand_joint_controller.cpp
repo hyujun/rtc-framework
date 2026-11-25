@@ -891,6 +891,30 @@ std::vector<double> Commands(const ControllerOutput& out, int dof) {
   return {out.devices[0].commands.begin(), out.devices[0].commands.begin() + dof};
 }
 
+/// `ref` (the commands from the first tick on the goal) is the old
+/// rest-to-rest quintic from `from` to `to` over `duration`, sample for sample:
+/// the trajectory clock summed as the controller sums it, the limits clamped.
+void ExpectTheRestToRestQuintic(const std::vector<std::vector<double>>& ref,
+                                const std::vector<double>& from, const std::vector<double>& to,
+                                double duration, const char* what) {
+  using Trajectory = rtc::trajectory::JointSpaceTrajectory<integrated_bringup::kHandJointMaxDof>;
+  Trajectory old;
+  Trajectory::State a{}, b{};
+  for (std::size_t i = 0; i < to.size(); ++i) {
+    a.positions[i] = from[i];
+    b.positions[i] = to[i];
+  }
+  old.initialize(a, b, duration);
+  double clock = 0.0;
+  for (std::size_t k = 0; k < ref.size(); ++k) {
+    clock += kDt;
+    const auto s = old.compute(clock);
+    for (std::size_t i = 0; i < to.size(); ++i) {
+      ASSERT_DOUBLE_EQ(ref[k][i], std::clamp(s.positions[i], -3.0, 3.0)) << what << " tick " << k;
+    }
+  }
+}
+
 /// A wave switch on the plain rig: goal 1 moves every joint 0.8 rad (signs
 /// alternating), 0.4 s at speed 2; at `switch_tick` goal 2 sends the even
 /// joints back to the start (a reversal) and the odd ones on to 1.6 rad (the
@@ -992,21 +1016,10 @@ TEST(HandJointRetarget, OffAMidMotionGoalRestartsFromRestAsBefore) {
   const Switch sw = RunASwitch(*ctrl, rig.q, 80);
   EXPECT_EQ(sw.plan.kept, 0);
   EXPECT_EQ(sw.plan.duration, sw.base);
-  rtc::trajectory::JointSpaceTrajectory<integrated_bringup::kHandJointMaxDof> old;
-  rtc::trajectory::JointSpaceTrajectory<integrated_bringup::kHandJointMaxDof>::State a{}, b{};
-  for (std::size_t i = 0; i < sw.goal2.size(); ++i) {
-    a.positions[i] = sw.ref[sw.at - 1][i];
-    b.positions[i] = sw.goal2[i];
-  }
-  old.initialize(a, b, sw.base);
-  double clock = 0.0;  // summed as the controller sums its trajectory clock
-  for (std::size_t k = 0; sw.at + k < sw.ref.size() && k < 50; ++k) {
-    clock += kDt;
-    const auto s = old.compute(clock);
-    for (std::size_t i = 0; i < sw.goal2.size(); ++i) {
-      ASSERT_DOUBLE_EQ(sw.ref[sw.at + k][i], std::clamp(s.positions[i], -3.0, 3.0)) << k;
-    }
-  }
+  const std::vector<std::vector<double>> after(
+      sw.ref.begin() + static_cast<std::ptrdiff_t>(sw.at),
+      sw.ref.begin() + static_cast<std::ptrdiff_t>(std::min(sw.ref.size(), sw.at + 50)));
+  ExpectTheRestToRestQuintic(after, sw.ref[sw.at - 1], sw.goal2, sw.base, "off");
   for (std::size_t i = 0; i < sw.goal2.size(); ++i) {
     EXPECT_GE(std::abs(Velocity(sw, sw.at - 1, i) - Velocity(sw, sw.at, i)),
               0.9 * std::abs(Velocity(sw, sw.at - 1, i)));
@@ -1033,21 +1046,7 @@ TEST(HandJointRetarget, AGoalFromRestIsUnchanged) {
     EXPECT_EQ(ctrl->LastRetarget().kept, 0);
     const double base = RestToRestDuration(rig.q, goal);
     EXPECT_EQ(ctrl->LastRetarget().duration, base);
-    rtc::trajectory::JointSpaceTrajectory<integrated_bringup::kHandJointMaxDof> old;
-    rtc::trajectory::JointSpaceTrajectory<integrated_bringup::kHandJointMaxDof>::State a{}, b{};
-    for (std::size_t i = 0; i < goal.size(); ++i) {
-      a.positions[i] = rig.q[i];
-      b.positions[i] = goal[i];
-    }
-    old.initialize(a, b, base);
-    double clock = 0.0;  // summed as the controller sums its trajectory clock
-    for (std::size_t k = 0; k < ref.size(); ++k) {
-      clock += kDt;
-      const auto s = old.compute(clock);
-      for (std::size_t i = 0; i < goal.size(); ++i) {
-        ASSERT_DOUBLE_EQ(ref[k][i], s.positions[i]) << "on=" << on << " tick " << k;
-      }
-    }
+    ExpectTheRestToRestQuintic(ref, rig.q, goal, base, on ? "on" : "off");
   }
 }
 

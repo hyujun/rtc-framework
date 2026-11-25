@@ -67,10 +67,6 @@ SENDING = "sending"  # handed to the GUI; its completion has not come back
 MOVING = "moving"
 DWELLING = "dwelling"
 
-# How the last step was left (``SequenceRunner.left_by``).
-LEFT_ARRIVED = "arrived"
-LEFT_SWITCHED = "switched"
-
 
 def round_time(value: float) -> float:
     """``value`` [s] on the 0.01 s grid."""
@@ -292,11 +288,11 @@ class SequenceRunner:
         self._expected_s = 0.0
         self._stop_at_cycle_end = False
         self._blend = True
-        self._stretched = False  # the current goal retargeted a move in progress
-        self._after_switch = False  # the step just handed out follows a switch
         self.switch_due: float | None = None  # when the current step hands over; None = settles
-        self.left_by = ""  # LEFT_ARRIVED / LEFT_SWITCHED: how the last step was left
-        self.left_due: float | None = None  # switch_due of the step left by switch
+        # The switch_due of the last step left, when it was left by switch;
+        # None when it arrived. Until the next step is left this also says that
+        # step's goal retargeted a move in progress (its timeout stretches).
+        self.left_due: float | None = None
 
     # ── Control ──────────────────────────────────────────────────────────────
 
@@ -328,9 +324,7 @@ class SequenceRunner:
         self.result, self.aborted = "", False
         self._stop_at_cycle_end = False
         self._blend = blend
-        self._after_switch = self._stretched = False
         self.switch_due = self.left_due = None
-        self.left_by = ""
         self.state = READY
         return ""
 
@@ -362,7 +356,6 @@ class SequenceRunner:
             return
         step = self._steps[self.index]
         self._expected_s = max(step.time_s, min_duration or 0.0)
-        self._stretched, self._after_switch = self._after_switch, False
         # Without a known speed the expected time is a guess: such a step settles.
         self.switch_due = None
         if min_duration is not None and self._switches(self.index):
@@ -394,8 +387,7 @@ class SequenceRunner:
             return None
         if self.state == MOVING:
             if self._due_to_switch(now):
-                self.left_by, self.left_due = LEFT_SWITCHED, self.switch_due
-                self._after_switch = True
+                self.left_due = self.switch_due
             elif not self._moving_done(now, measured, measured_age_s):
                 return None
         if self.state == DWELLING and now - self._since < self._steps[self.index].dwell_s:
@@ -473,13 +465,13 @@ class SequenceRunner:
         errors = [abs(t - m) for t, m in zip(step.target_rad, measured, strict=False)]
         comparable = len(measured) == len(step.target_rad)
         reached = fresh and comparable and max(errors, default=0.0) <= self._tolerance_rad
+        stretch = RETARGET_STRETCH_MAX if self.left_due is not None else 1.0
         if elapsed >= self._expected_s and reached:
-            self.left_by, self.left_due = LEFT_ARRIVED, None
+            self.left_due = None
             if step.dwell_s > 0.0:
                 self._enter(DWELLING, now)
                 return False
             return True
-        stretch = RETARGET_STRETCH_MAX if self._stretched else 1.0
         timeout = TIMEOUT_FACTOR * self._expected_s * stretch + TIMEOUT_MARGIN_S
         if elapsed > timeout:
             self._abort(

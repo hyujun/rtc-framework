@@ -22,7 +22,6 @@ from typing import Protocol
 from ..demo_gui.preset_speed import HandSpeedPlan, plan_hand_speed
 from ..demo_gui.sequence import (
     DWELLING,
-    LEFT_SWITCHED,
     MODE_LOOP,
     MOVING,
     ResolvedStep,
@@ -246,6 +245,12 @@ class Orchestrator:
             + ("required" if obs.link_pubs > 0 else "not published (sim)"),
             f"  logs grow {self._rate / 1e3:.0f} kB/s, {self.io.free_bytes() / 1e9:.1f} GB free",
         ]
+        if any(s.next_at_pct < 100 for s in inputs.steps) and not self._blends(obs):
+            state = "false" if obs.retarget is False else "not declared"
+            lines.append(
+                f"  next at % IGNORED: the controller's continuous_retarget is {state} — "
+                "every step waits for the arrival"
+            )
         for i, s in enumerate(inputs.steps, start=1):
             blend = f"  next at {s.next_at_pct:3d} %" if s.next_at_pct < 100 else ""
             lines.append(
@@ -260,6 +265,12 @@ class Orchestrator:
             return "not checked (no hand driver — sim)"
         return "the running driver's = the recorded one"
 
+    def _blends(self, obs: Observation) -> bool:
+        """Early handover only on a controller that keeps the velocity: with
+        continuous_retarget false or not declared, each early goal would restart
+        the move from rest (stop-and-go), so every step waits for the arrival."""
+        return obs.retarget is True
+
     def _start(self, obs: Observation, now: float) -> None:
         self._link_required = obs.link_pubs > 0
         problem = self.runner.start(
@@ -267,6 +278,7 @@ class Orchestrator:
             MODE_LOOP,
             self.cfg.inputs.tolerance_deg,
             self.cfg.joint_names,
+            blend=self._blends(obs),
         )
         if problem:
             self._finish(EXIT_NOT_READY, problem)
@@ -390,10 +402,9 @@ class Orchestrator:
             return
         step = self.cfg.inputs.steps[index]
         error, _ = worst_error(step.target_rad, obs.positions, self.cfg.joint_names)
-        if self.runner.left_by == LEFT_SWITCHED:
+        if (due := self.runner.left_due) is not None:  # left by switch
             self.stats[index].add_switch(math.degrees(error))
-            if self.runner.left_due is not None:
-                self._clock.switch_lag = (index, self.runner.left_due)
+            self._clock.switch_lag = (index, due)
             return
         self.stats[index].add(now - self._clock.move_started, math.degrees(error))
 

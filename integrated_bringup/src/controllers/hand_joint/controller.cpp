@@ -97,20 +97,12 @@ HandJointConfig ParseHandJointConfig(const YAML::Node& cfg) {
   }
   rtc::params::ParseDynamicsFeedforwardParams(cfg[std::string(kHandJointFfBlockKey)],
                                               kHandJointFfBlockKey, out.ff);
-  // Optional, default true; the shipped YAMLs spell it out. A non-boolean
-  // value is refused rather than read as some truth value.
+  // Optional, default true; the shipped YAMLs spell it out. A value yaml-cpp
+  // does not read as a boolean (it accepts true/false, yes/no, on/off) is
+  // refused, not defaulted.
   if (cfg["continuous_retarget"]) {
     const YAML::Node node = cfg["continuous_retarget"];
-    bool parsed = false;
-    if (node.IsScalar()) {
-      try {
-        out.continuous_retarget = node.as<bool>();
-        parsed = true;
-      } catch (const YAML::Exception&) {
-        parsed = false;
-      }
-    }
-    if (!parsed) {
+    if (!node.IsScalar() || !YAML::convert<bool>::decode(node, out.continuous_retarget)) {
       Fail("'continuous_retarget' must be true or false");
     }
   }

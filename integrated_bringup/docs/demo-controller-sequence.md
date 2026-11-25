@@ -83,7 +83,7 @@ controller 의 세션 파일과 손 driver 의 `timing/hand_timing_log.csv` 가 
 
 ## 일찍 넘어가는 step (wave)
 
-sequence 파일의 step 에 `next_at_pct` (1–99) 가 있으면 그 step 은 예상 이동 시간의 그 비율에서 다음 step 으로 넘어간다 (GUI 의 `Next %`, 100 은 키를 생략). 그 step 에는 도착 확인 · 도달 timeout · dwell 감시가 없다 — 손이 따라오는지는 100 % step 이 확인하므로 sequence 에 하나 이상 있어야 하고, 관절별 감시는 100 % step 의 자세들이 그 관절을 움직이는 만큼만 된다. 끝낼 때 (duration · Ctrl-C 한 번) 마지막 step 은 끝까지 가서 도착을 확인한다 — 요청이 마지막 step 이 넘어간 뒤에 오면 다음 cycle 끝에서 멈춘다. `lag_s_*` 는 이 CLI 의 수치다 (GUI 는 속도 set 에 왕복이 하나 더 있다).
+sequence 파일의 step 에 `next_at_pct` (1–99) 가 있으면 그 step 은 예상 이동 시간의 그 비율에서 다음 step 으로 넘어간다 (GUI 의 `Next %`, 100 은 키를 생략). controller 의 `continuous_retarget` 이 `true` 일 때만이다 — `false` 이거나 그 파라미터가 없는 controller 면 계획 화면에 `next at % IGNORED` 를 보이고 모든 step 을 도착까지 기다린다 (일찍 보내면 전환마다 멈췄다 출발한다). 그 step 에는 도착 확인 · 도달 timeout · dwell 감시가 없다 — 손이 따라오는지는 100 % step 이 확인하므로 sequence 에 하나 이상 있어야 하고, 관절별 감시는 100 % step 의 자세들이 그 관절을 움직이는 만큼만 된다. 끝낼 때 (duration · Ctrl-C 한 번) 마지막 step 은 끝까지 가서 도착을 확인한다 — 요청이 마지막 step 이 넘어간 뒤에 오면 다음 cycle 끝에서 멈춘다. `lag_s_*` 는 이 CLI 의 수치다 (GUI 는 속도 set 에 왕복이 하나 더 있다).
 
 ## GUI 와 다른 점
 

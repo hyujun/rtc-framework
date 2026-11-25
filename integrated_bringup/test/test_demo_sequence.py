@@ -296,6 +296,7 @@ GOOD = Observation(
     goal_matched=1,
     mode="tracking",
     cap=10.0,
+    retarget=True,
 )
 
 
@@ -1039,6 +1040,19 @@ def test_an_arrival_only_run_keeps_the_old_summary_values():
     _ticks(orch, io, 6.0)
     for row in orch.summary()["steps"]:
         assert row["switched"] == 0 and row["lag_s_mean"] is None and row["reached"] >= 1
+
+
+@pytest.mark.parametrize("retarget, said", [(False, "false"), (None, "not declared")])
+def test_a_controller_that_restarts_from_rest_plays_every_step_to_the_arrival(retarget, said):
+    """continuous_retarget off (or an older controller without it): an early
+    goal would stop-and-go, so the run ignores next % and says so up front."""
+    io = FakeIo(replace(GOOD, retarget=retarget))
+    orch = _wave_run(io)
+    _ticks(orch, io, 3.0, follow=False)  # the hand stays far from the first target
+    assert orch.summary()["steps"][0]["switched"] == 0
+    assert io.published == [WAVE[0].target_rad]  # no second goal without an arrival
+    plan = next(t for t in io.said if t.startswith("robot p2:"))
+    assert f"next at % IGNORED: the controller's continuous_retarget is {said}" in plan
 
 
 def test_the_plan_shows_the_switch_point_only_where_it_is_set():

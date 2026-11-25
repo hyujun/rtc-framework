@@ -7012,7 +7012,9 @@ class DemoControllerGUI(Node):
         notes = []
         if not blend and any(s.next_at_pct < MAX_NEXT_AT_PCT for s in steps):
             notes.append(f"next % ignored on {ctrl} (it restarts every goal from rest)")
-        if problem := settle_problem(steps):
+        # Once: the last step settles anyway (the runner's rule) — only a loop
+        # can run with no step that checks the hand.
+        if mode == MODE_LOOP and (problem := settle_problem(steps)):
             notes.append(problem)
         if notes:
             note = "; ".join(notes)

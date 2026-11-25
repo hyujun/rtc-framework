@@ -57,6 +57,7 @@ class Observation:
     goal_matched: int = 0  # subscribers matched to this CLI's publisher
     mode: str | None = None  # controller `mode` as last read
     cap: float | None = None  # max_traj_velocity [rad/s] as last read
+    retarget: bool | None = None  # continuous_retarget as last read (None = not declared)
     other_hand: bool = False  # the other hand's joint_states is on this domain
     driver_nodes: int = 0  # nodes named udp_hand_node (none: a sim)
     # What the running driver's parameters say (None = not read yet);

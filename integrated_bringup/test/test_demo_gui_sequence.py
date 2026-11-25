@@ -20,6 +20,7 @@ import inspect
 import json
 import math
 from dataclasses import replace
+from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 import pytest
@@ -29,8 +30,6 @@ from integrated_bringup.demo_gui.app import SEQUENCE_TICK_MS, DemoControllerGUI
 from integrated_bringup.demo_gui.sequence import (
     DWELLING,
     IDLE,
-    LEFT_ARRIVED,
-    LEFT_SWITCHED,
     MODE_LOOP,
     MODE_ONCE,
     MOVING,
@@ -725,7 +724,7 @@ def test_the_next_goal_goes_out_on_the_first_tick_at_the_switch_point_not_before
     assert runner.tick(10.39, _FAR, 0.0) is None and runner.state == MOVING
     # The hand is nowhere near _W's target: it is the switch, not an arrival.
     assert runner.tick(10.4, _FAR, 0.0) is _S
-    assert runner.left_by == LEFT_SWITCHED and runner.left_due == pytest.approx(10.4)
+    assert runner.left_due == pytest.approx(10.4)  # left by switch
     assert runner.index == 1 and runner.state == SENDING
 
 
@@ -737,7 +736,7 @@ def test_a_100_percent_twin_does_not_advance_on_the_same_far_pose():
     assert runner.tick(10.4, _FAR, 0.0) is None and runner.index == 0
     assert runner.tick(11.0, _FAR, 0.0) is None and runner.index == 0
     assert runner.tick(11.0, (1.0, 1.0), 0.0) is _S
-    assert runner.left_by == LEFT_ARRIVED
+    assert runner.left_due is None  # left by arrival
 
 
 def test_the_switch_point_counts_from_the_publish_of_the_longer_plan():
@@ -839,7 +838,7 @@ def test_stop_mid_blend_hands_nothing_more_out():
     _send(runner, 0.0, _FAR, min_duration=0.0)
     runner.stop()
     assert runner.tick(5.0, _FAR, 0.0) is None and not runner.running
-    assert runner.left_by == ""
+    assert runner.left_due is None
 
 
 def test_a_step_entered_by_a_switch_gets_the_stretched_timeout():
@@ -862,3 +861,15 @@ def test_a_step_entered_by_arrival_keeps_the_plain_timeout():
     runner.on_sent(runner.token, 0.5, "", 0.0)
     plain = seq.TIMEOUT_FACTOR * 1.0 + seq.TIMEOUT_MARGIN_S
     assert runner.tick(0.5 + plain + 0.05, (0.9, 0.0), 0.0) is None and runner.aborted
+
+
+def test_the_stretch_bound_is_the_controller_planners():
+    """RETARGET_STRETCH_MAX mirrors rtc_controllers' continuous-retarget
+    planner: its duration grows by 1.25 per step, and its test holds every plan
+    within 1.25³ × the base. A change there must move this constant too."""
+    root = Path(__file__).resolve().parents[2] / "rtc_controllers"
+    header = (root / "include/rtc_controllers/trajectory/continuous_retarget.hpp").read_text()
+    sweep = (root / "test/test_continuous_retarget.cpp").read_text()
+    assert "duration *= 1.25" in header
+    assert "c.base * 1.25 * 1.25 * 1.25" in sweep
+    assert seq.RETARGET_STRETCH_MAX == 1.25**3
