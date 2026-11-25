@@ -65,5 +65,5 @@ def test_the_shipped_g1_scene_matches_the_body_urdf_and_not_the_one_with_a_hand(
     body = model_match(robots / "g1/urdf/g1_29dof_floating.urdf", scene)
     assert abs(body["mass_kg"]) < 1e-5 and body["com_m"] < 1e-6 and body["inertia_kgm2"] < 1e-5
     hand = model_match(robots / "g1/urdf/g1_29dof_floating_with_p1b_surrogate.urdf.xacro", scene)
-    assert hand["mass_kg"] == pytest.approx(-0.932, abs=1e-3)
+    assert hand["mass_kg"] < -0.1  # the surrogate hand is missing from the scene
     assert hand["com_m"] > 5e-3

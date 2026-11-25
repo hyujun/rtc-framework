@@ -366,7 +366,16 @@ def test_shipped_write_all_equals_every_shipped_float(tmp_path):
                 n += 1
 
     walk(got, want)
-    assert n == 2 * (4 * 3 + 2 * 23) + 2 * 3 + 23 + 6 * 3  # every weight number
+
+    def count(w):
+        return sum(
+            count(v) if isinstance(v, dict) else len(v) if isinstance(v, list) else 1
+            for v in w.values()
+        )
+
+    # every number of the weight blocks in the loaded document is written, however many it has
+    blocks = ("state_weights", "terminal_weights", "input_weights", "contact_tracking")
+    assert n > 0 and n == sum(count(want[b]) for b in blocks)
 
 
 def test_shipped_one_group_scales_state_and_terminal_together(tmp_path):
@@ -383,8 +392,37 @@ def test_shipped_one_group_scales_state_and_terminal_together(tmp_path):
             assert v == ship[blk]["joints"][j] * 10.0**0.25
 
 
-# the checked-in fixtures of integrated_bringup's test_locomotion_mpc_weight_overlay.cpp are the
-# generator's output now
+@pytest.mark.parametrize("group", ["joint_position", "base_orientation"])
+def test_a_group_scales_every_shipped_number_it_names(tmp_path, group):
+    theta = 0.5
+    out = tmp_path / "o.yaml"
+    wo.generate(SHIPPED_MPC, SHIPPED_GROUPS, {group: theta}, GAUGE, out)
+    kin = yaml.safe_load(out.read_text())["integrated_rt_controller"]["ros__parameters"][
+        "locomotion_controller"
+    ]["mpc"]["kinodynamic"]
+    ship = yaml.safe_load(SHIPPED_MPC.read_text())["locomotion_controller"]["mpc"]["kinodynamic"]
+    seen = 0
+
+    def walk(g, w):
+        nonlocal seen
+        for k, gv in g.items():
+            if isinstance(gv, dict):
+                walk(gv, w[k])
+            else:
+                got = gv if isinstance(gv, list) else [gv]
+                ref = w[k] if isinstance(gv, list) else [w[k]]
+                assert got == pytest.approx([float(x) * 10.0**theta for x in ref])
+                seen += len(got)
+
+    walk(kin, ship)
+    assert seen > 0
+
+
+# Not a value pin: integrated_bringup's test_locomotion_mpc_weight_overlay.cpp
+# reads these checked-in overlays and expects them to be what the generator
+# writes from the shipped mpc.yaml (theta 0 = the shipped weights, +-0.5 = the
+# shipped weights x 10^theta). This fails first, and names the file, when a
+# retune leaves them stale: regenerate them with tools weight_overlay.
 @pytest.mark.parametrize(
     ("name", "theta", "write_all"),
     [
@@ -398,4 +436,6 @@ def test_the_checked_in_cpp_fixtures_are_what_the_generator_writes(
 ):
     out = tmp_path / name
     wo.generate(SHIPPED_MPC, SHIPPED_GROUPS, theta, GAUGE, out, write_all=write_all)
-    assert out.read_text() == (FIXTURES / name).read_text()
+    assert out.read_text() == (FIXTURES / name).read_text(), (
+        f"{name} is stale against the shipped mpc.yaml: regenerate it"
+    )
