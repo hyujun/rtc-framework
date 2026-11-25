@@ -71,9 +71,11 @@ RawVelocityCommandSample LocomotionController::RestCommandSample() const noexcep
   return rest;
 }
 
-// The one writer of the phase manager's command slot (and of the publish
-// thread's copy, and of the diagnostic log's): the timer, and
-// StartCommandTimer on the same executor thread before the timer exists.
+// The one writer of the publish thread's copy and of the diagnostic log's (and,
+// with to_planner, of the phase manager's command slot): under free_run the
+// timer, and StartCommandTimer on the same executor thread before the timer
+// exists; under lock-step the RT tick, and StartCommandTimer before the first
+// tick of the activation.
 void LocomotionController::PushCommand(const mpc::FilteredCommand& cmd,
                                        const LocomotionCommandSource& source,
                                        bool to_planner) noexcept {
