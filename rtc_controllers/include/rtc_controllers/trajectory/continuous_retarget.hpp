@@ -231,9 +231,7 @@ inline ContinuousRetargetPlan PlanContinuousRetarget(
   if (!any_dropped) {
     return finish(capped);
   }
-  if (!any_moving()) {
-    return finish(base);
-  }
+  // Nobody left moving: the ladder's first rung, the base.
   const double shorter = d::SmallestCappedDuration(q0, v0, goal, cap, base);
   return finish(shorter > 0.0 ? std::min(shorter, capped) : capped);
 }

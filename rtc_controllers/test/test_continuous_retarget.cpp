@@ -16,7 +16,7 @@ namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kPeakFactor = 15.0 / 8.0;  // rest-to-rest quintic: peak / mean velocity
-constexpr int kOracleSamples = 10000;
+constexpr int kOracleSamples = 2000;
 
 /// What a caller builds the base from: max distance / speed, each joint's
 /// rest-to-rest peak held to its cap, and a one-tick floor.
