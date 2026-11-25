@@ -1,4 +1,4 @@
-"""Process environment of the CLI: where its files are, and which RMW it talks.
+"""Process environment of the CLI: where it writes, and which RMW it talks.
 
 Both are settled before rclpy is imported. The robot launch runs every node on
 ``rmw_cyclonedds_cpp`` with the CM's ``cyclone_dds.xml`` but sets them only for
@@ -14,26 +14,20 @@ from collections.abc import MutableMapping
 CYCLONE = "rmw_cyclonedds_cpp"
 
 
-def logging_root(explicit: str | None) -> tuple[str, str]:
+def logging_root() -> tuple[str, str]:
     """(the logging root, "") or ("", why there is none).
 
     Only a root the workspace names counts (``workspace_logging_root``): the
     session helpers' last fallback, ``$PWD/logging_data``, is wherever the
-    terminal happens to be, and a run reading its presets from there reads
-    files nobody made.
+    terminal happens to be — not where the stack writes its sessions (the disk
+    the CLI watches), nor where the GUI keeps its working copy (what promote
+    reads).
     """
-    if explicit is not None:
-        if not os.path.isdir(explicit):
-            return "", f"--logging-root {explicit} is not a directory"
-        return explicit, ""
     from rtc_tools.utils.session_dir import workspace_logging_root
 
     root = workspace_logging_root()
     if root is None:
-        return "", (
-            "no colcon workspace in the environment or above this directory — source "
-            "the workspace, or pass --logging-root"
-        )
+        return "", "no colcon workspace in the environment or above this directory — source it"
     return root, ""
 
 

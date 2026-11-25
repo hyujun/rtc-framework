@@ -9,7 +9,10 @@ use runs the calibration the shipped postures are recorded under, then writes
 ``config/<robot>/demo_gui/`` of the SOURCE tree (never the installed share: a
 symlink install points it at the source, and a copy install would lose the
 change on the next build). Nothing is written unless every robot passes.
-Operator guide: docs/demo-controller-gui.md §Shipped postures.
+Each robot's posture code (``shipped.posture_code``) is printed:
+demo_controller_sequence shows the same code before 'start' on a field PC that
+has pulled and built the commit. Operator guide: docs/demo-controller-gui.md
+§Shipped postures.
 
 Exit codes: 0 written (or ``--check`` passed) · 1 refused · 2 arguments.
 """
@@ -31,6 +34,7 @@ from .shipped import (
     calibration_mismatch,
     driver_calibration,
     hand_limits_deg,
+    posture_code,
     read_calibration,
     read_json,
     shipped_dir,
@@ -50,6 +54,7 @@ class Plan:
     robot: str
     writes: tuple[tuple[str, object], ...]  # (source path, data)
     summary: tuple[str, ...]
+    code: str  # posture_code of what ships after the writes
 
 
 def _diff(name: str, old: object, new: object) -> list[str]:
@@ -104,6 +109,7 @@ def plan_robot(
 
     s_work = os.path.join(logging_root, f"demo_gui_sequences_{token}.json")
     s_ship = os.path.join(target, SEQUENCE_FILE)
+    sequence = None
     if os.path.exists(s_work):
         sequence = read_json(s_work, "sequence file")
         validate_sequence(sequence, s_work, presets, dof)
@@ -113,9 +119,14 @@ def plan_robot(
         summary.append(f"  {SEQUENCE_FILE}: {verdict}")
     elif os.path.exists(s_ship):
         # The shipped sequence stays; it must still play on the new presets.
-        validate_sequence(read_json(s_ship, "shipped sequence file"), s_ship, presets, dof)
+        sequence = read_json(s_ship, "shipped sequence file")
+        validate_sequence(sequence, s_ship, presets, dof)
         summary.append(f"  {SEQUENCE_FILE}: kept (no working sequence)")
-    return Plan(prof.robot, tuple(writes), tuple(summary))
+    if sequence is None:
+        summary.append(f"  no {SEQUENCE_FILE} ships: demo_controller_sequence refuses this robot")
+    code = posture_code(presets, sequence)
+    summary.append(f"  posture code {code}")
+    return Plan(prof.robot, tuple(writes), tuple(summary), code)
 
 
 def build_parser(robots: tuple[str, ...]) -> argparse.ArgumentParser:
@@ -161,9 +172,9 @@ def main(argv: list[str], default_src_root: str) -> int:
         if root is None:
             from ..demo_sequence import env
 
-            root, problem = env.logging_root(None)
+            root, problem = env.logging_root()
             if problem:
-                raise FileProblem(problem)
+                raise FileProblem(f"{problem}, or pass --logging-root")
         elif not os.path.isabs(root) or not os.path.isdir(root):
             raise FileProblem(f"--logging-root {root} is not an absolute directory")
         plans = [
@@ -194,4 +205,8 @@ def main(argv: list[str], default_src_root: str) -> int:
                 return EXIT_REFUSED
             written.append(path)
     print("written to the source tree — review with git diff and commit")
+    for plan in plans:
+        # What the field PCs compare: demo_controller_sequence shows the same
+        # code before 'start' once they have pulled and built this commit.
+        print(f"{plan.robot}: posture code {plan.code}")
     return EXIT_OK

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
@@ -267,44 +266,25 @@ def test_every_shipped_copy_plays_on_its_robot(robot):
     # limits are read from the robot's _base.yaml as it is now.
     presets, _ = s.load_shipped(str(_CONFIG), s.ShippedProfile.for_robot(robot))
     assert presets, f"config/{robot}/{s.SHIPPED_DIR} ships no {s.PRESETS_FILE}"
-    # The record of the calibration is readable (whether it matches the driver
-    # is the GUI's warning and promote's refusal, not a test).
     s.read_calibration(str(_CONFIG / robot / s.SHIPPED_DIR / s.CALIBRATION_FILE))
 
 
-def test_working_notes_say_when_the_run_plays_another_copy(tmp_path):
-    # A copy of a shipped robot's files: the shipped side is read as installed.
-    robot = _shipped_dirs()[0]
-    config = tmp_path / "config"
-    shutil.copytree(_CONFIG / robot, config / robot)
-    # The record is rewritten from the copied driver: the notes about the
-    # working copy are under test, not whether the shipped files agree today.
+@pytest.mark.parametrize("robot", _shipped_dirs())
+def test_every_shipped_driver_runs_the_calibration_its_postures_record(robot):
+    """A commit that changes the driver's signs or offsets without
+    calibration.yaml (or the other way round) would make every field PC that
+    pulls it refuse to start. Property, not values: the two files agree."""
     prof = s.ShippedProfile.for_robot(robot)
-    cal_path = config / robot / s.SHIPPED_DIR / s.CALIBRATION_FILE
-    driver = s.read_calibration(str(cal_path)).driver_config
-    in_use = s.driver_calibration(str(config / robot / driver), prof.side)
-    cal_path.write_text(
-        yaml.safe_dump(
-            {
-                "driver_config": driver,
-                "joint_names": list(in_use.joint_names),
-                "joint_direction_signs": list(in_use.joint_direction_signs),
-                "joint_position_offsets_deg": list(in_use.joint_position_offsets_deg),
-            }
-        )
-    )
-    presets, sequence = s.load_shipped(str(config), prof)
-    p_path, q_path = tmp_path / "p.json", tmp_path / "q.json"
-    p_path.write_text(json.dumps(presets))
-    q_path.write_text(json.dumps(sequence))
-    assert s.working_notes(str(config), robot, str(p_path), str(q_path)) == []
-    edited = dict(presets)
-    edited.pop(next(iter(edited)))
-    p_path.write_text(json.dumps(edited))
-    notes = s.working_notes(str(config), robot, str(p_path), str(q_path))
-    assert len(notes) == 1 and "p.json differs from the shipped copy" in notes[0]
-    # Nothing shipped → nothing to say.
-    assert s.working_notes(str(tmp_path / "none"), robot, str(p_path), str(q_path)) == []
+    assert s.check_calibration(str(_CONFIG), robot, prof.side) == ""
+
+
+def test_the_posture_code_names_the_content():
+    seq = {"steps": [{"preset": "a", "time_s": 1.0}], "tolerance_deg": 2.0}
+    code = s.posture_code(SHIPPED, seq)
+    assert len(code) == 8 and code == s.posture_code(dict(reversed(SHIPPED.items())), seq)
+    assert code != s.posture_code(EDITED, seq)
+    assert code != s.posture_code(SHIPPED, {**seq, "tolerance_deg": 3.0})
+    assert code != s.posture_code(SHIPPED, None)
 
 
 @pytest.mark.parametrize(

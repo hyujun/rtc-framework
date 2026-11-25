@@ -73,8 +73,8 @@ def is_session_dir_name(name: str) -> bool:
 def workspace_logging_root() -> str | None:
     """``resolve_logging_root`` 의 1·2 단 — 워크스페이스가 정하는 루트, 없으면 None.
 
-    마지막 폴백 (``$PWD/logging_data``) 은 터미널이 어디 있느냐일 뿐이라, 거기서
-    *읽는* 도구 (demo_controller_sequence 의 preset · sequence 파일) 는 이것을 쓴다.
+    마지막 폴백 (``$PWD/logging_data``) 은 터미널이 어디 있느냐일 뿐이라, stack 이 쓰는
+    루트를 *찾아야* 하는 도구 (그 루트의 파일을 읽거나 그 디스크를 지켜보는 도구) 는 이것을 쓴다.
     """
     # 1) COLCON_PREFIX_PATH 첫 entry 의 parent
     prefix_env = os.environ.get("COLCON_PREFIX_PATH", "")

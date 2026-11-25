@@ -12,9 +12,11 @@ postures validated on its hardware:
 
 The GUI runs on its working copy in the logging root
 (``hand_presets_<token>.json`` · ``demo_gui_sequences_<token>.json``) and
-seeds it from the shipped copy (``choose``); ``promote_main`` writes a working
-copy back into the source tree, so a change becomes a commit. Operator guide:
-docs/demo-controller-gui.md §Shipped postures.
+seeds it from the shipped copy (``choose``); ``promote`` writes a working copy
+back into the source tree, so a change becomes a commit. demo_controller_sequence
+plays the shipped copy itself, and both name it by ``posture_code``. Operator
+guides: docs/demo-controller-gui.md §Shipped postures,
+docs/demo-controller-sequence.md.
 """
 
 from __future__ import annotations
@@ -60,6 +62,13 @@ def content_hash(data: object) -> str:
     count, so a file the GUI rewrites unchanged keeps its hash."""
     text = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def posture_code(presets: object, sequence: object) -> str:
+    """The 8-character name of a robot's postures (presets + sequence): what
+    promote prints on the authoring PC and the run shows before 'start' on a
+    field PC — equal means the same postures, whatever the commit or copy."""
+    return content_hash({"presets": presets, "sequence": sequence})[:8]
 
 
 def _number(value: object) -> float | None:
@@ -324,7 +333,14 @@ def driver_calibration(driver_yaml: str, side: str) -> Calibration:
     """The signs and offsets a driver YAML runs with — its ``<side>.`` keys
     when set, else the flat ones (the node's own rule); an absent key is the
     node's default (+1, 0)."""
-    params = _ros_parameters(driver_yaml)
+    return calibration_of(
+        _ros_parameters(driver_yaml), side, driver_yaml, os.path.basename(driver_yaml)
+    )
+
+
+def calibration_of(params: Mapping, side: str, where: str, driver_config: str) -> Calibration:
+    """``driver_calibration`` over a parameter map: a YAML's ``ros__parameters``
+    or the answer of a running driver, nested the same way (``{side: {...}}``)."""
     per_hand = params.get(side, {}) if side else {}
 
     def key(name: str) -> object:
@@ -333,17 +349,17 @@ def driver_calibration(driver_yaml: str, side: str) -> Calibration:
 
     names = key("joint_state_names")
     if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
-        raise FileProblem(f"{driver_yaml} has no joint_state_names")
+        raise FileProblem(f"{where} has no joint_state_names")
 
     def numbers(name: str, default: float) -> tuple[float, ...]:
         raw = key(name) or [default] * len(names)
         values = [_number(v) for v in raw] if isinstance(raw, list) else [None]
         if None in values:
-            raise FileProblem(f"{driver_yaml}: {name} is not a list of numbers")
+            raise FileProblem(f"{where}: {name} is not a list of numbers")
         return tuple(values)
 
     return Calibration(
-        os.path.basename(driver_yaml),
+        driver_config,
         tuple(names),
         numbers("joint_direction_signs", 1.0),
         numbers("joint_position_offsets_deg", 0.0),
@@ -442,30 +458,3 @@ def load_shipped(config_dir: str, prof: ShippedProfile) -> tuple[dict | None, di
     sequence = read_json(s_path, "shipped sequence file")
     validate_sequence(sequence, s_path, presets, len(prof.hand_joint_names))
     return presets, sequence
-
-
-def working_notes(config_dir: str, robot: str, preset_path: str, sequence_path: str) -> list[str]:
-    """What an unattended run should say about its working copy against the
-    shipped one: the run plays the working copy either way (the CLI writes
-    nothing), so these are notes, not refusals. Empty when nothing ships."""
-    try:
-        presets, sequence = load_shipped(config_dir, ShippedProfile.for_robot(robot))
-    except (FileProblem, KeyError) as exc:
-        return [f"the shipped postures of '{robot}' are unusable: {exc}"]
-    if presets is None:
-        return []
-    notes = []
-    where = shipped_dir(config_dir, robot)
-    for path, ship in ((preset_path, presets), (sequence_path, sequence)):
-        if ship is None:
-            continue
-        try:
-            working = read_json(path, "working file")
-        except FileProblem:
-            continue  # the run's own loading has already refused it
-        if content_hash(working) != content_hash(ship):
-            notes.append(f"{path} differs from the shipped copy in {where}")
-    calibration = check_calibration(config_dir, robot, ShippedProfile.for_robot(robot).side)
-    if calibration:
-        notes.append(calibration)
-    return notes

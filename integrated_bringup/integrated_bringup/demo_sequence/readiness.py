@@ -12,11 +12,17 @@ pins:
 A latched value (active controller, E-STOP) is evidence only while its
 publisher is alive: a CM that died leaves the last sample in our cache, so the
 publisher count is part of every check that reads one.
+
+The hand driver's calibration is read from the running driver, not from a
+file: it reads its signs and offsets once, at configure, so a bring-up started
+before a pull runs the old ones while the files already say the new.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from ..demo_gui.shipped import Calibration, calibration_mismatch
 
 CONTROLLER = "hand_joint_controller"
 TRACKING = "tracking"
@@ -52,6 +58,11 @@ class Observation:
     mode: str | None = None  # controller `mode` as last read
     cap: float | None = None  # max_traj_velocity [rad/s] as last read
     other_hand: bool = False  # the other hand's joint_states is on this domain
+    driver_nodes: int = 0  # nodes named udp_hand_node (none: a sim)
+    # What the running driver's parameters say (None = not read yet);
+    # driver_problem: they were read but are not a calibration.
+    driver_calibration: Calibration | None = None
+    driver_problem: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,8 +72,37 @@ class Verdict:
     missing: tuple[str, ...] = field(default=())
 
 
-def _refusal(obs: Observation, cm_seen: bool) -> str:
-    """Why waiting cannot help (empty = it can)."""
+RESTART_HINT = (
+    "restart the bring-up (the driver reads its calibration when it starts); if it "
+    "persists, the posture author must re-record or fix calibration.yaml"
+)
+
+
+def driver_present(obs: Observation) -> bool:
+    """A hardware driver is up: its node, or its link_status (a sim has neither)."""
+    return obs.driver_nodes > 0 or obs.link_pubs > 0
+
+
+def _calibration_refusal(obs: Observation, recorded: Calibration | None) -> str:
+    if recorded is None or not driver_present(obs):
+        return ""
+    if obs.driver_problem:
+        return f"the hand driver's calibration cannot be read: {obs.driver_problem}"
+    if obs.driver_calibration is None:
+        return ""
+    mismatch = calibration_mismatch(recorded, obs.driver_calibration)
+    if mismatch:
+        return (
+            "the running hand driver is not the calibration the shipped postures were "
+            f"recorded under: {mismatch} — {RESTART_HINT}"
+        )
+    return ""
+
+
+def _refusal(obs: Observation, cm_seen: bool, recorded: Calibration | None = None) -> str:
+    """Why waiting cannot help (empty = it can). The calibration comes last: a
+    wrong hand or a second stack on the domain also shows another calibration,
+    and its own message says what to fix."""
     if obs.estop_pubs > 0 and obs.estop:
         return "E-STOP is latched — clear it (or restart the bring-up) first"
     if obs.other_hand:
@@ -75,6 +115,7 @@ def _refusal(obs: Observation, cm_seen: bool) -> str:
         (obs.param_nodes, "hand_joint_controller nodes"),
         (obs.active_pubs, "publishers of /rtc_cm/active_controller_name"),
         (obs.estop_pubs, "publishers of /system/estop_status"),
+        (obs.driver_nodes, "hand drivers (udp_hand_node)"),
     ):
         if count > 1:
             return f"{count} {what} on this domain — exactly one stack may be visible"
@@ -91,10 +132,10 @@ def _refusal(obs: Observation, cm_seen: bool) -> str:
         return f"another publisher on the hand's joint_goal ({obs.goal_pubs - 1}) — stop it first"
     if obs.roster_ok is False:
         return "the hand's joint_states names do not match this profile (wrong --robot?)"
-    return ""
+    return _calibration_refusal(obs, recorded)
 
 
-def _missing(obs: Observation) -> tuple[str, ...]:
+def _missing(obs: Observation, recorded: Calibration | None = None) -> tuple[str, ...]:
     out = []
     if obs.cm_nodes == 0:
         out.append("controller manager node")
@@ -124,14 +165,18 @@ def _missing(obs: Observation) -> tuple[str, ...]:
         out.append("joint_goal subscriber")
     if obs.link_pubs > 0 and obs.link is not True:
         out.append("hand link up")
+    if recorded is not None and driver_present(obs) and obs.driver_calibration is None:
+        out.append("hand driver calibration (udp_hand_node parameters)")
     return tuple(out)
 
 
-def assess(obs: Observation, cm_seen: bool) -> Verdict:
-    """``cm_seen``: a CM node was seen earlier in this wait."""
-    if reason := _refusal(obs, cm_seen):
+def assess(obs: Observation, cm_seen: bool, recorded: Calibration | None = None) -> Verdict:
+    """``cm_seen``: a CM node was seen earlier in this wait. ``recorded``: the
+    calibration the postures were recorded under (None = none ships: not
+    checked); with a hardware driver up, its running calibration must be it."""
+    if reason := _refusal(obs, cm_seen, recorded):
         return Verdict(REFUSE, reason)
-    if missing := _missing(obs):
+    if missing := _missing(obs, recorded):
         return Verdict(WAIT, "waiting for: " + ", ".join(missing), missing)
     return Verdict(READY)
 

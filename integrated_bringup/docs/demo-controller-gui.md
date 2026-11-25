@@ -73,7 +73,7 @@ Preset 패널의 `Toggle Close` / `Open` 콤보에 고른 두 preset 을 키 하
 
 ## Sequence 탭 (손 posture 순차 실행)
 
-같은 파일을 GUI 없이 몇 시간씩 반복하는 것은 [demo_controller_sequence](demo-controller-sequence.md) (p2 · p2_left) 다.
+promote 로 올린 정본 sequence 를 GUI 없이 몇 시간씩 반복하는 것은 [demo_controller_sequence](demo-controller-sequence.md) (p2 · p2_left) 다 — 이 탭의 작업 사본이 아니라 정본을 재생한다 (§출하 posture).
 
 저장된 preset 을 목록에 담아 **손 목표만** 차례로 보냅니다. 팔은 명령하지 않습니다: preset 에 적힌 `controller` 와 `robot_target` 은 쓰지 않고, 컨트롤러 전환도 하지 않습니다. 목표는 재생을 시작한 시점의 active controller 로 갑니다.
 
@@ -162,7 +162,7 @@ proto2 손 하나가 bringup 의 전부인 프로파일입니다 — device grou
 
 ## 출하 posture (`config/<robot>/demo_gui/`)
 
-실기에서 검증한 손 posture 는 repo 에 정본으로 둡니다 (지금 출하하는 robot 은 그 디렉토리가 있는 `config/<robot>/`). GUI 는 logging root 의 작업 사본 (`hand_presets_<scope>.json` · `demo_gui_sequences_<scope>.json`) 에서 돌고, 정본은 작업 사본을 채우는 데 씁니다 (`demo_gui.shipped`).
+실기에서 검증한 손 posture 는 repo 에 정본으로 둡니다 (지금 출하하는 robot 은 그 디렉토리가 있는 `config/<robot>/`). GUI 는 logging root 의 작업 사본 (`hand_presets_<scope>.json` · `demo_gui_sequences_<scope>.json`) 에서 돌고, 정본은 작업 사본을 채우는 데 씁니다 (`demo_gui.shipped`). 현장 PC 의 `demo_controller_sequence` 는 작업 사본이 아니라 정본을 재생합니다 ([demo-controller-sequence.md](demo-controller-sequence.md)).
 
 - **정본 파일**: `hand_presets.json` (GUI 와 같은 형식, 모든 preset 에 그 손의 `side` tag), `sequence.json` (선택), `calibration.yaml` (찍을 때 드라이버의 `joint_direction_signs` · `joint_position_offsets_deg`). preset 은 드라이버 offset 이 적용된 뒤의 관절 위치라, 다른 보정에서는 같은 숫자가 다른 자세입니다.
 - **시작할 때의 규칙** (preset 과 sequence 각각):
@@ -181,7 +181,8 @@ proto2 손 하나가 bringup 의 전부인 프로파일입니다 — device grou
   python3 integrated_bringup/tools/demo_postures/promote.py --robot p2 --robot p2_left
   ```
 
-  작업 사본을 release 로 검사합니다: 모든 preset 의 side tag, 관절 수, 유한값, `_base.yaml` 의 위치 한계 안, sequence 의 preset 참조, 그리고 사용 중 드라이버의 보정이 `calibration.yaml` 과 같은지. 하나라도 걸리면 아무것도 쓰지 않습니다 (exit 1). 쓰는 곳은 이 checkout 의 `config/<robot>/demo_gui/` 이고 설치본이 아니므로, `git diff` 로 보고 commit 합니다. 보정을 바꿨으면 posture 를 다시 찍고 `calibration.yaml` 을 같은 commit 에서 고칩니다. `--logging-root <dir>` 로 다른 작업 사본을 고릅니다.
+  작업 사본을 release 로 검사합니다: 모든 preset 의 side tag, 관절 수, 유한값, `_base.yaml` 의 위치 한계 안, sequence 의 preset 참조, 그리고 사용 중 드라이버의 보정이 `calibration.yaml` 과 같은지. 하나라도 걸리면 아무것도 쓰지 않습니다 (exit 1). 쓰는 곳은 이 checkout 의 `config/<robot>/demo_gui/` 이고 설치본이 아니므로, `git diff` 로 보고 commit 합니다. 보정을 바꿨으면 posture 를 다시 찍고 `calibration.yaml` 을 같은 commit 에서 고칩니다 (드라이버 YAML 과 `calibration.yaml` 이 다르면 테스트가 실패하고, 현장 PC 는 시작하지 않습니다). `--logging-root <dir>` 로 다른 작업 사본을 고릅니다.
+- **현장 PC 로 보내기**: promote 는 손마다 `posture code <8자리>` 를 출력합니다 (`--check` 도 같은 코드). 순서는 promote → (원하면) 이 PC 에서 `demo_controller_sequence` 로 미리 실행 → commit → PR merge → 운영자에게 손별 코드 공지입니다. 현장 PC 의 CLI 는 `start` 전에 같은 코드를 보여 주고, 운영자는 그것만 대조합니다. 이 PC 는 symlink install 이라 promote 가 고친 파일을 CLI 가 빌드 없이 읽습니다 (계획 화면의 commit 줄에 `+ local changes` 가 붙습니다).
 - **정본 파일을 처음 추가하면** 패키지를 한 번 다시 빌드해야 설치본에 보입니다 (symlink install 은 파일 단위). 그 뒤의 내용 갱신은 빌드 없이 반영됩니다.
 - **정본으로 되돌리기**: GUI 를 닫고 작업 사본과 `.seed` 를 지운 뒤 다시 시작합니다.
 - **공개 경계**: 정본에는 관절 이름 · 각도 · 보정값만 둡니다. 손 description 의 내부 (URDF · MJCF · mesh) 는 이 디렉토리에 넣지 않습니다.

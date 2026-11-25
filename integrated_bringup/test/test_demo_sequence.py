@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -43,15 +44,13 @@ NAMES = ("j0", "j1")
 # ── Files ────────────────────────────────────────────────────────────────────
 
 
-def _write(root: Path, presets: object, sequence: object, token: str = "p2") -> None:
-    (root / f"hand_presets_{token}.json").write_text(json.dumps(presets))
-    (root / f"demo_gui_sequences_{token}.json").write_text(json.dumps(sequence))
-
-
-PRESETS = {
-    "open": {"positions_deg": [0.0, 0.0], "side": "right"},
-    "close": {"positions_deg": [30.0, 60.0]},
-}
+# The run reads a robot's shipped copy (config/<robot>/demo_gui/ of the
+# installed package): each test builds one under tmp_path from p2's profile
+# files, with release presets taken from p2's own shipped table.
+_SHIPPED_P2 = json.loads((CONFIG_DIR / "p2" / "demo_gui" / "hand_presets.json").read_text())
+# Any two of them: the names below are this file's, the bodies a release's.
+_OPEN, _CLOSE = list(_SHIPPED_P2.values())[:2]
+PRESETS = {"open": _OPEN, "close": _CLOSE}
 SEQUENCE = {
     "steps": [
         {"preset": "close", "time_s": 1.0, "dwell_s": 2.0},
@@ -59,29 +58,45 @@ SEQUENCE = {
     ],
     "tolerance_deg": 2.0,
 }
+MISSING = object()
 
 
-def test_inputs_resolve_and_list_the_untagged_presets(tmp_path):
-    _write(tmp_path, PRESETS, SEQUENCE)
-    inputs = f.load_run_inputs(str(tmp_path), "p2", "right", 2)
+def _ship(tmp_path: Path, presets: object = PRESETS, sequence: object = SEQUENCE) -> str:
+    """A config dir holding p2's profile with ``presets`` / ``sequence`` as its
+    shipped copy (MISSING: no such file; a str: the file's raw text)."""
+    config = tmp_path / "config"
+    shutil.copytree(CONFIG_DIR / "p2", config / "p2")
+    shipped = config / "p2" / "demo_gui"
+    for name, data in (("hand_presets.json", presets), ("sequence.json", sequence)):
+        path = shipped / name
+        if data is MISSING:
+            path.unlink()
+        else:
+            path.write_text(data if isinstance(data, str) else json.dumps(data))
+    return str(config)
+
+
+def test_inputs_are_the_shipped_copy_resolved(tmp_path):
+    inputs = f.load_run_inputs(_ship(tmp_path), "p2")
     assert [s.preset for s in inputs.steps] == ["close", "open"]
-    assert inputs.steps[0].target_rad == pytest.approx((math.radians(30), math.radians(60)))
-    assert inputs.untagged == ("close",)
+    assert inputs.steps[0].target_rad == pytest.approx(
+        tuple(math.radians(v) for v in _CLOSE["positions_deg"])
+    )
     assert inputs.tolerance_deg == 2.0
 
 
 def test_inputs_write_nothing(tmp_path):
-    _write(tmp_path, PRESETS, SEQUENCE)
-    before = sorted(p.name for p in tmp_path.iterdir())
-    f.load_run_inputs(str(tmp_path), "p2", "right", 2)
-    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    config = _ship(tmp_path)
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    f.load_run_inputs(config, "p2")
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
 
 
 @pytest.mark.parametrize(
     "presets,sequence,needle",
     [
-        (None, SEQUENCE, "does not exist"),
-        ({"open": {"positions_deg": [0, 0], "side": "left"}}, SEQUENCE, "another hand"),
+        (MISSING, SEQUENCE, "does not exist"),
+        ({"open": {**_OPEN, "side": "left"}}, SEQUENCE, "another hand"),
         (PRESETS, {"steps": []}, "no steps"),
         (PRESETS, {"steps": [{"preset": "open", "time_s": 0.0}]}, "time_s"),
         (PRESETS, {"steps": [{"preset": "open", "time_s": 601.0}]}, "time_s"),
@@ -91,23 +106,21 @@ def test_inputs_write_nothing(tmp_path):
         (PRESETS, {"steps": [{"time_s": 1.0}]}, "names no preset"),
         (PRESETS, {"steps": [{"preset": "gone", "time_s": 1.0}]}, "no longer exists"),
         (PRESETS, {**SEQUENCE, "tolerance_deg": 40.0}, "tolerance_deg"),
-        ({"open": {"positions_deg": [0.0]}}, {"steps": [{"preset": "open", "time_s": 1}]}, "DoF"),
+        (
+            {"open": {**_OPEN, "positions_deg": [0.0]}},
+            {"steps": [{"preset": "open", "time_s": 1}]},
+            "positions_deg is not 10 finite numbers",
+        ),
     ],
 )
 def test_inputs_refuse_what_the_gui_would_clamp_or_drop(tmp_path, presets, sequence, needle):
-    if presets is None:
-        (tmp_path / "demo_gui_sequences_p2.json").write_text(json.dumps(sequence))
-    else:
-        _write(tmp_path, presets, sequence)
     with pytest.raises(f.FileProblem, match=needle):
-        f.load_run_inputs(str(tmp_path), "p2", "right", 2)
+        f.load_run_inputs(_ship(tmp_path, presets, sequence), "p2")
 
 
 def test_a_broken_json_names_the_file(tmp_path):
-    _write(tmp_path, PRESETS, SEQUENCE)
-    (tmp_path / "demo_gui_sequences_p2.json").write_text("{")
-    with pytest.raises(f.FileProblem, match="demo_gui_sequences_p2.json is not JSON"):
-        f.load_run_inputs(str(tmp_path), "p2", "right", 2)
+    with pytest.raises(f.FileProblem, match=r"sequence.json cannot be read"):
+        f.load_run_inputs(_ship(tmp_path, sequence="{"), "p2")
 
 
 # ── Arguments and environment ───────────────────────────────────────────────
@@ -134,7 +147,6 @@ def test_durations(text, seconds):
             "0.05",
             "--yes",
         ],
-        ["--robot", "p2", "--mode", "loop", "--duration", "1h", "--logging-root", "rel", "--yes"],
     ],
 )
 def test_out_of_range_arguments_exit_2(argv):
@@ -143,7 +155,12 @@ def test_out_of_range_arguments_exit_2(argv):
 
 @pytest.mark.parametrize(
     "argv",
-    [["--robot", "p2", "--mode", "once", "--duration", "1h"], ["--robot", "p3", "--mode", "loop"]],
+    [
+        ["--robot", "p2", "--mode", "once", "--duration", "1h"],
+        ["--robot", "p3", "--mode", "loop"],
+        # The run plays the shipped copy: there is no other file to point it at.
+        ["--robot", "p2", "--mode", "loop", "--duration", "1h", "--logging-root", "/x"],
+    ],
 )
 def test_once_and_unknown_robots_are_refused(argv):
     with pytest.raises(SystemExit) as exc:
@@ -151,16 +168,19 @@ def test_once_and_unknown_robots_are_refused(argv):
     assert exc.value.code == 2
 
 
-def test_a_missing_file_exits_2_before_ros(tmp_path, capsys):
+def test_a_missing_file_exits_2_before_ros(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "shipped_config_dir", lambda: _ship(tmp_path, sequence=MISSING))
+    monkeypatch.setattr(env, "logging_root", lambda: (str(tmp_path), ""))
     argv = ["--robot", "p2", "--mode", "loop", "--duration", "1h", "--yes"]
-    assert cli.main([*argv, "--logging-root", str(tmp_path)]) == 2
-    assert "does not exist" in capsys.readouterr().err
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "sequence.json does not exist" in err and "build.sh" in err
 
 
-def test_without_a_terminal_start_must_be_given(tmp_path, capsys, monkeypatch):
+def test_without_a_terminal_start_must_be_given(capsys, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     argv = ["--robot", "p2", "--mode", "loop", "--duration", "1h"]
-    assert cli.main([*argv, "--logging-root", str(tmp_path)]) == 2
+    assert cli.main(argv) == 2
     assert "--yes" in capsys.readouterr().err
 
 
@@ -414,7 +434,7 @@ STEPS = (
 
 
 def _cfg(**kw) -> RunConfig:
-    inputs = f.RunInputs(STEPS, 2.0, "/p.json", "/s.json", ())
+    inputs = f.RunInputs(STEPS, 2.0, "/p.json", "/s.json")
     base = {
         "robot": "p2",
         "joint_names": NAMES,
@@ -701,3 +721,213 @@ def test_runner_stop_at_cycle_end_finishes_the_pass():
             pos = step.target_rad
         t += 0.05
     assert sent == ["close", "open"] and not runner.aborted and runner.cycle == 1
+
+
+# ── The shipped copy is what plays (field PCs) ──────────────────────────────
+
+
+def _working_copy(root: Path, presets: object, sequence: object) -> None:
+    """The GUI's working copy in a logging root — what the run used to read."""
+    (root / "hand_presets_p2.json").write_text(json.dumps(presets))
+    (root / "demo_gui_sequences_p2.json").write_text(json.dumps(sequence))
+
+
+@pytest.mark.parametrize("working", ["missing", "other"])
+def test_the_run_plays_the_shipped_copy_whatever_the_working_copy_holds(
+    tmp_path, monkeypatch, working
+):
+    """The field-PC contract: pull + build + this command plays what was
+    committed. A PC's stale or edited GUI working copy changes nothing."""
+    from integrated_bringup.demo_gui import shipped as s
+    from integrated_bringup.demo_sequence import ros_io
+
+    root = tmp_path / "logging_data"
+    root.mkdir()
+    if working == "other":
+        _working_copy(root, {"open": {**_OPEN, "positions_deg": [0.0] * 10}}, SEQUENCE)
+    config = _ship(tmp_path)
+    monkeypatch.setattr(cli, "shipped_config_dir", lambda: config)
+    monkeypatch.setattr(env, "logging_root", lambda: (str(root), ""))
+    seen = {}
+
+    def run(args, profile, inputs, log_root):
+        seen.update(inputs=inputs, root=log_root)
+        return 0
+
+    monkeypatch.setattr(ros_io, "run", run)
+    argv = ["--robot", "p2", "--mode", "loop", "--duration", "1h", "--yes"]
+    assert cli.main(argv) == 0
+    inputs = seen["inputs"]
+    assert [x.preset for x in inputs.steps] == ["close", "open"]
+    assert inputs.steps[0].target_rad == pytest.approx(
+        tuple(math.radians(v) for v in _CLOSE["positions_deg"])
+    )
+    assert inputs.posture_code == s.posture_code(PRESETS, SEQUENCE)
+    assert inputs.preset_path == str(Path(config, "p2", "demo_gui", "hand_presets.json").resolve())
+    assert inputs.calibration is not None and seen["root"] == str(root)
+
+
+def test_the_installed_share_is_followed_to_the_files_it_links(tmp_path):
+    """A symlink install links each file: the run names what it read."""
+    real = Path(_ship(tmp_path / "src"))
+    config = tmp_path / "share" / "config"
+    for path in sorted(real.rglob("*")):
+        target = config / path.relative_to(real)
+        if path.is_dir():
+            target.mkdir(parents=True)
+        else:
+            target.symlink_to(path)
+    inputs = f.load_run_inputs(str(config), "p2")
+    assert inputs.sequence_path == str(real / "p2" / "demo_gui" / "sequence.json")
+
+
+def _git(cwd: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_the_commit_line_names_the_last_commit_and_local_changes(tmp_path):
+    repo = tmp_path / "repo"
+    config = Path(_ship(repo))
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "postures")
+    head = _git(repo, "log", "-1", "--format=%h %cs")
+    paths = tuple(
+        str(config / "p2" / "demo_gui" / n) for n in ("hand_presets.json", "sequence.json")
+    )
+    assert f.provenance(paths) == head
+    Path(paths[1]).write_text(json.dumps({**SEQUENCE, "tolerance_deg": 3.0}))
+    assert f.provenance(paths) == f"{head} + local changes"
+    # A shipped file git does not track yet (promote has just written it).
+    _git(repo, "rm", "-q", "--cached", paths[1])
+    _git(repo, "commit", "-q", "-m", "untrack")
+    assert f.provenance(paths).endswith(" + local changes")
+
+
+def test_no_git_no_commit_line(tmp_path):
+    config = Path(_ship(tmp_path))
+    paths = tuple(
+        str(config / "p2" / "demo_gui" / n) for n in ("hand_presets.json", "sequence.json")
+    )
+    assert f.provenance(paths) == ""
+
+
+# ── The running driver's calibration ────────────────────────────────────────
+
+
+def _calibration(offsets=(0.0, 5.0), names=NAMES):
+    from integrated_bringup.demo_gui.shipped import Calibration
+
+    return Calibration("drv.yaml", names, (1.0, 1.0), tuple(offsets))
+
+
+RECORDED = _calibration()
+
+
+def test_a_driver_on_the_recorded_calibration_is_ready():
+    obs = replace(GOOD, driver_nodes=1, driver_calibration=_calibration())
+    assert assess(obs, True, RECORDED).kind == READY
+
+
+def test_a_driver_on_another_calibration_refuses_and_says_restart():
+    obs = replace(GOOD, driver_nodes=1, driver_calibration=_calibration((0.0, -5.0)))
+    verdict = assess(obs, True, RECORDED)
+    assert verdict.kind == REFUSE
+    assert "j1 joint_position_offsets_deg -5 (recorded 5)" in verdict.reason
+    assert "restart the bring-up" in verdict.reason
+
+
+def test_a_driver_not_read_yet_is_waited_for():
+    verdict = assess(replace(GOOD, driver_nodes=1), True, RECORDED)
+    assert verdict.kind == WAIT and "hand driver calibration" in verdict.reason
+
+
+def test_a_driver_whose_parameters_are_no_calibration_refuses():
+    obs = replace(GOOD, driver_nodes=1, driver_problem="/udp_hand_node has no joint_state_names")
+    verdict = assess(obs, True, RECORDED)
+    assert verdict.kind == REFUSE and "cannot be read" in verdict.reason
+
+
+@pytest.mark.parametrize(
+    "obs,recorded",
+    [
+        # A sim: no driver node and no link_status — nothing to compare.
+        (replace(GOOD, link_pubs=0, link=None), RECORDED),
+        # No record ships beside the postures: not checked.
+        (replace(GOOD, driver_nodes=1), None),
+    ],
+)
+def test_the_calibration_is_not_checked_without_a_driver_or_a_record(obs, recorded):
+    assert assess(obs, True, recorded).kind == READY
+
+
+def test_the_link_alone_marks_a_driver_whose_node_is_not_seen_yet():
+    """link_status is the driver's topic: no READY without its calibration."""
+    assert assess(replace(GOOD, driver_nodes=0), True, RECORDED).kind == WAIT
+
+
+def test_a_calibration_mismatch_exits_3_before_anything_is_sent():
+    obs = replace(GOOD, driver_nodes=1, driver_calibration=_calibration((1.0, 5.0)))
+    io = FakeIo(obs)
+    inputs = replace(_cfg().inputs, calibration=RECORDED)
+    out = _ticks(Orchestrator(io, _cfg(inputs=inputs)), io, 1.0)
+    assert out.code == 3 and "j0 joint_position_offsets_deg" in out.reason
+    assert io.published == []
+
+
+# ── What the plan screen and the summary name ───────────────────────────────
+
+
+def _plan_and_summary(**inputs):
+    io = FakeIo(replace(GOOD, driver_nodes=1, driver_calibration=_calibration()))
+    run_inputs = replace(_cfg().inputs, calibration=RECORDED, **inputs)
+    orch = _running(io, inputs=run_inputs)
+    plan = next(t for t in io.said if t.startswith("robot p2:"))
+    return plan, orch.summary()
+
+
+def test_the_plan_and_the_summary_name_the_postures():
+    plan, summary = _plan_and_summary(posture_code="1a2b3c4d", provenance="0123abc 2026-11-25")
+    assert "posture code 1a2b3c4d" in plan
+    assert "commit   0123abc 2026-11-25" in plan
+    assert "presets  /p.json" in plan and "sequence /s.json" in plan
+    assert "calibration the running driver's = the recorded one" in plan
+    assert summary["posture_code"] == "1a2b3c4d"
+    assert summary["commit"] == "0123abc 2026-11-25"
+    assert (summary["preset_file"], summary["sequence_file"]) == ("/p.json", "/s.json")
+
+
+def test_no_commit_line_when_git_cannot_tell():
+    plan, summary = _plan_and_summary(posture_code="1a2b3c4d", provenance="")
+    assert "commit" not in plan and summary["commit"] == ""
+
+
+def test_a_missing_calibration_record_refuses_with_the_build_hint(tmp_path):
+    config = Path(_ship(tmp_path))
+    (config / "p2" / "demo_gui" / "calibration.yaml").unlink()
+    with pytest.raises(f.FileProblem, match=r"calibration.yaml does not exist .*build.sh"):
+        f.load_run_inputs(str(config), "p2")
+
+
+def test_the_wrong_hand_on_the_domain_is_named_before_its_calibration():
+    """Another hand's stack also runs another calibration: its own message
+    (the domain) is the one that says what to fix."""
+    obs = replace(
+        GOOD, driver_nodes=1, driver_calibration=_calibration((9.0, 9.0)), other_hand=True
+    )
+    verdict = assess(obs, True, RECORDED)
+    assert verdict.kind == REFUSE and "ROS_DOMAIN_ID" in verdict.reason
+
+
+def test_two_hand_drivers_on_the_domain_refuse():
+    obs = replace(GOOD, driver_nodes=2, driver_calibration=_calibration())
+    verdict = assess(obs, True, RECORDED)
+    assert verdict.kind == REFUSE and "2 hand drivers" in verdict.reason

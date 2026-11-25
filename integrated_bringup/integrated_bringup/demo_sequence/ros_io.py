@@ -25,6 +25,7 @@ from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterType, Paramet
 from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import parameter_value_to_python
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import JointState
@@ -34,12 +35,18 @@ from rtc_msgs.msg import RobotTarget
 from rtc_tools.analysis.ros_stop import StopFlag, stop_handlers
 
 from ..demo_gui.preset_toggle import atomic_write_json
+from ..demo_gui.shipped import calibration_of
 from . import env
+from .files import FileProblem
 from .orchestrator import EXIT_NOT_READY, Orchestrator, RunConfig
 from .readiness import CONTROLLER, STALE_S, Observation
 
 CM_NODE = "integrated_rt_controller"
 PARAM_NODE = f"/{CONTROLLER}/{CONTROLLER}"
+# The hand driver of robot_p2.launch.py (namespace ""): its calibration is read
+# from the running node (readiness module docstring).
+DRIVER_NODE = "/udp_hand_node"
+CALIBRATION_NAMES = ("joint_state_names", "joint_direction_signs", "joint_position_offsets_deg")
 ACTIVE_TOPIC = "/rtc_cm/active_controller_name"
 ESTOP_TOPIC = "/system/estop_status"
 # The hand driver's link_status per profile (config/<profile>/udp_hand_node_p2.yaml
@@ -49,7 +56,7 @@ GRAPH_PERIOD_S = 0.5
 PARAM_PERIOD_S = 1.0
 PARAM_TIMEOUT_S = 1.0
 LOOP_PERIOD_S = 0.02
-# Every subscription is depth 1, so at most one sample per topic plus the two
+# Every subscription is depth 1, so at most one sample per topic plus the three
 # service answers can be waiting: this many non-blocking spins drain them all.
 SPINS_PER_LOOK = 12
 
@@ -110,6 +117,7 @@ class SequenceIo(Node):
         self._param_at = -1e9
         self._get_future = None
         self._get_deadline = 0.0
+        self._driver = DriverCalibrationReader(profile.side)
         self.create_subscription(JointState, f"/rtc_cm/{group}/joint_states", self._on_joints, 1)
         self.create_subscription(String, ACTIVE_TOPIC, self._on_active, _latched())
         self.create_subscription(Bool, ESTOP_TOPIC, self._on_estop, _latched())
@@ -117,6 +125,10 @@ class SequenceIo(Node):
             self.create_subscription(Bool, self._link_topic, self._on_link, _latched())
         self._get = self.create_client(GetParameters, f"{PARAM_NODE}/get_parameters")
         self._set = self.create_client(SetParameters, f"{PARAM_NODE}/set_parameters")
+        self._driver_get = self.create_client(GetParameters, f"{DRIVER_NODE}/get_parameters")
+        self._driver_future = None
+        self._driver_deadline = 0.0
+        self._driver_at = -1e9
 
     # ── Callbacks: stamp on arrival ──────────────────────────────────────────
 
@@ -163,6 +175,7 @@ class SequenceIo(Node):
             self._graph_at = now
             self._read_graph()
         self._poll_params(now)
+        self._poll_driver(now)
         g = self._graph
         age = None if self._joint_stamp is None else now - self._joint_stamp
         steady = (
@@ -189,6 +202,9 @@ class SequenceIo(Node):
             mode=self._mode,
             cap=self._cap,
             other_hand=g["other"],
+            driver_nodes=g["driver"],
+            driver_calibration=self._driver.calibration,
+            driver_problem=self._driver.problem,
         )
 
     def _read_graph(self) -> None:
@@ -201,7 +217,10 @@ class SequenceIo(Node):
             "link": self.count_publishers(self._link_topic) if self._link_topic else 0,
             "goal": self.count_publishers(self._goal_topic),
             "other": bool(self._other_states) and self.count_publishers(self._other_states) > 0,
+            "driver": sum(1 for name, ns in nodes if f"{ns.rstrip('/')}/{name}" == DRIVER_NODE),
         }
+        if self._graph["driver"] == 0:
+            self._driver.reset()  # a restarted driver is read again
 
     def _poll_params(self, now: float) -> None:
         """``mode`` and the speed cap, read once a second (a set mode is the
@@ -231,6 +250,28 @@ class SequenceIo(Node):
         mode, cap = values
         self._mode = mode.string_value if mode.type == ParameterType.PARAMETER_STRING else None
         self._cap = cap.double_value if cap.type == ParameterType.PARAMETER_DOUBLE else None
+
+    def _poll_driver(self, now: float) -> None:
+        """The driver's calibration, until it has been read (one or two
+        requests: the per-hand keys exist only under hand_sides)."""
+        if self._driver_future is not None:
+            if self._driver_future.done():
+                self._driver.take(self._driver_future.result())
+                self._driver_future = None
+            elif now > self._driver_deadline:
+                self._driver_get.remove_pending_request(self._driver_future)
+                self._driver_future = None
+            return
+        names = self._driver.next_request()
+        if (
+            not names
+            or now - self._driver_at < PARAM_PERIOD_S
+            or not self._driver_get.service_is_ready()
+        ):
+            return
+        self._driver_at = now
+        self._driver_future = self._driver_get.call_async(GetParameters.Request(names=names))
+        self._driver_deadline = now + PARAM_TIMEOUT_S
 
     def set_speed(self, speed: float) -> object:
         if not self._set.service_is_ready():
@@ -310,6 +351,62 @@ class SequenceIo(Node):
         self.destroy_node()
 
 
+class DriverCalibrationReader:
+    """The running hand driver's calibration from GetParameters answers.
+
+    First the flat keys and ``hand_sides``; when hand_sides is set, then this
+    side's ``<side>.`` keys, which the driver declares only in that mode (an
+    undeclared name empties the whole answer). The keys are then picked as the
+    driver picks them (``shipped.calibration_of``).
+    """
+
+    def __init__(self, side: str) -> None:
+        self._side = side
+        self.reset()
+
+    def reset(self) -> None:
+        self._flat: dict | None = None
+        self.calibration = None
+        self.problem = ""
+
+    def next_request(self) -> list[str]:
+        """The names to ask for next; [] once read."""
+        if self.calibration is not None or self.problem:
+            return []
+        if self._flat is None:
+            return ["hand_sides", *CALIBRATION_NAMES]
+        return [f"{self._side}.{name}" for name in CALIBRATION_NAMES]
+
+    def take(self, response) -> None:
+        names = self.next_request()
+        values = list(getattr(response, "values", []) or [])
+        if not names or len(values) != len(names):
+            return  # not declared yet (the driver is configuring): ask again
+        answer = dict(zip(names, (parameter_value_to_python(v) for v in values), strict=True))
+        if self._flat is None:
+            sides = answer.get("hand_sides") or []
+            if sides and self._side not in sides:
+                # Its flat keys are another hand's: say which, not "mismatch".
+                self.problem = (
+                    f"it runs hand_sides {sides}, not '{self._side}' (wrong --robot, or the "
+                    "bring-up's side:=?)"
+                )
+                return
+            self._flat = answer
+            if sides:
+                return  # the per-hand keys next
+            self._settle(answer)
+            return
+        prefix = f"{self._side}."
+        self._settle({**self._flat, self._side: {k[len(prefix) :]: v for k, v in answer.items()}})
+
+    def _settle(self, params: dict) -> None:
+        try:
+            self.calibration = calibration_of(params, self._side, DRIVER_NODE, DRIVER_NODE)
+        except FileProblem as exc:
+            self.problem = str(exc)
+
+
 def _lock(root: str, robot: str):
     """One CLI per robot on this host (the graph check covers other hosts)."""
     folder = os.path.join(root, "sequence_runs")
@@ -323,7 +420,9 @@ def _lock(root: str, robot: str):
     return handle
 
 
-def run(args, profile, inputs, root: str, stack_log_root: str) -> int:
+def run(args, profile, inputs, root: str) -> int:
+    """``root``: the workspace logging root — the summary and the lock, and the
+    disk the checks watch (the stack's sessions are written there too)."""
     lock = _lock(root, args.robot)
     if lock is None:
         print(
@@ -336,7 +435,7 @@ def run(args, profile, inputs, root: str, stack_log_root: str) -> int:
     stop = StopFlag()
     with lock, stop_handlers(stop, signals=(signal.SIGINT, signal.SIGTERM, signal.SIGHUP)):
         rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-        io = SequenceIo(profile, args.robot, stop, summary_path, stack_log_root)
+        io = SequenceIo(profile, args.robot, stop, summary_path, root)
         try:
             cfg = RunConfig(
                 robot=args.robot,

@@ -11,18 +11,21 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import rclpy
-from rcl_interfaces.msg import SetParametersResult
+import yaml
+from rcl_interfaces.msg import ParameterDescriptor, ParameterType, SetParametersResult
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
 
+from integrated_bringup.demo_gui import shipped as s
 from integrated_bringup.demo_gui.discovery import ROBOT_PROFILES
-from integrated_bringup.demo_sequence.readiness import READY, assess, runtime_abort
+from integrated_bringup.demo_sequence.readiness import READY, REFUSE, assess, runtime_abort
 from integrated_bringup.demo_sequence.ros_io import SequenceIo
 from rtc_msgs.msg import RobotTarget
 from rtc_tools.analysis.ros_stop import StopFlag
@@ -41,10 +44,15 @@ def _latched() -> QoSProfile:
 class FakeStack:
     """The CM, the controller's node and the hand driver, as the CLI sees them."""
 
-    def __init__(self, names=ROSTER) -> None:
+    def __init__(self, names=ROSTER, driver_params: dict | None = None) -> None:
         self.cm = Node("integrated_rt_controller")
         self.ctrl = Node("hand_joint_controller", namespace="/hand_joint_controller")
         self.driver = Node("udp_hand_node")
+        for name, value in (driver_params or {}).items():
+            # An empty list has no type to infer: declare it through a
+            # descriptor, as the driver's empty per-hand defaults are.
+            descriptor = ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE_ARRAY)
+            self.driver.declare_parameter(name, value, descriptor if value == [] else None)
         self.active_pub = self.cm.create_publisher(
             String, "/rtc_cm/active_controller_name", _latched()
         )
@@ -180,3 +188,96 @@ def test_a_foreign_roster_is_seen_as_one(io):
         assert obs.roster_ok is False
     finally:
         stack.close()
+
+
+_CONFIG = Path(__file__).resolve().parents[1] / "config"
+CALIBRATION_KEYS = ("joint_state_names", "joint_direction_signs", "joint_position_offsets_deg")
+
+
+def _driver_params(**per_hand) -> dict:
+    """p2's shipped driver parameters as the node declares them: the flat
+    keys, hand_sides, and under hand_sides the per-hand keys (empty unless
+    ``per_hand`` sets one)."""
+    doc = yaml.safe_load((_CONFIG / "p2" / "udp_hand_node_p2.yaml").read_text())
+    params = doc["/**"]["ros__parameters"]
+    out = {"hand_sides": params["hand_sides"], **{k: params[k] for k in CALIBRATION_KEYS}}
+    for side in params["hand_sides"]:
+        for key in CALIBRATION_KEYS:
+            out[f"{side}.{key}"] = per_hand.get(key, [])
+    return out
+
+
+def _recorded() -> s.Calibration:
+    return s.read_calibration(str(_CONFIG / "p2" / s.SHIPPED_DIR / s.CALIBRATION_FILE))
+
+
+def test_the_running_driver_calibration_is_read_and_matches_the_record(io):
+    stack = FakeStack(driver_params=_driver_params())
+    recorded = _recorded()
+    try:
+        obs = _until(io, lambda o: assess(o, True, recorded).kind == READY)
+        assert assess(obs, True, recorded).kind == READY, assess(obs, True, recorded).reason
+        assert obs.driver_problem == "" and obs.driver_nodes == 1
+        assert obs.driver_calibration.joint_position_offsets_deg == (
+            recorded.joint_position_offsets_deg
+        )
+    finally:
+        stack.close()
+
+
+def test_a_per_hand_offset_on_the_running_driver_is_the_one_compared(io):
+    offsets = list(_recorded().joint_position_offsets_deg)
+    offsets[0] += 3.0
+    stack = FakeStack(driver_params=_driver_params(joint_position_offsets_deg=offsets))
+    try:
+        obs = _until(io, lambda o: o.driver_calibration is not None or o.driver_problem)
+        verdict = assess(obs, True, _recorded())
+        assert verdict.kind == REFUSE and "restart the bring-up" in verdict.reason, verdict
+    finally:
+        stack.close()
+
+
+class _Answer:
+    """A GetParameters response as the reader sees it."""
+
+    def __init__(self, *values) -> None:
+        from rclpy.parameter import Parameter
+
+        self.values = [Parameter("x", value=v).get_parameter_value() for v in values]
+
+
+def _settled(reader, *answers):
+    for answer in answers:
+        reader.take(answer)
+    return reader
+
+
+def test_the_reader_takes_the_flat_keys_in_one_request_without_hand_sides():
+    from integrated_bringup.demo_sequence.ros_io import DriverCalibrationReader
+
+    reader = DriverCalibrationReader("right")
+    assert reader.next_request()[0] == "hand_sides"
+    _settled(reader, _Answer([], ["j0", "j1"], [1.0, -1.0], [0.0, 5.0]))
+    assert reader.problem == "" and reader.next_request() == []
+    cal = reader.calibration
+    assert cal.joint_names == ("j0", "j1")
+    assert cal.joint_direction_signs == (1.0, -1.0)
+    assert cal.joint_position_offsets_deg == (0.0, 5.0)
+
+
+def test_the_reader_asks_again_while_the_driver_has_not_declared_its_keys():
+    from integrated_bringup.demo_sequence.ros_io import DriverCalibrationReader
+
+    reader = DriverCalibrationReader("right")
+    first = reader.next_request()
+    reader.take(_Answer())  # an undeclared name empties the whole answer
+    assert reader.next_request() == first and reader.calibration is None
+    assert reader.problem == ""
+
+
+def test_a_driver_running_another_hand_is_named_not_compared():
+    from integrated_bringup.demo_sequence.ros_io import DriverCalibrationReader
+
+    reader = _settled(DriverCalibrationReader("right"), _Answer(["left"], ["j0"], [1.0], [0.0]))
+    assert reader.calibration is None
+    assert "hand_sides ['left'], not 'right'" in reader.problem
