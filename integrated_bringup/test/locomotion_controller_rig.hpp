@@ -305,6 +305,50 @@ class LocomotionControllerTest : public ::testing::Test {
     ExpectShippedGains(out);
   }
 
+  // The servo target before a tick, to check the step the tick takes.
+  struct ServoTargetSnapshot {
+    std::array<double, integrated_bringup::kLocomotionMaxBodyJoints> q{};
+    std::array<double, integrated_bringup::kLocomotionMaxBodyJoints> v{};
+    bool seeded{false};  ///< false: the tick starts the target from the measurement
+  };
+
+  ServoTargetSnapshot SnapshotServoTarget() const {
+    return {ctrl_->ServoTargetPosition(), ctrl_->ServoTargetVelocity(), true};
+  }
+
+  // The servo target law (header, "The servo target") on this tick, from the
+  // measurement on the body lane, the QP's acceleration of this tick (0 when it
+  // did not solve) and the target before it — inside the joint's range.
+  void ExpectServoTargetStep(const ServoTargetSnapshot& before,
+                             const rtc::ControllerOutput& out) const {
+    const auto& body = out.devices[kBody];
+    const auto& dev = state_.devices[kBody];
+    const double dt = state_.dt;
+    const double tc = cfg_["pd_feedforward"]["target_time_constant_s"].as<double>();
+    const double k = before.seeded && tc > 0.0 ? std::exp(-dt / tc) : 0.0;
+    const rtc::tsid::CommandOutput* s = ctrl_->LastSolve();
+    const bool solved = s != nullptr && s->tau_valid && LastMode() == Mode::kNominal;
+    const pinocchio::Model& red = ctrl_->ReducedModel();
+    ASSERT_EQ(body.num_channels, red.nv - 6);
+    for (int i = 0; i < body.num_channels; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      const double q = dev.positions[ui];
+      const double v = dev.velocities[ui];
+      const double a = solved ? s->a_opt(6 + i) : 0.0;
+      const double q_now = q + k * (before.q[ui] - q);
+      const double v_now = v + k * (before.v[ui] - v);
+      const double want = std::clamp(q_now + v_now * dt + 0.5 * a * dt * dt,
+                                     red.lowerPositionLimit(7 + i), red.upperPositionLimit(7 + i));
+      EXPECT_NEAR(body.commands[ui], want, 1e-12) << i;
+    }
+  }
+
+  // A tick that starts the target over (a latch of the reference): the
+  // one-tick prediction from this tick's measurement.
+  void ExpectServoTargetFromMeasurement(const rtc::ControllerOutput& out) const {
+    ExpectServoTargetStep(ServoTargetSnapshot{}, out);
+  }
+
   void ExpectShippedGains(const rtc::ControllerOutput& out) const {
     const auto& body = out.devices[kBody];
     const auto kp = cfg_["pd_feedforward"]["kp"].as<std::vector<double>>();

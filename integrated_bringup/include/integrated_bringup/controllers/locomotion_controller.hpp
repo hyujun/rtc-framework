@@ -5,14 +5,14 @@
 // pose) → the reduced model's dynamics (hands locked at neutral: the hands are
 // held still and their mass is folded into the arm ends) → the whole-body QP
 // (rtc_tsid LocomotionFormulationBuilder) → pd_feedforward on the body group:
-// a position target plus the QP's torque as feedforward, with the controller's
-// own non-dominant PD gains on the wire. Hand groups get a kPosition hold at the
-// pose they had on their first readable tick after the last restart (an
-// activation, a reset, either E-STOP edge) — before the body's reference is
-// latched, so a hand never follows a push while the body waits. Under the MPC,
-// whose model locks the hands at reference.q_default, that hold is q_default
-// from the same first tick (the hands go there while the body may still be
-// waiting: the dynamics model has them nowhere else).
+// a position target (pd_feedforward.target, below) plus the QP's torque as
+// feedforward, with the controller's own PD gains on the wire. Hand groups
+// get a kPosition hold at the pose they had on their first readable tick after
+// the last restart (an activation, a reset, either E-STOP edge) — before the
+// body's reference is latched, so a hand never follows a push while the body
+// waits. Under the MPC, whose model locks the hands at reference.q_default,
+// that hold is q_default from the same first tick (the hands go there while
+// the body may still be waiting: the dynamics model has them nowhere else).
 //
 // The reference (LocomotionDiagLogPod::ReferenceSource):
 //   idle   the latched pose: the measured pose at the first valid tick the
@@ -64,6 +64,25 @@
 // a verdict: `waiting` stays, without the clock (ActivationWithTheCauseStill-
 // ThereWaitsOnDamping). The guard does not know the CM's post-clear policy:
 // after a clear it runs whether or not the CM then switches away.
+//
+// The servo target (nominal / degraded), pd_feedforward.target:
+//   plan  the reference's joint pose (ref.q_des: the latched pose, or the
+//         MPC plan's sample) — the servo also pulls the body toward the plan's
+//         posture, which the QP itself weighs only through its posture task
+//   wbc   the joint state the QP intends — its joint acceleration integrated
+//         a tick at a time — so the servo resists only what the plant did not
+//         do of what the QP asked, never the QP's own choice of posture.
+// With wbc, each tick, per body joint:
+//   q_now = q + k (q_t − q),  v_now = v + k (v_t − v),   k = exp(−dt / τ)
+//   q_t ← clamp(q_now + v_now dt + ½ a dt², joint range),  v_t ← v_now + a dt
+// (q, v the measurement, a the QP's acceleration, 0 on a missed solve; v_t = 0
+// where the clamp acts), and q_t is the wire's target. τ =
+// pd_feedforward.target_time_constant_s: 0 makes the target the one-tick
+// prediction from the measurement; a longer τ lets an acceleration the plant
+// falls short of build into a position error the servo corrects. The target
+// starts from the measurement at every latch of the reference and after any
+// tick that did not command; a tick without a valid state holds it. The wire
+// carries no velocity target: the servo's kd acts on −v.
 //
 // Modes (LocomotionDiagLogPod::Mode):
 //   waiting   no latched reference — before the first valid state, under the
@@ -127,7 +146,9 @@
 // whole_body_qp.* (rtc_tsid; `health:` sets the degraded / fault rule),
 // estimator.* (measured_state_source.hpp), and
 //   command_type: pd_feedforward      # the only accepted value
-//   pd_feedforward: {kp: [...], kd: [...]}   # body roster order, ≥ 0 [N·m/rad, N·m·s/rad]
+//   pd_feedforward: {kp: [...], kd: [...],   # body roster order, ≥ 0 [N·m/rad, N·m·s/rad]
+//                    target: plan | wbc,          # the servo target (above)
+//                    target_time_constant_s: τ}   # ≥ 0 [s], read by wbc only
 //   fault:
 //     max_source_bad_ticks: N (≥ 1)
 //     damping_kd: [...]                # body roster order, ≥ 0
@@ -307,6 +328,11 @@ struct LocomotionControllerConfig {
   locomotion::EstimatorConfig estimator;
   std::vector<double> pd_kp;  ///< body roster order; length checked against the roster
   std::vector<double> pd_kd;
+  /// `pd_feedforward.target_time_constant_s` [s], ≥ 0: the servo target's pull
+  /// toward the measured state (header, "The servo target"); 0 = the one-tick prediction.
+  double pd_target_time_constant_s{0.0};
+  /// `pd_feedforward.target`: true = wbc (the QP's integrated state), false = plan.
+  bool pd_target_wbc{false};
   int max_source_bad_ticks{1};
   std::vector<double> damping_kd;
   double pose_guard_base_tilt_rad{0.0};  ///< `fault.pose_guard.base_tilt_rad`, (0, π/2]
@@ -423,6 +449,18 @@ class LocomotionController final : public rtc::RTControllerInterface {
   [[nodiscard]] const rtc::tsid::ControlReference& Reference() const noexcept { return ref_; }
 
   [[nodiscard]] const rtc::tsid::CommandOutput* LastSolve() const noexcept { return last_solve_; }
+
+  /// The servo target after the last tick (header, "The servo target"), body
+  /// order: the position on the wire and the velocity it is propagated with.
+  [[nodiscard]] const std::array<double, kLocomotionMaxBodyJoints>& ServoTargetPosition()
+      const noexcept {
+    return target_q_;
+  }
+
+  [[nodiscard]] const std::array<double, kLocomotionMaxBodyJoints>& ServoTargetVelocity()
+      const noexcept {
+    return target_v_;
+  }
 
   [[nodiscard]] const pinocchio::Model& FullModel() const noexcept { return *full_model_; }
 
@@ -582,6 +620,8 @@ class LocomotionController final : public rtc::RTControllerInterface {
   void Solve() noexcept;
   void Latch(FaultCause cause) noexcept;
   void FillOutput(const rtc::ControllerState& state, rtc::ControllerOutput& out) noexcept;
+  /// The servo target of this tick into target_q_ (header, "The servo target").
+  void UpdateServoTarget() noexcept;
   void FillDamping(const rtc::ControllerState& state, rtc::DeviceOutput& body) noexcept;
   void FillHands(const rtc::ControllerState& state, rtc::ControllerOutput& out) noexcept;
   void FillLogs(const rtc::ControllerState& state, const rtc::ControllerOutput& out, int64_t now_ns,
@@ -612,6 +652,14 @@ class LocomotionController final : public rtc::RTControllerInterface {
   std::array<double, kLocomotionMaxBodyJoints> kp_{};
   std::array<double, kLocomotionMaxBodyJoints> kd_{};
   std::array<double, kLocomotionMaxBodyJoints> damping_kd_{};
+  // The servo target (header, "The servo target"): the QP's intended joint
+  // state, propagated a tick at a time and pulled toward the measurement.
+  std::array<double, kLocomotionMaxBodyJoints> target_q_{};
+  std::array<double, kLocomotionMaxBodyJoints> target_v_{};
+  bool target_wbc_{false};  ///< pd_feedforward.target == wbc
+  bool target_seeded_{false};
+  double target_keep_{0.0};  ///< exp(−dt / τ), 0 for τ = 0 — once at LoadConfig
+  double target_dt_{0.0};    ///< the control period [s]
   std::array<double, kLocomotionMaxBodyJoints> tau_max_{};  ///< +inf when the roster has none
   double cos_tilt_{1.0};  ///< cos(fault.pose_guard.base_tilt_rad), once at LoadConfig
   std::uint32_t guard_settle_ticks_{1};  ///< refusals before kPoseGuard: round(0.5 s · rate)
@@ -697,7 +745,8 @@ class LocomotionController final : public rtc::RTControllerInterface {
   rtc::mpc::MPCSolutionManager mpc_manager_;
   /// The hand joints' hold targets under the MPC (q_default), by full-model joint index.
   std::array<double, locomotion::kMaxStateJoints> q_default_full_{};
-  std::array<double, kLocomotionMaxBodyJoints> joint_lo_{};  ///< reduced model, body order
+  /// Reduced model, body order: the plan's sanity check and the servo target's clamp.
+  std::array<double, kLocomotionMaxBodyJoints> joint_lo_{};
   std::array<double, kLocomotionMaxBodyJoints> joint_hi_{};
   std::uint32_t all_contacts_mask_{0};
   std::int64_t tick_dt_ns_{0};

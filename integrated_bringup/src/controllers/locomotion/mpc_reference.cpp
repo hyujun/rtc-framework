@@ -239,10 +239,6 @@ void LocomotionController::BuildMpc(const YAML::Node& cfg) {
   mpc_manager_.SetModelEpoch(model_epoch_);
   mpc_manager_.SetEnabled(false);  // on at activation
 
-  for (std::size_t j = 0; j < nb_; ++j) {
-    joint_lo_[j] = reduced_model_->lowerPositionLimit(static_cast<Eigen::Index>(7 + j));
-    joint_hi_[j] = reduced_model_->upperPositionLimit(static_cast<Eigen::Index>(7 + j));
-  }
   mpc_enabled_ = true;
 }
 

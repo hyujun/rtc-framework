@@ -90,6 +90,15 @@ void LocomotionController::LoadConfig(const YAML::Node& cfg) {
 
   InitModels();
   BuildMpc(cfg);
+  // The servo target's constants (header, "The servo target"): the share of the
+  // old target kept on each tick, and the step it is propagated by.
+  target_dt_ = GetDefaultDt();
+  if (!(std::isfinite(target_dt_) && target_dt_ > 0.0)) {
+    Fail("the control rate gives no tick period");
+  }
+  target_wbc_ = cfg_.pd_target_wbc;
+  const double tc = cfg_.pd_target_time_constant_s;
+  target_keep_ = tc > 0.0 ? std::exp(-target_dt_ / tc) : 0.0;
   // The pose guard's constants, once: the tilt limit as a cosine and the
   // settle time in ticks of the control rate (header).
   cos_tilt_ = std::cos(cfg_.pose_guard_base_tilt_rad);
@@ -168,6 +177,10 @@ void LocomotionController::InitModels() {
   }
   nb_ = body_joint_names_.size();
   reduced_to_full_ = std::move(body.reduced_to_full);
+  for (std::size_t j = 0; j < nb_; ++j) {
+    joint_lo_[j] = reduced_model_->lowerPositionLimit(static_cast<Eigen::Index>(7 + j));
+    joint_hi_[j] = reduced_model_->upperPositionLimit(static_cast<Eigen::Index>(7 + j));
+  }
 
   rtc::tsid::LocomotionModelSpec spec;
   contact_names_.clear();

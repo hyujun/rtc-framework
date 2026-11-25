@@ -162,6 +162,78 @@ TEST_F(LocomotionControllerTest, AHandNotSeenAtTheLatchIsHeldWhereItFirstReports
   EXPECT_EQ(out.devices[kHand].commands[4], 0.2);  // and held there
 }
 
+// ── The wbc servo target (header, "The servo target") ───────────────────────
+
+YAML::Node WbcTargetConfig(double time_constant_s = 0.0) {
+  YAML::Node cfg = ShippedConfig();
+  cfg["pd_feedforward"]["target"] = "wbc";
+  cfg["pd_feedforward"]["target_time_constant_s"] = time_constant_s;
+  return cfg;
+}
+
+TEST_F(LocomotionControllerTest, TheWbcTargetStartsAtTheLatchFromTheMeasuredPose) {
+  BringUp(WbcTargetConfig());
+  const rtc::ControllerOutput out = Tick();
+  ASSERT_EQ(LastMode(), Mode::kNominal);
+  ExpectServoTargetFromMeasurement(out);
+}
+
+// The QP's reference stays where it was latched; the wbc target is the QP's own
+// joint state, so it starts from where the knee is, not from the latch.
+TEST_F(LocomotionControllerTest, TheWbcTargetFollowsTheRobotWhileTheReferenceStaysLatched) {
+  BringUp(WbcTargetConfig());
+  Tick();
+  const double q0 = state_.devices[kBody].positions[3];
+  state_.devices[kBody].positions[3] += 0.05;  // the knee sags
+  const auto before = SnapshotServoTarget();
+  const rtc::ControllerOutput out = Tick();
+  EXPECT_EQ(ctrl_->Reference().q_des(7 + 3), q0);  // the reference does not follow
+  ExpectServoTargetStep(before, out);
+  EXPECT_GT(out.devices[kBody].commands[3], q0 + 0.05 - 1e-3);
+}
+
+// τ > 0: the target keeps exp(−dt/τ) of its gap to the measurement — a sag the
+// QP did not ask for is not taken over at once, so the servo resists it.
+TEST_F(LocomotionControllerTest, ALongerWbcTargetTimeConstantKeepsPartOfTheGap) {
+  BringUp(WbcTargetConfig(0.05));
+  Tick();
+  const double q0 = state_.devices[kBody].positions[3];
+  state_.devices[kBody].positions[3] += 0.05;  // the knee sags
+  const auto before = SnapshotServoTarget();
+  const rtc::ControllerOutput out = Tick();
+  ExpectServoTargetStep(before, out);
+  const double k = std::exp(-state_.dt / 0.05);
+  // The kept share of the gap, up to the tick's own (small) motion.
+  EXPECT_NEAR(out.devices[kBody].commands[3], q0 + 0.05 * (1.0 - k), 1e-3);
+  EXPECT_LT(out.devices[kBody].commands[3], q0 + 0.05 - 1e-3);
+}
+
+// The target never leaves the joint's range; where it is clamped its velocity
+// stops, so it does not keep pushing past the limit.
+TEST_F(LocomotionControllerTest, TheWbcTargetIsClampedToTheJointRange) {
+  BringUp(WbcTargetConfig());
+  Tick();
+  const double hi = ctrl_->ReducedModel().upperPositionLimit(7 + 3);
+  state_.devices[kBody].positions[3] = hi - 1e-4;
+  state_.devices[kBody].velocities[3] = 1.0;  // one tick of it passes the limit
+  const rtc::ControllerOutput out = Tick();
+  EXPECT_EQ(out.devices[kBody].commands[3], hi);
+  EXPECT_EQ(ctrl_->ServoTargetVelocity()[3], 0.0);
+}
+
+// A tick without a valid state holds the target: the measurement it would be
+// pulled toward is not this tick's.
+TEST_F(LocomotionControllerTest, AStaleTickHoldsTheWbcTarget) {
+  BringUp(WbcTargetConfig());
+  Tick();
+  const rtc::ControllerOutput held = Tick();
+  const rtc::ControllerOutput out = StaleTick();
+  ASSERT_EQ(LastMode(), Mode::kDegraded);
+  for (std::size_t i = 0; i < 23; ++i) {
+    EXPECT_EQ(out.devices[kBody].commands[i], held.devices[kBody].commands[i]) << i;
+  }
+}
+
 // ── Degraded and fault ──────────────────────────────────────────────────────
 
 TEST_F(LocomotionControllerTest, AShortSourceDropHoldsTheTorqueAndALongOneLatches) {
@@ -278,6 +350,14 @@ TEST(LocomotionControllerConfig, RefusesEachMalformedRuntimeSection) {
   refused([](YAML::Node& c) { c["pd_feedforward"]["kd"][1] = ".nan"; }, "NaN kd");
   refused([](YAML::Node& c) { c["pd_feedforward"].remove("kd"); }, "missing kd");
   refused([](YAML::Node& c) { c["pd_feedforward"]["extra"] = 1; }, "unknown key");
+  refused([](YAML::Node& c) { c["pd_feedforward"].remove("target"); }, "missing target");
+  refused([](YAML::Node& c) { c["pd_feedforward"]["target"] = "measured"; }, "unknown target");
+  refused([](YAML::Node& c) { c["pd_feedforward"].remove("target_time_constant_s"); },
+          "missing target_time_constant_s");
+  refused([](YAML::Node& c) { c["pd_feedforward"]["target_time_constant_s"] = -0.01; },
+          "negative target_time_constant_s");
+  refused([](YAML::Node& c) { c["pd_feedforward"]["target_time_constant_s"] = ".inf"; },
+          "infinite target_time_constant_s");
   refused([](YAML::Node& c) { c["fault"]["max_source_bad_ticks"] = 0; }, "zero bad ticks");
   refused([](YAML::Node& c) { c["fault"].remove("damping_kd"); }, "missing damping");
   refused([](YAML::Node& c) { c["estimator"]["source"] = "imu"; }, "estimator source");
