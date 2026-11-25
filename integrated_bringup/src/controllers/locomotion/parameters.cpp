@@ -100,7 +100,7 @@ LocomotionMpcConfig ParseMpc(const YAML::Node& n, const std::string& where) {
   LocomotionMpcConfig out;
   CheckKeys(n, where,
             {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity", "ocp_type",
-             "solver", "kinodynamic", "max_stale_solutions", "sync"},
+             "solver", "kinodynamic", "max_stale_solutions", "sync", "activation_height"},
             {"enabled", "period_nodes", "max_policy_age_s", "riccati", "sanity"});
   out.present = true;
   out.enabled = ReadBool(n, "enabled", where);
@@ -125,6 +125,20 @@ LocomotionMpcConfig ParseMpc(const YAML::Node& n, const std::string& where) {
   out.sanity_joint_delta_rad = ReadPositive(n["sanity"], "joint_delta_rad", san, false);
   out.sanity_base_speed = ReadPositive(n["sanity"], "base_speed", san, false);
   out.sanity_wrench_scale = ReadPositive(n["sanity"], "wrench_scale", san, false);
+  // `activation_height:` (optional; absent = config).
+  if (n["activation_height"]) {
+    std::string source;
+    try {
+      source = n["activation_height"].as<std::string>();
+    } catch (const YAML::Exception&) {
+      Refuse(where + ".activation_height",
+             "expected a string, got " + Spelling(n["activation_height"]));
+    }
+    if (source != "config" && source != "measured") {
+      Refuse(where + ".activation_height", "must be config or measured, got '" + source + "'");
+    }
+    out.activation_height_measured = source == "measured";
+  }
   // `sync:` (optional; absent = free_run). The tick counts (N integer, L in
   // 1..N) are checked where the control rate is known (BuildMpc).
   if (n["sync"]) {

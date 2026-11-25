@@ -129,7 +129,10 @@ void LocomotionController::ServiceRequests() noexcept {
     // the tick's view of the raw slot starts over with it.
     cmd_seen_sequence_ = 0;
     cmd_seen_tick_ns_ = std::numeric_limits<std::int64_t>::min();
-    cmd_latest_ = command_filter_.output();
+    if (cmd_step_ticks_ > 0) {
+      cmd_latest_ = command_filter_.output();  // free_run: the timer's, not read here
+    }
+    height_latch_pending_ = mpc_enabled_ && cfg_.mpc.activation_height_measured;
     RestartReference();
     if (source_) {
       source_->Reset();
@@ -330,6 +333,10 @@ void LocomotionController::LatchReference(const ControllerState& state) noexcept
   target_seeded_ = false;  // the servo target starts over at the measured state
   qp_.Reset();
   reference_latched_ = true;
+  if (height_latch_pending_) {
+    height_latch_pending_ = false;
+    LatchActivationHeight();
+  }
 }
 
 void LocomotionController::Solve() noexcept {

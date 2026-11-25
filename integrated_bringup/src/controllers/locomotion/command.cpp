@@ -5,6 +5,7 @@
 #include "integrated_bringup/support/owned_topics.hpp"
 #include "rtc_base/types/types.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -70,9 +71,11 @@ RawVelocityCommandSample LocomotionController::RestCommandSample() const noexcep
   return rest;
 }
 
-// The one writer of the phase manager's command slot (and of the publish
-// thread's copy, and of the diagnostic log's): the timer, and
-// StartCommandTimer on the same executor thread before the timer exists.
+// The one writer of the publish thread's copy and of the diagnostic log's (and,
+// with to_planner, of the phase manager's command slot): under free_run the
+// timer, and StartCommandTimer on the same executor thread before the timer
+// exists; under lock-step the RT tick, and StartCommandTimer before the first
+// tick of the activation.
 void LocomotionController::PushCommand(const mpc::FilteredCommand& cmd,
                                        const LocomotionCommandSource& source,
                                        bool to_planner) noexcept {
@@ -96,6 +99,13 @@ void LocomotionController::PushCommand(const mpc::FilteredCommand& cmd,
 // whatever the subscription last stored — also when that is stale or nothing
 // (the Bessel stage assumes a fixed period; the filter zeroes a stale input).
 void LocomotionController::StepCommand() noexcept {
+  // The activation's measured height, handed over by the RT tick (header): the
+  // filter starts over at it, on its writer's thread.
+  const double height =
+      pending_height_.exchange(std::numeric_limits<double>::quiet_NaN(), std::memory_order_acq_rel);
+  if (std::isfinite(height)) {
+    static_cast<void>(command_filter_.Reset(height));  // clamped into the range by the tick
+  }
   const RawVelocityCommandSample raw = raw_command_.Load();
   const mpc::FilteredCommand& out =
       command_filter_.Step(raw.twist, raw.recv_steady_ns, SteadyNowNs());
@@ -131,8 +141,30 @@ void LocomotionController::StepCommandOnTick() noexcept {
   PushCommand(out, raw.source, /*to_planner=*/false);  // the planner on the trigger tick
 }
 
+void LocomotionController::LatchActivationHeight() noexcept {
+  const auto& cfg = command_filter_.config();
+  const double z = qp_state_.q(2);
+  if (!std::isfinite(z)) {
+    return;  // not reachable with a valid state; the configured height stands
+  }
+  const double height = std::clamp(z, cfg.h_min, cfg.h_max);
+  if (cmd_step_ticks_ > 0) {
+    // Lock-step: this tick is the filter's writer. The reset cannot fail (a
+    // finite height inside the range); the trigger tick hands it to the planner.
+    static_cast<void>(command_filter_.Reset(height));
+    cmd_latest_ = command_filter_.output();
+    PushCommand(cmd_latest_, raw_command_.Load().source, /*to_planner=*/false);
+    return;
+  }
+  pending_height_.store(height, std::memory_order_release);  // the wall timer applies it
+}
+
 void LocomotionController::StartCommandTimer() noexcept {
-  if (command_timer_ || !node_ || !VelocityCommandSubscribed()) {
+  // Before the first tick of this activation: a height the last one handed
+  // over and no timer step took is not this activation's.
+  pending_height_.store(std::numeric_limits<double>::quiet_NaN(), std::memory_order_release);
+  if (command_timer_ || !node_ ||
+      !(VelocityCommandSubscribed() || cfg_.mpc.activation_height_measured)) {
     return;
   }
   // A fresh start with the robot: the height back to the stance height, no
