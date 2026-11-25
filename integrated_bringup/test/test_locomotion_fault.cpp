@@ -436,7 +436,8 @@ TEST_F(LocomotionFaultTest, ATriggerAndAClearBetweenTwoTicksStillRestartTheRefer
   EXPECT_FALSE(ctrl_->LastDiag().estop);
   EXPECT_EQ(LocomotionControllerTestAccess::StateEpoch(*ctrl_), epoch + 1) << "one restart";
   EXPECT_EQ(LastMode(), Mode::kNominal) << "the guard passed the standing robot at once";
-  EXPECT_EQ(last_out_.devices[kBody].commands[2], q0 + 0.02) << "re-latched where the robot is";
+  EXPECT_EQ(ctrl_->Reference().q_des(7 + 2), q0 + 0.02) << "re-latched where the robot is";
+  ExpectServoTargetFromMeasurement(last_out_);
   EXPECT_EQ(ctrl_->Source(), Source::kIdle);
   EXPECT_EQ(ctrl_->LastDiag().fault_count, 0U);
 }
@@ -454,10 +455,12 @@ TEST_F(LocomotionFaultTest, AClearLatchesTheTickItPassesTheGuardFromThatTicksMea
   const rtc::ControllerOutput out = Tick();
   EXPECT_EQ(LastMode(), Mode::kNominal);
   EXPECT_EQ(GuardMask(), 0U);
-  const auto& body = out.devices[kBody];
-  for (std::size_t i = 0; i < 23; ++i) {
-    EXPECT_EQ(body.commands[i], state_.devices[kBody].positions[i]) << i;
+  for (int i = 0; i < 23; ++i) {
+    EXPECT_EQ(ctrl_->Reference().q_des(7 + i),
+              state_.devices[kBody].positions[static_cast<std::size_t>(i)])
+        << i;
   }
+  ExpectServoTargetFromMeasurement(out);
   EXPECT_TRUE(ctrl_->LastDiag().tau_valid);
   ExpectShippedGains(out);
 }
@@ -500,7 +503,8 @@ TEST_F(LocomotionFaultTest, StandingUpInsideTheSettleTimeLatchesWithNoFault) {
   EXPECT_EQ(LastMode(), Mode::kNominal);
   EXPECT_EQ(GuardMask(), 0U);
   EXPECT_EQ(ctrl_->LastDiag().fault_count, 0U);
-  EXPECT_EQ(out.devices[kBody].commands[0], state_.devices[kBody].positions[0]);
+  EXPECT_EQ(ctrl_->Reference().q_des(7 + 0), state_.devices[kBody].positions[0]);
+  ExpectServoTargetFromMeasurement(out);
 }
 
 TEST_F(LocomotionFaultTest, TheSettleClockRestartsAtEveryEntryAndDoesNotRunUnderTheEstop) {
@@ -648,7 +652,8 @@ TEST_F(LocomotionFaultTest, RequestsMadeWhileInactiveAreConsumedByTheActivation)
   EXPECT_EQ(LastMode(), Mode::kNominal);
   EXPECT_EQ(ctrl_->LastDiag().tick_count, 1U);
   EXPECT_EQ(ctrl_->LastDiag().fault_count, 1U) << "no second latch, no false restart";
-  EXPECT_EQ(out.devices[kBody].commands[0], state_.devices[kBody].positions[0]);
+  EXPECT_EQ(ctrl_->Reference().q_des(7 + 0), state_.devices[kBody].positions[0]);
+  ExpectServoTargetFromMeasurement(out);
 }
 
 TEST_F(LocomotionFaultTest, FaultThenEstopThenResetThenClearEndsInTheGuardsVerdict) {

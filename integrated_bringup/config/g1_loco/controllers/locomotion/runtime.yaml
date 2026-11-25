@@ -13,21 +13,26 @@ locomotion_controller:
   # order (_base.yaml devices.g1.joint_state_names) [N·m/rad, N·m·s/rad]. They
   # ride the wire with every command and stay in the simulator after a switch
   # (sticky). Deliberately well under the MJCF servo (legs / waist 200/5, arms
-  # 100/2) so the feedforward carries the robot and the servo only corrects;
-  # provisional until the gain selection on the sim settles them.
+  # 100/2) so the feedforward carries the robot and the servo only corrects.
+  # The wire carries no velocity target, so the servo's −kd·v opposes the motion
+  # the QP asks for: leg / waist kd 2 tilts less than 4 at the same forward
+  # tracking, and under 1 the walk tilts more again (#1184).
   pd_feedforward:
     kp: [60, 60, 60, 60, 60, 60,  60, 60, 60, 60, 60, 60,  60, 60, 60,  30, 30, 30, 30,  30, 30, 30, 30]
-    kd: [4, 4, 4, 4, 4, 4,  4, 4, 4, 4, 4, 4,  4, 4, 4,  1.5, 1.5, 1.5, 1.5,  1.5, 1.5, 1.5, 1.5]
+    kd: [2, 2, 2, 2, 2, 2,  2, 2, 2, 2, 2, 2,  2, 2, 2,  1.5, 1.5, 1.5, 1.5,  1.5, 1.5, 1.5, 1.5]
     # The position target (locomotion_controller.hpp, "The servo target"):
     # plan = the reference's pose; wbc = the QP's own joint state, integrated
     # from its acceleration and pulled toward the measurement with
     # target_time_constant_s [s] (0 = the one-tick prediction q + v dt + ½ a dt²).
-    # On the g1_loco sim (2026-11-25, plant with armature) wbc fell on the
-    # first step in place with every gain set and τ tried (0 · 0.05 · 0.2 s)
-    # where plan stepped: the servo's pull toward the plan's posture is still
-    # load-bearing with this QP.
-    target: plan
-    target_time_constant_s: 0.0
+    # wbc with τ 0.05 s is the selection of the g1_loco sim batch (#1184; the
+    # plant carrying the control model's hand mass, elbows 0.9 rad): standing,
+    # a height change, stepping in place and walking all run. τ trades forward
+    # tracking against tilt — 0.035 … 0.07 s stays up (tracking ratio
+    # 0.81 … 0.49); 0.02 s loses the walk to solve health, 0.1 s follows 0.3 of
+    # the command, 0 and 0.2 s fault while stepping. plan was not measured on
+    # that plant.
+    target: wbc
+    target_time_constant_s: 0.05
 
   # Latched fault: feedforward −damping_kd·v (clamped to max_torque), position
   # target = the measured q, the gains above unchanged — a slow settle, not a

@@ -109,15 +109,16 @@ TEST_F(LocomotionControllerTest, TheFirstTickAfterActivationSolvesTheStance) {
   }
   EXPECT_LE((lhs - rhs).cwiseAbs().maxCoeff(), 1e-6 * rhs.cwiseAbs().maxCoeff());
 
-  // The wire: pd_feedforward on the body at the latched pose with the QP's
-  // torque, the shipped gains claimed; the hand held where it was.
+  // The wire: pd_feedforward on the body with the QP's torque, the target
+  // started from the measurement at the latch (header, "The servo target"),
+  // the shipped gains claimed; the hand held where it was.
   EXPECT_EQ(out.command_type, rtc::CommandType::kPdFeedforward);
   const auto& body = out.devices[kBody];
   ASSERT_EQ(body.num_channels, 23);
   for (std::size_t i = 0; i < 23; ++i) {
-    EXPECT_EQ(body.commands[i], state_.devices[kBody].positions[i]) << i;
     EXPECT_EQ(body.feedforward[i], s->tau(static_cast<Eigen::Index>(i))) << i;
   }
+  ExpectServoTargetFromMeasurement(out);
   ExpectShippedGains(out);
   const auto& hand = out.devices[kHand];
   EXPECT_EQ(hand.command_type, rtc::CommandType::kPosition);
@@ -133,8 +134,8 @@ TEST_F(LocomotionControllerTest, TheReferenceStaysLatchedWhileTheRobotMoves) {
   Tick();
   const double q0 = state_.devices[kBody].positions[3];
   state_.devices[kBody].positions[3] += 0.05;  // the knee sags
-  const rtc::ControllerOutput out = Tick();
-  EXPECT_EQ(out.devices[kBody].commands[3], q0);  // the target does not follow
+  Tick();
+  EXPECT_EQ(ctrl_->Reference().q_des(7 + 3), q0);  // the reference does not follow
 }
 
 TEST_F(LocomotionControllerTest, TheHandsHoldThePoseTheyHadAtTheLatch) {
@@ -275,7 +276,8 @@ TEST_F(LocomotionControllerTest, TheResetServiceReleasesTheLatchAndReLatchesTheR
   const rtc::ControllerOutput out = Tick();
   EXPECT_FALSE(ctrl_->HasLatchedFault());
   EXPECT_EQ(LastMode(), Mode::kNominal);
-  EXPECT_EQ(out.devices[kBody].commands[0], state_.devices[kBody].positions[0]);
+  EXPECT_EQ(ctrl_->Reference().q_des(7 + 0), state_.devices[kBody].positions[0]);
+  ExpectServoTargetFromMeasurement(out);
 }
 
 TEST_F(LocomotionControllerTest, AResetWhileTheCauseStaysDoesNotCommandTheQp) {
@@ -336,7 +338,8 @@ TEST_F(LocomotionControllerTest, EstopDampsAndTheClearReLatchesFromWhereTheRobot
   ctrl_->ClearEstop();
   const rtc::ControllerOutput out = Tick();
   EXPECT_EQ(LastMode(), Mode::kNominal);
-  EXPECT_EQ(out.devices[kBody].commands[2], state_.devices[kBody].positions[2]);
+  EXPECT_EQ(ctrl_->Reference().q_des(7 + 2), state_.devices[kBody].positions[2]);
+  ExpectServoTargetFromMeasurement(out);
 }
 
 // ── Refusals ────────────────────────────────────────────────────────────────

@@ -113,13 +113,11 @@ TEST_F(LocomotionMpcTest, AConvergedStandingPlanIsFollowedBlockForBlock) {
   EXPECT_EQ(d.mpc_solve_us, 1.234);
   EXPECT_GE(d.policy_age_us, 0.0);
   EXPECT_EQ(d.contact_mask, 0b11U);
-  // The body's position target is the plan's.
-  const auto& body = last_out_.devices[kBody];
-  for (int j = 0; j < body.num_channels; ++j) {
-    EXPECT_EQ(body.commands[static_cast<std::size_t>(j)],
-              plan.q_ref[static_cast<std::size_t>(7 + j)])
-        << j;
-  }
+  // The body's position target is the QP's own state, carried on from the
+  // tick before (header, "The servo target") — not the plan's pose.
+  const auto before = SnapshotServoTarget();
+  last_out_ = Tick();
+  ExpectServoTargetStep(before, last_out_);
 }
 
 // One budget for every solve: a published plan that did not converge is still a
@@ -172,10 +170,9 @@ TEST_F(LocomotionMpcTest, AnImplausiblePlanFallsBackToIdleWithoutAFault) {
     TickFor(30);
     EXPECT_EQ(ctrl_->Source(), Source::kIdle) << "an implausible plan stays refused";
     // The re-latched pose is the measured one.
-    const auto& body = last_out_.devices[kBody];
     const auto pose = StandPose();
     for (std::size_t j = 0; j < pose.size(); ++j) {
-      EXPECT_NEAR(body.commands[j], pose[j], 1e-12) << j;
+      EXPECT_NEAR(ctrl_->Reference().q_des(7 + static_cast<Eigen::Index>(j)), pose[j], 1e-12) << j;
     }
     ctrl_.reset();
   }
