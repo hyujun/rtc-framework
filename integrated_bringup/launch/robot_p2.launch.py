@@ -23,6 +23,12 @@
 # it selects the driver's in-process loop model (sil_mode loopmodel) unless
 # `sil_mode:=` is given explicitly.
 #
+# enable_logging:=false turns off the high-rate CSVs of both processes — the
+# controller's session files (_base.yaml enable_logging) and the hand driver's
+# timing CSV (udp_hand_node_p2.yaml enable_timing_log) — without editing a
+# tracked file, so a field PC's `git pull` never meets a local change. Empty
+# (the default) keeps each file's own value.
+#
 # Topics: /p2/<side>/{joint_states, joint_command, motor_states, sensor_states,
 # link_status}, /p2/estop. The controller's own topics live under
 # /hand_joint_controller/ (p2_<side>/joint_goal, transforms).
@@ -80,10 +86,11 @@ FIRMWARE_CAN_INTERFACE = "vcan0"
 
 
 def _load_hand_params(pkg, *relpath):
-    """Return the `/**` ros__parameters dict from an installed hand-node yaml.
+    """Return the `/**` ros__parameters dict from an installed parameter yaml.
 
-    Used at launch-build time to seed the sil_mode arg default and the fake
-    firmware peer's protocol / cmd_ack. Returns {} on any error.
+    Used at launch-build time to seed the sil_mode arg default, the fake
+    firmware peer's protocol / cmd_ack and the logging switches' YAML values.
+    Returns {} on any error.
     """
     path = os.path.join(get_package_share_directory(pkg), *relpath)
     try:
@@ -92,6 +99,28 @@ def _load_hand_params(pkg, *relpath):
         return data.get("/**", {}).get("ros__parameters", {}) or {}
     except (OSError, yaml.YAMLError):
         return {}
+
+
+def _logging_switch(arg, side, shipped_by_side):
+    """The logging switch a node gets: the ``enable_logging`` argument when it is
+    set, else the side's own YAML value (``shipped_by_side``: side → bool), so
+    an empty argument changes nothing."""
+    return ParameterValue(
+        PythonExpression(
+            [
+                "('",
+                arg,
+                "' == 'true') if '",
+                arg,
+                "' else ",
+                repr(shipped_by_side),
+                "['",
+                side,
+                "']",
+            ]
+        ),
+        value_type=bool,
+    )
 
 
 def _base_yaml_path(config_variant):
@@ -203,6 +232,34 @@ def generate_launch_description():
         description="Comma-separated kernel events. 'none' disables kernel tracing.",
     )
 
+    enable_logging_arg = DeclareLaunchArgument(
+        "enable_logging",
+        default_value="",
+        choices=["", "true", "false"],
+        description=(
+            "false: no high-rate CSVs — the controller's session files "
+            "(_base.yaml enable_logging) and the hand driver's timing CSV "
+            f"({HAND_YAML} enable_timing_log). Empty = each file's own value."
+        ),
+    )
+    enable_logging = LaunchConfiguration("enable_logging")
+    shipped_cm_logging = {
+        s: bool(
+            _load_hand_params("integrated_bringup", "config", p, "_base.yaml").get(
+                "enable_logging", True
+            )
+        )
+        for s, p in SIDE_PROFILES.items()
+    }
+    shipped_hand_timing_log = {
+        s: bool(
+            _load_hand_params("integrated_bringup", "config", p, HAND_YAML).get(
+                "enable_timing_log", True
+            )
+        )
+        for s, p in SIDE_PROFILES.items()
+    }
+
     trace_action = OpaqueFunction(function=_build_trace_action)
 
     # ── Paths ──────────────────────────────────────────────────────────────────
@@ -296,6 +353,7 @@ def generate_launch_description():
                     LaunchConfiguration("max_log_sessions"), value_type=int
                 ),
                 "rt_layout_profile": layout_profile,
+                "enable_logging": _logging_switch(enable_logging, side, shipped_cm_logging),
             },
         ],
         emulate_tty=True,
@@ -325,6 +383,7 @@ def generate_launch_description():
             # Core placement is the tier table's, not the YAML's: both slots
             # after the YAML file so a YAML value cannot override them.
             {"hand_cpu_slot": hand_driver_slot, "aux_cpu_slot": get_os_slot()},
+            {"enable_timing_log": _logging_switch(enable_logging, side, shipped_hand_timing_log)},
         ],
         emulate_tty=True,
     )
@@ -467,6 +526,7 @@ def generate_launch_description():
             trace_events_ust_arg,
             trace_events_kernel_arg,
             max_log_sessions_arg,
+            enable_logging_arg,
             # 2) Session + environment (#402: below the arguments, above every
             #    consumer of the session path)
             open_session_action,

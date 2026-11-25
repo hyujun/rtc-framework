@@ -3,8 +3,9 @@
 ``enable_device_log`` was removed from the CM: a key left in a shipped file
 would make every bring-up of that profile print the removal warning, so none
 may carry it. The hand driver's ``enable_timing_log`` is the one switch for
-``timing/hand_timing_log.csv`` and is spelled out in every driver file, so the
-field recipe ("set it to false") edits a line that is already there.
+``timing/hand_timing_log.csv`` and is spelled out in every driver file: the
+launch's empty ``enable_logging`` argument passes that value through, so the
+file states what a bring-up gets.
 """
 
 from __future__ import annotations
@@ -50,5 +51,5 @@ def test_every_driver_file_spells_out_enable_timing_log(path):
 
 @pytest.mark.parametrize("profile", ["p2", "p2_left"])
 def test_the_exhibition_profiles_ship_logging_on(profile):
-    # Turning it off is the field recipe, not the shipped state.
+    # Turning it off is the launch's enable_logging:=false, not the shipped state.
     assert _params(CONFIG_DIR / profile / "_base.yaml")["enable_logging"] is True
