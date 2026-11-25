@@ -18,6 +18,12 @@ time has passed AND the measured hand is within a tolerance of the target. A
 target the hand cannot reach (a joint limit the controller clamps to, a
 mechanical end stop) therefore ends the run with a timeout that names the
 joint, instead of the next step being sent on top of an unfinished move.
+
+A step may instead hand over early (``next_at_pct`` < 100): the next goal goes
+out at that fraction of the step's expected move time, without checking that
+the hand arrived and without a dwell. That is a "wave" — the controller
+continues the velocity into the new goal — so a sequence still needs one step
+that settles (``settle_problem``), or nothing would ever check the hand.
 """
 
 from __future__ import annotations
@@ -36,6 +42,9 @@ DEFAULT_TOLERANCE_DEG = 2.0
 MIN_TOLERANCE_DEG = 0.1
 MAX_TOLERANCE_DEG = 30.0
 
+MIN_NEXT_AT_PCT = 1
+MAX_NEXT_AT_PCT = 100  # the step settles: arrive within the tolerance, then dwell
+
 MODE_ONCE = "once"
 MODE_LOOP = "loop"
 
@@ -44,6 +53,10 @@ STALE_AFTER_S = 0.5
 # A step is given up after TIMEOUT_FACTOR x its expected duration + TIMEOUT_MARGIN_S.
 TIMEOUT_FACTOR = 2.0
 TIMEOUT_MARGIN_S = 1.0
+# A goal sent while the previous step was still moving is a velocity-continuous
+# retarget: the controller may stretch it up to this factor to hold its velocity
+# cap, so the timeout of such a step is counted from the stretched duration.
+RETARGET_STRETCH_MAX = 1.25**3
 # The speed set before a goal answers within the GUI's own 1 s timeout; a send
 # that has not completed after this is a lost callback, not a slow service.
 SEND_TIMEOUT_S = 3.0
@@ -53,6 +66,10 @@ READY = "ready"  # the current step is due to be sent
 SENDING = "sending"  # handed to the GUI; its completion has not come back
 MOVING = "moving"
 DWELLING = "dwelling"
+
+# How the last step was left (``SequenceRunner.left_by``).
+LEFT_ARRIVED = "arrived"
+LEFT_SWITCHED = "switched"
 
 
 def round_time(value: float) -> float:
@@ -70,22 +87,30 @@ def clamp_dwell(value: float) -> float:
     return min(max(round_time(value), 0.0), MAX_TIME_S)
 
 
+def clamp_next_at_pct(value: float) -> int:
+    """A switch point: a whole percent within [MIN_NEXT_AT_PCT, MAX_NEXT_AT_PCT]."""
+    return min(max(round(float(value)), MIN_NEXT_AT_PCT), MAX_NEXT_AT_PCT)
+
+
 def clamp_tolerance(value: float) -> float:
     return min(max(round(float(value), 1), MIN_TOLERANCE_DEG), MAX_TOLERANCE_DEG)
 
 
 @dataclass(frozen=True)
 class SequenceStep:
-    """One row of the list: a preset by name, how long the move to it takes
-    and how long the hand rests there before the next step."""
+    """One row of the list: a preset by name, how long the move to it takes,
+    how long the hand rests there before the next step, and at what percent of
+    the move time the next step is sent instead (100 = wait for the arrival)."""
 
     preset: str
     time_s: float
     dwell_s: float = 0.0
+    next_at_pct: int = MAX_NEXT_AT_PCT
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "time_s", clamp_time(self.time_s))
         object.__setattr__(self, "dwell_s", clamp_dwell(self.dwell_s))
+        object.__setattr__(self, "next_at_pct", clamp_next_at_pct(self.next_at_pct))
 
 
 @dataclass(frozen=True)
@@ -95,15 +120,29 @@ class SequenceFile:
 
 
 def with_all_times(
-    steps: Sequence[SequenceStep], time_s: float | None = None, dwell_s: float | None = None
+    steps: Sequence[SequenceStep],
+    time_s: float | None = None,
+    dwell_s: float | None = None,
+    next_at_pct: int | None = None,
 ) -> tuple[SequenceStep, ...]:
-    """Every step with its move time and/or dwell replaced; None keeps a field."""
+    """Every step with its move time, dwell and/or switch point replaced; None
+    keeps a field."""
     changes = {}
     if time_s is not None:
         changes["time_s"] = time_s
     if dwell_s is not None:
         changes["dwell_s"] = dwell_s
+    if next_at_pct is not None:
+        changes["next_at_pct"] = next_at_pct
     return tuple(replace(step, **changes) for step in steps)
+
+
+def settle_problem(steps: Sequence[SequenceStep | ResolvedStep]) -> str:
+    """Why the list would never check the hand ("" = it does): every step hands
+    over early, so none waits for the hand to arrive."""
+    if steps and all(s.next_at_pct < MAX_NEXT_AT_PCT for s in steps):
+        return "the sequence has no 100 % step — nothing checks that the hand arrives"
+    return ""
 
 
 def moved(steps: Sequence[SequenceStep], index: int, offset: int) -> tuple[tuple, int]:
@@ -136,7 +175,10 @@ def normalize_sequence_file(data: object) -> SequenceFile:
         dwell_s = _finite(raw.get("dwell_s", 0.0))
         if not isinstance(preset, str) or not preset or time_s is None or dwell_s is None:
             continue
-        steps.append(SequenceStep(preset, time_s, dwell_s))
+        pct = _finite(raw.get("next_at_pct"))
+        steps.append(
+            SequenceStep(preset, time_s, dwell_s, MAX_NEXT_AT_PCT if pct is None else pct)
+        )
     tolerance = _finite(data.get("tolerance_deg"))
     return SequenceFile(
         tuple(steps),
@@ -152,15 +194,21 @@ def load_sequence_file(path: str) -> SequenceFile:
         return SequenceFile()
 
 
+def _step_json(step: SequenceStep) -> dict:
+    """The key of a switch point is written only when it is set: a file that
+    never used it keeps its bytes, hence its posture code, across a save."""
+    row: dict = {"preset": step.preset, "time_s": step.time_s, "dwell_s": step.dwell_s}
+    if step.next_at_pct < MAX_NEXT_AT_PCT:
+        row["next_at_pct"] = step.next_at_pct
+    return row
+
+
 def save_sequence_file(path: str, sequence: SequenceFile) -> None:
     """Atomically persist the list beside the preset store."""
     atomic_write_json(
         path,
         {
-            "steps": [
-                {"preset": s.preset, "time_s": s.time_s, "dwell_s": s.dwell_s}
-                for s in sequence.steps
-            ],
+            "steps": [_step_json(s) for s in sequence.steps],
             "tolerance_deg": clamp_tolerance(sequence.tolerance_deg),
         },
         prefix=".demo_gui_sequences_",
@@ -188,6 +236,7 @@ class ResolvedStep:
     target_rad: tuple[float, ...]
     time_s: float
     dwell_s: float
+    next_at_pct: int = MAX_NEXT_AT_PCT
 
 
 def resolve_steps(
@@ -205,7 +254,9 @@ def resolve_steps(
         if problem := step_problem(step, presets, hand_dof):
             return (), f"step {number} '{step.preset}': {problem}"
         target = tuple(math.radians(float(v)) for v in presets[step.preset]["positions_deg"])
-        resolved.append(ResolvedStep(step.preset, target, step.time_s, step.dwell_s))
+        resolved.append(
+            ResolvedStep(step.preset, target, step.time_s, step.dwell_s, step.next_at_pct)
+        )
     return tuple(resolved), ""
 
 
@@ -219,6 +270,11 @@ class SequenceRunner:
       goal is a service round trip,
     - ``stop`` ends the run. Nothing is sent after it: a send still in flight is
       refused by ``awaiting``. A trajectory already started runs to its end.
+
+    A step with ``next_at_pct`` < 100 is left by *switch*: the next step is
+    handed out once that share of the expected move time has passed, whatever
+    the hand measures. A step that must settle (see ``_must_settle``) waits for
+    the arrival as before.
     """
 
     def __init__(self) -> None:
@@ -235,6 +291,12 @@ class SequenceRunner:
         self._since = 0.0  # when the current state was entered
         self._expected_s = 0.0
         self._stop_at_cycle_end = False
+        self._blend = True
+        self._stretched = False  # the current goal retargeted a move in progress
+        self._after_switch = False  # the step just handed out follows a switch
+        self.switch_due: float | None = None  # when the current step hands over; None = settles
+        self.left_by = ""  # LEFT_ARRIVED / LEFT_SWITCHED: how the last step was left
+        self.left_due: float | None = None  # switch_due of the step left by switch
 
     # ── Control ──────────────────────────────────────────────────────────────
 
@@ -248,8 +310,11 @@ class SequenceRunner:
         mode: str,
         tolerance_deg: float = DEFAULT_TOLERANCE_DEG,
         joint_names: Sequence[str] = (),
+        blend: bool = True,
     ) -> str:
-        """Begin a run; returns why not ("" = started)."""
+        """Begin a run; returns why not ("" = started). ``blend`` False plays
+        every step as a 100 % one (a controller that restarts each goal from
+        rest gains nothing from an early handover)."""
         if self.running:
             return "a sequence is already playing"
         if not steps:
@@ -262,6 +327,10 @@ class SequenceRunner:
         self.mode, self.index, self.cycle = mode, 0, 0
         self.result, self.aborted = "", False
         self._stop_at_cycle_end = False
+        self._blend = blend
+        self._after_switch = self._stretched = False
+        self.switch_due = self.left_due = None
+        self.left_by = ""
         self.state = READY
         return ""
 
@@ -293,6 +362,11 @@ class SequenceRunner:
             return
         step = self._steps[self.index]
         self._expected_s = max(step.time_s, min_duration or 0.0)
+        self._stretched, self._after_switch = self._after_switch, False
+        # Without a known speed the expected time is a guess: such a step settles.
+        self.switch_due = None
+        if min_duration is not None and self._switches(self.index):
+            self.switch_due = now + step.next_at_pct / 100.0 * self._expected_s
         self._enter(MOVING, now)
 
     def tick(
@@ -318,8 +392,12 @@ class SequenceRunner:
             if now - self._since > SEND_TIMEOUT_S:
                 self._abort(f"the send of {self._where()} never completed")
             return None
-        if self.state == MOVING and not self._moving_done(now, measured, measured_age_s):
-            return None
+        if self.state == MOVING:
+            if self._due_to_switch(now):
+                self.left_by, self.left_due = LEFT_SWITCHED, self.switch_due
+                self._after_switch = True
+            elif not self._moving_done(now, measured, measured_age_s):
+                return None
         if self.state == DWELLING and now - self._since < self._steps[self.index].dwell_s:
             return None
         if self.state in (MOVING, DWELLING) and not self._advance():
@@ -342,7 +420,10 @@ class SequenceRunner:
         head = f"playing ({self.mode}) — cycle {self.cycle + 1}, {self._where()}"
         elapsed = max(now - self._since, 0.0)
         if self.state == MOVING:
-            return f"{head}: moving {elapsed:.1f} / {self._expected_s:.2f} s"
+            text = f"{head}: moving {elapsed:.1f} / {self._expected_s:.2f} s"
+            if self.switch_due is not None and not self._must_settle(self.index):
+                text += f" → next at {self.switch_due - self._since:.2f} s"
+            return text
         if self.state == DWELLING:
             return f"{head}: dwell {elapsed:.1f} / {self._steps[self.index].dwell_s:.2f} s"
         return f"{head}: sending"
@@ -352,6 +433,28 @@ class SequenceRunner:
     def _where(self) -> str:
         step = self._steps[self.index]
         return f"step {self.index + 1}/{len(self._steps)} '{step.preset}'"
+
+    def _switches(self, index: int) -> bool:
+        """Does the step hand over early at all (before the run-state rules)?"""
+        return self._blend and self._steps[index].next_at_pct < MAX_NEXT_AT_PCT
+
+    def _must_settle(self, index: int) -> bool:
+        """Must step ``index`` arrive before the next goes out? Re-read every
+        tick: a graceful stop asked before the last step's switch makes it
+        settle; after the switch the pass in progress is the next one."""
+        last = index == len(self._steps) - 1
+        return (
+            not self._switches(index)
+            or len(self._steps) == 1
+            or (last and (self.mode == MODE_ONCE or self._stop_at_cycle_end))
+        )
+
+    def _due_to_switch(self, now: float) -> bool:
+        return (
+            self.switch_due is not None
+            and not self._must_settle(self.index)
+            and now >= self.switch_due
+        )
 
     def _enter(self, state: str, now: float) -> None:
         self.state, self._since = state, now
@@ -371,11 +474,13 @@ class SequenceRunner:
         comparable = len(measured) == len(step.target_rad)
         reached = fresh and comparable and max(errors, default=0.0) <= self._tolerance_rad
         if elapsed >= self._expected_s and reached:
+            self.left_by, self.left_due = LEFT_ARRIVED, None
             if step.dwell_s > 0.0:
                 self._enter(DWELLING, now)
                 return False
             return True
-        timeout = TIMEOUT_FACTOR * self._expected_s + TIMEOUT_MARGIN_S
+        stretch = RETARGET_STRETCH_MAX if self._stretched else 1.0
+        timeout = TIMEOUT_FACTOR * self._expected_s * stretch + TIMEOUT_MARGIN_S
         if elapsed > timeout:
             self._abort(
                 f"{self._where()} not reached within {timeout:.2f} s: {self._why(age, errors, comparable)}"

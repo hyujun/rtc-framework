@@ -19,6 +19,7 @@ from __future__ import annotations
 import inspect
 import json
 import math
+from dataclasses import replace
 from types import MethodType, SimpleNamespace
 
 import pytest
@@ -28,6 +29,8 @@ from integrated_bringup.demo_gui.app import SEQUENCE_TICK_MS, DemoControllerGUI
 from integrated_bringup.demo_gui.sequence import (
     DWELLING,
     IDLE,
+    LEFT_ARRIVED,
+    LEFT_SWITCHED,
     MODE_LOOP,
     MODE_ONCE,
     MOVING,
@@ -36,11 +39,13 @@ from integrated_bringup.demo_gui.sequence import (
     SequenceFile,
     SequenceRunner,
     SequenceStep,
+    clamp_next_at_pct,
     load_sequence_file,
     moved,
     normalize_sequence_file,
     resolve_steps,
     save_sequence_file,
+    settle_problem,
     step_problem,
     with_all_times,
 )
@@ -153,6 +158,7 @@ def test_steps_resolve_to_the_presets_hand_targets_only():
         "target_rad",
         "time_s",
         "dwell_s",
+        "next_at_pct",
     }
 
 
@@ -629,3 +635,230 @@ def test_the_end_of_a_run_unlocks_the_tab_and_logs_at_either_severity():
     assert [level for level, _ in logger.lines] == ["info", "warn"]
     assert order[:3] == ["unlock", "paint True", "log"]
     assert gui._sequence_message == "aborted — x"
+
+
+# ── next_at_pct: the early handover ──────────────────────────────────────────
+
+
+def test_a_switch_point_is_a_whole_percent_within_range():
+    assert [SequenceStep("a", 1.0, 0.0, v).next_at_pct for v in (0, -5, 50.4, 50.6, 101, 1)] == [
+        1,
+        1,
+        50,
+        51,
+        100,
+        1,
+    ]
+    assert SequenceStep("a", 1.0).next_at_pct == 100
+    assert clamp_next_at_pct(1000) == 100
+    assert with_all_times((SequenceStep("a", 1.0), SequenceStep("b", 2.0)), next_at_pct=40) == (
+        SequenceStep("a", 1.0, 0.0, 40),
+        SequenceStep("b", 2.0, 0.0, 40),
+    )
+
+
+def test_the_file_reads_the_switch_point_leniently():
+    steps = [
+        {"preset": "a", "time_s": 1.0},
+        {"preset": "a", "time_s": 1.0, "next_at_pct": True},
+        {"preset": "a", "time_s": 1.0, "next_at_pct": "50"},
+        {"preset": "a", "time_s": 1.0, "next_at_pct": 0},
+        {"preset": "a", "time_s": 1.0, "next_at_pct": 49.6},
+        {"preset": "a", "time_s": 1.0, "next_at_pct": 400},
+    ]
+    loaded = normalize_sequence_file({"steps": steps})
+    assert [s.next_at_pct for s in loaded.steps] == [100, 100, 100, 1, 50, 100]
+
+
+def test_the_switch_point_is_saved_only_when_set_and_an_old_file_keeps_its_code(tmp_path):
+    from integrated_bringup.demo_gui.shipped import content_hash
+
+    old = {
+        "steps": [
+            {"preset": "open", "time_s": 1.0, "dwell_s": 0.5},
+            {"preset": "close", "time_s": 2.0, "dwell_s": 0.0},
+        ],
+        "tolerance_deg": 2.0,
+    }
+    path = tmp_path / "seq.json"
+    path.write_text(json.dumps(old))
+    save_sequence_file(str(path), load_sequence_file(str(path)))
+    assert json.loads(path.read_text()) == old
+    assert content_hash(json.loads(path.read_text())) == content_hash(old)
+    blended = SequenceFile((SequenceStep("open", 1.0, 0.0, 60), SequenceStep("close", 1.0)))
+    save_sequence_file(str(path), blended)
+    rows = json.loads(path.read_text())["steps"]
+    assert rows[0]["next_at_pct"] == 60 and "next_at_pct" not in rows[1]
+    assert load_sequence_file(str(path)) == blended
+
+
+def test_a_sequence_must_hold_a_step_that_settles():
+    assert settle_problem((SequenceStep("a", 1.0, 0.0, 50), SequenceStep("b", 1.0))) == ""
+    assert "no 100 % step" in settle_problem((SequenceStep("a", 1.0, 0.0, 50),))
+    assert settle_problem(()) == ""
+    assert "no 100 % step" in settle_problem((ResolvedStep("a", (0.0,), 1.0, 0.0, 99),))
+
+
+def test_resolve_carries_the_switch_point():
+    resolved, _ = resolve_steps((SequenceStep("open", 0.5, 0.0, 30),), _PRESETS, 2)
+    assert resolved[0].next_at_pct == 30
+
+
+# Wave fixtures: w1 hands over at 40 % of 1 s, s settles (0.5 s), far apart
+# so a switch cannot be mistaken for an arrival.
+_W = ResolvedStep("w", (1.0, 1.0), 1.0, 0.0, 40)
+_S = ResolvedStep("s", (0.0, 0.0), 0.5, 0.0)
+_FAR = (0.0, 0.0)  # far from _W's target
+_AWAY = (5.0, 5.0)  # far from both targets
+
+
+def _wave(steps=(_W, _S), mode=MODE_LOOP, **kw) -> SequenceRunner:
+    runner = SequenceRunner()
+    assert runner.start(steps, mode, 2.0, ("thumb", "index"), **kw) == ""
+    return runner
+
+
+def test_the_next_goal_goes_out_on_the_first_tick_at_the_switch_point_not_before():
+    runner = _wave()
+    _send(runner, 10.0, _FAR, min_duration=0.2)
+    assert runner.switch_due == pytest.approx(10.4)
+    assert runner.tick(10.39, _FAR, 0.0) is None and runner.state == MOVING
+    # The hand is nowhere near _W's target: it is the switch, not an arrival.
+    assert runner.tick(10.4, _FAR, 0.0) is _S
+    assert runner.left_by == LEFT_SWITCHED and runner.left_due == pytest.approx(10.4)
+    assert runner.index == 1 and runner.state == SENDING
+
+
+def test_a_100_percent_twin_does_not_advance_on_the_same_far_pose():
+    twin = ResolvedStep("w", (1.0, 1.0), 1.0, 0.0, 100)
+    runner = _wave((twin, _S))
+    _send(runner, 10.0, _FAR, min_duration=0.2)
+    assert runner.switch_due is None
+    assert runner.tick(10.4, _FAR, 0.0) is None and runner.index == 0
+    assert runner.tick(11.0, _FAR, 0.0) is None and runner.index == 0
+    assert runner.tick(11.0, (1.0, 1.0), 0.0) is _S
+    assert runner.left_by == LEFT_ARRIVED
+
+
+def test_the_switch_point_counts_from_the_publish_of_the_longer_plan():
+    runner = _wave()
+    _send(runner, 0.0, _FAR, min_duration=2.0)  # expected 2 s: 40 % = 0.8 s
+    assert runner.tick(0.5, _FAR, 0.0) is None
+    assert "→ next at 0.80 s" in runner.status(0.5)
+    assert runner.tick(0.8, _FAR, 0.0) is _S
+
+
+def test_the_last_step_of_a_once_run_settles():
+    last = ResolvedStep("l", (1.0, 1.0), 0.5, 0.0, 40)
+    runner = _wave((_S, last), MODE_ONCE)
+    _send(runner, 0.0)
+    runner.tick(0.5, _FAR, 0.0)  # _S arrives, hands out `last`
+    runner.on_sent(runner.token, 0.5, "", 0.0)
+    assert runner.tick(2.0, _FAR, 0.0) is None and runner.running  # 40 % passed, not arrived
+    assert "→ next" not in runner.status(2.0)
+    runner.tick(2.1, (1.0, 1.0), 0.0)
+    assert not runner.running and not runner.aborted and runner.cycle == 1
+
+
+def test_a_stop_at_cycle_end_asked_before_the_last_switch_makes_it_settle():
+    last = ResolvedStep("l", (1.0, 1.0), 0.5, 0.0, 40)
+    runner = _wave((_S, last))
+    _send(runner, 0.0)
+    runner.tick(0.5, _FAR, 0.0)
+    runner.on_sent(runner.token, 0.5, "", 0.0)
+    runner.stop_at_cycle_end()
+    assert runner.tick(2.0, _FAR, 0.0) is None and runner.index == 1
+    runner.tick(2.1, (1.0, 1.0), 0.0)
+    assert not runner.running and "end of cycle 1" in runner.result
+
+
+def test_a_stop_at_cycle_end_asked_after_the_last_switch_runs_the_next_pass():
+    last = ResolvedStep("l", (1.0, 1.0), 0.5, 0.0, 40)
+    runner = _wave((_S, last))
+    _send(runner, 0.0)
+    runner.tick(0.5, _FAR, 0.0)
+    runner.on_sent(runner.token, 0.5, "", 0.0)
+    assert runner.tick(0.7, _FAR, 0.0) is _S  # `last` switched back to the first step
+    assert runner.cycle == 1
+    runner.stop_at_cycle_end()
+    assert runner.running
+    runner.on_sent(runner.token, 0.7, "", 0.0)
+    assert runner.tick(1.2, _FAR, 0.0) is last  # _S arrives, `last` goes out
+    runner.on_sent(runner.token, 1.2, "", 0.0)
+    assert runner.tick(2.5, _FAR, 0.0) is None and runner.running  # must settle now
+    runner.tick(2.6, (1.0, 1.0), 0.0)
+    assert not runner.running and runner.cycle == 2
+
+
+def test_a_one_step_list_and_a_blend_off_run_settle_every_step():
+    one = _wave((_W,))
+    _send(one, 0.0, _FAR, min_duration=0.2)
+    assert one.tick(0.5, _FAR, 0.0) is None and one.index == 0
+    off = _wave(blend=False)
+    _send(off, 0.0, _FAR, min_duration=0.2)
+    assert off.switch_due is None
+    assert off.tick(0.5, _FAR, 0.0) is None and off.index == 0
+
+
+def test_a_step_without_a_known_speed_settles():
+    runner = _wave()
+    _send(runner, 0.0, _FAR, min_duration=None)
+    assert runner.switch_due is None
+    assert runner.tick(0.5, _FAR, 0.0) is None and runner.index == 0
+
+
+def test_the_loop_blends_last_to_first_and_counts_a_cycle_once_per_pass():
+    wave_t = ResolvedStep("t", (0.5, 0.5), 1.0, 0.0, 50)
+    runner = _wave((_S, _W, wave_t))
+    step = runner.tick(0.0, _FAR, 0.0)
+    assert step is _S
+    runner.on_sent(runner.token, 0.0, "", 0.0)
+    assert runner.tick(0.5, _FAR, 0.0) is _W  # _S arrives (the hand is at its target)
+    runner.on_sent(runner.token, 0.5, "", 0.0)
+    assert runner.tick(0.9, _AWAY, 0.0) is wave_t  # switch, hand far away
+    runner.on_sent(runner.token, 0.9, "", 0.0)
+    assert runner.cycle == 0
+    # The last step hands over to the first at 50 % without an arrival.
+    assert runner.tick(1.39, _AWAY, 0.0) is None and runner.cycle == 0
+    assert runner.tick(1.4, _AWAY, 0.0) is _S
+    assert runner.cycle == 1 and runner.index == 0
+    # Dwell-free 100 % step: the next pass counts only when it wraps again.
+    runner.on_sent(runner.token, 1.4, "", 0.0)
+    assert runner.tick(1.9, _FAR, 0.0) is _W and runner.cycle == 1
+
+
+def test_a_blended_step_never_dwells():
+    runner = _wave((ResolvedStep("w", (1.0, 1.0), 1.0, 5.0, 40), _S))
+    _send(runner, 0.0, _FAR, min_duration=0.0)
+    step = runner.tick(0.4, _FAR, 0.0)
+    assert step is _S and runner.state == SENDING
+
+
+def test_stop_mid_blend_hands_nothing_more_out():
+    runner = _wave()
+    _send(runner, 0.0, _FAR, min_duration=0.0)
+    runner.stop()
+    assert runner.tick(5.0, _FAR, 0.0) is None and not runner.running
+    assert runner.left_by == ""
+
+
+def test_a_step_entered_by_a_switch_gets_the_stretched_timeout():
+    runner = _wave()
+    _send(runner, 0.0, _AWAY, min_duration=0.0)
+    assert runner.tick(0.4, _AWAY, 0.0) is _S
+    runner.on_sent(runner.token, 0.4, "", 0.0)
+    plain = seq.TIMEOUT_FACTOR * 0.5 + seq.TIMEOUT_MARGIN_S
+    stretched = seq.TIMEOUT_FACTOR * 0.5 * seq.RETARGET_STRETCH_MAX + seq.TIMEOUT_MARGIN_S
+    assert stretched > plain + 0.5
+    # Past the plain timeout: still waiting; past the stretched one: aborted.
+    assert runner.tick(0.4 + plain + 0.05, _AWAY, 0.0) is None and runner.running
+    assert runner.tick(0.4 + stretched + 0.05, _AWAY, 0.0) is None and runner.aborted
+
+
+def test_a_step_entered_by_arrival_keeps_the_plain_timeout():
+    runner = _wave((_S, replace(_W, next_at_pct=100)))
+    _send(runner, 0.0)
+    runner.tick(0.5, _FAR, 0.0)  # _S arrived
+    runner.on_sent(runner.token, 0.5, "", 0.0)
+    plain = seq.TIMEOUT_FACTOR * 1.0 + seq.TIMEOUT_MARGIN_S
+    assert runner.tick(0.5 + plain + 0.05, (0.9, 0.0), 0.0) is None and runner.aborted

@@ -168,6 +168,61 @@ def test_once_and_unknown_robots_are_refused(argv):
     assert exc.value.code == 2
 
 
+def _seq(*rows) -> dict:
+    return {"steps": [{"preset": "open", "time_s": 1.0, **r} for r in rows], "tolerance_deg": 2.0}
+
+
+def _parse(*rows):
+    return f.parse_sequence(_seq(*rows), "/s.json")[0]
+
+
+def test_a_switch_point_is_read_into_the_step():
+    steps = _parse({"next_at_pct": 1}, {"next_at_pct": 99}, {})
+    assert [s.next_at_pct for s in steps] == [1, 99, 100]
+
+
+@pytest.mark.parametrize(
+    ("value", "needle"),
+    [
+        (True, "whole number"),
+        (50.5, "whole number"),
+        (50.0, "whole number"),
+        ("50", "whole number"),
+        (None, "whole number"),
+        (0, "outside"),
+        (-3, "outside"),
+        (101, "outside"),
+        (100, "omit next_at_pct"),
+    ],
+)
+def test_a_malformed_switch_point_is_refused(value, needle):
+    with pytest.raises(f.FileProblem, match=needle):
+        _parse({"next_at_pct": value}, {})
+
+
+def test_a_sequence_without_a_settling_step_is_refused_on_every_path(tmp_path):
+    rows = ({"next_at_pct": 50}, {"next_at_pct": 20})
+    with pytest.raises(f.FileProblem, match="no 100 % step"):
+        _parse(*rows)
+    with pytest.raises(f.FileProblem, match="no 100 % step"):
+        f.load_run_inputs(_ship(tmp_path, sequence=_seq(*rows)), "p2")
+
+
+def test_a_shipped_wave_loads_into_resolved_steps(tmp_path):
+    seq = _seq({"preset": "close", "next_at_pct": 40}, {"preset": "open"})
+    inputs = f.load_run_inputs(_ship(tmp_path, sequence=seq), "p2")
+    assert [s.next_at_pct for s in inputs.steps] == [40, 100]
+
+
+def test_a_sequence_without_a_settling_step_exits_2(tmp_path, capsys, monkeypatch):
+    seq = _seq({"preset": "close", "next_at_pct": 40})
+    monkeypatch.setattr(cli, "shipped_config_dir", lambda: _ship(tmp_path, sequence=seq))
+    monkeypatch.setattr(env, "logging_root", lambda: (str(tmp_path), ""))
+    argv = ["--robot", "p2", "--mode", "loop", "--duration", "1h", "--yes"]
+    assert cli.main(argv) == 2
+    assert "no 100 % step" in capsys.readouterr().err
+
+
 def test_a_missing_file_exits_2_before_ros(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(cli, "shipped_config_dir", lambda: _ship(tmp_path, sequence=MISSING))
     monkeypatch.setattr(env, "logging_root", lambda: (str(tmp_path), ""))
@@ -931,3 +986,65 @@ def test_two_hand_drivers_on_the_domain_refuse():
     obs = replace(GOOD, driver_nodes=2, driver_calibration=_calibration())
     verdict = assess(obs, True, RECORDED)
     assert verdict.kind == REFUSE and "2 hand drivers" in verdict.reason
+
+
+# ── A wave: steps that hand over before they arrive ─────────────────────────
+
+WAVE = (
+    ResolvedStep("close", (0.5, 1.0), 1.0, 0.0, 50),
+    ResolvedStep("open", (0.0, 0.0), 1.0, 0.0),
+)
+
+
+def _wave_run(io: FakeIo) -> Orchestrator:
+    inputs = f.RunInputs(WAVE, 2.0, "/p.json", "/s.json")
+    return _running(io, inputs=inputs)
+
+
+def test_a_switched_step_is_not_reached_and_records_where_the_hand_was():
+    io = FakeIo(GOOD)  # the hand rests at (0, 0): far from the first target
+    orch = _wave_run(io)
+    _ticks(orch, io, 3.0, follow=False)
+    first = orch.summary()["steps"][0]
+    assert first["switched"] >= 1 and first["reached"] == 0
+    assert first["reach_s_mean"] is None
+    assert first["switch_error_deg_max"] > 30.0  # ~57 deg off: no arrival was needed
+    second = orch.summary()["steps"][1]
+    assert second["reached"] >= 1 and second["switched"] == 0
+    # The first goal went out, then the second at 50 % of 1 s, not after 1 s.
+    assert io.published[:2] == [WAVE[0].target_rad, WAVE[1].target_rad]
+
+
+def test_the_lag_is_the_publish_after_the_switch_due_time():
+    io = FakeIo(GOOD)
+    orch = _wave_run(io)
+    while not io.published:
+        _ticks(orch, io, 0.02, follow=False)
+    io.answer = None  # the next speed set takes a while to answer
+    while orch.runner.index != 1:
+        _ticks(orch, io, 0.02, follow=False)
+    _ticks(orch, io, 0.3, follow=False)
+    io.answer = True
+    _ticks(orch, io, 0.1, follow=False)
+    step = orch.summary()["steps"][0]
+    assert len(io.published) >= 2 and step["switched"] == 1
+    assert 0.28 <= step["lag_s_mean"] <= 0.45 and step["lag_s_max"] == pytest.approx(
+        step["lag_s_mean"], abs=1e-3
+    )
+
+
+def test_an_arrival_only_run_keeps_the_old_summary_values():
+    io = FakeIo(GOOD)
+    orch = _running(io)
+    _ticks(orch, io, 6.0)
+    for row in orch.summary()["steps"]:
+        assert row["switched"] == 0 and row["lag_s_mean"] is None and row["reached"] >= 1
+
+
+def test_the_plan_shows_the_switch_point_only_where_it_is_set():
+    io = FakeIo(replace(GOOD, driver_nodes=1, driver_calibration=_calibration()))
+    inputs = f.RunInputs(WAVE, 2.0, "/p.json", "/s.json", calibration=RECORDED)
+    _running(io, inputs=inputs)
+    lines = next(t for t in io.said if t.startswith("robot p2:")).splitlines()
+    assert "next at  50 %" in next(x for x in lines if " 1. close" in x)
+    assert "next at" not in next(x for x in lines if " 2. open" in x)
