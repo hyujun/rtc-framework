@@ -199,6 +199,11 @@ class PipelineTestController : public RTControllerInterface {
   static inline std::array<std::atomic<int64_t>, kMaxImuSites> observed_imu_recv_ns{};
   static inline std::array<std::atomic<uint64_t>, kMaxImuSites> observed_imu_sequence{};
   static inline std::array<std::atomic<bool>, kMaxImuSites> observed_imu_valid{};
+  // The producer orientation of BOTH sites and its per-site flag, for the
+  // same reason: the stub gives each site its own quaternion and flag.
+  static inline std::array<std::array<std::atomic<double>, kImuOrientationDim>, kMaxImuSites>
+      observed_imu_orientation{};
+  static inline std::array<std::atomic<bool>, kMaxImuSites> observed_imu_orientation_valid{};
   // The joint lane's receipt stamp and counter as seen by Compute.
   static inline std::atomic<int64_t> observed_joint_recv_ns{0};
   static inline std::atomic<uint64_t> observed_joint_sequence{0};
@@ -257,6 +262,11 @@ class PipelineTestController : public RTControllerInterface {
     for (auto& v : observed_imu_sequence)
       v.store(0, std::memory_order_relaxed);
     for (auto& v : observed_imu_valid)
+      v.store(false, std::memory_order_relaxed);
+    for (auto& site : observed_imu_orientation)
+      for (auto& v : site)
+        v.store(0.0, std::memory_order_relaxed);
+    for (auto& v : observed_imu_orientation_valid)
       v.store(false, std::memory_order_relaxed);
     observed_joint_recv_ns.store(0, std::memory_order_relaxed);
     observed_joint_sequence.store(0, std::memory_order_relaxed);
@@ -369,6 +379,11 @@ class PipelineTestController : public RTControllerInterface {
       observed_imu_recv_ns[s].store(dev0.imu_recv_steady_ns[s], std::memory_order_relaxed);
       observed_imu_sequence[s].store(dev0.imu_sequence[s], std::memory_order_relaxed);
       observed_imu_valid[s].store(dev0.imu_valid[s], std::memory_order_relaxed);
+      for (std::size_t i = 0; i < observed_imu_orientation[s].size(); ++i) {
+        observed_imu_orientation[s][i].store(dev0.imu_orientation[s][i], std::memory_order_relaxed);
+      }
+      observed_imu_orientation_valid[s].store(dev0.imu_orientation_valid[s],
+                                              std::memory_order_relaxed);
     }
     observed_joint_recv_ns.store(dev0.joint_recv_steady_ns, std::memory_order_relaxed);
     observed_joint_sequence.store(dev0.joint_sequence, std::memory_order_relaxed);
@@ -583,6 +598,13 @@ class PipelineStubBackend : public DeviceBackend {
                                                                 -0.75, 0.875, -0.9375};
   static constexpr std::array<double, kImuChannelsPerSite> kImuSite1{0.1,  -0.2,  0.3,
                                                                      9.81, -0.01, 0.02};
+  // Producer orientation per site: distinct per site so a copy that crosses
+  // sites is visible, and deliberately NOT unit-norm (|q|² = 0.890625 and
+  // 1.953125, both binary-exact) so a seam that renormalised would fail
+  // bit-exactness — the lane's contract is that nothing between the producer
+  // and the consumer touches the quaternion.
+  static constexpr std::array<std::array<double, kImuOrientationDim>, kMaxImuSites> kImuOrientation{
+      {{0.25, -0.5, 0.125, 0.75}, {-0.375, 0.0625, 0.5, 1.25}}};
 
   // IMU lane. Opt-in per test like the base lane, for the same two reasons.
   // Site 0's VALUES are left zero and only site 1's are filled, so a copy
@@ -596,6 +618,7 @@ class PipelineStubBackend : public DeviceBackend {
   static inline std::array<std::atomic<int64_t>, kMaxImuSites> imu_recv_steady_ns{};
   static inline std::array<std::atomic<uint64_t>, kMaxImuSites> imu_sequence{};
   static inline std::array<std::atomic<bool>, kMaxImuSites> imu_valid{};
+  static inline std::array<std::atomic<bool>, kMaxImuSites> imu_orientation_valid{};
 
   static void ResetStateChannels() {
     state_num_channels.store(2, std::memory_order_relaxed);
@@ -620,6 +643,8 @@ class PipelineStubBackend : public DeviceBackend {
     for (auto& v : imu_sequence)
       v.store(0, std::memory_order_relaxed);
     for (auto& v : imu_valid)
+      v.store(false, std::memory_order_relaxed);
+    for (auto& v : imu_orientation_valid)
       v.store(false, std::memory_order_relaxed);
   }
 
@@ -687,6 +712,8 @@ class PipelineStubBackend : public DeviceBackend {
     cache.base_twist = kBaseTwist;
     cache.num_imu_sites = 2;
     cache.imu[1] = kImuSite1;
+    cache.imu_orientation = kImuOrientation;
+    cache.imu_orientation_valid = {true, true};
     cache.base_recv_steady_ns = base_recv_steady_ns.load(std::memory_order_relaxed);
     cache.base_sequence = base_sequence.load(std::memory_order_relaxed);
     cache.base_valid = base_valid.load(std::memory_order_relaxed);
@@ -705,6 +732,8 @@ class PipelineStubBackend : public DeviceBackend {
       cache.imu_recv_steady_ns[s] = imu_recv_steady_ns[s].load(std::memory_order_relaxed);
       cache.imu_sequence[s] = imu_sequence[s].load(std::memory_order_relaxed);
       cache.imu_valid[s] = imu_valid[s].load(std::memory_order_relaxed);
+      cache.imu_orientation[s] = kImuOrientation[s];
+      cache.imu_orientation_valid[s] = imu_orientation_valid[s].load(std::memory_order_relaxed);
     }
   }
 

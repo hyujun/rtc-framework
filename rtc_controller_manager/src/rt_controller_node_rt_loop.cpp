@@ -603,14 +603,18 @@ void RtControllerNode::ControlLoop() {
         // IMU lane. Every per-site array is bounded by the site count the
         // backend reports, and that bounded count is written back for the
         // same reason num_channels is above. The per-site flag travels with
-        // the values for the same reason `base_valid` does. Seam test:
-        // ImuLaneReachesTheControllerBitExact (test_rt_loop_pipeline).
+        // the values for the same reason `base_valid` does, and the
+        // orientation and its flag travel with the raw sample they qualify.
+        // Seam tests: ImuLaneReachesTheControllerBitExact and
+        // ImuOrientationReachesTheControllerBitExact (test_rt_loop_pipeline).
         const auto nsites = BoundedCount(cache.num_imu_sites, urtc::kMaxImuSites);
         dev.num_imu_sites = static_cast<int>(nsites);
         std::copy_n(cache.imu.data(), nsites, dev.imu.data());
         std::copy_n(cache.imu_recv_steady_ns.data(), nsites, dev.imu_recv_steady_ns.data());
         std::copy_n(cache.imu_sequence.data(), nsites, dev.imu_sequence.data());
         std::copy_n(cache.imu_valid.data(), nsites, dev.imu_valid.data());
+        std::copy_n(cache.imu_orientation.data(), nsites, dev.imu_orientation.data());
+        std::copy_n(cache.imu_orientation_valid.data(), nsites, dev.imu_orientation_valid.data());
       }
       dev.valid = cache.valid;
       ++di;

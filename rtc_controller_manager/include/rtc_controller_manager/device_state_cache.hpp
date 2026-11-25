@@ -92,15 +92,19 @@ struct DeviceStateCache {
   uint64_t base_sequence{0};
   bool base_valid{false};
   // IMU lane. Mirrors DeviceState::imu, ::num_imu_sites,
-  // ::imu_recv_steady_ns, ::imu_sequence and ::imu_valid; that declaration
-  // owns the contract — site-frame raw gyro · specific force, per-site stamp,
-  // counter and verdict, values held under a false flag. Same mirror-seam
-  // warning: a site array dropped from the copy reads "never received".
+  // ::imu_recv_steady_ns, ::imu_sequence, ::imu_valid, ::imu_orientation and
+  // ::imu_orientation_valid; that declaration owns the contract — site-frame
+  // raw gyro · specific force, per-site stamp, counter and verdict, values
+  // held under a false flag, and the producer orientation that qualifies the
+  // raw sample. Same mirror-seam warning: a site array dropped from the copy
+  // reads "never received".
   std::array<std::array<double, kImuChannelsPerSite>, kMaxImuSites> imu{};
   int num_imu_sites{0};
   std::array<int64_t, kMaxImuSites> imu_recv_steady_ns{};
   std::array<uint64_t, kMaxImuSites> imu_sequence{};
   std::array<bool, kMaxImuSites> imu_valid{};
+  std::array<std::array<double, kImuOrientationDim>, kMaxImuSites> imu_orientation{};
+  std::array<bool, kMaxImuSites> imu_orientation_valid{};
   bool valid{false};
 };
 
