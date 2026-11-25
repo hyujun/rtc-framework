@@ -117,6 +117,7 @@ FSM(`GraspPhase`): `kIdle → kApproaching → kContact → kForceControl → kH
 | `QuinticPolynomial` (`trajectory_utils.hpp`) | 스칼라 | 경계 pos/vel/acc | C2 |
 | `JointSpaceTrajectory<N>` (`joint_space_trajectory.hpp`) | 관절 | start/goal `State` + duration | C2 |
 | `TaskSpaceTrajectory` (`task_space_trajectory.hpp`) | SE(3) | start/goal pose·velocity + duration | C2 |
+| `PlanContinuousRetarget` (`continuous_retarget.hpp`) | 관절 | 진행 중 (q, v) → 정지 goal, cap · 한계 | 시작 속도 연속 |
 | `QuinticBlendTrajectory<N>` (`quintic_blend_trajectory.hpp`) | 관절 | via-point (최대 `kMaxWaypoints = 32`), rest-to-rest | via-point 에서 C2 |
 | `QuinticSplineTrajectory<N>` (`quintic_spline_trajectory.hpp`) | 관절 | via-point, natural 또는 clamped 경계 | 전역 C4 |
 | `TaskSpaceBlendTrajectory` (`task_space_blend_trajectory.hpp`) | SE(3) | via-point, rest-to-rest | via-point 에서 C2 |
