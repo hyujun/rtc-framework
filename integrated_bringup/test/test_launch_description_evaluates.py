@@ -52,6 +52,7 @@ from launch.actions import (
 )
 from launch.event_handlers import OnProcessExit
 from launch.utilities import perform_substitutions
+from launch_ros.parameter_descriptions import ParameterValue
 
 from rtc_tools.launch.session import SESSION_DIR_CONFIG
 from rtc_tools.utils.session_dir import is_session_dir_name, resolve_logging_root
@@ -171,6 +172,7 @@ EXTRA_COMBOS: dict[str, list[tuple[str, dict[str, str]]]] = {
     "robot_p2.launch.py": [
         ("side_left", {"side": "left"}),
         ("side_left_firmware", {"side": "left", "sil_mode": "firmware"}),
+        ("logging_off", {"enable_logging": "false"}),
     ],
 }
 
@@ -744,6 +746,8 @@ def _override_values(node, context) -> dict:
             continue
         for key, value in entry.items():
             name = perform_substitutions(context, list(key))
+            if isinstance(value, ParameterValue):
+                value = value.evaluate(context)
             if (
                 isinstance(value, (list, tuple))
                 and value
@@ -1016,3 +1020,58 @@ def test_pinning_starts_only_after_the_cpu_shield(filename, combo_id, overrides)
         f"{filename} [{combo_id}] starts {beside} beside the shield instead of "
         "after it. Declaration order is not completion order — see issue #405."
     )
+
+
+def _shipped_switch(profile: str, filename: str, key: str) -> bool:
+    path = os.path.join(
+        get_package_share_directory("integrated_bringup"), "config", profile, filename
+    )
+    with open(path, encoding="utf-8") as handle:
+        return yaml.safe_load(handle)["/**"]["ros__parameters"][key]
+
+
+@pytest.mark.parametrize(("side", "profile"), [("right", "p2"), ("left", "p2_left")])
+@pytest.mark.parametrize("enable_logging", ["", "true", "false"])
+def test_robot_p2_enable_logging_reaches_both_processes(side, profile, enable_logging):
+    """`enable_logging:=false` is the field switch for the high-rate CSVs: it must
+    reach the controller's `enable_logging` and the hand driver's
+    `enable_timing_log`, or a PC that relies on it fills its disk. Empty must be
+    the side's own YAML value, so a hand-edited file still holds."""
+    overrides = {"use_cpu_affinity": "false", "side": side}
+    if enable_logging:
+        overrides["enable_logging"] = enable_logging
+    nodes, context = _nodes_by_name(overrides, "robot_p2.launch.py")
+    controller = _override_values(nodes["integrated_rt_controller"], context)
+    driver = _override_values(nodes["udp_hand_node"], context)
+    if enable_logging:
+        expected_cm = expected_hand = enable_logging == "true"
+    else:
+        expected_cm = _shipped_switch(profile, "_base.yaml", "enable_logging")
+        expected_hand = _shipped_switch(profile, "udp_hand_node_p2.yaml", "enable_timing_log")
+    assert controller.get("enable_logging") is expected_cm, controller
+    assert driver.get("enable_timing_log") is expected_hand, driver
+
+
+def test_robot_p2_empty_enable_logging_keeps_a_yaml_that_turned_it_off(monkeypatch):
+    """The case the shipped files cannot show (both ship true): a YAML set to
+    false stays false under the default empty argument."""
+    module = _load_launch_module("robot_p2.launch.py")
+    real = module._load_hand_params
+
+    def logging_off(pkg, *relpath):
+        params = dict(real(pkg, *relpath))
+        params["enable_logging"] = params["enable_timing_log"] = False
+        return params
+
+    monkeypatch.setattr(module, "_load_hand_params", logging_off)
+    description = module.generate_launch_description()
+    context = _seeded_context(description, {"use_cpu_affinity": "false"})
+    nodes = {
+        entity._Node__node_name: entity
+        for entity in _walk(description.entities, context)
+        if hasattr(entity, "_Node__node_name")
+    }
+    controller = _override_values(nodes["integrated_rt_controller"], context)
+    driver = _override_values(nodes["udp_hand_node"], context)
+    assert controller.get("enable_logging") is False, controller
+    assert driver.get("enable_timing_log") is False, driver

@@ -61,4 +61,4 @@ non-RT 외부 통신 토픽은 **컨트롤러가 소유**한다. 아래 경로�
 - 그 아래 `enable_timing_log` 는 CM timing CSV 2개만, 각 controller YAML 의 `logs:` 는 그 controller 의 채널만 정한다. `logs:` 를 비우려면 `logs: []` 나 항목을 지운 `logs:` (null) 모두 된다.
 - 손 driver 는 별도 프로세스다: `udp_hand_node_<profile>.yaml` 의 `enable_timing_log: false` 가 `timing/hand_timing_log.csv` 를 끈다 ([udp_hand_driver README](../../udp_hand_driver/README.md)).
 
-Proto2 처럼 손 driver 가 있는 robot launch 에서 고주기 CSV 를 모두 끄려면 위 첫째와 셋째, 두 줄이다. 꺼도 남는 것: launch 가 만드는 세션 폴더와 그 retention (`max_log_sessions`), driver 가 10 s 마다 덮어쓰는 `device/hand_stats*.json`, ROS 로그 (`~/.ros/log`).
+Proto2 처럼 손 driver 가 있는 robot launch 에서 고주기 CSV 를 모두 끄려면 위 첫째와 셋째, 두 줄이다. `robot_p2.launch.py` 는 그 둘을 `enable_logging:=false` 인자 하나로 끈다 — 파일을 고치지 않으므로 현장 PC 의 `git pull` 과 부딪히지 않는다. 인자를 비우면 (기본) 각 YAML 의 값을 그대로 쓴다. 꺼도 남는 것: launch 가 만드는 세션 폴더와 그 retention (`max_log_sessions`), driver 가 10 s 마다 덮어쓰는 `device/hand_stats*.json`, ROS 로그 (`~/.ros/log`).

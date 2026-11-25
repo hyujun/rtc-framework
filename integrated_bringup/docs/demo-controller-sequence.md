@@ -46,12 +46,14 @@ preset 과 sequence 는 GUI (`demo_controller_gui`) 의 Sequence 탭에서 만�
 
 ## 로그와 디스크
 
-출하 설정의 고주기 CSV 는 손 하나가 9 h 에 약 15 GB 를 쓴다 (#1126 실측). 전시에서는 NUC 마다 두 줄로 끈다:
+출하 설정의 고주기 CSV 는 손 하나가 9 h 에 약 15 GB 를 쓴다 (#1126 실측). 전시에서는 bring-up 에 인자 하나를 붙여 끈다:
 
-- `config/<p2|p2_left>/_base.yaml` `enable_logging: false`
-- `config/<p2|p2_left>/udp_hand_node_p2.yaml` `enable_timing_log: false`
+```bash
+ros2 launch integrated_bringup robot_p2.launch.py enable_logging:=false              # 오른손
+ros2 launch integrated_bringup robot_p2.launch.py side:=left enable_logging:=false   # 왼손
+```
 
-세부는 [controller-logs.md](controller-logs.md#로그-끄기). CLI 는 시작 전 5 s 동안 세션 폴더의 증가율을 재서 `증가율 × duration × 1.5` 가 여유 공간보다 크면 시작하지 않고, 60 s 마다 다시 재서 모자라면 그 cycle 끝에서 멈춘다.
+controller 의 세션 파일과 손 driver 의 `timing/hand_timing_log.csv` 가 함께 꺼진다. git 이 관리하는 YAML 은 고치지 않는다 — 고쳐 두면 그 파일이 upstream 에서 바뀌는 날 `git pull` 이 멈춘다. 세부는 [controller-logs.md](controller-logs.md#로그-끄기). CLI 는 시작 전 5 s 동안 세션 폴더의 증가율을 재서 `증가율 × duration × 1.5` 가 여유 공간보다 크면 시작하지 않고, 60 s 마다 다시 재서 모자라면 그 cycle 끝에서 멈춘다.
 
 ## exit code
 
