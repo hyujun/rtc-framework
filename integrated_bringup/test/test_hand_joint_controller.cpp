@@ -842,7 +842,7 @@ TEST(HandJointGoals, APerJointDeviceRatingBelowTheYamlCapBoundsThatJoint) {
   EXPECT_GT(step0 / kDt, 0.1);
 }
 
-TEST(HandJointGoals, ARetargetMidMotionRestartsFromRestWithinTheCap) {
+TEST(HandJointGoals, AGoalJustAheadAtPeakSpeedIsReachedWithinTheCap) {
   const Rig rig = PlainRig();
   auto ctrl = BringUp(rig);
   (void)TickUntilFresh(*ctrl, rig.q, 5);
@@ -868,6 +868,288 @@ TEST(HandJointGoals, ARetargetMidMotionRestartsFromRestWithinTheCap) {
   }
   EXPECT_LE(max_step / kDt, 4.0 + 1e-6);
   EXPECT_NEAR(prev, near[0], 1e-9);
+}
+
+// ── Continuous retarget ─────────────────────────────────────────────────────
+
+/// The rest-to-rest duration the controller computes from `from` to `to` on
+/// the plain rig (speed 2, every joint capped at 4 rad/s, one tick at least).
+double RestToRestDuration(const std::vector<double>& from, const std::vector<double>& to,
+                          double speed = 2.0, double cap = 4.0) {
+  double max_dist = 0.0;
+  double duration = 0.0;
+  for (std::size_t i = 0; i < from.size(); ++i) {
+    const double dist = std::abs(to[i] - from[i]);
+    max_dist = std::max(max_dist, dist);
+    duration = std::max(duration, 15.0 / 8.0 * dist / cap);
+  }
+  duration = std::max(duration, max_dist / speed);
+  return std::max(duration, kDt);
+}
+
+std::vector<double> Commands(const ControllerOutput& out, int dof) {
+  return {out.devices[0].commands.begin(), out.devices[0].commands.begin() + dof};
+}
+
+/// A wave switch on the plain rig: goal 1 moves every joint 0.8 rad (signs
+/// alternating), 0.4 s at speed 2; at `switch_tick` goal 2 sends the even
+/// joints back to the start (a reversal) and the odd ones on to 1.6 rad (the
+/// same direction). The reference is recorded every tick to the end.
+struct Switch {
+  std::vector<std::vector<double>> ref;  // commands per tick; ref[0] = before goal 1
+  std::size_t at{0};                     // index of the first tick on goal 2
+  std::vector<double> goal2;
+  rtc::trajectory::ContinuousRetargetPlan plan{};
+  double base{0.0};  // goal 2's rest-to-rest duration from the reference at the switch
+};
+
+Switch RunASwitch(HandJointController& ctrl, const std::vector<double>& q, int switch_tick) {
+  const auto n = static_cast<std::size_t>(ctrl.Dof());
+  std::vector<double> goal1 = q;
+  Switch sw;
+  sw.goal2 = q;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double sign = (i % 2 == 0) ? 1.0 : -1.0;
+    goal1[i] += 0.8 * sign;
+    sw.goal2[i] += (i % 2 == 0) ? 0.0 : 1.6 * sign;
+  }
+  std::uint64_t t = 100;
+  sw.ref.push_back(Commands(ctrl.Compute(MakeState(q, true, t++)), ctrl.Dof()));
+  ctrl.SetDeviceTarget(0, goal1);
+  for (int k = 0; k < switch_tick; ++k) {
+    sw.ref.push_back(Commands(ctrl.Compute(MakeState(q, true, t++)), ctrl.Dof()));
+  }
+  EXPECT_TRUE(ctrl.LastTick().traj_active) << "goal 1 ended before the switch";
+  sw.base = RestToRestDuration(sw.ref.back(), sw.goal2);
+  ctrl.SetDeviceTarget(0, sw.goal2);
+  sw.at = sw.ref.size();
+  for (int k = 0; k < 5000; ++k) {
+    sw.ref.push_back(Commands(ctrl.Compute(MakeState(q, true, t++)), ctrl.Dof()));
+    if (k == 0) {
+      sw.plan = ctrl.LastRetarget();
+    }
+    if (!ctrl.LastTick().traj_active) {
+      break;
+    }
+  }
+  return sw;
+}
+
+double Velocity(const Switch& sw, std::size_t tick, std::size_t joint) {
+  return (sw.ref[tick][joint] - sw.ref[tick - 1][joint]) / kDt;
+}
+
+void ExpectWithinCapAndLimitsAndReached(const Switch& sw) {
+  for (std::size_t t = 1; t < sw.ref.size(); ++t) {
+    for (std::size_t i = 0; i < sw.ref[t].size(); ++i) {
+      ASSERT_LE(std::abs(Velocity(sw, t, i)), 4.0 + 1e-6) << "tick " << t << " joint " << i;
+      ASSERT_LE(std::abs(sw.ref[t][i]), 3.0) << "tick " << t << " joint " << i;
+    }
+  }
+  for (std::size_t i = 0; i < sw.goal2.size(); ++i) {
+    EXPECT_DOUBLE_EQ(sw.ref.back()[i], sw.goal2[i]) << i;
+  }
+}
+
+// At 40 % of goal 1 every joint moves at ≈ 1.73 × its mean speed and still
+// accelerates. On: the reference velocity carries over the switch (it changes
+// by about one tick of acceleration), the continuing joints are slowed so as
+// not to pass goal 2, and the cap and the limits hold to the end.
+TEST(HandJointRetarget, AMidMotionGoalKeepsTheReferenceVelocity) {
+  const Rig rig = PlainRig();
+  auto ctrl = BringUp(rig);
+  (void)TickUntilFresh(*ctrl, rig.q, 5);
+  ASSERT_TRUE(ctrl->GetGains().continuous_retarget) << "on unless the YAML says otherwise";
+  const Switch sw = RunASwitch(*ctrl, rig.q, 80);
+  ASSERT_GT(sw.ref.size(), sw.at + 2);
+  EXPECT_EQ(sw.plan.kept, ctrl->Dof());
+  EXPECT_GE(sw.plan.duration, sw.base);
+  for (std::size_t i = 0; i < sw.goal2.size(); ++i) {
+    const double before = Velocity(sw, sw.at - 1, i);
+    const double after = Velocity(sw, sw.at, i);
+    ASSERT_GE(std::abs(before), 2.0) << "the switch must come while the joint moves fast";
+    EXPECT_LE(std::abs(after - before), 0.1 * std::abs(before)) << "joint " << i;
+  }
+  ExpectWithinCapAndLimitsAndReached(sw);
+  // The continuing (odd) joints never pass goal 2.
+  for (std::size_t i = 1; i < sw.goal2.size(); i += 2) {
+    const double sign = (i % 2 == 0) ? 1.0 : -1.0;
+    for (std::size_t t = sw.at; t < sw.ref.size(); ++t) {
+      ASSERT_LE((sw.ref[t][i] - sw.goal2[i]) * sign, 1e-12) << "tick " << t << " joint " << i;
+    }
+  }
+}
+
+// Off: the old rest-to-rest restart, sample for sample — the reference
+// velocity drops to (nearly) 0 at the switch.
+TEST(HandJointRetarget, OffAMidMotionGoalRestartsFromRestAsBefore) {
+  const Rig rig = PlainRig();
+  auto ctrl = BringUp(rig);
+  (void)TickUntilFresh(*ctrl, rig.q, 5);
+  auto gains = ctrl->GetGains();
+  gains.continuous_retarget = false;
+  ctrl->SetGains(gains);
+  const Switch sw = RunASwitch(*ctrl, rig.q, 80);
+  EXPECT_EQ(sw.plan.kept, 0);
+  EXPECT_EQ(sw.plan.duration, sw.base);
+  rtc::trajectory::JointSpaceTrajectory<integrated_bringup::kHandJointMaxDof> old;
+  rtc::trajectory::JointSpaceTrajectory<integrated_bringup::kHandJointMaxDof>::State a{}, b{};
+  for (std::size_t i = 0; i < sw.goal2.size(); ++i) {
+    a.positions[i] = sw.ref[sw.at - 1][i];
+    b.positions[i] = sw.goal2[i];
+  }
+  old.initialize(a, b, sw.base);
+  double clock = 0.0;  // summed as the controller sums its trajectory clock
+  for (std::size_t k = 0; sw.at + k < sw.ref.size() && k < 50; ++k) {
+    clock += kDt;
+    const auto s = old.compute(clock);
+    for (std::size_t i = 0; i < sw.goal2.size(); ++i) {
+      ASSERT_DOUBLE_EQ(sw.ref[sw.at + k][i], std::clamp(s.positions[i], -3.0, 3.0)) << k;
+    }
+  }
+  for (std::size_t i = 0; i < sw.goal2.size(); ++i) {
+    EXPECT_GE(std::abs(Velocity(sw, sw.at - 1, i) - Velocity(sw, sw.at, i)),
+              0.9 * std::abs(Velocity(sw, sw.at - 1, i)));
+  }
+  ExpectWithinCapAndLimitsAndReached(sw);
+}
+
+// A goal from rest is the rest-to-rest quintic whether the switch is on or
+// not: nothing to carry, the base duration, the same samples.
+TEST(HandJointRetarget, AGoalFromRestIsUnchanged) {
+  const Rig rig = PlainRig();
+  for (const bool on : {true, false}) {
+    auto ctrl = BringUp(rig);
+    (void)TickUntilFresh(*ctrl, rig.q, 5);
+    auto gains = ctrl->GetGains();
+    gains.continuous_retarget = on;
+    ctrl->SetGains(gains);
+    const std::vector<double> goal = StaggeredGoal(rig.q);
+    ctrl->SetDeviceTarget(0, goal);
+    std::vector<std::vector<double>> ref;
+    for (std::uint64_t t = 10; t < 40; ++t) {
+      ref.push_back(Commands(ctrl->Compute(MakeState(rig.q, true, t)), ctrl->Dof()));
+    }
+    EXPECT_EQ(ctrl->LastRetarget().kept, 0);
+    const double base = RestToRestDuration(rig.q, goal);
+    EXPECT_EQ(ctrl->LastRetarget().duration, base);
+    rtc::trajectory::JointSpaceTrajectory<integrated_bringup::kHandJointMaxDof> old;
+    rtc::trajectory::JointSpaceTrajectory<integrated_bringup::kHandJointMaxDof>::State a{}, b{};
+    for (std::size_t i = 0; i < goal.size(); ++i) {
+      a.positions[i] = rig.q[i];
+      b.positions[i] = goal[i];
+    }
+    old.initialize(a, b, base);
+    double clock = 0.0;  // summed as the controller sums its trajectory clock
+    for (std::size_t k = 0; k < ref.size(); ++k) {
+      clock += kDt;
+      const auto s = old.compute(clock);
+      for (std::size_t i = 0; i < goal.size(); ++i) {
+        ASSERT_DOUBLE_EQ(ref[k][i], s.positions[i]) << "on=" << on << " tick " << k;
+      }
+    }
+  }
+}
+
+// An unreadable tick freezes the reference: a goal after it starts at rest,
+// not with the velocity from before the outage.
+TEST(HandJointRetarget, AGoalAfterAFrozenTickStartsAtRest) {
+  const Rig rig = PlainRig();
+  auto ctrl = BringUp(rig);
+  (void)TickUntilFresh(*ctrl, rig.q, 5);
+  ctrl->SetDeviceTarget(0, StaggeredGoal(rig.q));
+  std::uint64_t t = 10;
+  for (int k = 0; k < 20; ++k) {
+    (void)ctrl->Compute(MakeState(rig.q, true, t++));
+  }
+  (void)ctrl->Compute(MakeState(rig.q, false, t++));  // unreadable
+  ctrl->SetDeviceTarget(0, rig.q);
+  (void)ctrl->Compute(MakeState(rig.q, true, t++));
+  EXPECT_EQ(ctrl->LastRetarget().kept, 0);
+  // One readable tick later the same goal mid-motion keeps the velocity.
+  for (int k = 0; k < 5; ++k) {
+    (void)ctrl->Compute(MakeState(rig.q, true, t++));
+  }
+  ctrl->SetDeviceTarget(0, StaggeredGoal(rig.q));
+  (void)ctrl->Compute(MakeState(rig.q, true, t++));
+  EXPECT_GT(ctrl->LastRetarget().kept, 0);
+}
+
+// A reversal next to a limit would carry the joint past it before it turns:
+// that joint starts at rest instead, and the reference never leaves [−3, 3].
+TEST(HandJointRetarget, AReversalNextToALimitStartsThatJointAtRest) {
+  const Rig rig = PlainRig();
+  auto ctrl = BringUp(rig);
+  (void)TickUntilFresh(*ctrl, rig.q, 5);
+  std::vector<double> up = rig.q;
+  up[0] = 3.0;  // to the limit, fast
+  ctrl->SetDeviceTarget(0, up);
+  std::uint64_t t = 10;
+  double ref0 = rig.q[0];
+  while (ref0 < 2.9) {
+    ref0 = ctrl->Compute(MakeState(rig.q, true, t++)).devices[0].commands[0];
+    ASSERT_LT(t, 5000u);
+  }
+  ASSERT_TRUE(ctrl->LastTick().traj_active);
+  std::vector<double> down = rig.q;
+  down[0] = 0.0;
+  ctrl->SetDeviceTarget(0, down);
+  double highest = ref0;
+  for (int k = 0; k < 5000; ++k) {
+    const double r = ctrl->Compute(MakeState(rig.q, true, t++)).devices[0].commands[0];
+    if (k == 0) {
+      EXPECT_EQ(ctrl->LastRetarget().dropped, 1);
+    }
+    highest = std::max(highest, r);
+    if (!ctrl->LastTick().traj_active) {
+      break;
+    }
+  }
+  EXPECT_LE(highest, 3.0);
+  EXPECT_LE(highest, ref0 + 1e-12) << "started at rest: monotone down from the switch";
+}
+
+// Two goals drained on one tick both start from the same reference; the last
+// one wins and still carries the velocity.
+TEST(HandJointRetarget, TwoGoalsOnOneTickTheLastWins) {
+  const Rig rig = PlainRig();
+  auto ctrl = BringUp(rig);
+  (void)TickUntilFresh(*ctrl, rig.q, 5);
+  ctrl->SetDeviceTarget(0, StaggeredGoal(rig.q));
+  std::uint64_t t = 10;
+  for (int k = 0; k < 20; ++k) {
+    (void)ctrl->Compute(MakeState(rig.q, true, t++));
+  }
+  std::vector<double> last = rig.q;
+  last[3] += 0.4;
+  ctrl->SetDeviceTarget(0, rig.q);
+  ctrl->SetDeviceTarget(0, last);
+  const ControllerOutput out = ctrl->Compute(MakeState(rig.q, true, t++));
+  for (int i = 0; i < ctrl->Dof(); ++i) {
+    EXPECT_DOUBLE_EQ(out.devices[0].goal_positions[static_cast<std::size_t>(i)],
+                     last[static_cast<std::size_t>(i)]);
+  }
+  EXPECT_GT(ctrl->LastRetarget().kept, 0);
+}
+
+TEST(HandJointRetarget, TheYamlKeyIsABooleanDefaultingToOn) {
+  EXPECT_TRUE(ParseHandJointConfig(YAML::Load(Yaml())).continuous_retarget);
+  EXPECT_FALSE(ParseHandJointConfig(YAML::Load(Yaml() + "continuous_retarget: false\n"))
+                   .continuous_retarget);
+  EXPECT_TRUE(
+      ParseHandJointConfig(YAML::Load(Yaml() + "continuous_retarget: true\n")).continuous_retarget);
+  for (const char* bad : {"continuous_retarget: maybe\n", "continuous_retarget: 2\n",
+                          "continuous_retarget: [true]\n", "continuous_retarget:\n"}) {
+    try {
+      (void)ParseHandJointConfig(YAML::Load(Yaml() + bad));
+      ADD_FAILURE() << "accepted: " << bad;
+    } catch (const std::runtime_error& e) {
+      EXPECT_NE(std::string(e.what()).find("continuous_retarget"), std::string::npos) << e.what();
+    }
+  }
+  // The YAML value reaches the tick's gains.
+  Rig rig = PlainRig(Yaml() + "continuous_retarget: false\n");
+  EXPECT_FALSE(BringUp(rig)->GetGains().continuous_retarget);
 }
 
 // ── Modes ───────────────────────────────────────────────────────────────────
@@ -1059,6 +1341,8 @@ TEST_P(HandJointShipped, TheYamlParsesAndNamesOneGroup) {
   EXPECT_GE(parsed.ff.inertia_gain, 0.0);
   EXPECT_LE(parsed.ff.inertia_gain, rtc::params::kDynamicsFeedforwardGainMax);
   EXPECT_TRUE(cfg["dynamics_feedforward"]["inertia_gain"]) << "spelled out, not defaulted";
+  // A behaviour every goal depends on: spelled out (a parse proves it boolean).
+  EXPECT_TRUE(cfg["continuous_retarget"]) << "spelled out, not defaulted";
   // The bound covers the sum of the gravity and the inertia term.
   EXPECT_TRUE(std::isfinite(parsed.ff.max_abs));
   EXPECT_GT(parsed.ff.max_abs, 0.0);
@@ -1104,6 +1388,16 @@ TEST(HandJointLifecycle, ConfiguresDeclaresParametersAndCleansUp) {
   EXPECT_TRUE(node->has_parameter("trajectory_speed"));
   EXPECT_TRUE(node->has_parameter("mode"));
   EXPECT_EQ(node->get_parameter("mode").as_string(), "tracking");
+  // continuous_retarget: a boolean that reaches the tick; another type is refused.
+  ASSERT_TRUE(node->has_parameter("continuous_retarget"));
+  EXPECT_TRUE(node->get_parameter("continuous_retarget").as_bool());
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("continuous_retarget", false)).successful);
+  EXPECT_FALSE(ctrl->GetGains().continuous_retarget);
+  const auto not_bool = node->set_parameter(rclcpp::Parameter("continuous_retarget", 1.0));
+  EXPECT_FALSE(not_bool.successful);
+  EXPECT_FALSE(ctrl->GetGains().continuous_retarget);
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("continuous_retarget", true)).successful);
+  EXPECT_TRUE(ctrl->GetGains().continuous_retarget);
   // The mode reaches the tick's gains; a typo is refused with the whitelist
   // in the reason and the mode kept.
   const auto damp = node->set_parameter(rclcpp::Parameter("mode", "damping_feedforward"));

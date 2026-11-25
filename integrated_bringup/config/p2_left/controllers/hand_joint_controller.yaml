@@ -21,7 +21,7 @@ hand_joint_controller:
   mode: tracking
 
   # ── Trajectory generation ─────────────────────────────────────────────────
-  # Quintic rest-to-rest. Duration = max joint distance / speed, extended
+  # Quintic to rest. Duration = max joint distance / speed, extended
   # until the peak velocity (15/8 × Δq / T) is within max_traj_velocity.
   # max_traj_velocity is the hardware rig's value (2026-11), under devices.p2_left
   # joint_limits max_velocity in _base.yaml. It is the ceiling of the runtime parameter
@@ -30,6 +30,15 @@ hand_joint_controller:
   # accepted and the move simply takes longer.
   trajectory_speed: 1.0       # rad/s, > 0
   max_traj_velocity: 13.0     # rad/s — read-only parameter
+  # A goal that lands mid-motion starts from the reference's current velocity
+  # (acceleration 0) instead of from rest, so a posture sequence that sends
+  # the next goal early moves on without stopping (the wave of
+  # demo_controller_sequence's next_at_pct). A joint heading on to its goal is
+  # slowed just enough not to pass it; a reversing joint travels on and turns,
+  # or starts at rest if that would leave its limits; the duration grows
+  # until every joint is within max_traj_velocity. false = rest-to-rest
+  # (the reference velocity steps to 0). Runtime parameter, read per goal.
+  continuous_retarget: true
 
   # ── Feedforward torque lane ──────────────────────────────────────────────
   # τ_ff = clamp(gravity_gain · g_a(q_meas) + inertia_gain · M_a(q_meas) · q̈_ref,

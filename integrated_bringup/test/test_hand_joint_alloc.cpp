@@ -71,6 +71,32 @@ TEST(HandJointAlloc, TheGatesSeeAnAllocationMadeInsideALibrary) {
                                       "below would be vacuous";
 }
 
+/// A velocity-continuous retarget on the gated ticks: a long goal at the cap
+/// speed, then, at about its peak velocity, a reversal — the planner runs on
+/// that tick (duration growth included) and must allocate nothing.
+template <typename Tick>
+void RetargetAtPeakSpeed(HandJointController& ctrl, const std::vector<double>& q, Tick&& tick) {
+  auto gains = ctrl.GetGains();
+  gains.trajectory_speed = gains.max_traj_velocity;
+  gains.continuous_retarget = true;
+  ctrl.SetGains(gains);
+  std::vector<double> far = q;
+  for (double& v : far) {
+    v += 0.8;
+  }
+  ctrl.SetDeviceTarget(0, far);
+  for (int i = 0; i < 90; ++i) {
+    tick("toward the far goal");
+  }
+  ASSERT_TRUE(ctrl.LastTick().traj_active);
+  ctrl.SetDeviceTarget(0, q);
+  tick("mid-motion reversal (retarget planner)");
+  EXPECT_GT(ctrl.LastRetarget().kept, 0) << "the planner did not run: the claim would be vacuous";
+  for (int i = 0; i < 20; ++i) {
+    tick("after the reversal");
+  }
+}
+
 TEST(HandJointAlloc, EveryTickAfterTheFirstIsAllocationFree) {
   const Rig rig = ClosedRig();
   auto ctrl = BringUp(rig);
@@ -110,6 +136,8 @@ TEST(HandJointAlloc, EveryTickAfterTheFirstIsAllocationFree) {
   for (int i = 0; i < 20; ++i) {
     expect_clean(MakeState(rig.q, true, t++), "goal");
   }
+  RetargetAtPeakSpeed(*ctrl, rig.q,
+                      [&](const char* what) { expect_clean(MakeState(rig.q, true, t++), what); });
   // Lane off.
   auto gains = ctrl->GetGains();
   gains.ff_enabled = false;
@@ -159,6 +187,12 @@ TEST(HandJointAlloc, ThePlainPathIsAllocationFreeToo) {
     EXPECT_EQ(c.op_new, 0u) << "inertia on, tick " << t;
     EXPECT_EQ(c.c_malloc, 0u) << "inertia on, tick " << t;
   }
+  std::uint64_t t = 32;
+  RetargetAtPeakSpeed(*ctrl, rig.q, [&](const char* what) {
+    const Counts c = GatedTick(*ctrl, MakeState(rig.q, true, t++));
+    EXPECT_EQ(c.op_new, 0u) << what;
+    EXPECT_EQ(c.c_malloc, 0u) << what;
+  });
 }
 
 }  // namespace

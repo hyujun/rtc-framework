@@ -8,8 +8,10 @@
 #include "rtc_controllers/joint/dynamics_feedforward_law.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -95,6 +97,23 @@ HandJointConfig ParseHandJointConfig(const YAML::Node& cfg) {
   }
   rtc::params::ParseDynamicsFeedforwardParams(cfg[std::string(kHandJointFfBlockKey)],
                                               kHandJointFfBlockKey, out.ff);
+  // Optional, default true; the shipped YAMLs spell it out. A non-boolean
+  // value is refused rather than read as some truth value.
+  if (cfg["continuous_retarget"]) {
+    const YAML::Node node = cfg["continuous_retarget"];
+    bool parsed = false;
+    if (node.IsScalar()) {
+      try {
+        out.continuous_retarget = node.as<bool>();
+        parsed = true;
+      } catch (const YAML::Exception&) {
+        parsed = false;
+      }
+    }
+    if (!parsed) {
+      Fail("'continuous_retarget' must be true or false");
+    }
+  }
   // Optional; the shipped YAML spells it out. Off-whitelist throws (naming
   // the three values) — a typo must not fall back to tracking silently.
   if (cfg["mode"]) {
@@ -138,6 +157,7 @@ void HandJointController::LoadConfig(const YAML::Node& cfg) {
   gains.ff_enabled = cfg_.ff.enabled;
   gains.gravity_gain = cfg_.ff.gravity_gain;
   gains.inertia_gain = cfg_.ff.inertia_gain;
+  gains.continuous_retarget = cfg_.continuous_retarget;
   gains.mode = cfg_.mode;
   gains_lock_.Store(gains);
 
@@ -351,11 +371,12 @@ void HandJointController::ApplyPendingTarget(int device_idx, std::span<const dou
                                   std::max(kHandJointMinSpeed, gains_tick_.max_traj_velocity));
   rtc::trajectory::JointSpaceTrajectory<kHandJointMaxDof>::State start{};
   rtc::trajectory::JointSpaceTrajectory<kHandJointMaxDof>::State goal{};
+  std::array<double, kHandJointMaxDof> cap{};
   double max_dist = 0.0;
-  // Rest-to-rest from the CURRENT reference: a goal that lands mid-motion
-  // restarts the quintic with zero start velocity (the reference velocity
-  // steps to 0 for one tick, which a position servo takes), so the 15/8 peak
-  // factor below is exact and the per-joint cap holds on a retarget too.
+  // From the CURRENT reference. The base duration is the rest-to-rest one:
+  // max distance / speed, extended until each joint's peak velocity
+  // (15/8 · Δq / T) is within its cap (device rating, never above the YAML
+  // cap), one tick at least.
   double duration = max_dist / speed;
   for (int i = 0; i < dof_; ++i) {
     const auto ui = static_cast<std::size_t>(i);
@@ -365,14 +386,29 @@ void HandJointController::ApplyPendingTarget(int device_idx, std::span<const dou
     goal.positions[ui] = goal_[ui];
     const double dist = std::abs(goal_[ui] - q_ref_[ui]);
     max_dist = std::max(max_dist, dist);
-    // Extended until this joint's peak velocity (15/8 · Δq / T) is within
-    // its cap (device rating, never above the YAML cap).
-    const double cap =
-        std::max(kHandJointMinSpeed, std::min(v_max_[ui], gains_tick_.max_traj_velocity));
-    duration = std::max(duration, kQuinticPeakVelocityFactor * dist / cap);
+    cap[ui] = std::max(kHandJointMinSpeed, std::min(v_max_[ui], gains_tick_.max_traj_velocity));
+    duration = std::max(duration, kQuinticPeakVelocityFactor * dist / cap[ui]);
   }
   duration = std::max(duration, max_dist / speed);
   duration = std::max(duration, GetDefaultDt());
+  last_retarget_ = {.duration = duration};
+  // Mid-motion: start at the reference velocity (acceleration 0). The planner
+  // lowers, or zeroes, the joints that would pass their goal or leave their
+  // limits and lengthens the move until every joint is within its cap; with
+  // nothing moving it returns the base, so a goal from rest is unchanged. At
+  // rest, or with continuous_retarget off, the start velocity is 0 and a
+  // mid-motion goal steps the reference velocity to 0 (a position servo
+  // takes that).
+  if (gains_tick_.continuous_retarget && traj_active_ && ref_advanced_) {
+    const auto n = static_cast<std::size_t>(dof_);
+    const std::span<double> v0(start.velocities.data(), n);
+    std::copy_n(qd_ref_.begin(), n, v0.begin());
+    last_retarget_ = rtc::trajectory::PlanContinuousRetarget(
+        std::span<const double>(q_ref_.data(), n), v0, std::span<const double>(goal_.data(), n),
+        std::span<const double>(cap.data(), n), std::span<const double>(q_min_.data(), n),
+        std::span<const double>(q_max_.data(), n), duration);
+    duration = last_retarget_.duration;
+  }
   traj_.initialize(start, goal, duration);
   traj_time_ = 0.0;
   traj_active_ = true;
@@ -504,8 +540,10 @@ void HandJointController::EvaluateModel(const ControllerState& state) noexcept {
 
 void HandJointController::AdvanceReference(const ControllerState& state, double dt) noexcept {
   // Every branch but a running quintic leaves the reference at rest — a
-  // frozen one included, so an outage never carries the last acceleration.
+  // frozen one included, so an outage never carries the last acceleration
+  // (nor, into a retarget, the last velocity: ref_advanced_).
   std::fill(qdd_ref_.begin(), qdd_ref_.end(), 0.0);
+  ref_advanced_ = false;
   if (dof_ <= 0 || !readable_) {
     return;  // frozen: last reference, trajectory clock stopped
   }
@@ -552,6 +590,7 @@ void HandJointController::AdvanceReference(const ControllerState& state, double 
     qd_ref_[ui] = s.velocities[ui];
     qdd_ref_[ui] = s.accelerations[ui];
   }
+  ref_advanced_ = true;
 }
 
 void HandJointController::HoldAtMeasurement(const ControllerState& state) noexcept {
