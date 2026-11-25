@@ -273,9 +273,10 @@ class DeviceBackend {
   /// blocks, never allocates, `imu_valid[s]` is this backend's own verdict
   /// for site s, and a site's values are left in place when it goes false.
   /// `imu_orientation[s]` is converted to DeviceState's canonical form
-  /// (R_{R←S}, z-up reference, Hamilton xyzw) here, written only with an
-  /// accepted raw sample, and its flag implies `imu_valid[s]`; a backend
-  /// whose driver has no fused orientation writes zeros and false.
+  /// (R_{R←S}, z-up reference, Hamilton xyzw), updated only with an accepted
+  /// raw sample but written on EVERY read like the raw values (CM hands this
+  /// call a zeroed cache each tick), and its flag implies `imu_valid[s]`; a
+  /// backend whose driver has no fused orientation writes zeros and false.
   virtual void ReadImuState(DeviceStateCache& /*cache*/) noexcept {}
 
   /// Last time a state message arrived on this backend (steady clock). Used

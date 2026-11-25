@@ -371,11 +371,13 @@ struct DeviceState {
   // norm gate, with its tolerance, is the consumer's.
   //
   // The orientation QUALIFIES site s's raw sample rather than being a lane of
-  // its own: a producer writes it only with an accepted gyro/accelerometer
-  // sample, it never advances `imu_recv_steady_ns[s]` or `imu_sequence[s]` by
-  // itself (an estimator propagates once per new counter, and an
-  // orientation-only update would propagate the same gyro sample twice), and
-  // `imu_orientation_valid[s]` implies `imu_valid[s]`. That makes it coherent
+  // its own: a producer updates it only together with an accepted
+  // gyro/accelerometer sample and then reports it like the raw values — on
+  // every read, held between samples, its flag lowered whenever the site's
+  // `imu_valid[s]` is (so `imu_orientation_valid[s]` implies `imu_valid[s]`).
+  // It never advances `imu_recv_steady_ns[s]` or `imu_sequence[s]` by itself
+  // (an estimator propagates once per new counter, and an orientation-only
+  // update would propagate the same gyro sample twice). That makes it coherent
   // with the raw sample at RECEIPT, not at acquisition — a vendor filter's own
   // latency is not represented. `imu_orientation_valid[s]` is the producer's
   // verdict (the vendor's status and finiteness); whether yaw is magnetometer
