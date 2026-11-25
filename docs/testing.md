@@ -97,13 +97,14 @@ timing CSV 는 `ros2 run rtc_tools plot_rtc_log <csv> --stats` 로 읽는다.
 | 관절 궤적이 "정착" 인지 "밴드에 pin" 인지 모르겠다 | 컨트롤러 로그의 `joint band engaged:` WARN 구간은 pin 이다. Ctrl-C 로 끝내면 요약이 없다 |
 | `ament_cmake_test` missing | `.venv` overlay 가 system site-packages 를 가림. 재활성화 후 ROS 환경 재로드 |
 | 0.01 초 만의 configure 실패 `Failed to find .../package.sh`, 빌드 직후 테스트 바이너리 없음 | 잘못된 cwd 로 colcon 을 돌린 것. repo 안 `build/`·`install/`·`log/` 삭제 후 workspace root 에서 재실행 |
+| 방금 넣은 test 가 목록에 없다, 실패 줄 번호가 소스와 어긋난다, `cmake --build build/<pkg> --target <test>` 가 출력 없이 끝난다 | `--cmake-args` 없는 plain `colcon build` 가 `BUILD_TESTING=OFF` 로 재구성해 test 타깃을 없앴고, `build/<pkg>/` 의 **옛 test 바이너리**가 새로 설치된 라이브러리에 링크된 채 돈다. `grep BUILD_TESTING build/<pkg>/CMakeCache.txt` 로 확인하고 `./build.sh -p <pkg> --tests` 로 다시 짓는다 — test 결과는 test 수 · 바이너리 mtime 으로 새것인지 본다 |
 | env 미source 로 전 바이너리 일괄 실패 | 회귀 아님. AGENTS.md §9.1 서브셸 표준형으로 재실행 |
 | 지운 config · launch 를 테스트나 `ros2 launch` 가 아직 찾는다 | `--symlink-install` 이 끊긴 링크를 남긴다. `./build.sh -p <pkg>` 는 빌드 뒤 지운다 (`find install/<pkg> -xtype l` 로 확인) |
 | `No rule to make target '/opt/ros/<distro>/lib/lib<X>.so.<옛 버전>'` | ROS apt 업그레이드 뒤 옛 경로가 남은 것. `colcon build --cmake-force-configure` ([repo_scripts/README.md](../repo_scripts/README.md)) |
 | sim 을 다시 띄웠는데 옛 씬이 응답한다 | launch 프로세스만 죽이면 `mujoco_simulator_node` · `integrated_rt_controller` 가 남아 계속 발행한다. 재기동은 세 단계다: launch 를 죽이고 → 남은 노드를 `pidof` 로 찾아 PID 로 죽이고 → SIGKILL 이 남긴 `/dev/shm/fastrtps_*` 를 지운다 (Fast DDS 는 정상 종료할 때만 자기 세그먼트를 지운다) |
 | 세션 CSV 의 끝이 잘렸다, 스크립트에서 `ros2 launch` 에 보낸 SIGINT 가 아무 일도 안 한다 | SIGINT 로 끝낸다 — `-9` 는 CSV flush 를 날린다. 비대화형 셸 (스크립트 · 에이전트) 이 `&` 로 띄운 job 은 SIGINT 를 SIG_IGN 으로 물려받고 `ros2 launch` 는 그대로 둔다. 노드는 자기 핸들러를 설치하므로 노드에 직접 `kill -INT $(pidof integrated_rt_controller mujoco_simulator_node)` (손 SIL: `udp_hand_node fake_hand_firmware` 둘 다) — launch 는 자식이 끝나면 따라 끝난다. 또는 스크립트에서 `set -m` 으로 띄우고 `kill -INT -- -<launch pid>` |
 | `pkill -f <노드>` 가 자기 셸을 죽인다 (exit 144), `pgrep -f` 가 엉뚱한 PID 를 섞는다 | 명령을 `bash -c '…'` 로 감싸는 셸은 자기 커맨드라인에 그 패턴을 담는다. 노드는 `pidof <실행 파일 이름>` 으로 찾고 (`pgrep -x` 는 15 자에서 잘려 0 건이 된다), 직접 띄운 것은 띄울 때의 `$!` 로 죽인다 — `ros2 launch` · `ros2 topic pub` 은 실행 파일이 python 이라 `$!` 뿐이다 |
-| 남겨 둔 평가 세션이 사라졌다 | launch 는 기동할 때 `logging_data/` 를 `max_log_sessions` (출하 10) 로 잘라 오래된 세션을 지운다. 세션을 모으는 동안에는 모든 기동에 `max_log_sessions:=<현재 개수 + 여유>` 를 주고, 판정에 쓸 세션은 끝나는 즉시 다른 곳으로 복사한다 |
+| 남겨 둔 평가 세션이 사라졌다 | launch 는 기동할 때 `logging_data/` 를 `max_log_sessions` (출하 10) 로 잘라 오래된 세션을 지운다. 세션을 모으는 동안에는 모든 기동에 `max_log_sessions:=<현재 개수 + 계획한 기동 수 + 여유>` 를 주고 (한 번 띄워 보는 확인용 기동도 같다 — 고정 상수는 폴더가 이미 차 있으면 모자라므로 `ls logging_data \| wc -l` 로 먼저 센다), 판정에 쓸 세션은 끝나는 즉시 다른 곳으로 복사한다. `run_arms.py` 는 이 인자를 스스로 넣지 않으니 `--launch-arg max_log_sessions:=<N>` 으로 주고, 그 `--logging-root` 는 세션을 **찾는** 곳일 뿐이라 launch 는 언제나 workspace 의 `logging_data/` 에 쓴다 |
 | 한 세션 CSV 안에서 열 수가 중간에 바뀐다 (pandas `Expected N fields … saw M`) | 세션 이름은 `YYMMDD_HHMMSS` 라 **같은 초에 띄운 두 기동은 한 세션 폴더를 공유**하고, 로거는 있던 CSV 에 헤더 없이 이어 쓴다 (다른 로봇이면 λ 열 수가 다르다). #1156 이전의 `YYMMDD_HHMM` 세션은 같은 분이 같은 폴더다. 그 세션이면 기동 시각을 확인하고, 끝난 세션은 다음 기동 전에 복사해 둔다 |
 | 켜 둔 sim 이 디스크를 채운다 | 활성 컨트롤러는 대기 중에도 tick 마다 CSV 를 쓴다 (무장한 catching 컨트롤러는 약 3.4 GB/h). 확인이 끝나면 바로 내린다. 정리할 때는 `YYMMDD_HHMMSS` 세션 폴더만 지운다 — 옆의 `*.json` · `stats/` · `ur_plot/` 은 사용자 파일이다 |
 | sim 의 `<group>/joint_states` 구독이 0 메시지, "incompatible QoS" 경고 | sim 은 상태를 BEST_EFFORT depth 1 로 발행한다. 구독도 BEST_EFFORT (sensor-data QoS) 로 한다 |
@@ -210,6 +211,31 @@ colcon test-result --verbose --test-result-base build/<pkg>       # 패키지 �
 ```
 
 결과를 어떻게 판정하는지 (누적 XML · 종료 코드 · 범위와 단위 · timeout 과 crash) 는 [testing-debug.md](../agent_docs/testing-debug.md#test-측정) 가 갖고, 각 항이 실제로 잘못된 보고를 낳은 사례는 [testing-rationale.md](reference/testing-rationale.md) §계측 함정 에 있다.
+
+### Mutation 루프
+
+mutant 마다 패키지 전체를 다시 짓지 않는다 — 판정할 테스트 타깃만 기존 캐시로 빌드하고 그 테스트만 돌린다.
+
+```bash
+# workspace root, setup_env.sh 를 source 한 서브셸에서 (AGENTS.md §9.1)
+cmake --build build/<pkg> --target <test 타깃들>
+colcon test --packages-select <pkg> --ctest-args -R '^(<test 타깃들>)$'      # 판정: test_results/<pkg>/*.gtest.xml 의 <failure
+( cd build/<pkg> && LD_LIBRARY_PATH=$PWD:$LD_LIBRARY_PATH ctest -R '^(<test 타깃들>)$' )   # 공유 라이브러리를 바꾼 mutant
+```
+
+루프를 믿기 전에 **무변형 대조 1 회** (테스트가 실제로 돌았는가) 와 **첫 mutant 가 red 인가** 를 본다. 아래는 모두 거짓 green · 거짓 red 를 낸 경로다.
+
+| 함정 | 처방 |
+|---|---|
+| 빌드를 plain `colcon build` 로 하면 `.colcon/defaults.yaml` 의 `BUILD_TESTING=OFF` 가 트리를 재구성해 test 타깃이 사라지고, colcon 은 성공을 보고한다 | 루프의 빌드는 `cmake --build build/<pkg> --target` 만 쓴다. 구성 (새 `find_package` 포함) 은 `verify-changes.sh --run` 에 맡긴다 — `cmake -S/-B` 직접 재구성은 workspace install 을 못 찾는다 |
+| 테스트 바이너리는 build 트리가 아니라 **install 트리의 `lib<pkg>.so`** 를 싣는다 (`ldd` 로 확인). `colcon test` 는 `LD_LIBRARY_PATH` 앞에 install 경로를 다시 붙인다 | `.so` 를 바꾼 mutant 는 위 셋째 줄의 `ctest` 로 돌린다 |
+| 정적 라이브러리 패키지 (`ls build/<pkg>/*.a`) 는 test 바이너리에 라이브러리가 박힌다 | 루프가 끝나 원복한 뒤 라이브러리만이 아니라 **test 타깃까지** 다시 빌드한다 — 아니면 마지막 mutant 가 바이너리에 남는다 |
+| 원복을 `cp -p` · `shutil.copy2` · `shutil.move` 로 하면 옛 mtime 이 되살아나 make 가 다시 컴파일하지 않는다 | 원복은 내용만 쓰고 `touch` 한다 |
+| `git checkout -- <file>` 원복은 그 파일의 미커밋 수정까지 HEAD 로 되돌린다 | 루프 전에 고친 사본을 따로 두고 그것으로 원복한다 |
+| 빌드 출력을 ` error ` 로 거르면 gcc 의 `error:` 가 빠져 컴파일 실패가 조용히 지나가고 옛 바이너리가 돈다 | 필터는 `error` 로, 판정은 테스트 출력으로 따로 한다. commit 을 같은 파이프의 `&&` 에 잇지 않는다 |
+| 루프가 소스를 바꿔 끼우는 동안 띄운 리뷰는 그때 걸린 mutant 를 결함으로 보고한다 | 리뷰는 루프가 끝나 트리를 원복한 뒤에 띄운다 |
+
+필터로 조용했던 mutant 만 넓은 바이너리로 다시 확인하고, 루프 뒤에는 원복한 소스로 `verify-changes.sh --run` 을 돌린다. 어떤 mutant 를 만들어야 하는지 (게이트의 fail-closed 확인) 는 [testing-debug.md](../agent_docs/testing-debug.md) 가 갖는다.
 
 ### 커버리지
 

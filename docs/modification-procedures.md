@@ -88,4 +88,17 @@ colcon test-result --verbose
 ### PR 전 리뷰와 정리
 
 - PR 을 열기 전에 [Inferential review 트리거](../agent_docs/modification-guide.md#inferential-review-트리거-llm-as-judge-수동-trigger) 표에서 이번 변경이 어느 review (code · security · 재사용·단순화) 에 걸리는지 보고 그 review 를 받는다. 목록은 그 표에만 있다.
-- merge 된 로컬 branch 는 `git branch -d <branch>`, stale remote-tracking ref 는 `git fetch --prune`. 원격 branch 는 merge 확인 후에만 지운다.
+- merge 된 로컬 branch 는 `git branch -d <branch>`, stale remote-tracking ref 는 `git fetch --prune`. 원격 branch 는 merge 확인 후에만 지운다 (`git branch -r --merged origin/main` 으로 남은 것을 본다).
+
+### 전체 정리 (ROS 2 산출물 포함)
+
+[AGENTS.md](../AGENTS.md) §11 의 정리를 workspace 밖 산출물까지 넓힐 때의 범위다. 다른 세션이 빌드 · 테스트 중이면 `/tmp` 와 `~/.ros/log` 는 `find -mmin +30` 으로 최근 것을 남긴다.
+
+| 지운다 | 주의 |
+|---|---|
+| workspace root `log/` 의 colcon run 디렉토리 | `log/latest*` 심링크 **전부** 의 대상은 남긴다. `find log -mindepth 1 -maxdepth 1 -type d` 로 돌린다 (`for d in log/*/` 는 심링크를 따라가 남길 run 의 내용을 지운다). `log/` 직속 파일 (`COLCON_IGNORE`) 은 둔다 |
+| `~/.ros/log/*`, `ros2 daemon stop` 뒤 `fastdds shm clean` | `fastdds shm clean` 이 남긴 `/dev/shm/fastrtps_*` 는 살아 있는 것이므로 둔다 |
+| repo 안 python · ruff 캐시, `MUJOCO_LOG.TXT`, ignored `*.orig` | `*.orig` 는 HEAD 와 diff 해 미저장 작업이 아님을 확인한 뒤 |
+| 테스트 · launch 가 `/tmp` 에 남긴 것 — `rtc_*_test*` · `rtc_topo_test_*` · `rtc_log_set_*` · `rtc_session_*` · `rtc_*.yaml` · `rub_*.yaml` · `udp_hand_node_lifecycle_*` · `launch_params_*` · `replay_log_runs` · `pytest-of-$USER` · `tmp.*` (topology test 의 cpuinfo 사본, verify run 의 test 출력) | `tmp.*` 는 내용을 확인한 뒤. 출처를 모르는 파일은 둔다 |
+
+지우지 않는 것: workspace root `build/` · `install/` (src 에 없는 패키지의 디렉토리만 크기와 함께 보고하고 결정을 받는다 — 대조는 디렉토리 이름이 아니라 `package.xml` 의 `<name>` 으로 한다) 와 `logging_data/` (평가 증거).
