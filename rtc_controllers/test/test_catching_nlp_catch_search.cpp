@@ -2777,8 +2777,9 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
   // The ball's VELOCITY is uncertain (0.5 m/s on every axis) and its position
   // is not: the screening's closing-speed window, which reads the position
   // spread along the approach axis, stays open, every candidate is solved, and
-  // every solution breaks the terminal velocity set's chance rows — whatever
-  // the arm does, since no pose makes the ball's speed better known. The
+  // every solution (every solve that ends on an iterate) breaks the terminal
+  // velocity set's chance rows — whatever the arm does, since no pose makes
+  // the ball's speed better known. The
   // samples are ON the lattice instants, so that no position spread grows out
   // of the velocity's between a sample and a candidate.
   for (const bool following : {false, true}) {
@@ -2799,31 +2800,41 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
     Throw unsure = ball;
     unsure.cov = LateralCovariance(unsure, 0.002, 0.001, /*sigma_v=*/0.5);
     const Wake w = RunWake(*rig, unsure, rt, reported, now);
-    EXPECT_FALSE(w.plan.valid) << Table(rig->search, w.stats);
-    EXPECT_EQ(w.stats.nlp.reason, NlpReject::kChance) << Table(rig->search, w.stats);
+    const std::string uncertain = Table(rig->search, w.stats);
+    EXPECT_FALSE(w.plan.valid) << uncertain;
+    EXPECT_EQ(w.stats.nlp.reason, NlpReject::kChance) << uncertain;
     EXPECT_EQ(w.plan.reason, PlanReason::kUncertainty);
-    EXPECT_GE(w.stats.nlp.n_solved, 3) << Table(rig->search, w.stats);
-    EXPECT_EQ(Count(rig->search, NlpReject::kChance), w.stats.nlp.n_solved)
-        << Table(rig->search, w.stats);
     EXPECT_EQ(Count(rig->search, NlpReject::kSpeedWindow), 0);
+    // Every solve ends on an iterate that breaks the chance rows — or on no
+    // iterate, when a QP on the way did not converge. Which QP that is, if
+    // any, is the floating point's: the same binary takes it on a core with
+    // a 48 KiB L1 and not on one with 32 KiB (Eigen blocks its products by
+    // the L1). A solve the SOLVER refused says nothing about the rows.
+    std::set<std::int64_t> refused;    // by the chance rows
+    std::set<std::int64_t> forgotten;  // by the solver
     for (const Candidate& c : rig->search.Candidates()) {
       if (c.reject == NlpReject::kChance) {
         EXPECT_EQ(c.worst_group, DockingRowGroup::kVelocitySet) << c.index;
         EXPECT_GT(c.worst_violation, 0.1) << c.index;  // m/s — no tolerance's doing
+        // What each refused solve ended on is remembered …
+        EXPECT_NE(rig->search.RememberedSolution(c.index), nullptr) << c.index;
+        refused.insert(c.index);
+      } else if (c.reject == NlpReject::kSolverRejected) {
+        EXPECT_TRUE(c.core_reason == MpcDockingReason::kQpFailed ||
+                    c.core_reason == MpcDockingReason::kSolutionNonFinite)
+            << c.index << uncertain;
+        // … what the solver failed on is not.
+        EXPECT_EQ(rig->search.RememberedSolution(c.index), nullptr) << c.index;
+        forgotten.insert(c.index);
       }
     }
+    EXPECT_GE(refused.size(), 3U) << uncertain;
+    EXPECT_EQ(static_cast<int>(refused.size() + forgotten.size()), w.stats.nlp.n_solved)
+        << uncertain;
     // Nothing is published over a followed plan; "no plan" otherwise.
     EXPECT_EQ(w.stats.publish, !following);
     EXPECT_EQ(w.stats.decision,
               following ? SwitchDecision::kHeldNoCandidate : SwitchDecision::kNoCurrent);
-    // What each refused solve ended on is remembered …
-    std::set<std::int64_t> refused;
-    for (const Candidate& c : rig->search.Candidates()) {
-      if (c.reject == NlpReject::kChance) {
-        EXPECT_NE(rig->search.RememberedSolution(c.index), nullptr) << c.index;
-        refused.insert(c.index);
-      }
-    }
     // The same throw at the same instant, its velocity known ten times better.
     Throw sharp = ball;
     sharp.cov = LateralCovariance(sharp, 0.002, 0.001, /*sigma_v=*/0.05);
@@ -2833,7 +2844,7 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
     EXPECT_TRUE(ok.stats.publish);
     // … and is where the next wake starts that candidate: a start from an
     // iterate the rows refused does not keep the candidate refused once the
-    // rows can be met.
+    // rows can be met. A forgotten candidate starts from anything but itself.
     int from_refused = 0;
     for (const Candidate& c : rig->search.Candidates()) {
       if (c.solved && refused.count(c.index) != 0) {
@@ -2841,9 +2852,16 @@ TEST(NlpCatchSearchFollowing, AnUncertainBallIsRefusedByItsChanceRowsAndASharper
         EXPECT_EQ(c.reject, NlpReject::kNone) << c.index << Table(rig->search, ok.stats);
         ++from_refused;
       }
+      if (c.solved && forgotten.count(c.index) != 0) {
+        EXPECT_NE(c.start, NlpCatchSearch::Start::kSameCandidate)
+            << c.index << Table(rig->search, ok.stats);
+      }
     }
     EXPECT_GE(from_refused, 3) << Table(rig->search, ok.stats);
-    EXPECT_EQ(refused.count(ok.stats.nlp.chosen_index), 1U);
+    // The plan is one of the candidates the uncertain wake solved.
+    EXPECT_EQ(refused.count(ok.stats.nlp.chosen_index) + forgotten.count(ok.stats.nlp.chosen_index),
+              1U)
+        << uncertain << Table(rig->search, ok.stats);
   }
 }
 
