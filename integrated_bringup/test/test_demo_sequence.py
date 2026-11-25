@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -43,15 +44,13 @@ NAMES = ("j0", "j1")
 # ── Files ────────────────────────────────────────────────────────────────────
 
 
-def _write(root: Path, presets: object, sequence: object, token: str = "p2") -> None:
-    (root / f"hand_presets_{token}.json").write_text(json.dumps(presets))
-    (root / f"demo_gui_sequences_{token}.json").write_text(json.dumps(sequence))
-
-
-PRESETS = {
-    "open": {"positions_deg": [0.0, 0.0], "side": "right"},
-    "close": {"positions_deg": [30.0, 60.0]},
-}
+# The run reads a robot's shipped copy (config/<robot>/demo_gui/ of the
+# installed package): each test builds one under tmp_path from p2's profile
+# files, with release presets taken from p2's own shipped table.
+_SHIPPED_P2 = json.loads((CONFIG_DIR / "p2" / "demo_gui" / "hand_presets.json").read_text())
+# Any two of them: the names below are this file's, the bodies a release's.
+_OPEN, _CLOSE = list(_SHIPPED_P2.values())[:2]
+PRESETS = {"open": _OPEN, "close": _CLOSE}
 SEQUENCE = {
     "steps": [
         {"preset": "close", "time_s": 1.0, "dwell_s": 2.0},
@@ -59,29 +58,45 @@ SEQUENCE = {
     ],
     "tolerance_deg": 2.0,
 }
+MISSING = object()
 
 
-def test_inputs_resolve_and_list_the_untagged_presets(tmp_path):
-    _write(tmp_path, PRESETS, SEQUENCE)
-    inputs = f.load_run_inputs(str(tmp_path), "p2", "right", 2)
+def _ship(tmp_path: Path, presets: object = PRESETS, sequence: object = SEQUENCE) -> str:
+    """A config dir holding p2's profile with ``presets`` / ``sequence`` as its
+    shipped copy (MISSING: no such file; a str: the file's raw text)."""
+    config = tmp_path / "config"
+    shutil.copytree(CONFIG_DIR / "p2", config / "p2")
+    shipped = config / "p2" / "demo_gui"
+    for name, data in (("hand_presets.json", presets), ("sequence.json", sequence)):
+        path = shipped / name
+        if data is MISSING:
+            path.unlink()
+        else:
+            path.write_text(data if isinstance(data, str) else json.dumps(data))
+    return str(config)
+
+
+def test_inputs_are_the_shipped_copy_resolved(tmp_path):
+    inputs = f.load_run_inputs(_ship(tmp_path), "p2")
     assert [s.preset for s in inputs.steps] == ["close", "open"]
-    assert inputs.steps[0].target_rad == pytest.approx((math.radians(30), math.radians(60)))
-    assert inputs.untagged == ("close",)
+    assert inputs.steps[0].target_rad == pytest.approx(
+        tuple(math.radians(v) for v in _CLOSE["positions_deg"])
+    )
     assert inputs.tolerance_deg == 2.0
 
 
 def test_inputs_write_nothing(tmp_path):
-    _write(tmp_path, PRESETS, SEQUENCE)
-    before = sorted(p.name for p in tmp_path.iterdir())
-    f.load_run_inputs(str(tmp_path), "p2", "right", 2)
-    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    config = _ship(tmp_path)
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    f.load_run_inputs(config, "p2")
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
 
 
 @pytest.mark.parametrize(
     "presets,sequence,needle",
     [
-        (None, SEQUENCE, "does not exist"),
-        ({"open": {"positions_deg": [0, 0], "side": "left"}}, SEQUENCE, "another hand"),
+        (MISSING, SEQUENCE, "does not exist"),
+        ({"open": {**_OPEN, "side": "left"}}, SEQUENCE, "another hand"),
         (PRESETS, {"steps": []}, "no steps"),
         (PRESETS, {"steps": [{"preset": "open", "time_s": 0.0}]}, "time_s"),
         (PRESETS, {"steps": [{"preset": "open", "time_s": 601.0}]}, "time_s"),
@@ -91,23 +106,21 @@ def test_inputs_write_nothing(tmp_path):
         (PRESETS, {"steps": [{"time_s": 1.0}]}, "names no preset"),
         (PRESETS, {"steps": [{"preset": "gone", "time_s": 1.0}]}, "no longer exists"),
         (PRESETS, {**SEQUENCE, "tolerance_deg": 40.0}, "tolerance_deg"),
-        ({"open": {"positions_deg": [0.0]}}, {"steps": [{"preset": "open", "time_s": 1}]}, "DoF"),
+        (
+            {"open": {**_OPEN, "positions_deg": [0.0]}},
+            {"steps": [{"preset": "open", "time_s": 1}]},
+            "positions_deg is not 10 finite numbers",
+        ),
     ],
 )
 def test_inputs_refuse_what_the_gui_would_clamp_or_drop(tmp_path, presets, sequence, needle):
-    if presets is None:
-        (tmp_path / "demo_gui_sequences_p2.json").write_text(json.dumps(sequence))
-    else:
-        _write(tmp_path, presets, sequence)
     with pytest.raises(f.FileProblem, match=needle):
-        f.load_run_inputs(str(tmp_path), "p2", "right", 2)
+        f.load_run_inputs(_ship(tmp_path, presets, sequence), "p2")
 
 
 def test_a_broken_json_names_the_file(tmp_path):
-    _write(tmp_path, PRESETS, SEQUENCE)
-    (tmp_path / "demo_gui_sequences_p2.json").write_text("{")
-    with pytest.raises(f.FileProblem, match="demo_gui_sequences_p2.json is not JSON"):
-        f.load_run_inputs(str(tmp_path), "p2", "right", 2)
+    with pytest.raises(f.FileProblem, match=r"sequence.json cannot be read"):
+        f.load_run_inputs(_ship(tmp_path, sequence="{"), "p2")
 
 
 # ── Arguments and environment ───────────────────────────────────────────────
@@ -134,7 +147,6 @@ def test_durations(text, seconds):
             "0.05",
             "--yes",
         ],
-        ["--robot", "p2", "--mode", "loop", "--duration", "1h", "--logging-root", "rel", "--yes"],
     ],
 )
 def test_out_of_range_arguments_exit_2(argv):
@@ -143,7 +155,12 @@ def test_out_of_range_arguments_exit_2(argv):
 
 @pytest.mark.parametrize(
     "argv",
-    [["--robot", "p2", "--mode", "once", "--duration", "1h"], ["--robot", "p3", "--mode", "loop"]],
+    [
+        ["--robot", "p2", "--mode", "once", "--duration", "1h"],
+        ["--robot", "p3", "--mode", "loop"],
+        # The run plays the shipped copy: there is no other file to point it at.
+        ["--robot", "p2", "--mode", "loop", "--duration", "1h", "--logging-root", "/x"],
+    ],
 )
 def test_once_and_unknown_robots_are_refused(argv):
     with pytest.raises(SystemExit) as exc:
@@ -151,16 +168,19 @@ def test_once_and_unknown_robots_are_refused(argv):
     assert exc.value.code == 2
 
 
-def test_a_missing_file_exits_2_before_ros(tmp_path, capsys):
+def test_a_missing_file_exits_2_before_ros(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(cli, "shipped_config_dir", lambda: _ship(tmp_path, sequence=MISSING))
+    monkeypatch.setattr(env, "logging_root", lambda: (str(tmp_path), ""))
     argv = ["--robot", "p2", "--mode", "loop", "--duration", "1h", "--yes"]
-    assert cli.main([*argv, "--logging-root", str(tmp_path)]) == 2
-    assert "does not exist" in capsys.readouterr().err
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "sequence.json does not exist" in err and "build.sh" in err
 
 
-def test_without_a_terminal_start_must_be_given(tmp_path, capsys, monkeypatch):
+def test_without_a_terminal_start_must_be_given(capsys, monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     argv = ["--robot", "p2", "--mode", "loop", "--duration", "1h"]
-    assert cli.main([*argv, "--logging-root", str(tmp_path)]) == 2
+    assert cli.main(argv) == 2
     assert "--yes" in capsys.readouterr().err
 
 
@@ -414,7 +434,7 @@ STEPS = (
 
 
 def _cfg(**kw) -> RunConfig:
-    inputs = f.RunInputs(STEPS, 2.0, "/p.json", "/s.json", ())
+    inputs = f.RunInputs(STEPS, 2.0, "/p.json", "/s.json")
     base = {
         "robot": "p2",
         "joint_names": NAMES,

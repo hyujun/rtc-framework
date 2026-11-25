@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
@@ -271,40 +270,6 @@ def test_every_shipped_copy_plays_on_its_robot(robot):
     # is the GUI's warning and promote's refusal, not a test).
     s.read_calibration(str(_CONFIG / robot / s.SHIPPED_DIR / s.CALIBRATION_FILE))
 
-
-def test_working_notes_say_when_the_run_plays_another_copy(tmp_path):
-    # A copy of a shipped robot's files: the shipped side is read as installed.
-    robot = _shipped_dirs()[0]
-    config = tmp_path / "config"
-    shutil.copytree(_CONFIG / robot, config / robot)
-    # The record is rewritten from the copied driver: the notes about the
-    # working copy are under test, not whether the shipped files agree today.
-    prof = s.ShippedProfile.for_robot(robot)
-    cal_path = config / robot / s.SHIPPED_DIR / s.CALIBRATION_FILE
-    driver = s.read_calibration(str(cal_path)).driver_config
-    in_use = s.driver_calibration(str(config / robot / driver), prof.side)
-    cal_path.write_text(
-        yaml.safe_dump(
-            {
-                "driver_config": driver,
-                "joint_names": list(in_use.joint_names),
-                "joint_direction_signs": list(in_use.joint_direction_signs),
-                "joint_position_offsets_deg": list(in_use.joint_position_offsets_deg),
-            }
-        )
-    )
-    presets, sequence = s.load_shipped(str(config), prof)
-    p_path, q_path = tmp_path / "p.json", tmp_path / "q.json"
-    p_path.write_text(json.dumps(presets))
-    q_path.write_text(json.dumps(sequence))
-    assert s.working_notes(str(config), robot, str(p_path), str(q_path)) == []
-    edited = dict(presets)
-    edited.pop(next(iter(edited)))
-    p_path.write_text(json.dumps(edited))
-    notes = s.working_notes(str(config), robot, str(p_path), str(q_path))
-    assert len(notes) == 1 and "p.json differs from the shipped copy" in notes[0]
-    # Nothing shipped → nothing to say.
-    assert s.working_notes(str(tmp_path / "none"), robot, str(p_path), str(q_path)) == []
 
 
 @pytest.mark.parametrize(
