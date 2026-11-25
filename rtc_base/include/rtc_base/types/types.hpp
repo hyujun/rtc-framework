@@ -93,13 +93,15 @@ inline constexpr int kMaxTaskLinks = 8;
 // kBasePoseDim        : p_xyz + q_xyzw — the free-flyer configuration width.
 // kBaseTwistDim       : v_xyz + ω_xyz.
 // kImuChannelsPerSite : gyro 3 + accelerometer 3.
-// The last three are geometry, not capacity: they name the layout a consumer
-// indexes by, so they are spelled once here rather than as 7 / 6 / 6 literals
-// at the producer, the mirror seam and every reader.
+// kImuOrientationDim  : q_xyzw — a producer-fused site orientation.
+// The last four are geometry, not capacity: they name the layout a consumer
+// indexes by, so they are spelled once here rather than as 7 / 6 / 6 / 4
+// literals at the producer, the mirror seam and every reader.
 inline constexpr int kMaxImuSites = 2;
 inline constexpr int kBasePoseDim = 7;
 inline constexpr int kBaseTwistDim = 6;
 inline constexpr int kImuChannelsPerSite = 6;
+inline constexpr int kImuOrientationDim = 4;
 
 // ── C++20 Concepts
 // ───────────────────────────────────────────────────────────── Constrains
@@ -353,6 +355,41 @@ struct DeviceState {
   std::array<int64_t, kMaxImuSites> imu_recv_steady_ns{};
   std::array<uint64_t, kMaxImuSites> imu_sequence{};
   std::array<bool, kMaxImuSites> imu_valid{};
+  // Producer orientation of each IMU site: the attitude an IMU's own fusion
+  // filter reports beside its raw sample, for the sites whose driver has one.
+  //
+  // `imu_orientation[s]` is q = R_{R←S}, mapping site s's frame (the frame its
+  // gyro and accelerometer read in) into a reference frame R whose z axis
+  // points UP, against gravity; R's yaw origin is unspecified, so a consumer
+  // treats yaw as a gauge. Hamilton, stored x, y, z, w (Eigen `coeffs()`
+  // order — the constructor takes w first). The checkable invariant is that a
+  // site at rest reads R_{R←S}·accel ≈ +g·e_z. The PRODUCER converts a
+  // driver's own convention into this one, as `base_twist` above does —
+  // conjugation, JPL to Hamilton, a fixed reference-axis rotation (NED to
+  // z-up), RPY to quaternion — and does nothing else: no renormalisation, no
+  // mounting extrinsic, no hemisphere choice (q and −q are one rotation). The
+  // norm gate, with its tolerance, is the consumer's.
+  //
+  // The orientation QUALIFIES site s's raw sample rather than being a lane of
+  // its own: a producer updates it only together with an accepted
+  // gyro/accelerometer sample and then reports it like the raw values — on
+  // every read, held between samples, its flag lowered whenever the site's
+  // `imu_valid[s]` is (so `imu_orientation_valid[s]` implies `imu_valid[s]`).
+  // It never advances `imu_recv_steady_ns[s]` or `imu_sequence[s]` by itself
+  // (an estimator propagates once per new counter, and an orientation-only
+  // update would propagate the same gyro sample twice). That makes it coherent
+  // with the raw sample at RECEIPT, not at acquisition — a vendor filter's own
+  // latency is not represented. `imu_orientation_valid[s]` is the producer's
+  // verdict (the vendor's status and finiteness); whether yaw is magnetometer
+  // referenced is the consumer's configuration, not this POD's.
+  //
+  // Unlike `base_pose`, the default is all zeros, not the identity: no
+  // consumer copies this q into pinocchio's configuration, and an identity
+  // would read as "level" to a tilt check that skipped the flag, where a zero
+  // quaternion fails any norm gate. A producer without a fused orientation
+  // writes zeros and false. Mirror seam and capability as for `imu` above.
+  std::array<std::array<double, kImuOrientationDim>, kMaxImuSites> imu_orientation{};
+  std::array<bool, kMaxImuSites> imu_orientation_valid{};
   bool valid{false};
 };
 
@@ -763,7 +800,8 @@ enum class DeviceCapability : uint16_t {
   kSensorData = 1 << 2,    ///< sensor_data / sensor_data_raw
   kInference = 1 << 3,     ///< inference_data / inference_enable
   kFloatingBase = 1 << 4,  ///< base_pose / base_twist and their stamp · counter · flag
-  kImuState = 1 << 5,      ///< imu / num_imu_sites and the per-site stamp · counter · flag
+  kImuState = 1 << 5,      ///< imu / num_imu_sites, the per-site stamp · counter · flag, and
+                           ///< imu_orientation / imu_orientation_valid
 };
 
 [[nodiscard]] inline constexpr uint16_t operator|(DeviceCapability lhs,

@@ -396,6 +396,57 @@ TEST_F(RtLoopPipelineTest, ImuLaneReachesTheControllerBitExact) {
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
 }
 
+// The producer orientation crosses the same seam — a separate test rather
+// than more assertions in the one above, because that test's flags put site 0
+// DOWN, and an orientation flag up on a site whose raw flag is down breaks the
+// lane's contract (orientation_valid implies imu_valid).
+//
+// Both raw flags are up and the orientation flags differ — site 0 up, site 1
+// down — so each wrong copy fails on a different site: a dropped copy reads
+// false on site 0, a copy of `imu_valid` into the orientation flag reads true
+// on site 1, and a copy that crosses sites fails on the quaternions, which
+// the stub makes distinct per site and NOT unit-norm (a seam that
+// renormalised fails bit-exactness).
+TEST_F(RtLoopPipelineTest, ImuOrientationReachesTheControllerBitExact) {
+  constexpr std::array<bool, kMaxImuSites> kImuValid{true, true};
+  constexpr std::array<bool, kMaxImuSites> kOrientationValid{true, false};
+  PipelineStubBackend::has_imu_state.store(true, std::memory_order_relaxed);
+  for (std::size_t s = 0; s < kImuValid.size(); ++s) {
+    PipelineStubBackend::imu_valid[s].store(kImuValid[s], std::memory_order_relaxed);
+    PipelineStubBackend::imu_orientation_valid[s].store(kOrientationValid[s],
+                                                        std::memory_order_relaxed);
+  }
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(2, PipelineTestController::observed_num_imu_sites.load(std::memory_order_relaxed));
+  for (std::size_t s = 0; s < kImuValid.size(); ++s) {
+    for (std::size_t i = 0; i < PipelineStubBackend::kImuOrientation[s].size(); ++i) {
+      EXPECT_EQ(
+          PipelineStubBackend::kImuOrientation[s][i],
+          PipelineTestController::observed_imu_orientation[s][i].load(std::memory_order_relaxed))
+          << "imu_orientation[" << s << "][" << i << "]";
+    }
+    EXPECT_EQ(kOrientationValid[s], PipelineTestController::observed_imu_orientation_valid[s].load(
+                                        std::memory_order_relaxed))
+        << "imu_orientation_valid[" << s << "]";
+    EXPECT_EQ(kImuValid[s],
+              PipelineTestController::observed_imu_valid[s].load(std::memory_order_relaxed))
+        << "imu_valid[" << s << "]";
+  }
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
 // An out-of-contract site count is bounded before the IMU copy, the way the
 // joint channel count is (issue #196 §4): a backend reporting more sites than
 // the lane has arrays must neither index past them nor hand the controller a
@@ -420,6 +471,46 @@ TEST_F(RtLoopPipelineTest, ImuSiteCountIsBoundedBeforeTheCopy) {
   EXPECT_EQ(PipelineStubBackend::kImuSite1[3],
             PipelineTestController::observed_imu_site1[3].load(std::memory_order_relaxed));
   EXPECT_EQ(9U, PipelineTestController::observed_imu_sequence[1].load(std::memory_order_relaxed));
+
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
+  EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
+}
+
+// The orientation arrays are bounded by the same site count as the raw ones:
+// a backend reporting one site gets site 0's orientation through and site 1's
+// stays at the zero / false default even though the stub filled it and set
+// its flag — a copy that ignored the count would hand the controller an
+// orientation for a site it was told does not exist.
+TEST_F(RtLoopPipelineTest, ImuOrientationCopyIsBoundedBySiteCount) {
+  PipelineStubBackend::has_imu_state.store(true, std::memory_order_relaxed);
+  PipelineStubBackend::imu_num_sites.store(1, std::memory_order_relaxed);
+  for (std::size_t s = 0; s < static_cast<std::size_t>(kMaxImuSites); ++s) {
+    PipelineStubBackend::imu_valid[s].store(true, std::memory_order_relaxed);
+    PipelineStubBackend::imu_orientation_valid[s].store(true, std::memory_order_relaxed);
+  }
+
+  auto node = MakeNode(/*control_rate=*/250.0);
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_configure(StateUnconfigured()));
+
+  auto* backend = Backend(*node);
+  ASSERT_NE(nullptr, backend);
+
+  ASSERT_EQ(CallbackReturn::SUCCESS, node->on_activate(StateInactive()));
+  backend->FireStateReady();
+  ASSERT_TRUE(WaitFor([&] { return backend->WriteCount() > 0; }, 2000ms));
+
+  EXPECT_EQ(1, PipelineTestController::observed_num_imu_sites.load(std::memory_order_relaxed));
+  EXPECT_EQ(PipelineStubBackend::kImuOrientation[0][3],
+            PipelineTestController::observed_imu_orientation[0][3].load(std::memory_order_relaxed));
+  EXPECT_TRUE(
+      PipelineTestController::observed_imu_orientation_valid[0].load(std::memory_order_relaxed));
+  for (std::size_t i = 0; i < static_cast<std::size_t>(kImuOrientationDim); ++i) {
+    EXPECT_EQ(
+        0.0, PipelineTestController::observed_imu_orientation[1][i].load(std::memory_order_relaxed))
+        << "imu_orientation[1][" << i << "] crossed past the site count";
+  }
+  EXPECT_FALSE(
+      PipelineTestController::observed_imu_orientation_valid[1].load(std::memory_order_relaxed));
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));
@@ -532,6 +623,13 @@ TEST_F(RtLoopPipelineTest, BaseOnlyClaimLeavesTheImuLaneNeverReceived) {
     EXPECT_EQ(0, PipelineTestController::observed_imu_recv_ns[s].load(std::memory_order_relaxed));
     EXPECT_EQ(0U, PipelineTestController::observed_imu_sequence[s].load(std::memory_order_relaxed));
     EXPECT_FALSE(PipelineTestController::observed_imu_valid[s].load(std::memory_order_relaxed));
+    for (std::size_t i = 0; i < static_cast<std::size_t>(kImuOrientationDim); ++i) {
+      EXPECT_EQ(0.0, PipelineTestController::observed_imu_orientation[s][i].load(
+                         std::memory_order_relaxed))
+          << "imu_orientation[" << s << "][" << i << "] crossed under the base capability";
+    }
+    EXPECT_FALSE(
+        PipelineTestController::observed_imu_orientation_valid[s].load(std::memory_order_relaxed));
   }
   EXPECT_EQ(0, PipelineStubBackend::read_imu_calls.load(std::memory_order_relaxed));
 
@@ -573,6 +671,12 @@ TEST_F(RtLoopPipelineTest, FloatingBaseLaneIsWithheldWithoutTheCapability) {
   EXPECT_EQ(0, PipelineTestController::observed_num_imu_sites.load(std::memory_order_relaxed));
   EXPECT_EQ(1.0, PipelineTestController::observed_base_pose[6].load(std::memory_order_relaxed));
   EXPECT_EQ(0, PipelineStubBackend::read_base_calls.load(std::memory_order_relaxed));
+  // The IMU orientation's default is the opposite of the base pose's: all
+  // zeros, q_w included, with its flag down (types.hpp says why).
+  EXPECT_EQ(0.0,
+            PipelineTestController::observed_imu_orientation[0][3].load(std::memory_order_relaxed));
+  EXPECT_FALSE(
+      PipelineTestController::observed_imu_orientation_valid[0].load(std::memory_order_relaxed));
 
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_deactivate(StateActive()));
   EXPECT_EQ(CallbackReturn::SUCCESS, node->on_cleanup(StateInactive()));

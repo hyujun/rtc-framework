@@ -1258,6 +1258,29 @@ TEST_F(MujocoImuLaneTest, OneMessage_RawPerSiteValuesValidSequenceAndStamp) {
   }
 }
 
+// The simulator has no IMU fusion filter, so every site's producer orientation
+// is zeros with its flag down — even on a site whose raw sample is accepted.
+// The cache is PREFILLED with a quaternion and a raised flag first: CM hands
+// ReadImuState a value-initialised cache each tick, so only a prefilled one
+// can tell "wrote zeros" from "left the slot alone".
+TEST_F(MujocoImuLaneTest, AcceptedSample_WritesNoProducerOrientation) {
+  Publish(BaseMessage(BaseInputs{}), true);
+
+  rtc::DeviceStateCache cache{};
+  for (std::size_t s = 0; s < 2; ++s) {
+    cache.imu_orientation[s] = {0.25, -0.5, 0.125, 0.75};
+    cache.imu_orientation_valid[s] = true;
+  }
+  backend_->ReadImuState(cache);
+  for (std::size_t s = 0; s < 2; ++s) {
+    ASSERT_TRUE(cache.imu_valid[s]) << "site " << s;
+    for (std::size_t i = 0; i < cache.imu_orientation[s].size(); ++i) {
+      EXPECT_EQ(cache.imu_orientation[s][i], 0.0) << "site " << s << " q " << i;
+    }
+    EXPECT_FALSE(cache.imu_orientation_valid[s]) << "site " << s;
+  }
+}
+
 TEST_F(MujocoImuLaneTest, SecondMessage_AdvancesEverySiteByOne) {
   BaseInputs in;
   Publish(BaseMessage(in), true);

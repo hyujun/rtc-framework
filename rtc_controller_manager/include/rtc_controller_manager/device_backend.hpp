@@ -253,8 +253,9 @@ class DeviceBackend {
   /// own freshness verdict — values are left in place when it goes false.
   virtual void ReadBaseState(DeviceStateCache& /*cache*/) noexcept {}
 
-  /// True when this backend fills the IMU lane — `imu` / `num_imu_sites` and
-  /// the per-site stamp, counter and flag in DeviceStateCache. CM derives
+  /// True when this backend fills the IMU lane — `imu` / `num_imu_sites`,
+  /// the per-site stamp, counter and flag, and the per-site producer
+  /// orientation with its flag in DeviceStateCache. CM derives
   /// DeviceCapability::kImuState from this answer once, at configure, and
   /// both the RT read and the copy are gated on that bit — so the answer must
   /// not change after Configure(): a backend that starts claiming the lane
@@ -271,6 +272,11 @@ class DeviceBackend {
   /// true. Same contract as ReadBaseState, per site: latest value, never
   /// blocks, never allocates, `imu_valid[s]` is this backend's own verdict
   /// for site s, and a site's values are left in place when it goes false.
+  /// `imu_orientation[s]` is converted to DeviceState's canonical form
+  /// (R_{R←S}, z-up reference, Hamilton xyzw), updated only with an accepted
+  /// raw sample but written on EVERY read like the raw values (CM hands this
+  /// call a zeroed cache each tick), and its flag implies `imu_valid[s]`; a
+  /// backend whose driver has no fused orientation writes zeros and false.
   virtual void ReadImuState(DeviceStateCache& /*cache*/) noexcept {}
 
   /// Last time a state message arrived on this backend (steady clock). Used

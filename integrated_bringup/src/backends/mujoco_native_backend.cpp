@@ -521,6 +521,11 @@ void MujocoNativeBackend::ReadImuState(DeviceStateCache& cache) noexcept {
     cache.imu_recv_steady_ns[s] = mirror.recv_steady_ns[s];
     cache.imu_sequence[s] = mirror.sequence[s];
     cache.imu_valid[s] = mirror.received[s] && (rt_imu_miss_count_[s] < imu_max_missed_ticks_);
+    // No producer orientation: the simulator's IMU is raw, and its ground
+    // truth must not stand in for a vendor filter's estimate. Written, not
+    // left alone — an unused slot is zero-filled by the producer.
+    cache.imu_orientation[s] = {};
+    cache.imu_orientation_valid[s] = false;
   }
 }
 

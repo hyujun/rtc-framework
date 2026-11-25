@@ -76,7 +76,8 @@ TEST(FloatingBaseLaneTest, FreshnessNeedsFlagAndAgeAndPositiveBound) {
 
 // A default-constructed device reports every IMU site and the joint lane as
 // never received — the zero-init polarity every producer that predates these
-// fields relies on.
+// fields relies on. The producer orientation is all zeros, q_w included, with
+// its flag down: unlike `base_pose`, not the identity (types.hpp says why).
 TEST(ImuLaneTest, DefaultIsNeverReceivedOnEverySite) {
   const rtc::DeviceState dev{};
   EXPECT_EQ(0, dev.num_imu_sites);
@@ -87,6 +88,10 @@ TEST(ImuLaneTest, DefaultIsNeverReceivedOnEverySite) {
     EXPECT_EQ(0, dev.imu_recv_steady_ns[s]);
     EXPECT_EQ(0U, dev.imu_sequence[s]);
     EXPECT_FALSE(dev.imu_valid[s]);
+    for (double v : dev.imu_orientation[s]) {
+      EXPECT_EQ(0.0, v);
+    }
+    EXPECT_FALSE(dev.imu_orientation_valid[s]);
     EXPECT_LT(rtc::ImuSiteAgeNs(dev, static_cast<int>(s), /*now_steady_ns=*/1'000), 0);
     EXPECT_FALSE(rtc::IsImuSiteFresh(dev, static_cast<int>(s), 1'000, /*max_age_ns=*/1'000'000));
   }

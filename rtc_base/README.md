@@ -78,7 +78,7 @@ auto snapshot = state_lock.Load();            // 다른 스레드, lock-free
 | `kMaxRobotDOF` | 12 | capacity |
 | `kMaxDeviceChannels` / `kMaxSensorChannels` / `kMaxInferenceValues` | 64 / 128 / 64 | capacity |
 | `kMaxSensorGroups` / `kMaxTaskLinks` / `kMaxImuSites` | 8 / 8 / 2 | capacity |
-| `kBasePoseDim` / `kBaseTwistDim` / `kImuChannelsPerSite` | 7 / 6 / 6 | 레이아웃 (p·q_xyzw / v·ω / gyro·accel) |
+| `kBasePoseDim` / `kBaseTwistDim` / `kImuChannelsPerSite` / `kImuOrientationDim` | 7 / 6 / 6 / 4 | 레이아웃 (p·q_xyzw / v·ω / gyro·accel / q_xyzw) |
 | `ControllerState::kMaxDevices` · `ControllerOutput::kMaxDevices` · `PublishSnapshot::kMaxGroups` | 8 | capacity (구조체 스코프) |
 | `kDefaultMaxJointVelocity` / `kDefaultMaxJointTorque` | 2.0 rad/s / 150.0 N·m | default |
 
@@ -95,7 +95,7 @@ auto snapshot = state_lock.Load();            // 다른 스레드, lock-free
 
 | 구조체 | 역할 |
 |--------|------|
-| `DeviceState` / `ControllerState` | 가변 채널 디바이스 상태 (position·velocity·effort, motor, sensor, inference, 부동 베이스 `base_*`, site 별 IMU `imu*`, joint 수신 시각·순번) / `devices[8]` + `dt`, `iteration`, `t_relative_s` |
+| `DeviceState` / `ControllerState` | 가변 채널 디바이스 상태 (position·velocity·effort, motor, sensor, inference, 부동 베이스 `base_*`, site 별 IMU `imu*` (raw · producer orientation), joint 수신 시각·순번) / `devices[8]` + `dt`, `iteration`, `t_relative_s` |
 | `DeviceOutput` / `ControllerOutput` | 디바이스별 command·goal·target·trajectory·feedforward, 선택 PD 게인 (`pd_kp`·`pd_kd`·`has_pd_gains`) / `devices[8]` + task-space 값 + TF 발행용 SE3 |
 | `Pose` | RT-safe SE3 (`position[3]`, Hamilton quaternion w,x,y,z) |
 | `DeviceNameConfig` | 디바이스 이름·joint/sensor 이름·`DeviceUrdfConfig`·`DeviceJointLimits`·`DeviceSensorLayout`·`safe_position` |
