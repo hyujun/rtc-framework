@@ -332,7 +332,9 @@ TEST_F(LocomotionMpcLockstepTest, TheActivationHeightKeyIsChecked) {
   ExpectRefused(
       LockstepConfig(), [](YAML::Node& c) { c["mpc"]["activation_height"] = YAML::Node(); },
       "no value");
-  EXPECT_FALSE(ParseLocomotionControllerConfig(LockstepConfig()).mpc.activation_height_measured)
+  YAML::Node absent = LockstepConfig();
+  absent["mpc"].remove("activation_height");
+  EXPECT_FALSE(ParseLocomotionControllerConfig(absent).mpc.activation_height_measured)
       << "absent = config";
   YAML::Node config = LockstepConfig();
   config["mpc"]["activation_height"] = "config";

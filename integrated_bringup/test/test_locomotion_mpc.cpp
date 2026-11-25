@@ -56,6 +56,10 @@ class LocomotionMpcTest : public LocomotionControllerTest {
 
   bool Standing() { return ctrl_->Source() == Source::kStand; }
 
+  /// The base height MakeStanding stands the rig at — what the shipped
+  /// profile's `mpc.activation_height: measured` puts the command at.
+  double StandHeight() const { return state_.devices[kBody].base_pose[2]; }
+
   void ReachStand() {
     ASSERT_TRUE(TickUntil([this] { return Standing(); })) << SourceName();
   }
@@ -756,7 +760,7 @@ TEST_F(LocomotionCommandTest, ATwistReachesTheFilterAndThePlanner) {
   EXPECT_TRUE(cmd.fresh);
   EXPECT_NEAR(cmd.v_x, 0.3, 0.02) << "the Bessel stage settled on the command";
   EXPECT_EQ(cmd.v_y, 0.0);
-  EXPECT_EQ(cmd.base_height, cfg_["command"]["base_height"].as<double>());
+  EXPECT_EQ(cmd.base_height, StandHeight());
   EXPECT_GT(cmd.sequence, 20U) << "one filter step per timer period (100 Hz nominal; a loaded host "
                                   "skips periods)";
   EXPECT_EQ(cmd.nonfinite_count, 0U);
@@ -776,7 +780,7 @@ TEST_F(LocomotionCommandTest, AStaleTwistDecaysToRestAndStaysValid) {
   EXPECT_FALSE(cmd.fresh);
   EXPECT_GT(cmd.stale_count, 0U);
   EXPECT_NEAR(cmd.v_x, 0.0, 1e-3);
-  EXPECT_EQ(cmd.base_height, cfg_["command"]["base_height"].as<double>());
+  EXPECT_EQ(cmd.base_height, StandHeight()) << "the height stays where the activation put it";
 }
 
 TEST_F(LocomotionCommandTest, ANonFiniteAxisKeepsTheLastAcceptedValue) {
@@ -825,6 +829,9 @@ TEST_F(LocomotionCommandTest, TheDiagLogCarriesTheCommandTheGaitAndThePlanVeloci
 TEST_F(LocomotionCommandTest, WithoutATopicKeyNothingIsSubscribed) {
   YAML::Node cfg = MpcConfig();
   cfg.remove("velocity_command");
+  // The shipped profile's measured activation height runs the filter's timer
+  // by itself (AMeasuredActivationHeightNeedsNoCommandTopic); without it:
+  cfg["mpc"]["activation_height"] = "config";
   BringUpSpinning(cfg);
   EXPECT_FALSE(ctrl_->VelocityCommandSubscribed());
   EXPECT_EQ(helper_->count_subscribers(kTwistTopic), 0U);
@@ -922,7 +929,7 @@ TEST_F(LocomotionCommandTest, TheStatusTopicCarriesTheSourceThePlanAndTheCommand
   EXPECT_EQ(Value(LocomotionStatusKey::kCmdValid), "1");
   EXPECT_EQ(Value(LocomotionStatusKey::kCmdFresh), "1");
   char height[integrated_bringup::kLocomotionStatusValueChars];
-  std::snprintf(height, sizeof(height), "%.6g", cfg_["command"]["base_height"].as<double>());
+  std::snprintf(height, sizeof(height), "%.6g", StandHeight());
   EXPECT_EQ(Value(LocomotionStatusKey::kCmdHeight), height);
   EXPECT_EQ(Value(LocomotionStatusKey::kCmdNonFiniteTicks), "0");
   EXPECT_NE(Value(LocomotionStatusKey::kPolicyAgeMs), "-1");

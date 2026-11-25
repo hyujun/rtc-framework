@@ -191,6 +191,10 @@ TEST_F(LocomotionMpcConfig, TheInstalledConstraintsAreUsableAndFitTheModel) {
     centre[s] = rel.translation();
   }
 
+  const double kSoleHalfLengthM = 0.09;
+  EXPECT_LE(c.contact_rectangle.x_max, kSoleHalfLengthM) << "the CoP bound lies inside the sole";
+  EXPECT_GE(c.contact_rectangle.x_min, -kSoleHalfLengthM);
+
   struct Point {
     std::size_t side;
     char what;  // c centre, 1 / 2 the sole's front / back point, a ankle, k knee
@@ -204,11 +208,13 @@ TEST_F(LocomotionMpcConfig, TheInstalledConstraintsAreUsableAndFitTheModel) {
     if (p.what == 'c' || p.what == '1' || p.what == '2') {
       offset = centre[p.side];
     }
+    // The foot's geometry: 0.6 of the sole's half length either way — not of
+    // the CoP rectangle, which is a bound inside the sole.
     if (p.what == '1') {
-      offset.x() += 0.6 * c.contact_rectangle.x_max;
+      offset.x() += 0.6 * kSoleHalfLengthM;
     }
     if (p.what == '2') {
-      offset.x() += 0.6 * c.contact_rectangle.x_min;
+      offset.x() -= 0.6 * kSoleHalfLengthM;
     }
   };
   const std::size_t L = 0;
