@@ -27,7 +27,7 @@
 namespace rtc::mpc::test_utils {
 
 /// A window of the shipped walk at @p t0, straight at @p v_x [m/s], the
-/// shipped nominal pelvis height (0.7925 m): stance from `t0 − 4 − lead`, walk
+/// shipped nominal pelvis height (0.7644 m): stance from `t0 − 4 − lead`, walk
 /// requested at once, taken over before `t0` (policy off). @p lead [s] moves
 /// the warm-up, and with it every gait event, earlier against `t0` and its
 /// node grid; 0 is the window the gates without a lead were registered on.
@@ -67,7 +67,7 @@ struct ShippedWalkWindow {
     cmd.v_x = v_x;
     cmd.v_y = 0.0;
     cmd.omega_z = 0.0;
-    cmd.base_height = 0.7925;
+    cmd.base_height = 0.7644;
     EXPECT_EQ(scheduler.Advance(t0, cmd, rtc::mpc::PlanarVelocity{}),
               rtc::mpc::GaitSchedulerError::kNoError);
     EXPECT_EQ(builder.Build(scheduler, SnapshotAt(model, stand), cmd),

@@ -13,7 +13,7 @@ namespace rtc::mpc::test_utils {
 
 /// The g1_loco profile's walk gait and reference, as shipped (copies — this
 /// package reads no profile file): walk single support 0.45 s, double support
-/// 0.1 s; q_default knees 0.1, hips and ankles −0.05, shoulder rolls ±0.15
+/// 0.1 s; q_default knees 0.6, hip and ankle pitch −0.3, shoulder rolls ±0.15
 /// (left +, right −), arm swing on.
 inline constexpr const char* kShippedGaitYaml = R"(
 sequence: [stance, slow_walk, walk]
@@ -43,17 +43,17 @@ gaits:
 inline constexpr const char* kShippedReferenceYaml = R"(
 intermediate_fraction: 0.7
 q_default:
-  left_hip_pitch_joint: -0.05
+  left_hip_pitch_joint: -0.3
   left_hip_roll_joint: 0.0
   left_hip_yaw_joint: 0.0
-  left_knee_joint: 0.1
-  left_ankle_pitch_joint: -0.05
+  left_knee_joint: 0.6
+  left_ankle_pitch_joint: -0.3
   left_ankle_roll_joint: 0.0
-  right_hip_pitch_joint: -0.05
+  right_hip_pitch_joint: -0.3
   right_hip_roll_joint: 0.0
   right_hip_yaw_joint: 0.0
-  right_knee_joint: 0.1
-  right_ankle_pitch_joint: -0.05
+  right_knee_joint: 0.6
+  right_ankle_pitch_joint: -0.3
   right_ankle_roll_joint: 0.0
   waist_yaw_joint: 0.0
   waist_roll_joint: 0.0

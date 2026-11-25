@@ -5,11 +5,11 @@ integrated_rt_controller:
         kinodynamic:
           state_weights:
             base_orientation:
-            - 63.24555320336759
-            - 63.24555320336759
+            - 316.22776601683796
+            - 126.49110640673518
             - 0.0
           terminal_weights:
             base_orientation:
-            - 63.24555320336759
-            - 63.24555320336759
+            - 50.59644256269407
+            - 25.298221281347036
             - 0.0

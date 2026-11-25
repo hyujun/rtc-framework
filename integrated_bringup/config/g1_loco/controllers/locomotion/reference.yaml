@@ -6,9 +6,13 @@
 # an unknown key refused; q_default must name exactly the actuated 1-DoF joints);
 # the template is rtc_mpc/config/reference_default.yaml.
 #
-# q_default is the original whole-body MPC's default joint state (hip pitch
-# −0.05, knee 0.1, ankle pitch −0.05, everything else 0; the hand held at 0,
-# WD-12) with the shoulder rolls opened 0.15 rad (left +, right −) so the
+# q_default: the legs are the stand pose demo_joint_controller holds before the
+# switch to this controller (the MJCF `stand` keyframe: hip pitch −0.3, knee
+# 0.6, ankle pitch −0.3), so the plan does not straighten the legs after the
+# switch — with the reference's near-straight legs (−0.05 / 0.1 / −0.05) the
+# pelvis rose 30 mm in the first seconds whatever the commanded height, and the
+# wbc servo target fell on the first step in place. Everything else 0 (the hand
+# held at 0), with the shoulder rolls opened 0.15 rad (left +, right −) so the
 # swinging hand clears the hip in the control model's collision geometry up
 # to gain 0.45, and intermediate_fraction its 70 % averaged-velocity knot. Arm
 # swing is on (the original swings shoulder pitch and elbow with its left /
@@ -18,17 +22,17 @@ locomotion_controller:
   reference:
     intermediate_fraction: 0.7
     q_default:                   # [rad] body (23, model order) then hand (10)
-      left_hip_pitch_joint: -0.05
+      left_hip_pitch_joint: -0.3
       left_hip_roll_joint: 0.0
       left_hip_yaw_joint: 0.0
-      left_knee_joint: 0.1
-      left_ankle_pitch_joint: -0.05
+      left_knee_joint: 0.6
+      left_ankle_pitch_joint: -0.3
       left_ankle_roll_joint: 0.0
-      right_hip_pitch_joint: -0.05
+      right_hip_pitch_joint: -0.3
       right_hip_roll_joint: 0.0
       right_hip_yaw_joint: 0.0
-      right_knee_joint: 0.1
-      right_ankle_pitch_joint: -0.05
+      right_knee_joint: 0.6
+      right_ankle_pitch_joint: -0.3
       right_ankle_roll_joint: 0.0
       waist_yaw_joint: 0.0
       waist_roll_joint: 0.0

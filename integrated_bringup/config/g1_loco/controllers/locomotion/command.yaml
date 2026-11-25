@@ -9,7 +9,9 @@
 # pelvis height RATE (integrated into base_height). Limits are the original
 # whole-body MPC's (2.0 / 1.2 / 1.0); the height range is its reference.info
 # defaultBaseHeight 0.7925 − maxDeltaPelvisHeight 0.4 up to the 1.0 clamp of
-# its velocity command. Retuning belongs to the sim evaluation (W8).
+# its velocity command. base_height is where the filter starts; with
+# mpc.activation_height: measured (mpc.yaml) the activation's first latch
+# replaces it with the measured height. Retuning belongs to the sim evaluation.
 locomotion_controller:
   command:
     sample_rate_hz: 100.0            # [Hz] the consumer timer's rate
@@ -18,6 +20,6 @@ locomotion_controller:
     hdot_max: 0.1                    # [m/s]
     accel_max: [0.0, 0.0, 0.0, 0.0]  # slew off
     t_stale: 0.5                     # [s]
-    base_height: 0.7925              # [m] nominal pelvis height
+    base_height: 0.7644              # [m] pelvis height of q_default's stand pose, soles down
     h_min: 0.3925                    # [m]
     h_max: 1.0                       # [m]
