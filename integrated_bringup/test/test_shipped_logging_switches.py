@@ -6,6 +6,11 @@ may carry it. The hand driver's ``enable_timing_log`` is the one switch for
 ``timing/hand_timing_log.csv`` and is spelled out in every driver file: the
 launch's empty ``enable_logging`` argument passes that value through, so the
 file states what a bring-up gets.
+
+Which way a switch points is not pinned: the shipped state is on, a rig may
+hold it off, and either is a working bring-up. What breaks a bring-up is a
+switch that is not a boolean (``"false"`` in quotes is declared as a string
+and the node refuses the parameter), so that is what is held.
 """
 
 from __future__ import annotations
@@ -43,13 +48,15 @@ def test_no_shipped_file_carries_the_removed_enable_device_log(path):
 @pytest.mark.parametrize(
     "path", DRIVER_YAML, ids=[str(p.relative_to(CONFIG_DIR)) for p in DRIVER_YAML]
 )
-def test_every_driver_file_spells_out_enable_timing_log(path):
+def test_every_driver_file_spells_out_enable_timing_log_as_a_boolean(path):
     params = _params(path)
     assert params is not None
-    assert params.get("enable_timing_log") is True
+    assert isinstance(params.get("enable_timing_log"), bool)
 
 
 @pytest.mark.parametrize("profile", ["p2", "p2_left"])
-def test_the_exhibition_profiles_ship_logging_on(profile):
-    # Turning it off is the launch's enable_logging:=false, not the shipped state.
-    assert _params(CONFIG_DIR / profile / "_base.yaml")["enable_logging"] is True
+def test_the_exhibition_profiles_logging_switches_are_booleans(profile):
+    params = _params(CONFIG_DIR / profile / "_base.yaml")
+    assert params is not None
+    for key in ("enable_logging", "enable_timing_log"):
+        assert isinstance(params.get(key), bool), key
