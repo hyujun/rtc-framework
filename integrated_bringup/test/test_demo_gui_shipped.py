@@ -266,10 +266,25 @@ def test_every_shipped_copy_plays_on_its_robot(robot):
     # limits are read from the robot's _base.yaml as it is now.
     presets, _ = s.load_shipped(str(_CONFIG), s.ShippedProfile.for_robot(robot))
     assert presets, f"config/{robot}/{s.SHIPPED_DIR} ships no {s.PRESETS_FILE}"
-    # The record of the calibration is readable (whether it matches the driver
-    # is the GUI's warning and promote's refusal, not a test).
     s.read_calibration(str(_CONFIG / robot / s.SHIPPED_DIR / s.CALIBRATION_FILE))
 
+
+@pytest.mark.parametrize("robot", _shipped_dirs())
+def test_every_shipped_driver_runs_the_calibration_its_postures_record(robot):
+    """A commit that changes the driver's signs or offsets without
+    calibration.yaml (or the other way round) would make every field PC that
+    pulls it refuse to start. Property, not values: the two files agree."""
+    prof = s.ShippedProfile.for_robot(robot)
+    assert s.check_calibration(str(_CONFIG), robot, prof.side) == ""
+
+
+def test_the_posture_code_names_the_content():
+    seq = {"steps": [{"preset": "a", "time_s": 1.0}], "tolerance_deg": 2.0}
+    code = s.posture_code(SHIPPED, seq)
+    assert len(code) == 8 and code == s.posture_code(dict(reversed(SHIPPED.items())), seq)
+    assert code != s.posture_code(EDITED, seq)
+    assert code != s.posture_code(SHIPPED, {**seq, "tolerance_deg": 3.0})
+    assert code != s.posture_code(SHIPPED, None)
 
 
 @pytest.mark.parametrize(

@@ -174,3 +174,28 @@ def test_the_tool_writes_into_its_own_checkout():
     assert text.startswith("#!/usr/bin/env python3\n")
     assert 'Path(__file__).resolve().parents[2] / "config"' in text
     assert (_TOOL.parents[2] / "config").is_dir()
+
+
+@pytest.mark.parametrize("check", [True, False])
+def test_promote_prints_the_posture_code_the_field_run_shows(trees, capsys, check):
+    """The code the author announces is the one demo_controller_sequence
+    computes from the shipped files (shipped.posture_code), per robot."""
+    assert _run(trees, "--robot", "p2", "--robot", "p2_left", *(["--check"] if check else [])) == 0
+    out = capsys.readouterr().out
+    log = trees[2]
+    for robot in ROBOTS:
+        presets = json.loads((log / f"hand_presets_{robot}.json").read_text())
+        sequence = json.loads((log / f"demo_gui_sequences_{robot}.json").read_text())
+        code = s.posture_code(presets, sequence)
+        assert f"posture code {code}" in out
+        if not check:
+            assert f"{robot}: posture code {code}" in out
+            assert code == s.posture_code(
+                _shipped(trees, robot), _shipped(trees, robot, s.SEQUENCE_FILE)
+            )
+
+
+def test_a_robot_without_a_sequence_is_said_to_be_refused_by_the_run(trees, capsys):
+    (trees[2] / "demo_gui_sequences_p2.json").unlink()
+    assert _run(trees, "--robot", "p2", "--check") == 0
+    assert "demo_controller_sequence refuses this robot" in capsys.readouterr().out
