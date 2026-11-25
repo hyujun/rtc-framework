@@ -1,28 +1,43 @@
 # demo_controller_sequence — 전시용 hand sequence CLI
 
-한 손의 저장된 posture sequence 를 GUI 없이 정해진 시간 동안 반복한다. 손마다 NUC 하나에서 bring-up 과 함께 띄운다.
+한 손의 출하 posture sequence 를 GUI 없이 정해진 시간 동안 반복한다. 손마다 NUC 하나에서 bring-up 과 함께 띄운다.
 
 ```bash
 ros2 run integrated_bringup demo_controller_sequence --robot p2 --mode loop --duration 9h
 ros2 run integrated_bringup demo_controller_sequence --robot p2_left --mode loop --duration 9h
 ```
 
-preset 과 sequence 는 GUI (`demo_controller_gui`) 의 Sequence 탭에서 만든 파일 (`<logging_data>/hand_presets_<robot>.json` · `demo_gui_sequences_<robot>.json`) 을 그대로 읽는다. CLI 는 이 파일을 고쳐 쓰지 않는다. 출하 posture 가 있는 robot 에서는 작업 사본이 정본과 다르거나 드라이버 보정이 정본의 기록과 다르면 `note:` 한 줄을 띄운다. 실행은 그래도 작업 사본으로 한다 ([demo-controller-gui.md](demo-controller-gui.md) §출하 posture).
+재생하는 것은 git 이 출하하는 정본이다: 설치된 패키지의 `config/<robot>/demo_gui/hand_presets.json` · `sequence.json`. 그 PC 의 `logging_data` 에 있는 GUI 작업 사본은 읽지 않는다. 그래서 코드를 받고 빌드한 현장 PC 는 commit 된 posture 를 그대로 재생한다. posture 를 만들고 정본으로 올리는 일은 GUI PC 에서 한다 ([demo-controller-gui.md](demo-controller-gui.md) §출하 posture). CLI 는 아무 파일도 고쳐 쓰지 않는다.
+
+**posture 코드**: presets + sequence 의 내용 hash 8자리다. 같은 코드면 같은 posture 다 — commit · clone · 복사본과 상관없다. GUI PC 의 promote 가 손마다 이 코드를 출력하고, CLI 는 `start` 를 묻기 전에 보여 준다. 운영자가 대조하는 것은 이 코드 하나다.
 
 ## 매일의 절차
 
+0. 코드를 받고 빌드한다. repo 루트에서 `git pull --ff-only` 뒤 `./build.sh robot` 을 실행한다. posture 가 바뀌지 않은 날 해도 해가 없다. bring-up 은 그 **뒤에** 띄운다 — 드라이버는 보정을 시작할 때 한 번 읽는다.
 1. NUC 마다 `ROS_DOMAIN_ID` 를 다르게 정하고 bring-up 터미널과 CLI 터미널에 같게 둔다 (같은 네트워크의 두 손 stack 은 이름이 같아 서로를 본다 — CLI 는 둘이 보이면 시작하지 않는다).
-2. tmux 를 연다 (SSH 가 끊겨도 run 이 남는다). 한 창에서 bring-up, 다른 창에서 CLI.
-3. CLI 는 stack 을 기다렸다가 (기본 60 s, `--startup-timeout`) 계획을 보여 준다: step 목록, 파일 경로, 속도 상한, 손 link 감시 여부, 로그 증가율과 디스크 여유. `start` 를 치면 시작한다 (`--yes` 는 묻지 않음).
+2. tmux 를 연다 (SSH 가 끊겨도 run 이 남는다). 한 창에서 bring-up (`enable_logging:=false`, 아래 로그와 디스크), 다른 창에서 CLI.
+3. CLI 는 stack 을 기다렸다가 (기본 60 s, `--startup-timeout`) 계획을 보여 준다: posture 코드, commit, 정본 파일의 실제 경로, 보정 확인, 속도 상한, 손 link 감시 여부, 로그 증가율과 디스크 여유, step 목록. **posture 코드가 그 손에 공지된 코드와 같으면** `start` 를 친다 (`--yes` 는 묻지 않음). 다르면 Ctrl-C 로 끝내고 0단계를 확인한다.
+   - commit 줄은 참고용이다: 정본을 바꾼 마지막 commit 과 날짜이고, 파일이 그 commit 과 다르면 `+ local changes` 가 붙는다. git 이 답하지 못하는 설치 (복사 설치 · git 없는 사본) 에서는 나오지 않는다. 파일을 옮겨 다시 commit 한 사본 (다른 저장소의 mirror) 에서는 같은 posture 라도 hash 가 다르므로 대조에 쓰지 않는다.
 4. 끝: duration 이 지나면 그 cycle 을 마치고 exit 0. 중간에 끝내려면 Ctrl-C 한 번 (cycle 끝에서), 두 번 (즉시).
 
-## 시작하지 않는 경우 (exit 3)
+## 시작하지 않는 경우
+
+ROS 를 띄우기 전에 정본을 읽고, 문제가 있으면 원인 한 줄과 함께 exit 2 로 끝난다:
+
+| 상황 | 할 일 |
+|---|---|
+| 정본 파일 (`hand_presets.json` · `sequence.json` · `calibration.yaml`) 이 없음 (`… does not exist`) | 0단계의 빌드. 정본 파일은 처음 추가될 때 빌드해야 설치본에 생긴다 |
+| 정본이 출하 검사에 걸림 (side tag · 관절 수 · 위치 한계 · sequence 의 preset 참조) | 메시지를 그대로 posture 담당자 (GUI PC) 에게 전달 |
+| workspace 를 source 하지 않음 | `source install/setup.bash` |
+
+stack 을 보고 나서는 exit 3 으로 끝난다 (아무것도 보내지 않는다):
 
 | 상황 | CLI | 할 일 |
 |---|---|---|
 | stack 이 아직 없음 · domain/RMW 불일치 | 5 s 마다 빠진 항목과 DDS 환경변수를 출력하고 기다림 → 시간 초과 | bring-up 확인, 두 터미널의 `ROS_DOMAIN_ID` · `RMW_IMPLEMENTATION` 비교 |
 | 기다리는 중 controller manager 가 사라짐 | 즉시 | 손 전원 · CAN · driver 확인 뒤 bring-up 재시작 (기동 timeout) |
-| E-STOP · 다른 손의 stack · 노드 중복 · active 가 `hand_joint_controller` 아님 · `mode` 가 `tracking` 아님 · 다른 `joint_goal` publisher · 관절 이름 불일치 | 즉시 | 메시지대로 |
+| E-STOP · 다른 손의 stack · 노드 중복 (손 driver 포함) · 손 driver 가 다른 손 (`hand_sides`) 을 돌림 · active 가 `hand_joint_controller` 아님 · `mode` 가 `tracking` 아님 · 다른 `joint_goal` publisher · 관절 이름 불일치 | 즉시 | 메시지대로 |
+| 실행 중인 손 driver 의 보정 (`joint_direction_signs` · `joint_position_offsets_deg`) 이 정본의 `calibration.yaml` 과 다름 | 즉시 | bring-up 재시작 (0단계 전에 띄운 bring-up 은 예전 보정으로 돈다). 그래도 같으면 posture 담당자에게 전달 |
 | 디스크가 로그를 감당하지 못함 | 계획 직후 | 공간 확보 또는 아래 로그 끄기 |
 
 `RMW_IMPLEMENTATION` 이 비어 있으면 CLI 가 robot launch 와 같은 `rmw_cyclonedds_cpp` 와 `cyclone_dds.xml` 을 쓴다. `sim_p2.launch.py` 는 RMW 를 고정하지 않으므로 sim 에 붙일 때는 두 터미널에 같은 `RMW_IMPLEMENTATION` 을 export 한다 — 다르면 topic 은 보이지만 파라미터 서비스가 답하지 않아 "its node is visible but does not answer" 로 기다린다.
@@ -42,7 +57,7 @@ preset 과 sequence 는 GUI (`demo_controller_gui`) 의 Sequence 탭에서 만�
 
 ## 요약 파일
 
-`<logging_data>/sequence_runs/<YYMMDDTHHMMSS>_<robot>.json` — 시작, 60 s 마다, 끝에 원자적으로 쓴다. cycle 수, 보낸 목표 수, step 별 도달 횟수 · 평균/최대 도달 시간 · 최대 최종 오차, dwell 이탈 기록, 종료 사유와 exit code. 마지막 쓰기가 실패하면 exit 4.
+`<logging_data>/sequence_runs/<YYMMDDTHHMMSS>_<robot>.json` — 시작, 60 s 마다, 끝에 원자적으로 쓴다. 재생한 posture 코드 · commit · 정본 파일의 실제 경로, cycle 수, 보낸 목표 수, step 별 도달 횟수 · 평균/최대 도달 시간 · 최대 최종 오차, dwell 이탈 기록, 종료 사유와 exit code. 마지막 쓰기가 실패하면 exit 4.
 
 ## 로그와 디스크
 
@@ -68,7 +83,7 @@ controller 의 세션 파일과 손 driver 의 `timing/hand_timing_log.csv` 가 
 
 ## GUI 와 다른 점
 
-GUI 는 preset 파일을 고치고 (반대 손 파일은 옆으로 옮기고 기본값을 씀), 속도 설정이 실패해도 목표를 보내고, E-STOP 미수신 · mode 미상을 통과시킨다. CLI 는 읽기만 하고, 모르면 시작하지 않는다 (fail-closed). controller 는 목표를 거부해도 답하지 않으므로, 조용한 거부는 도달 timeout 으로만 드러난다.
+GUI 는 logging_data 의 작업 사본에서 돌며 그것을 고치고, 속도 설정이 실패해도 목표를 보내고, E-STOP 미수신 · mode 미상을 통과시킨다. CLI 는 정본을 읽기만 하고, 모르면 시작하지 않는다 (fail-closed). sim (`sim_p2`) 에는 손 driver 가 없으므로 보정은 확인하지 않는다 (계획 화면에 그렇게 나온다). controller 는 목표를 거부해도 답하지 않으므로, 조용한 거부는 도달 timeout 으로만 드러난다.
 
 ## 한계
 

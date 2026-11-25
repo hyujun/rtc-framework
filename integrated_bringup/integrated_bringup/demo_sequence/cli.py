@@ -1,6 +1,9 @@
-"""``demo_controller_sequence``: one hand's saved sequence, looped headless.
+"""``demo_controller_sequence``: one hand's shipped sequence, looped headless.
 
     ros2 run integrated_bringup demo_controller_sequence --robot p2 --mode loop --duration 9h
+
+It plays what git ships for the robot (``config/<robot>/demo_gui/`` of the
+installed package), so a field PC needs only pull, build and this command.
 
 Arguments and exit codes live here; the run is ``orchestrator``, its inputs
 ``files``, the ROS side ``ros_io``. Operator guide:
@@ -65,7 +68,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_HOLD_ABORT_AFTER_S,
         help="a dwell drift lasting longer aborts (default 1s, 0.1s .. 60s)",
     )
-    p.add_argument("--logging-root", help="where the preset / sequence files are (absolute)")
     p.add_argument("--yes", action="store_true", help="start without typing 'start'")
     return p
 
@@ -77,27 +79,19 @@ def check_args(args: argparse.Namespace) -> str:
         return "--hold-abort-after must be between 0.1s and 60s"
     if args.startup_timeout <= 0.0:
         return "--startup-timeout must be positive"
-    if args.logging_root is not None and not os.path.isabs(args.logging_root):
-        return "--logging-root must be an absolute path"
     if not args.yes and not sys.stdin.isatty():
         return "no terminal to type 'start' in (nohup, a service, a pipe) — pass --yes"
     return ""
 
 
-def shipped_notes(robot: str, inputs) -> list[str]:
-    """The working copy against the robot's shipped postures — notes only: the
-    run plays the working copy, as it always has (demo_gui.shipped)."""
+def shipped_config_dir() -> str:
+    """The installed package's ``config``: where the shipped postures are read."""
     from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 
-    from ..demo_gui.shipped import working_notes
-
     try:
-        share = get_package_share_directory("integrated_bringup")
+        return os.path.join(get_package_share_directory("integrated_bringup"), "config")
     except PackageNotFoundError:
-        return []
-    return working_notes(
-        os.path.join(share, "config"), robot, inputs.preset_path, inputs.sequence_path
-    )
+        raise FileProblem("integrated_bringup is not installed — source the workspace") from None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,7 +101,9 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     if args.duration < SHORT_DURATION_WARN_S:
         print(f"note: --duration {args.duration / 3600:.2f} h is under 8 h", file=sys.stderr)
-    root, problem = env.logging_root(args.logging_root)
+    # Where the run writes (its summary, the per-robot lock) and the disk it
+    # watches: the stack's session folders go there too.
+    root, problem = env.logging_root()
     if problem:
         print(f"error: {problem}", file=sys.stderr)
         return EXIT_USAGE
@@ -117,22 +113,11 @@ def main(argv: list[str] | None = None) -> int:
     # argument / file errors need no ROS at all.
     from ..demo_gui.discovery import ROBOT_PROFILES
 
-    profile = ROBOT_PROFILES[args.robot]
     try:
-        inputs = load_run_inputs(
-            root, profile.preset_token(), profile.side, len(profile.shape.hand_motor_names)
-        )
+        inputs = load_run_inputs(shipped_config_dir(), args.robot)
     except FileProblem as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    for line in shipped_notes(args.robot, inputs):
-        print(f"note: {line}", file=sys.stderr)
-    # The disk checks watch where the stack writes, which --logging-root (the
-    # preset files) need not be.
-    stack_root, problem = env.logging_root(None)
-    if problem:
-        print(f"note: {problem}; the disk checks watch {root}", file=sys.stderr)
-        stack_root = root
     from .ros_io import run
 
-    return run(args, profile, inputs, root, stack_root)
+    return run(args, ROBOT_PROFILES[args.robot], inputs, root)

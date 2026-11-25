@@ -23,7 +23,7 @@ from ..demo_gui.preset_speed import HandSpeedPlan, plan_hand_speed
 from ..demo_gui.sequence import DWELLING, MODE_LOOP, MOVING, ResolvedStep, SequenceRunner
 from .files import RunInputs
 from .gates import DwellWatch, disk_verdict, worst_error
-from .readiness import READY, REFUSE, Observation, assess, runtime_abort
+from .readiness import READY, REFUSE, Observation, assess, driver_present, runtime_abort
 
 EXIT_DONE = 0
 EXIT_ABORT = 1
@@ -161,7 +161,7 @@ class Orchestrator:
             self._finish(EXIT_INTERRUPTED, "stopped before the start — nothing was sent")
             return
         self._cm_seen = self._cm_seen or obs.cm_nodes > 0
-        verdict = assess(obs, self._cm_seen)
+        verdict = assess(obs, self._cm_seen, self.cfg.inputs.calibration)
         if verdict.kind == REFUSE:
             self._finish(EXIT_NOT_READY, verdict.reason)
             return
@@ -211,8 +211,12 @@ class Orchestrator:
         lines = [
             f"robot {self.cfg.robot}: {len(inputs.steps)} steps, loop for "
             f"{self.cfg.duration_s / 3600:.2f} h, tolerance {inputs.tolerance_deg:.1f} deg",
+            f"  posture code {inputs.posture_code} — compare it with the code announced "
+            "for this robot",
+            *([f"  commit   {inputs.provenance}"] if inputs.provenance else []),
             f"  presets  {inputs.preset_path}",
             f"  sequence {inputs.sequence_path}",
+            f"  calibration {self._calibration_text(obs)}",
             f"  speed cap {obs.cap:.2f} rad/s, hand link "
             + ("required" if obs.link_pubs > 0 else "not published (sim)"),
             f"  logs grow {self._rate / 1e3:.0f} kB/s, {self.io.free_bytes() / 1e9:.1f} GB free",
@@ -221,9 +225,14 @@ class Orchestrator:
             lines.append(
                 f"  {i:2d}. {s.preset:24s} move {s.time_s:6.2f} s  dwell {s.dwell_s:6.2f} s"
             )
-        if inputs.untagged:
-            lines.append(f"  presets without a side tag: {', '.join(inputs.untagged)}")
         return "\n".join(lines)
+
+    def _calibration_text(self, obs: Observation) -> str:
+        if self.cfg.inputs.calibration is None:
+            return "not checked (no record)"
+        if not driver_present(obs):
+            return "not checked (no hand driver — sim)"
+        return "the running driver's = the recorded one"
 
     def _start(self, obs: Observation, now: float) -> None:
         self._link_required = obs.link_pubs > 0
@@ -392,6 +401,8 @@ class Orchestrator:
             "updated": self.io.wall(),
             "elapsed_s": round(max(now - self._clock.started, 0.0), 1),
             "duration_s": self.cfg.duration_s,
+            "posture_code": inputs.posture_code,
+            "commit": inputs.provenance,
             "preset_file": inputs.preset_path,
             "sequence_file": inputs.sequence_path,
             "tolerance_deg": inputs.tolerance_deg,
