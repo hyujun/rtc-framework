@@ -6,16 +6,24 @@
 # an unknown key is refused). The contact set and the torso frame are model.*'s;
 # this file only parameterises them (contact_overrides.<contact name> per foot).
 #
-# Values are those the W6-F01 gates were registered on (#1039): every foot
-# task works while its contact is released (swing), the torso task holds the
-# orientation only, the force task pulls λ toward the MPC's. Further retuning
-# belongs to the sim evaluation (W8).
-#
-# Except contact.patch_half_length_y and tasks.force.weight, set by the walking
-# evaluation on the sim: with the CoP bound at the sole's edge (0.03) the stance
-# CoP sat on that bound most of the single support and the ankle torque rolled
-# the foot over its edge; the bound inset to 0.02 and the force task 100× harder
-# (λ kept nearer the plan's) together brought the stance roll down by half.
+# Task gains follow one rule per task (2026-11-25 initial-gain bring-up):
+# kd = 2 ζ √kp with ζ ≈ 0.7 for the CoM, torso and posture tasks and ζ ≈ 1
+# for the feet and the contact Baumgarte (kd = 2 √kp). The CoM task is the
+# slowest loop (√14 ≈ 3.7 rad/s, below the MPC's replanning rate) and, with
+# weight 100, as hard as the feet; the torso and posture tasks only shape
+# what is left (weights 5 and 0.2). The posture weight is also the only
+# regularisation of joints no other task reaches (the hand joints of the
+# actuated model): at 0.1 that model's QP stops converging within max_iter
+# (test_humanoid_model_config; 0.2 converges). The force task (0.04) keeps λ near
+# the MPC's without overruling the CoM. The CoP bound is 10 mm inside the sole's
+# length and 5 mm inside its width (0.09 × 0.03). On the sim (lock-step, n = 2
+# per arm, 2026-11-24) these values against the previous set — CoM 50 / 14 ·
+# weight 10, torso 80 / 20 · 10, posture 50 / 10 · 1, feet 400 / 40, force 0.1,
+# CoP 0.09 × 0.02 — stood as well and, stepping in place for 26 s, survived
+# 2 of 2 (previous 1 of 2) with a quarter of the horizontal drift (0.45 m vs
+# 1.3–2.1 m), at posture weight 0.05; on the plant with joint armature
+# (2026-11-25) 0.2 stepped as 0.05 did (2 of 2) and 1.0 fell after 25–33 s.
+# Walking was not re-evaluated with them.
 #
 # solver.warm_start / constraints.contact.inactive_lambda: each solve starts
 # from the previous result with ProxQP's proximal step reset (from the
@@ -37,31 +45,31 @@ locomotion_controller:
     contact:
       friction_coeff: 0.4
       friction_faces: 4
-      patch_half_length_x: 0.09        # [m] sole half length
-      patch_half_length_y: 0.02        # [m] CoP bound, inside the sole half width (0.03)
+      patch_half_length_x: 0.08        # [m] CoP bound, inside the sole half length (0.09)
+      patch_half_length_y: 0.025       # [m] CoP bound, inside the sole half width (0.03)
       torsional_friction_coeff: 0.0
       t_ramp: 0.0                      # [s] force ramp on a support change
     tasks:
-      posture: {kp: 50.0, kd: 10.0, weight: 1.0}
+      posture: {kp: 55.0, kd: 10.4, weight: 0.2}
       feet:                            # [lin; ang], world axes
-        kp: [400, 400, 400, 400, 400, 400]
-        kd: [40, 40, 40, 40, 40, 40]
+        kp: [320, 320, 320, 320, 320, 320]
+        kd: [36, 36, 36, 36, 36, 36]
         weight: 100.0
       torso:
-        kp: [0, 0, 0, 80, 80, 80]
-        kd: [0, 0, 0, 20, 20, 20]
+        kp: [0, 0, 0, 40, 40, 40]
+        kd: [0, 0, 0, 9, 9, 9]
         mask: [0, 0, 0, 1, 1, 1]
-        weight: 10.0
-      force: {weight: 0.1}
+        weight: 5.0
+      force: {weight: 0.04}
       # The CoM over its reference in the horizontal plane (the height is the
       # posture's). Without it nothing holds the base's horizontal position
       # against the plant: on the sim the stance rocked from foot to foot at
       # ~5.6 Hz and the feet slid ~0.1 m in 10 s.
-      com: {kp: [50, 50, 0], kd: [14, 14, 0], weight: 10.0}
+      com: {kp: [14, 14, 0], kd: [5.2, 5.2, 0], weight: 100.0}
     constraints:
       eom: {}
       contact:                         # Baumgarte on the stance feet, [lin; ang]
-        baumgarte: {kp: [0, 0, 100, 80, 80, 80], kd: [20, 20, 10, 20, 20, 20]}
+        baumgarte: {kp: [0, 0, 100, 100, 100, 100], kd: [20, 20, 20, 20, 20, 20]}
         inactive_lambda: zero
       friction_cone: {}
       joint_limit: {position_margin: 0.05, velocity_margin: 0.1}
