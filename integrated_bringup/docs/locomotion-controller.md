@@ -134,7 +134,7 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
 
 실기에서도 얻는 값과 sim 에서만 얻는 참값은 **다른 파일**이다.
 
-- **R tier** — `locomotion_diag.csv` (위). sim 에서만 얻는 값은 이 파일에 없다. 끝에 붙인 열 (기존 열은 `test_locomotion_diag_golden` 이 고정한다):
+- **R tier** — `locomotion_diag.csv` (위). sim 에서만 얻는 값은 이 파일에 없다. 끝에 붙인 열 (기존 열은 `test_locomotion_diag_contract` 이 고정한다):
   - `state_source` — 0 = truth lane 복사, 1 = 추정.
   - `wrench_des_<c>_{fx,fy,fz,tx,ty,tz}` — 그 tick 에 WBC QP 가 받은 접촉 wrench 목표 (`lambda_des`: stand · walk 는 plan 의 MPC wrench, idle 은 지렛대 규칙). world 축 · contact frame 원점 · 바닥→발. QP 가 돌지 않은 tick (waiting · E-STOP · 이미 latch 된 fault · degraded hold) 은 NaN — QP 가 돌고 실패한 tick 은 받은 목표를 남긴다. 점 접촉 (dim 3) 의 모멘트도 NaN.
   - `servo_kp_<j>` · `servo_kd_<j>` — `tau_servo_<j>` 의 두 항 kp (q_cmd − q) 와 −kd q̇ (합은 반올림 차이까지 `tau_servo`). damping tick 의 kp 항은 0.

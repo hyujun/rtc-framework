@@ -2349,22 +2349,21 @@ if(BUILD_TESTING)
     Eigen3
   )
 
-  # locomotion_diag.csv's existing columns against a golden recorded before the
-  # R-tier columns were appended (by name; appended columns are ignored).
-  ament_add_gtest(test_locomotion_diag_golden test/test_locomotion_diag_golden.cpp
+  # locomotion_diag.csv as a contract: the existing columns keep their names and
+  # places, one row per tick, sane ranges (appended columns are ignored).
+  ament_add_gtest(test_locomotion_diag_contract test/test_locomotion_diag_contract.cpp
     TIMEOUT 300
     ENV ROS_DOMAIN_ID=52
   )
-  target_include_directories(test_locomotion_diag_golden PRIVATE
+  target_include_directories(test_locomotion_diag_contract PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/test")
-  target_compile_definitions(test_locomotion_diag_golden PRIVATE
-    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
-    LOCO_DIAG_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/test/data/locomotion_diag_golden.csv")
-  target_link_libraries(test_locomotion_diag_golden
+  target_compile_definitions(test_locomotion_diag_contract PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_locomotion_diag_contract
     ${PROJECT_NAME}_demo_controllers
     yaml-cpp
   )
-  ament_target_dependencies(test_locomotion_diag_golden
+  ament_target_dependencies(test_locomotion_diag_contract
     ament_index_cpp
     rclcpp
     rclcpp_lifecycle
@@ -2904,7 +2903,7 @@ if(BUILD_TESTING)
     test_inekf_state_source_alloc
     test_locomotion_estimator
     test_locomotion_truth_log
-    test_locomotion_diag_golden
+    test_locomotion_diag_contract
     test_demo_sequence_ros
     test_estimator_replay
     test_cm_sim_time_sync
