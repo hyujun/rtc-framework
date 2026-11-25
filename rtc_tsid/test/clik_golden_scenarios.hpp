@@ -1,14 +1,12 @@
 /// @file clik_golden_scenarios.hpp
-/// @brief The scenarios of the CLIK golden-vector regression, apart from the
-///        recorded table and its assertions (test_clik_golden.cpp keeps those).
+/// @brief The scenarios shared by the CLIK suites, apart from their assertions.
 ///
-/// Two suites run them: test_clik_golden through the SE3 Compute() overload,
-/// against the recorded table, and test_clik_multiframe through the
-/// multi-frame overload, against the first — so the inputs must be ONE
-/// definition. `compute` is the only thing a suite supplies.
+/// Two suites run them: test_clik_scenarios through the SE3 Compute() overload
+/// (every branch fires), and test_clik_multiframe through the multi-frame
+/// overload, against the single-task overload in the same run — so the inputs
+/// must be ONE definition. `compute` is the only thing a suite supplies.
 ///
-/// Changing anything here changes what the recorded table means: the rules in
-/// test_clik_golden.cpp's header apply (E-6 / PROC-6).
+/// Nothing recorded from a host is compared against (PROC-6).
 
 #pragma once
 

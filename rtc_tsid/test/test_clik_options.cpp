@@ -6,8 +6,7 @@
 ///     axis < 0.5°;
 ///   - every option on, both overloads: no heap allocation.
 ///
-/// Every option defaults off; "off ⇒ bit-identical" is the golden-vector
-/// suite's job (test_clik_golden.cpp). This file checks what each option does
+/// Every option defaults off. This file checks what each option does
 /// when it is ON.
 
 #include <gtest/gtest.h>

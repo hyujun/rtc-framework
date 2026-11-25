@@ -219,7 +219,7 @@ if(BUILD_TESTING)
 
   # Own binaries from here on: test_se3_task / test_object_se3_task include
   # test/alloc_counter.hpp, the three CLIK suites carry an inline replacement,
-  # and test_clik_golden needs its own compile definition.
+  # and test_clik_scenarios needs the test/ include dir.
   add_tsid_gtest(test_se3_task)
 
   # Stage B-4: ObjectSE3Task ((Gᵀ)⁺·J_c kinematic) + ObjectStateProvider.
@@ -232,15 +232,10 @@ if(BUILD_TESTING)
   # world, judged against the same task stated in the world / as a relative task.
   add_tsid_gtest(test_rotated_base_frame)
 
-  # Golden-vector regression of the default CLIK path.
-  # Bit-exact only in the configuration the table was recorded in (Release, no
-  # sanitizer); other builds compare with a relative tolerance (see the test
-  # file header).
-  add_tsid_gtest(test_clik_golden)
-  target_include_directories(test_clik_golden PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
-  if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT CMAKE_CXX_FLAGS MATCHES "sanitize")
-    target_compile_definitions(test_clik_golden PRIVATE RTC_CLIK_GOLDEN_EXACT=1)
-  endif()
+  # The shared CLIK scenarios reach every branch of Compute() (properties of the
+  # current run; nothing recorded).
+  add_tsid_gtest(test_clik_scenarios)
+  target_include_directories(test_clik_scenarios PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/test)
 
   # CLIK options (each defaults off).
   add_tsid_gtest(test_clik_options)
@@ -250,7 +245,7 @@ if(BUILD_TESTING)
   add_tsid_gtest(test_clik_accel_constraint)
 
   # The multi-frame Compute() overload. Replays the universe
-  # scenarios of the golden table through it (test/clik_golden_scenarios.hpp),
+  # scenarios of the shared scenario set through it (test/clik_golden_scenarios.hpp),
   # and runs on three models: the Panda, the 17-DoF tree above, and the
   # sibling rtc_urdf_bridge's serial 6-DoF fixture (source-tree path, test-only
   # — the layout rtc_controllers' tests already rely on), whose 6 columns put
