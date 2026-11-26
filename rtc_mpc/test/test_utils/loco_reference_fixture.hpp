@@ -148,6 +148,7 @@ inline YAML::Node ReferenceYaml(const pinocchio::Model& model, const std::vector
   n["arm_swing"]["enabled"] = arm_enabled;
   n["arm_swing"]["gain"] = 0.15;
   n["arm_swing"]["phase_offset"] = 0.15;
+  n["foothold"]["enabled"] = false;
   n["arm_swing"]["joints"] = YAML::Node(YAML::NodeType::Sequence);
   for (const auto& [name, sign] : arm_joints) {
     YAML::Node j;

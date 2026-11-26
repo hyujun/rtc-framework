@@ -75,6 +75,7 @@ arm_swing:
     - {name: left_elbow_joint, sign: -1}
     - {name: right_shoulder_pitch_joint, sign: 1}
     - {name: right_elbow_joint, sign: 1}
+foothold: {enabled: false}
 )";
 
 /// The shipped swing and terrain sections (the values of `ShippedSwing()`).

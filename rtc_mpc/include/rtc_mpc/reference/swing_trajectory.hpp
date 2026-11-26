@@ -106,7 +106,7 @@ struct SwingConfig {
 [[nodiscard]] SwingError ValidateSwingConfig(const SwingConfig& cfg) noexcept;
 
 /// @brief One cubic Hermite segment on `[t0, t0 + dt]` (file comment), built
-///        only by @ref TwoSegmentCubic::Build.
+///        by @ref TwoSegmentCubic::Build or @ref BuildCubicSegment.
 struct CubicSegment {
   double t0{0.0};
   double dt{1.0};
@@ -118,6 +118,13 @@ struct CubicSegment {
   ///        (`t` NaN reads as `t0`).
   void Evaluate(double t, double& value, double& rate, double& acceleration) const noexcept;
 };
+
+/// @brief The one segment through `(t0, p0, v0)` and `(t1, p1, v1)`.
+///        `kNonFinite` for a non-finite input, `kDegenerateInterval` when
+///        `t1 − t0 ≤ kMinSwingDuration`, `kCoefficientOverflow` for a
+///        coefficient. `out` is written only on `kNoError`.
+[[nodiscard]] SwingError BuildCubicSegment(double t0, double p0, double v0, double t1, double p1,
+                                           double v1, CubicSegment& out) noexcept;
 
 /// @brief Two segments meeting at `t_mid = (t0 + t1) / 2` with zero rate.
 class TwoSegmentCubic {

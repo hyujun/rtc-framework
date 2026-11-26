@@ -869,6 +869,7 @@ arm_swing:
   joints:
     - {name: joint_a, sign: 1}
     - {name: joint_b, sign: -1}
+foothold: {enabled: false}
 )";
 
 ReferenceConfig Sentinel() {

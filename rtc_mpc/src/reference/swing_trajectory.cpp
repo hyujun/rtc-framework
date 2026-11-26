@@ -119,6 +119,24 @@ void CubicSegment::Evaluate(double t, double& value, double& rate,
   acceleration = (6.0 * c3 * tau + 2.0 * c2) * inv_dt2;
 }
 
+SwingError BuildCubicSegment(double t0, double p0, double v0, double t1, double p1, double v1,
+                             CubicSegment& out) noexcept {
+  if (!std::isfinite(t0) || !std::isfinite(t1) || !std::isfinite(p0) || !std::isfinite(v0) ||
+      !std::isfinite(p1) || !std::isfinite(v1)) {
+    return SwingError::kNonFinite;
+  }
+  if (!(t1 - t0 > kMinSwingDuration)) {
+    return SwingError::kDegenerateInterval;
+  }
+  const CubicSegment s = Segment(t0, p0, v0, t1, p1, v1);
+  if (!std::isfinite(s.c1) || !std::isfinite(s.c2) || !std::isfinite(s.c3) ||
+      !std::isfinite(s.inv_dt2)) {
+    return SwingError::kCoefficientOverflow;
+  }
+  out = s;
+  return SwingError::kNoError;
+}
+
 SwingError TwoSegmentCubic::Build(double t0, double p0, double v0, double p_mid, double t1,
                                   double p1, double v1) noexcept {
   if (!std::isfinite(t0) || !std::isfinite(t1) || !std::isfinite(p0) || !std::isfinite(v0) ||

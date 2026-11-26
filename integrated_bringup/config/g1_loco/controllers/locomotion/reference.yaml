@@ -17,7 +17,9 @@
 # to gain 0.45, and intermediate_fraction its 70 % averaged-velocity knot. Arm
 # swing is on (the original swings shoulder pitch and elbow with its left /
 # right phase; here the phase is the gait's): its gain was tuned in W8-F05
-# (#1155) and the shipped 0.15 kept.
+# (#1155) and the shipped 0.15 kept. The foothold (swing x · y · yaw planned
+# to a landing target from the command) ships off: the feet's planar reference
+# is where they are measured, as before the key existed.
 locomotion_controller:
   reference:
     intermediate_fraction: 0.7
@@ -64,3 +66,5 @@ locomotion_controller:
         - {name: left_elbow_joint, sign: -1}
         - {name: right_shoulder_pitch_joint, sign: 1}
         - {name: right_elbow_joint, sign: 1}
+    foothold:
+      enabled: false             # landing-target reference off until its batch (#1193)

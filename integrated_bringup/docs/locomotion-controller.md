@@ -92,7 +92,7 @@ configure 때 정하고 실행 중에는 바꾸지 않는다.
 | `runtime.yaml` | `command_type: pd_feedforward` · `pd_feedforward {kp, kd}` (본체 roster 순) · `fault {max_source_bad_ticks, damping_kd, pose_guard {base_tilt_rad}}` ((0, π/2], 필수) · `estimator {source: truth | inekf, body_max_age_ms, hand_max_age_ms, inekf {imu_frame, imu, core, fsm, init, policy}}` (`inekf` 는 `source: inekf` 면 필수이고, 있으면 source 와 무관하게 검사한다. `imu.sample_period_s` = 1 / control_rate 이어야 하고, `imu_frame` 은 root 관절에 붙은 frame 이어야 한다. schema 는 `controllers/locomotion/inekf_source_config.hpp`) · `velocity_command {topic}` (선택 — Twist 명령) · `topics` (본체 → 손 순) · `logs` |
 | `whole_body_qp.yaml` | `whole_body_qp.*` — task · 제약 · `health {max_invalid_ticks, recover_valid_ticks}` · `com` task (수평 CoM 고정) |
 | `mpc.yaml` | `mpc.*` — 소비자 키 `enabled` · `period_nodes` · `max_policy_age_s` · `riccati {enabled, …}` · `sanity {joint_delta_rad, base_speed, wrench_scale}` (`mpc:` 가 있으면 전부 필수, 의미는 헤더) · `sync {mode: free_run \| lockstep, delivery_ticks, wait_timeout_s}` (선택; 아래) · `activation_height: config \| measured` (선택, 없으면 `config`; 아래 명령 절) + OCP (`kinodynamic`) · `solver` |
-| `command.yaml` · `gait.yaml` · `swing.yaml` · `reference.yaml` | `mpc.enabled` 일 때 MPC 의 stage reference 로 조립 — `reference.q_default` 의 손 관절은 MPC 동안 손의 hold 자세 |
+| `command.yaml` · `gait.yaml` · `swing.yaml` · `reference.yaml` | `mpc.enabled` 일 때 MPC 의 stage reference 로 조립 — `reference.q_default` 의 손 관절은 MPC 동안 손의 hold 자세. `reference.foothold.enabled` 는 swing 발 x · y · yaw 를 명령 속도로 정한 착지 목표로 계획한다 (식: `rtc_mpc` `stage_reference_builder.hpp`); 출하는 `false` (측정 발 자리 그대로) |
 
 `b7_loco` 의 값은 `g1_loco` 의 것을 옮긴 잠정값이다 (`mpc:` 없음 = MPC 없음). `estimator.inekf` 절은 `g1_loco` 에만 있다.
 

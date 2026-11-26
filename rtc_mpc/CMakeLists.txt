@@ -339,6 +339,7 @@ if(BUILD_TESTING)
         RTC_MPC_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
   endif()
   add_mpc_gtest(test_stage_reference_alloc_gate)
+  add_mpc_gtest(test_foothold_reference)
   add_mpc_gtest(test_locomotion_phase_manager)
   add_mpc_gtest(test_locomotion_phase_manager_alloc_gate)
 

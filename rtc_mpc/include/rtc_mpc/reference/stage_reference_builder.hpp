@@ -43,8 +43,32 @@
 ///    the lift-off @ref GaitScheduler::SwingStart reports — unless that is
 ///    clamped at the gait's take-over, when the open-start plan stands) or the terrain
 ///    height under that x · y in stance; twist · acceleration carry only ż · z̈.
+///    With the foothold on (below) x · y · yaw are planned instead.
 ///  - **wrench**: every stance contact `F_z = m·|g| / n_stance`, else 0; a
 ///    flight node is all zero.
+///
+/// **Foothold** (`foothold.enabled`; off, the horizon is byte for byte the one
+/// above). Each swing stretch `[t_lo, t_td)` of contact `c` in the horizon gets
+/// a landing target from the base reference at touch-down:
+/// `p_land = p_ref(t_td) + R_z(ψ_ref(t_td))·o_c + (T_st/2)·v_c`,
+/// `ψ_land = ψ_ref(t_td) + ψ_c + (T_st/2)·ω_c` — `p_ref` · `ψ_ref` the base
+/// knots above (continued past `H` at `v_c` · `ω_c`), `(o_c, ψ_c)` the planar
+/// offset and yaw of the contact from the base at `q_default` (forward
+/// kinematics at Init, base at the origin, level), `T_st` the stance after
+/// touch-down: up to the contact's next lift-off in the window, else the gait
+/// table's (@ref GaitScheduler::table — the stance run of the gait in force at
+/// `t_td` from its phase there, one period when the contact never lifts). x ·
+/// y · yaw run one cubic Hermite each from the lift-off pose (the previous
+/// landing target, else the measured one), at rest, to the landing target at
+/// rest; a stretch under way at `t0` starts at `t0` from the measured pose and
+/// world velocity of the contact frame. The yaw target is taken within π of the
+/// start. `contact_pose` x · y · yaw, `contact_twist` ẋ · ẏ · ω_z and
+/// `contact_acceleration` ẍ · ÿ · α_z come from those curves; z is the swing
+/// plan above. Stance nodes after a touch-down hold its landing target, a
+/// contact in stance before its first lift-off the measured pose. Fallbacks: a
+/// stretch whose touch-down is beyond the window (`open_end`) holds its
+/// lift-off pose (twist 0); one too short to fit a curve
+/// (`≤ kMinSwingDuration`) holds the landing target.
 ///
 /// YAML schema (`reference:`, every key required; `q_default` must name
 /// exactly the joints the caller lists, `joints` only those):
@@ -58,6 +82,8 @@
 ///   phase_offset: 0.15         # gait-phase offset of the sine
 ///   joints:                    # the swinging joints and their sign (±1); checked even when off
 ///     - {name: <joint>, sign: 1}
+/// foothold:
+///   enabled: false             # plan swing x · y · yaw to a landing target (file comment)
 /// ```
 
 #include "rtc_mpc/model/robot_model_handler.hpp"
@@ -119,7 +145,8 @@ enum class ReferenceError {
   kNoSchedule,        ///< the scheduler has not built a window (`schedule_id == 0`)
   kScheduleMismatch,  ///< the window's contact count is not the model's, or a mode bit beyond it
   kSnapshotMismatch,  ///< `nq` / `nv` differ, or the free-flyer quaternion is not unit
-  kNonFiniteInput,    ///< a NaN / ±inf in the snapshot or the command, or a knot that overflowed
+  kNonFiniteInput,    ///< a NaN / ±inf in the snapshot or the command, or a knot (or a foothold
+                      ///< curve) that overflowed
   kWindowTooShort,    ///< a node falls outside the window (@ref SampleNodes)
   kBaseBelowTerrain,  ///< `base_height ≤` the terrain height under the base
   kSwingCapacity,     ///< more swing stretches than @ref kMaxSwingsPerContact
@@ -141,6 +168,7 @@ struct ReferenceConfig {
   double arm_swing_gain{0.0};
   double arm_swing_phase_offset{0.0};
   std::vector<ArmSwingJoint> arm_swing_joints;
+  bool foothold_enabled{false};
 };
 
 /// @brief Parse the `reference:` map. `joint_names` are the joints `q_default`
@@ -204,6 +232,19 @@ class StageReferenceBuilder {
                                          const FilteredCommand& cmd, const NodeGrid* grid,
                                          std::int64_t first_index) noexcept;
 
+  /// One swing stretch's x · y · yaw (foothold on).
+  struct Foothold {
+    CubicSegment x{}, y{}, psi{};
+    double land_x{0.0}, land_y{0.0}, land_psi{0.0};  ///< the target (or the held pose)
+    bool curve{false};    ///< false: the stretch holds (land_x, land_y, land_psi)
+    bool landing{false};  ///< it touches down in the window (stance after it holds the target)
+  };
+
+  /// A contact's planar pose at `q_default` relative to the base (Init).
+  struct Nominal {
+    double x{0.0}, y{0.0}, psi{0.0};
+  };
+
   struct ArmJoint {
     int idx_q{0};
     double sign{1.0};
@@ -218,6 +259,8 @@ class StageReferenceBuilder {
   std::vector<double> q_default_{};     ///< nq, joint entries (base zero)
   std::vector<ArmJoint> arm_joints_{};  ///< empty when arm swing is off
   std::array<std::array<SwingTrajectory, kMaxSwingsPerContact>, kMaxContacts> swings_{};
+  std::array<std::array<Foothold, kMaxSwingsPerContact>, kMaxContacts> footholds_{};
+  std::array<Nominal, kMaxContacts> nominal_{};
   std::array<std::uint32_t, kMaxHorizon + 1> modes_{};
   SwingConfig swing_{};
   SurfaceFrame terrain_{};
@@ -227,6 +270,7 @@ class StageReferenceBuilder {
   double gain_{0.0};
   double phase_offset_{0.0};
   int n_nodes_{0};
+  bool foothold_{false};
   bool initialized_{false};
 };
 
