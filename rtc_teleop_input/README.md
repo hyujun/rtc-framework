@@ -52,7 +52,7 @@ ros2 launch rtc_teleop_input teleop_input.launch.py joy_topic:=<topic> input:=pa
 | reset_fault (`back`) | BACK 1 s | `Backspace` 1 s |
 | help | `help_combo` (기본 없음) | `F1` (`help_key`) |
 
-전환 · E-STOP 해제 · Trigger 버튼은 기본으로 없고 소비자가 `params_file` 로 준다. hold 버튼은 deadman · E-STOP 누름 · 다른 hold 버튼이 있으면 처음부터 다시 시작하고, E-STOP 해제는 E-STOP 버튼도 놓여 있어야 한다 (규칙 전문: [`model.py`](rtc_teleop_input/model.py) 서두). help 는 패드 그림에 번호를, 그 아래 표에 기능 · 키를 보인다. `help_combo` 는 `input:=pad` 에서만 동작한다.
+전환 · E-STOP 해제 · Trigger 버튼은 기본으로 없고 소비자가 `params_file` 로 준다. hold 버튼은 deadman · 다른 hold 버튼이 눌려 있으면 처음부터 다시 세고, E-STOP 을 누르면 다시 누를 때까지 보내지 않는다 (규칙 전문: [`model.py`](rtc_teleop_input/model.py) 서두). help 는 패드 그림에 번호를, 그 아래 표에 기능 · 키를 보인다. `help_combo` 는 `input:=pad` 에서만 동작한다.
 
 - 키의 자동 반복은 무시한다. 창이 포커스를 잃으면 모든 키 · 스틱 · 버튼을 놓고, 다시 누를 때까지 놓인 채다.
 - `pad` 에서 상류가 `pad_timeout_s` (0.25 s) 넘게 조용하거나 크기가 다른 Joy 가 오면 놓은 상태를 낸다. 창에는 "pad lost" 가 뜬다.

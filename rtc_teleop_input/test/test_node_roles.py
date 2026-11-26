@@ -246,3 +246,41 @@ def test_help_combo_toggles_in_pad_mode_only(uid, peer, spun):
     virtual.step(0.0)
     assert virtual.help_toggles == 0
     virtual.destroy_node()
+
+
+def test_an_estop_during_an_inflight_clear_is_sent_again_after_it(uid, peer, spun):
+    entered, release = threading.Event(), threading.Event()
+    order = []
+
+    def slow_clear(request, response):
+        entered.set()
+        release.wait(5.0)
+        order.append("clear")
+        response.ok = True
+        return response
+
+    def estop(request, response):
+        order.append("estop")
+        response.success = True
+        return response
+
+    peer.create_service(ClearEstop, f"/{uid}/clear", slow_clear)
+    peer.create_service(Trigger, f"/{uid}/trigger_estop", estop)
+    node, results, _ = spun()
+    try:
+        assert wait_until(lambda: node._hold_clients["clear"].service_is_ready())
+        assert wait_until(lambda: node._estop_client.service_is_ready())
+        hold(node, "Return")
+        assert entered.wait(3.0)
+        node.actions.request_estop()  # while the clear is in flight
+        node.step(100.0)
+        node.step(100.02)
+        assert node.estop_calls_sent == 1
+    finally:
+        release.set()
+    assert wait_until(lambda: node.pending("clear") == 0)
+    node.step(100.04)  # the tick after the clear's reply
+    assert wait_until(lambda: order.count("estop") == 2)
+    # the last call the server ran is an E-STOP, whatever it ran first
+    assert order[-1] == "estop"
+    assert node.estop_calls_sent == 2

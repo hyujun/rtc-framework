@@ -2,10 +2,11 @@
 
 Safety rules under test (model.ButtonActions):
 - one call per continuous hold, none for a short hold;
-- the deadman, any E-STOP press, and a second held hold button start every
-  hold again;
-- the clear hold also needs the E-STOP button released throughout, so a clear
-  held while the operator presses E-STOP cannot lower that E-STOP.
+- the deadman and a second held hold button start every hold again;
+- an E-STOP press spends every hold held then (nothing until released and
+  pressed again), so a clear held through an E-STOP cannot lower it, not even
+  after the E-STOP button is let go; the clear hold also needs the E-STOP
+  button released.
 """
 
 from __future__ import annotations
@@ -121,6 +122,19 @@ def test_the_deadman_restarts_every_hold():
     assert rig.sent == ["switch:ctrl_a"]
 
 
+def _spent_until_pressed_again(rig, key, expected):
+    """Held on through and after the E-STOP: nothing; a new press: one hold."""
+    rig.tick(3.0)
+    assert rig.sent == []
+    rig.key(key, False)
+    rig.tick()
+    rig.key(key, True)
+    rig.tick(0.9)
+    assert rig.sent == []
+    rig.tick(0.2)
+    assert rig.sent == [expected]
+
+
 def test_an_estop_during_a_clear_hold_is_not_cleared():
     rig = Rig()
     rig.key("Return", True)
@@ -129,49 +143,61 @@ def test_an_estop_during_a_clear_hold_is_not_cleared():
     rig.tick(3.0)
     assert rig.estops == 1
     assert rig.sent == []
-    # released: the clear hold starts over from here
+    # E-STOP let go, the clear still held: it must not lower that E-STOP
     rig.key("Escape", False)
-    rig.tick(0.9)
-    assert rig.sent == []
-    rig.tick(0.2)
-    assert rig.sent == ["clear"]
+    _spent_until_pressed_again(rig, "Return", "clear")
 
 
-def test_an_estop_tap_restarts_the_clear_hold():
+def test_an_estop_tap_spends_the_clear_hold():
     rig = Rig()
     rig.key("Return", True)
     rig.tick(0.9)
     rig.key("Escape", True)
     rig.key("Escape", False)  # inside one tick
-    rig.tick(0.9)  # 1.8 s since the press, 0.9 s since the tap
+    assert rig.estops == 0
+    _spent_until_pressed_again(rig, "Return", "clear")
     assert rig.estops == 1
-    assert rig.sent == []
-    rig.tick(0.2)
-    assert rig.sent == ["clear"]
 
 
-def test_the_window_estop_restarts_every_hold():
+def test_the_window_estop_spends_every_hold():
     rig = Rig()
     rig.key("Return", True)
     rig.tick(0.9)
     rig.actions.request_estop()
-    rig.tick(0.9)
+    _spent_until_pressed_again(rig, "Return", "clear")
     assert rig.estops == 1
-    assert rig.sent == []
-    rig.tick(0.2)
-    assert rig.sent == ["clear"]
 
 
-def test_an_estop_press_restarts_a_switch_hold():
+def test_an_estop_press_spends_a_switch_hold():
     rig = Rig()
     rig.key("1", True)
     rig.tick(0.9)
     rig.key("Escape", True)
     rig.key("Escape", False)
+    _spent_until_pressed_again(rig, "1", "switch:ctrl_a")
+
+
+def test_a_clear_pressed_after_the_estop_is_a_new_hold():
+    # the E-STOP first, then a deliberate clear press: one hold, E-STOP released
+    rig = Rig()
+    rig.key("Escape", True)
+    rig.tick(0.2)
+    rig.key("Return", True)
+    rig.tick(2.0)
+    assert rig.sent == []  # E-STOP button still down
+    rig.key("Escape", False)
     rig.tick(0.9)
     assert rig.sent == []
     rig.tick(0.2)
-    assert rig.sent == ["switch:ctrl_a"]
+    assert rig.sent == ["clear"]
+
+
+def test_a_clear_pressed_in_the_estop_tick_is_spent():
+    rig = Rig()
+    rig.key("Escape", True)
+    rig.key("Escape", False)
+    rig.key("Return", True)  # the same tick as the E-STOP tap
+    _spent_until_pressed_again(rig, "Return", "clear")
 
 
 def test_two_switch_buttons_together_send_nothing():

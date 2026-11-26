@@ -27,10 +27,12 @@ Safety rules (each one has a test):
   release inside one tick still counts once.
 - In ``pad`` mode, a silent upstream (``pad_timeout_s``) or a Joy of the wrong
   size publishes the released state, never the last value.
-- A hold starts again (sends nothing) while the deadman is held, on any
-  E-STOP press, and while two or more hold buttons are held. The clear-E-STOP
-  hold also needs the E-STOP button released throughout: a clear held while
-  the operator presses E-STOP must not lower that E-STOP.
+- A hold starts again (sends nothing) while the deadman is held and while
+  two or more hold buttons are held.
+- An E-STOP press (pad, key or window) cancels every hold running then: that
+  button sends nothing until it is released and pressed again. A clear held
+  through an E-STOP must not lower that E-STOP, not even after the E-STOP
+  button is let go. The clear hold also needs the E-STOP button released.
 """
 
 from __future__ import annotations
@@ -528,8 +530,10 @@ class ButtonActions:
     """Service calls from the frames. Runs on the tick (GUI) thread.
 
     One hold state per hold button. Each one starts again while the deadman is
-    held, on any E-STOP press, and while two or more hold buttons are held;
-    the clear hold also while the E-STOP button is held. A hold sends once.
+    held and while two or more hold buttons are held; the clear hold also while
+    the E-STOP button is held. An E-STOP press spends every hold held then
+    (sent nothing, and nothing more until its button is released). A hold
+    sends once.
     """
 
     def __init__(self, layout: GamepadLayout, config: TeleopConfig) -> None:
@@ -566,7 +570,15 @@ class ButtonActions:
         # the deadman must stay released for the whole hold (a tap inside one
         # tick is latched into buttons, so it shows here); an E-STOP press or
         # a second hold button also starts every hold again
-        restart = bool(frame.buttons[self._deadman]) or estops > 0 or held > 1
+        restart = bool(frame.buttons[self._deadman]) or held > 1
+        if estops:
+            # spent, not restarted: a hold kept through the E-STOP would
+            # otherwise send hold_s after the E-STOP button is let go
+            for entry, index in enumerate(self._index):
+                if frame.buttons[index]:
+                    self._start[entry] = None
+                    self._fired[entry] = True
+            restart = True
         fired = []
         for entry, hold in enumerate(self.holds):
             blocked = restart or (hold.kind == "clear" and bool(frame.buttons[self._estop]))

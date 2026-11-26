@@ -144,6 +144,10 @@ class TeleopInputNode(Node):
         self.calls_sent: dict[str, int] = {}
         self._pending: dict[str, int] = {}
         self._pending_lock = threading.Lock()
+        # an E-STOP pressed while a clear call is in flight is sent again after
+        # the clear's reply: the server may run the E-STOP first (answering
+        # "latched") and the clear after it, which would lower it
+        self._estop_after_clear = False
 
         self._joy_pub = self.create_publisher(Joy, self.config.output_topic, _JOY_QOS)
         if self.config.input == "pad":
@@ -276,6 +280,11 @@ class TeleopInputNode(Node):
             self.help_toggles += 1
         actions = self.actions.step(frame, now)
         for _ in range(actions.estop_calls):
+            self._call("estop", self._estop_client, Trigger.Request())
+        if actions.estop_calls and self.pending("clear"):
+            self._estop_after_clear = True
+        elif self._estop_after_clear and not self.pending("clear"):
+            self._estop_after_clear = False
             self._call("estop", self._estop_client, Trigger.Request())
         for hold in actions.fired:
             self._send_hold(hold)
