@@ -61,7 +61,10 @@ REF_SOURCE_STAND = REFERENCE_SOURCE_NAMES.index("stand")
 MODE_DEGRADED = MODE_NAMES.index("degraded")
 HEALTH_FAULT = HEALTH_NAMES.index("fault")
 FAULT_CAUSE_PLAN_LOSS = FAULT_CAUSE_NAMES.index("plan loss")
-QP_INFEASIBLE_STATUSES = (2, 3)  # proxsuite QPSolverOutput PRIMAL_INFEASIBLE, DUAL_INFEASIBLE
+# proxsuite QPSolverOutput PRIMAL_INFEASIBLE (2) and DUAL_INFEASIBLE (4); 3 is
+# SOLVED_CLOSEST_PRIMAL_FEASIBLE, which the controller does not take as solved
+# either but is not an infeasibility verdict.
+QP_INFEASIBLE_STATUSES = (2, 4)
 
 
 @dataclass(frozen=True)
