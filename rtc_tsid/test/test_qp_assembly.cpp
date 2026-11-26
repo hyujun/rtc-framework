@@ -367,6 +367,7 @@ TEST(QpAssemblyTest, ANonFiniteForceTermRefusesTheTickAndTheNextOneSolves) {
     const CommandOutput& bad = rig.Solve();
     EXPECT_FALSE(bad.tau_valid) << "case " << which;
     EXPECT_TRUE(bad.qp_non_finite) << "case " << which;
+    EXPECT_EQ(bad.qp_status, kNonFiniteProblem) << "case " << which;
     // As the dense products left it: the whole of g, not one column.
     EXPECT_TRUE(Wqp(rig).LastQpForTesting().g.array().isNaN().all()) << "case " << which;
     EXPECT_TRUE(bad.tau.allFinite()) << "case " << which;
@@ -378,6 +379,84 @@ TEST(QpAssemblyTest, ANonFiniteForceTermRefusesTheTickAndTheNextOneSolves) {
     EXPECT_TRUE(good.tau_valid) << "case " << which;
     EXPECT_TRUE(good.qp_converged) << "case " << which;
   }
+}
+
+// A QP with a non-finite vector — the cost's g, the bias force behind the
+// torque rows' bounds (an actuated row) and behind b (a base row), a velocity
+// behind the limit rows' bounds — is not handed to the solver: no
+// iteration runs (ProxQP would run to its caps on it), the outputs are the last
+// valid ones, and the next tick solves from a cold start as it did after that
+// miss. The ±inf padding of every solved tick's unused bound rows is not
+// refused. A matrix alone (an entry of M) is not read: that tick is still the
+// solver's miss.
+TEST(QpAssemblyTest, ANonFiniteQpIsRefusedBeforeTheSolver) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  const char* names[] = {"g", "h (a bound)", "v", "inf in h", "h (b alone)"};
+  for (const int which : {0, 1, 2, 3, 4}) {
+    SCOPED_TRACE(names[which]);
+    test::LocoRig rig;
+    const Eigen::VectorXd q = test::QStand(*rig.model);
+    const Eigen::VectorXd v = Eigen::VectorXd::Zero(rig.info.nv);
+    rig.Set(q, v);
+    rig.WeightOn({0, 1});
+    ASSERT_TRUE(rig.Solve().tau_valid);
+    const CommandOutput& warm = rig.Solve();
+    ASSERT_TRUE(warm.tau_valid);
+    ASSERT_TRUE(warm.qp_warm_started);
+    ASSERT_GT(warm.solve_time_us, 0.0);
+    const Eigen::VectorXd tau = warm.tau;
+
+    if (which == 0) {
+      rig.ref.lambda_des(2) = nan;
+    } else if (which == 1) {
+      rig.cache.h(8) = nan;
+    } else if (which == 2) {
+      rig.cache.v(8) = nan;
+    } else if (which == 3) {
+      rig.cache.h(8) = inf;
+    } else {
+      rig.cache.h(2) = nan;  // a base row: the equations of motion's b, no bound
+    }
+    const CommandOutput& bad = rig.Solve();
+    EXPECT_FALSE(bad.tau_valid);
+    EXPECT_FALSE(bad.qp_converged);
+    EXPECT_TRUE(bad.qp_non_finite);
+    EXPECT_EQ(bad.qp_status, kNonFiniteProblem);
+    EXPECT_EQ(bad.qp_iterations, 0);
+    EXPECT_EQ(bad.outer_iterations, 0);
+    EXPECT_EQ(bad.solve_time_us, 0.0);
+    EXPECT_EQ(bad.rows_dropped, 0);
+    EXPECT_EQ(std::memcmp(bad.tau.data(), tau.data(),
+                          sizeof(double) * static_cast<std::size_t>(tau.size())),
+              0);
+
+    rig.Set(q, v);
+    rig.WeightOn({0, 1});
+    const CommandOutput& good = rig.Solve();
+    EXPECT_TRUE(good.tau_valid);
+    EXPECT_EQ(good.qp_status, 0);
+    EXPECT_FALSE(good.qp_warm_started) << "the tick after a refused one starts cold";
+    EXPECT_TRUE(rig.Solve().qp_warm_started);
+  }
+
+  // One foot released: its rows are padding, bounded by ±inf — and solved.
+  test::LocoRig rig;
+  rig.Set(test::QStand(*rig.model), Eigen::VectorXd::Zero(rig.info.nv));
+  rig.Release(1);
+  rig.WeightOn({0});
+  EXPECT_TRUE(rig.Solve().tau_valid);
+  const QPData& qp = Wqp(rig).LastQpForTesting();
+  EXPECT_TRUE((qp.l.array() == -inf).any() && (qp.u.array() == inf).any())
+      << "premise: a solved QP carries infinite bounds";
+
+  // A NaN in the mass matrix alone reaches A and C, not a vector: solved, and
+  // missed there.
+  rig.cache.M(8, 9) = nan;
+  const CommandOutput& matrix = rig.Solve();
+  EXPECT_FALSE(matrix.tau_valid);
+  EXPECT_TRUE(matrix.qp_non_finite);
+  EXPECT_NE(matrix.qp_status, kNonFiniteProblem);
 }
 
 // ── Tasks and the torque limit on a fixed base ──────────────────────────────

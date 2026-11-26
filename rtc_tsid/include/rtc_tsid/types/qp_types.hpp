@@ -44,6 +44,14 @@ struct QPData {
 // QPSolverOutput values are non-negative; −1 means no attempt was made.
 inline constexpr int kRowBudgetExceeded = -2;
 
+// SolveResult::status when a vector of the assembled QP was not finite (a NaN
+// or ±inf in g or b; a NaN, +inf lower or −inf upper bound): it was NOT handed to the solver
+// (converged = false, non_finite = true, no iteration ran) and the next solve
+// starts without the previous iterates, as after non-finite iterates. WQP only, and only
+// the vectors are read — an HQP level, a bare QPSolverWrapper and a WQP whose
+// H, A or C alone is non-finite still solve and report non-finite iterates.
+inline constexpr int kNonFiniteProblem = -3;
+
 // ────────────────────────────────────────────────
 // QP Solve 결과
 // ────────────────────────────────────────────────
@@ -52,10 +60,12 @@ struct SolveResult {
   bool converged{false};
   // proxsuite::proxqp::QPSolverOutput of the last solve as int (0 = SOLVED);
   // −1 = the wrapper returned before solving (not initialised);
-  // kRowBudgetExceeded = rows were dropped, not solved.
+  // kRowBudgetExceeded = rows were dropped, not solved;
+  // kNonFiniteProblem = a vector of the QP was not finite, not solved.
   int status{-1};
   // Solver iterates were non-finite (converged is then false even if status
-  // reports SOLVED — see QPSolverWrapper::Solve).
+  // reports SOLVED — see QPSolverWrapper::Solve), or the QP itself was
+  // (status kNonFiniteProblem).
   bool non_finite{false};
   double solve_time_us{0.0};
   // ProxQP's INNER (Newton) iterations summed over its outer proximal steps
@@ -93,8 +103,9 @@ struct SolveResult {
 
   void Init(int max_n_vars) { x_opt.setZero(max_n_vars); }
 
-  // A tick on which no QP was solved: `status` says why (−1 or
-  // kRowBudgetExceeded), the solve diagnostics are zeroed, x_opt is left as is.
+  // A tick on which no QP was solved: `status` says why (−1,
+  // kRowBudgetExceeded or kNonFiniteProblem — the caller then sets non_finite),
+  // the solve diagnostics are zeroed, x_opt is left as is.
   void MarkNotSolved(int why) noexcept {
     converged = false;
     status = why;

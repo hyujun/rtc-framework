@@ -13,8 +13,9 @@
 # weight 100, as hard as the feet; the torso and posture tasks only shape
 # what is left (weights 5 and 0.2). The posture weight is also the only
 # regularisation of joints no other task reaches (the hand joints of the
-# actuated model): at 0.1 that model's QP stops converging within max_iter
-# (test_humanoid_model_config; 0.2 converges). The force task (0.04) keeps λ near
+# actuated model): at 0.1 that model's QP stopped converging within 200 outer
+# steps (test_humanoid_model_config; 0.2 converges, inside the caps below).
+# The force task (0.04) keeps λ near
 # the MPC's without overruling the CoM. The CoP bound is 10 mm inside the sole's
 # length and 5 mm inside its width (0.09 × 0.03). On the sim (lock-step, n = 2
 # per arm, 2026-11-24) these values against the previous set — CoM 50 / 14 ·
@@ -31,15 +32,29 @@
 # pinned to zero in the QP itself. With the library default (the previous
 # result and its proximal step, regularised released forces) this QP misses on
 # a few percent of the ticks of a gait, in chains, and can return SOLVED at a
-# non-optimal point on a support change. A miss is still bounded by
-# max_iter × max_iter_in inner iterations, not by the control period.
+# non-optimal point on a support change.
+#
+# solver.max_iter / max_iter_in bound what a miss costs, not what a solve
+# needs. On a walking trace of this QP (5500 ticks, without and with 1e-3
+# state noise, dev PC, 2026-11-27) a solve took at most 9 outer steps and 11
+# inner iterations in all (6 in one outer step), and 9 / 9 from the
+# equality-constrained start after a miss; on the sim (lock-step, stand /
+# height / step / walk × 4, 230 k ticks) a solve took at most 15 inner
+# iterations, with either pair of caps, and none missed. 25 × 25 leaves twice
+# the trace's need and changed no solve of it. What it changes is the tick
+# that cannot be solved. Two made for the measurement — the cones' normal-force
+# rows pinned outside the cone, and a tolerance out of reach — ended after
+# 3.6 ms and 0.4 ms, against 36 ms and 2.9 ms at ProxQP-sized caps
+# (200 × 500). That is still more than a control period: the caps shorten a
+# miss, they do not fit it into the tick.
+# A non-finite reference or state is refused before the solver (qp_status −3).
 locomotion_controller:
   whole_body_qp:
     formulation_type: wqp
     solver:
       eps_abs: 1.0e-6
-      max_iter: 200
-      max_iter_in: 500
+      max_iter: 25                     # outer (proximal) steps
+      max_iter_in: 25                  # inner iterations of one outer step
       dense_backend: PrimalDualLDLT
       warm_start: previous_result_reset_mu
     contact:

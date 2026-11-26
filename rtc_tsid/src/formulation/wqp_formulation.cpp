@@ -149,8 +149,9 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
   // A non-finite reference, weight or activation made every entry of g NaN
   // when all tasks went through the products (0 × NaN), and the solver's
   // iterates then went non-finite: the tick was refused. A shortcut leaves it
-  // in its own columns, where ProxQP can return its previous iterate as
-  // solved — so it is spread here, to the same refusal.
+  // in its own columns (a weight on a task without rows leaves nothing at
+  // all), where ProxQP can return its previous iterate as solved — so it is
+  // spread here, and the check before the solve refuses the tick.
   if (cost_non_finite || !g_vec.allFinite()) {
     g_vec.setConstant(std::numeric_limits<double>::quiet_NaN());
   }
@@ -232,6 +233,29 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
 
   if (rows_dropped > 0) {
     result_.MarkNotSolved(kRowBudgetExceeded);
+    return result_;
+  }
+
+  // A QP whose vectors are not finite is refused here. Handed to ProxQP it
+  // runs to the iteration caps (every residual test against NaN fails) before
+  // its iterates come back non-finite — max_iter × max_iter_in inner
+  // iterations on the tick that is already lost. The next solve starts without
+  // the previous iterates, as it did after that miss.
+  //
+  // Only g, b, l and u are read (a few hundred values; H, A and C are ten
+  // times that, measured at 3 % of a tick). A non-finite reference, weight or
+  // activation reaches g (above), a non-finite state reaches g through the
+  // task residuals, b through the bias force and l / u through the limit rows.
+  // One that reaches a matrix alone is still the solver's to report. A bound
+  // may be its own side's "no bound" (l = −inf, u = +inf) and nothing else
+  // that is not finite: the comparisons below are false for a NaN too.
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  if (!g_vec.allFinite() || !qp_data_.b.head(max_n_eq_).allFinite() ||
+      !(qp_data_.l.head(max_n_ineq_).array() < kInf).all() ||
+      !(qp_data_.u.head(max_n_ineq_).array() > -kInf).all()) {
+    qp_solver_.ResetWarmStart();
+    result_.MarkNotSolved(kNonFiniteProblem);
+    result_.non_finite = true;
     return result_;
   }
 

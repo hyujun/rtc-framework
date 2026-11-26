@@ -235,12 +235,15 @@ struct CommandOutput {
   // 2 = PRIMAL_INFEASIBLE, …); −1 = nothing was attempted (no active task,
   // wrapper not initialised, after Reset); kRowBudgetExceeded (−2, qp_types.hpp)
   // = active constraints needed more rows than the formulation holds, nothing
-  // was solved. HQP: status of the last level
+  // was solved; kNonFiniteProblem (−3) = a vector of the WQP's assembled QP
+  // was not finite, nothing was solved (qp_non_finite is then true). HQP: status of
+  // the last level
   // tried, iterations summed over every level tried (failed one included).
   int qp_status{-1};
   int qp_iterations{0};
-  // Solver iterates of the last attempt were non-finite, or the solve
-  // converged but the torque recovered from it did not come out finite. WQP:
+  // Solver iterates of the last attempt were non-finite, the QP's vectors were
+  // (WQP, qp_status kNonFiniteProblem), or the solve converged but the torque
+  // recovered from it did not come out finite. WQP:
   // qp_converged is then false. HQP: refers to the last level tried;
   // qp_converged may still be true from an earlier level whose solution is
   // the one in use.

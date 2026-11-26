@@ -6,7 +6,8 @@
 # an unknown key is refused). The contact set and the torso frame are model.*'s;
 # this file only parameterises them (contact_overrides.<contact name> per foot).
 #
-# Values are g1_loco's, provisional for this profile: every foot task works
+# Values are g1_loco's (but for solver.max_iter / max_iter_in, which are
+# ProxQP-sized here), provisional for this profile: every foot task works
 # while its contact is released (swing), the torso task holds the orientation
 # only, the force task pulls λ toward the reference's. The sole patch is the
 # g1 sole's until this profile's foot is measured.

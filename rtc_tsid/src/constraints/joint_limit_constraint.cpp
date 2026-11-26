@@ -176,7 +176,8 @@ void JointLimitConstraint::ComputeInequality(const PinocchioCache& cache,
     // the crossing (there u = pos_ub = vel_lb); rows that did not cross are
     // untouched. Both sides cannot cross at once since Init enforces
     // q_min_ <= q_max_. Non-finite q / v take the unrepaired path on purpose:
-    // the row stays non-finite for the solve to fail on, instead of being
+    // the row stays non-finite for the tick to fail on (the WQP refuses such a
+    // bound before solving, an HQP level fails in the solver), instead of being
     // laundered into a finite box by std::max/min (NUM-7).
     if (std::isfinite(qi) && std::isfinite(vi) && l_block(i) > u_block(i)) {
       ++inverted;
