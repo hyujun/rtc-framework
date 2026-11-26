@@ -71,7 +71,9 @@ terrain:
 # What the locomotion OCP tracks at each node: the base from three knots (the
 # measured pose, an averaged-velocity knot at intermediate_fraction of the
 # horizon, the commanded velocity at the end), the joints at q_default, the
-# feet where they are measured with the swing plan above in z. Header:
+# feet where they are measured with the swing plan above in z — or, with
+# foothold on, each swing foot's x · y · yaw planned to a landing target set
+# by the commanded velocity and the q_default stance. Header:
 # rtc_mpc/reference/stage_reference_builder.hpp. q_default must name exactly
 # the 1-DoF joints the caller lists (the model's, in a robot config); the
 # arm_swing joints are checked even when it is off.
@@ -87,3 +89,5 @@ reference:
     joints:                      # sign ±1 per joint
       - {name: joint_a, sign: 1}
       - {name: joint_b, sign: -1}
+  foothold:
+    enabled: false               # true: swing x · y · yaw planned to a landing target

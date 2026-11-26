@@ -54,6 +54,87 @@ void YawQuaternion(double psi, double* out) noexcept {
   return std::atan2(R(1, 0), R(0, 0));
 }
 
+/// A touch-down is a phase start; node-time rounding may read it this far
+/// before the start [s] (phases are milliseconds and longer).
+constexpr double kPhaseSnap = 1e-6;
+
+/// The three base knots (file comment) and what continues them past `H`.
+struct BaseKnots {
+  double p0x, p0y, psi0, p1x, p1y, psi1, p2x, p2y, psi2;
+  double f, H, vcx, vcy, wz;
+
+  /// The base at `tk ∈ [0, H]` after node 0 (linear between the knots).
+  void At(double tk, double& px, double& py, double& psi) const noexcept {
+    if (tk <= f * H) {
+      const double alpha = std::min(tk / (f * H), 1.0);
+      px = Lerp(p0x, p1x, alpha);
+      py = Lerp(p0y, p1y, alpha);
+      psi = Lerp(psi0, psi1, alpha);
+    } else {
+      const double alpha = std::min((tk - f * H) / ((1.0 - f) * H), 1.0);
+      px = Lerp(p1x, p2x, alpha);
+      py = Lerp(p1y, p2y, alpha);
+      psi = Lerp(psi1, psi2, alpha);
+    }
+  }
+
+  /// As @ref At, continued past `H` at the commanded velocity.
+  void AtExtended(double tk, double& px, double& py, double& psi) const noexcept {
+    if (tk > H) {
+      px = p2x + (tk - H) * vcx;
+      py = p2y + (tk - H) * vcy;
+      psi = psi2 + (tk - H) * wz;
+    } else {
+      At(tk, px, py, psi);
+    }
+  }
+};
+
+/// The gait table's stance of `contact` from its touch-down at `t_td` (file
+/// comment): the run of phases with the contact's bit on from the phase that
+/// holds `t_td` in the gait in force there; one period when it never lifts,
+/// 0 when the table has it off there (or nothing is anchored).
+[[nodiscard]] double TableStance(const GaitScheduler& scheduler, std::size_t contact,
+                                 double t_td) noexcept {
+  GaitPhaseInfo info{};
+  if (!scheduler.PhaseInfo(info)) {
+    return 0.0;
+  }
+  const std::uint32_t g =
+      info.pending && t_td >= info.t_switch ? scheduler.target_gait() : scheduler.current_gait();
+  const GaitTable& table = scheduler.table();
+  if (g >= table.n_gaits) {
+    return 0.0;
+  }
+  const GaitTemplate& gait = table.gaits[g];
+  const std::uint32_t n = gait.n_phases;
+  if (n == 0 || n > kMaxGaitPhases || !(gait.period > 0.0)) {
+    return 0.0;
+  }
+  const std::uint32_t bit = 1U << contact;
+  double tau = GaitPhase(info, t_td) * gait.period;
+  std::uint32_t j = 0;
+  while (j + 1 < n && gait.switching_time[j + 1] <= tau) {
+    ++j;
+  }
+  if ((gait.mode[j] & bit) == 0 && gait.switching_time[j + 1] - tau <= kPhaseSnap) {
+    j = (j + 1) % n;  // read just before the phase it starts
+    tau = gait.switching_time[j];
+  }
+  if ((gait.mode[j] & bit) == 0) {
+    return 0.0;
+  }
+  double stance = gait.switching_time[j + 1] - tau;
+  for (std::uint32_t m = 1; m < n; ++m) {
+    const std::uint32_t k = (j + m) % n;
+    if ((gait.mode[k] & bit) == 0) {
+      return stance;
+    }
+    stance += gait.switching_time[k + 1] - gait.switching_time[k];
+  }
+  return gait.period;  // the contact never lifts in this gait
+}
+
 }  // namespace
 
 // ── YAML ──────────────────────────────────────────────────────────────────────
@@ -64,7 +145,8 @@ ReferenceError LoadReferenceConfig(const YAML::Node& node, std::span<const std::
     if (!node.IsDefined() || !node.IsMap()) {
       return ReferenceError::kNotAMap;
     }
-    if (!internal::HasOnlyKeys(node, {"intermediate_fraction", "q_default", "arm_swing"})) {
+    if (!internal::HasOnlyKeys(node,
+                               {"intermediate_fraction", "q_default", "arm_swing", "foothold"})) {
       return ReferenceError::kUnknownKey;
     }
     ReferenceConfig c;
@@ -167,6 +249,21 @@ ReferenceError LoadReferenceConfig(const YAML::Node& node, std::span<const std::
         c.arm_swing_joints.push_back(std::move(j));
       }
     }
+    const YAML::Node foothold = internal::Child(node, "foothold");
+    if (!internal::Present(foothold)) {
+      return ReferenceError::kMissingKey;
+    }
+    if (!foothold.IsMap()) {
+      return ReferenceError::kNotAMap;
+    }
+    if (!internal::HasOnlyKeys(foothold, {"enabled"})) {
+      return ReferenceError::kUnknownKey;
+    }
+    if (const FieldRead r =
+            internal::ReadBool(internal::Child(foothold, "enabled"), c.foothold_enabled);
+        r != FieldRead::kOk) {
+      return internal::ToError<ReferenceError>(r);
+    }
     const ReferenceError e = ValidateReferenceConfig(c);
     if (e == ReferenceError::kNoError) {
       out = std::move(c);
@@ -263,6 +360,19 @@ ReferenceError StageReferenceBuilder::Init(const RobotModelHandler& handler,
   }
 
   auto data = std::make_unique<pinocchio::Data>(model);
+  // Each contact's planar offset and yaw from the base at q_default (base at
+  // the origin, level): the foothold's nominal stance.
+  std::array<Nominal, kMaxContacts> nominal{};
+  {
+    Eigen::VectorXd qn = Eigen::Map<const Eigen::VectorXd>(q_default.data(), model.nq);
+    qn[6] = 1.0;  // q_default carries the base as zeros: the identity quaternion
+    pinocchio::forwardKinematics(model, *data, qn);
+    for (std::size_t c = 0; c < static_cast<std::size_t>(handler.n_contacts()); ++c) {
+      const auto fid = static_cast<pinocchio::FrameIndex>(handler.contact_frames()[c].frame_id);
+      const pinocchio::SE3& oMf = pinocchio::updateFramePlacement(model, *data, fid);
+      nominal[c] = Nominal{oMf.translation()[0], oMf.translation()[1], Yaw(oMf.rotation())};
+    }
+  }
   std::array<std::unique_ptr<HorizonReference>, 2> slots = {std::make_unique<HorizonReference>(),
                                                             std::make_unique<HorizonReference>()};
   handler_ = &handler;
@@ -271,6 +381,8 @@ ReferenceError StageReferenceBuilder::Init(const RobotModelHandler& handler,
   active_ = 0;
   q_default_ = std::move(q_default);
   arm_joints_ = std::move(arm);
+  nominal_ = nominal;
+  foothold_ = cfg.foothold_enabled;
   swing_ = swing;
   terrain_ = terrain;
   n_nodes_ = n_nodes;
@@ -361,10 +473,16 @@ ReferenceError StageReferenceBuilder::BuildImpl(const GaitScheduler& scheduler,
 
   // Forward kinematics of the measured configuration: where each contact is.
   const Eigen::Map<const Eigen::VectorXd> q(snapshot.q.data(), nq);
-  pinocchio::forwardKinematics(model, *data_, q);
+  if (foothold_) {
+    const Eigen::Map<const Eigen::VectorXd> v(snapshot.v.data(), nv);
+    pinocchio::forwardKinematics(model, *data_, q, v);  // the contacts' velocity too
+  } else {
+    pinocchio::forwardKinematics(model, *data_, q);
+  }
 
   struct Foot {
     double x, y, psi, terrain;
+    double vx, vy, wz;  ///< world velocity of the frame origin, ω_z (foothold only)
   };
 
   std::array<Foot, kMaxContacts> foot{};
@@ -375,6 +493,13 @@ ReferenceError StageReferenceBuilder::BuildImpl(const GaitScheduler& scheduler,
     foot[c].y = oMf.translation()[1];
     foot[c].psi = Yaw(oMf.rotation());
     foot[c].terrain = HeightAt(terrain_, foot[c].x, foot[c].y);
+    if (foothold_) {
+      const pinocchio::Motion vf =
+          pinocchio::getFrameVelocity(model, *data_, fid, pinocchio::LOCAL_WORLD_ALIGNED);
+      foot[c].vx = vf.linear()[0];
+      foot[c].vy = vf.linear()[1];
+      foot[c].wz = vf.angular()[2];
+    }
   }
 
   // The swing plan of every stretch in the window. A stretch under way at t0
@@ -440,6 +565,73 @@ ReferenceError StageReferenceBuilder::BuildImpl(const GaitScheduler& scheduler,
       !std::isfinite(p2y) || !std::isfinite(psi2)) {
     return ReferenceError::kNonFiniteInput;  // finite but huge velocities overflowed a knot
   }
+  const BaseKnots knots{p0x, p0y, psi0, p1x, p1y, psi1, p2x, p2y, psi2, f, H, vcx, vcy, wz};
+
+  // Foothold (file comment): every stretch the z plan above covers, in time
+  // order, each lifting off where the one before landed.
+  std::array<std::size_t, kMaxContacts> n_footholds{};
+  for (std::size_t c = 0; foothold_ && c < n_contacts; ++c) {
+    double cx = foot[c].x;
+    double cy = foot[c].y;
+    double cpsi = foot[c].psi;
+    for (std::size_t i = 0; i < n_swings[c]; ++i) {
+      const SwingInterval& iv = intervals[c][i];
+      if (iv.lift_off > t_last) {
+        break;  // as the z plan: not sampled
+      }
+      Foothold& fh = footholds_[c][i];
+      n_footholds[c] = i + 1;
+      fh.curve = false;
+      fh.landing = false;
+      fh.land_x = cx;
+      fh.land_y = cy;
+      fh.land_psi = cpsi;
+      if (iv.open_end) {
+        continue;  // no touch-down in the window: hold the lift-off pose
+      }
+      const double t_td = iv.touch_down;
+      const double t_st = i + 1 < n_swings[c] ? intervals[c][i + 1].lift_off - t_td
+                                              : TableStance(scheduler, c, t_td);
+      double bx = 0.0, by = 0.0, bpsi = 0.0;
+      knots.AtExtended(t_td - schedule.t0, bx, by, bpsi);
+      const double cb = std::cos(bpsi);
+      const double sb = std::sin(bpsi);
+      const Nominal& nm = nominal_[c];
+      const double lx = bx + cb * nm.x - sb * nm.y + 0.5 * t_st * vcx;
+      const double ly = by + sb * nm.x + cb * nm.y + 0.5 * t_st * vcy;
+      double lpsi = bpsi + nm.psi + 0.5 * t_st * wz;
+      // The start: a stretch under way at t0 from the measured pose and velocity.
+      const bool under_way = iv.open_start;
+      const double ts = under_way ? schedule.t0 : iv.lift_off;
+      const double sx = under_way ? foot[c].x : cx;
+      const double sy = under_way ? foot[c].y : cy;
+      const double spsi = under_way ? foot[c].psi : cpsi;
+      if (!std::isfinite(lx) || !std::isfinite(ly) || !std::isfinite(lpsi)) {
+        return ReferenceError::kNonFiniteInput;
+      }
+      lpsi = spsi + std::remainder(lpsi - spsi, 2.0 * std::numbers::pi);
+      fh.land_x = lx;
+      fh.land_y = ly;
+      fh.land_psi = lpsi;
+      fh.landing = true;
+      if (t_td - ts > kMinSwingDuration) {
+        const SwingError ex =
+            BuildCubicSegment(ts, sx, under_way ? foot[c].vx : 0.0, t_td, lx, 0.0, fh.x);
+        const SwingError ey =
+            BuildCubicSegment(ts, sy, under_way ? foot[c].vy : 0.0, t_td, ly, 0.0, fh.y);
+        const SwingError ep =
+            BuildCubicSegment(ts, spsi, under_way ? foot[c].wz : 0.0, t_td, lpsi, 0.0, fh.psi);
+        if (ex != SwingError::kNoError || ey != SwingError::kNoError ||
+            ep != SwingError::kNoError) {
+          return ReferenceError::kNonFiniteInput;  // a measured velocity overflowed a curve
+        }
+        fh.curve = true;
+      }
+      cx = lx;
+      cy = ly;
+      cpsi = lpsi;
+    }
+  }
 
   GaitPhaseInfo phase{};
   const bool phased = !arm_joints_.empty() && scheduler.PhaseInfo(phase);
@@ -455,17 +647,7 @@ ReferenceError StageReferenceBuilder::BuildImpl(const GaitScheduler& scheduler,
 
     // base
     double px = 0.0, py = 0.0, psi = 0.0;
-    if (tk <= f * H) {
-      const double alpha = std::min(tk / (f * H), 1.0);
-      px = Lerp(p0x, p1x, alpha);
-      py = Lerp(p0y, p1y, alpha);
-      psi = Lerp(psi0, psi1, alpha);
-    } else {
-      const double alpha = std::min((tk - f * H) / ((1.0 - f) * H), 1.0);
-      px = Lerp(p1x, p2x, alpha);
-      py = Lerp(p1y, p2y, alpha);
-      psi = Lerp(psi1, psi2, alpha);
-    }
+    knots.At(tk, px, py, psi);
     st.q[0] = px;
     st.q[1] = py;
     st.q[2] = cmd.base_height;
@@ -503,9 +685,10 @@ ReferenceError StageReferenceBuilder::BuildImpl(const GaitScheduler& scheduler,
       const bool stance = (st.mode & (1U << c)) != 0;
       SwingSample sample;
       sample.z = foot[c].terrain;
-      if (!stance && n_swings[c] > 0) {
+      std::size_t pick = 0;
+      const bool in_swing = !stance && n_swings[c] > 0;
+      if (in_swing) {
         // The stretch this node is in: the last one starting at or before t_k.
-        std::size_t pick = 0;
         for (std::size_t i = 1; i < n_swings[c]; ++i) {
           if (intervals[c][i].lift_off <= st.time) {
             pick = i;
@@ -526,6 +709,31 @@ ReferenceError StageReferenceBuilder::BuildImpl(const GaitScheduler& scheduler,
       }
       twist[2] = sample.z_dot;
       acc[2] = sample.z_ddot;
+      if (foothold_) {
+        // Swing: its stretch's curve (or held pose). Stance: the last landing at
+        // or before t_k, else the measured pose already written.
+        const Foothold* fh = nullptr;
+        if (in_swing && pick < n_footholds[c]) {
+          fh = &footholds_[c][pick];
+        } else if (stance) {
+          for (std::size_t i = 0; i < n_footholds[c]; ++i) {
+            if (footholds_[c][i].landing && intervals[c][i].touch_down <= st.time) {
+              fh = &footholds_[c][i];
+            }
+          }
+        }
+        if (fh != nullptr && in_swing && fh->curve) {
+          double yaw = 0.0;
+          fh->x.Evaluate(st.time, pose[0], twist[0], acc[0]);
+          fh->y.Evaluate(st.time, pose[1], twist[1], acc[1]);
+          fh->psi.Evaluate(st.time, yaw, twist[5], acc[5]);
+          YawQuaternion(yaw, &pose[3]);
+        } else if (fh != nullptr) {
+          pose[0] = fh->land_x;
+          pose[1] = fh->land_y;
+          YawQuaternion(fh->land_psi, &pose[3]);
+        }
+      }
       st.impact_proximity[c] = sample.impact;
       if (stance) {
         const auto off = static_cast<std::size_t>(layout.contact_u_offset[c]);
