@@ -2195,6 +2195,33 @@ if(BUILD_TESTING)
     Eigen3
   )
 
+  # The installed g1_loco whole_body_qp.solver caps: half of them to spare on a
+  # stand / release / return, the tick after a miss, a contradictory QP. No node.
+  ament_add_gtest(test_g1_loco_qp_iteration_budget test/test_g1_loco_qp_iteration_budget.cpp
+    TIMEOUT 120
+  )
+  target_include_directories(test_g1_loco_qp_iteration_budget PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_compile_definitions(test_g1_loco_qp_iteration_budget PRIVATE
+    RTC_DEMO_SHARED_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config")
+  target_link_libraries(test_g1_loco_qp_iteration_budget
+    ${PROJECT_NAME}_demo_controllers
+    yaml-cpp
+  )
+  ament_target_dependencies(test_g1_loco_qp_iteration_budget
+    ament_index_cpp
+    rclcpp
+    rclcpp_lifecycle
+    rtc_controller_interface
+    rtc_controller_manager
+    rtc_controllers
+    rtc_urdf_bridge
+    rtc_tsid
+    rtc_base
+    pinocchio
+    Eigen3
+  )
+
   # The measured-state seam: device layout map, `estimator` section, truth source.
   # No model, no node.
   ament_add_gtest(test_measured_state_source test/test_measured_state_source.cpp
