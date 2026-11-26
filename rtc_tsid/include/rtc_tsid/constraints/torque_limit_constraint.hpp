@@ -25,6 +25,10 @@ namespace rtc::tsid {
 // τ_prev outside the effort limits would empty the row: it is then pinned to
 // the limit it lies beyond (ClampedCount()). Turning the constraint off by a
 // phase preset turns the rate bound off with it (it is one row).
+//
+// S is read in Init: when it is [0 | I] the S·X products of every later
+// ComputeInequality are row copies, whatever S that call's robot_info carries
+// — pass the RobotModelInfo Init was given.
 // ────────────────────────────────────────────────
 class TorqueLimitConstraint final : public ConstraintBase {
  public:
@@ -92,6 +96,13 @@ class TorqueLimitConstraint final : public ConstraintBase {
   // (raw URDF 사용). init 에서 (0, 1] 범위 위반 시 throw — silent margin 변경 방지.
   double tau_scale_{1.0};
   const ContactManagerConfig* manager_{nullptr};
+
+  // S is [0 | I] (judged once, in Init, on the S Init was given): the three
+  // S·X products are then row copies, with the same doubles as the products
+  // (zero signs included) wherever Eigen evaluates the product through its
+  // GEMM kernel; on the small sizes it evaluates coefficient-wise the −S·Jcᵀ
+  // block can differ in the sign of a zero. Any other S takes the products.
+  bool selects_tail_{false};
 
   // Pre-allocated workspace
   Eigen::MatrixXd SM_;  // [na × nv] S·M

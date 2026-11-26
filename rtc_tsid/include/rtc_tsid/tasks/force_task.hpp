@@ -29,9 +29,15 @@ class ForceTask final : public TaskBase {
   [[nodiscard]] int ResidualDim() const noexcept override { return current_residual_dim_; }
 
   void ComputeResidual(const PinocchioCache& cache, const ControlReference& ref,
-                        const ContactState& contacts, int n_vars,
-                        Eigen::Ref<Eigen::MatrixXd> J_block,
-                        Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
+                       const ContactState& contacts, int n_vars,
+                       Eigen::Ref<Eigen::MatrixXd> J_block,
+                       Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
+
+  // The same cost, added without the dense J (TaskBase::AccumulateCost).
+  [[nodiscard]] bool AccumulateCost(const PinocchioCache& cache, const ControlReference& ref,
+                                    const ContactState& contacts, int n_vars, double w,
+                                    Eigen::Ref<Eigen::MatrixXd> H,
+                                    Eigen::Ref<Eigen::VectorXd> g) noexcept override;
 
   /// @brief ContactManagerConfig 포인터 설정 (init 후 외부에서 호출)
   void SetContactManager(const ContactManagerConfig* manager) noexcept;
