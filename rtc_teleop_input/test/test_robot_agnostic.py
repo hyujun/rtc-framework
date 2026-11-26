@@ -7,8 +7,10 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1]
 # built from parts so that this file does not match itself
-_WORDS = ("g" + "1", "b" + "7", "ur" + "5e", "loco" + "motion")
-PATTERN = re.compile(r"\b(" + "|".join(_WORDS) + r")\b", re.IGNORECASE)
+_WORDS = ("g" + "1", "b" + "7", "ur" + "5e", "loco" + "motion", "demo" + "_joint")
+# Bounded by letters and digits only, not by \b: "_" is a word character, so
+# \b would let a controller name like "<word>_controller" through.
+PATTERN = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(_WORDS) + r")(?![A-Za-z0-9])", re.IGNORECASE)
 
 
 def test_no_robot_names():
