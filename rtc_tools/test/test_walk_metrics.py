@@ -186,6 +186,25 @@ def test_the_windows_are_whole_walk_cycles():
     assert "error" in wm.walk_summary(header, diag, GAITS, walk_period_s=2.1, truth=truth)
 
 
+def test_the_infeasible_rows_are_the_two_infeasibility_verdicts():
+    # proxsuite QPSolverOutput: 2 PRIMAL_INFEASIBLE, 3 SOLVED_CLOSEST_PRIMAL_FEASIBLE,
+    # 4 DUAL_INFEASIBLE. A NaN status (an unreadable row) counts too.
+    header, diag, truth = synthetic()
+    base = wm.walk_summary(header, diag, GAITS, walk_period_s=1.1, truth=truth)
+    assert base["counters"]["qp_infeasible_rows"] == 0
+    t = diag["t_relative_s"]
+    rows = np.flatnonzero((t > A + 5.0) & (t < A + 6.0))[:45]
+    status = np.zeros(len(t))
+    status[rows[0:10]] = 2
+    status[rows[10:15]] = 3
+    status[rows[15:35]] = 4
+    status[rows[35:45]] = np.nan
+    s = wm.walk_summary(
+        header, {**diag, "qp_status": status}, GAITS, walk_period_s=1.1, truth=truth
+    )
+    assert s["counters"]["qp_infeasible_rows"] == 10 + 20 + 10
+
+
 @pytest.mark.parametrize("bad", [0.0, -1.0, math.nan, math.inf])
 def test_a_walk_period_that_is_not_positive_is_refused(bad):
     with pytest.raises(ValueError):
