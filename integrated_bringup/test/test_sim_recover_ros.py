@@ -95,7 +95,7 @@ class Stack:
         while time.monotonic() < deadline:
             with self.node._lock:
                 got = self.node._active is not None and self.node._estop is not None
-                got = got and bool(self.node._positions)
+                got = got and self.node._positions_locked() is not None
                 got = got and (self.node._sim_time is not None or sim_rate is None)
             if got and self.recover.service_is_ready():
                 return
@@ -259,4 +259,18 @@ def test_a_stalled_sim_hits_the_wall_guard(make, monkeypatch):
     s = make(offset=0.2, follows=True, sim_rate=0.0)
     res = s.call()
     assert not res.success and "wall guard" in res.message
+    assert s.reset_calls == 0
+
+
+def test_stop_ends_a_running_wait_without_a_reset(make):
+    s = make(offset=0.2, follows=True, sim_rate=0.0)  # a stalled sim: the wait would last
+    fut = s.recover.call_async(Trigger.Request())
+    s.wait_for_goal()
+    stopped_at = time.monotonic()
+    s.node.stop()  # what main() does on shutdown, before the executor's
+    deadline = time.monotonic() + 5.0
+    while not fut.done() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert fut.done() and time.monotonic() - stopped_at < 1.0
+    assert not fut.result().success and "shutting down" in fut.result().message
     assert s.reset_calls == 0

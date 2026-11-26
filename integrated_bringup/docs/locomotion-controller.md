@@ -77,7 +77,7 @@ latch 는 `/rtc_cm/reset_fault` 나 **재활성화**로 풀린다 (다음 tick �
 | sim 복구 | X 1 s | R 1 s |
 | help | LT+RT (`teleop:=pad`) | F1 |
 
-- 1 s 버튼은 deadman 을 놓고 누른다. E-STOP 을 누르거나 버튼을 둘 이상 함께 누르면 처음부터 다시 센다 (규칙: rtc_teleop_input README).
+- 1 s 버튼은 deadman 을 놓고 누른다. 버튼을 둘 이상 함께 누르면 처음부터 다시 세고, 누르는 중에 E-STOP 을 누르면 그 버튼은 놓았다 다시 눌러야 한다 (규칙: rtc_teleop_input README).
 - 해제는 `operator_request` (운영자 `trigger_estop`) 만 내린다. 검출기 E-STOP 은 사유를 직접 echo 한다. 해제 뒤에는 CM 의 `estop_on_clear` 대로 `demo_joint_controller` 가 활성이다 — 복구 버튼은 이 상태에서만 받는다.
 - 걷는 중 A (→ demo_joint) 를 막지 않는다: 그 자리에서 관절 hold 로 바뀌므로 걸음 중이면 넘어질 수 있다. 서서 바꾼다.
 - `command_input` 의 기본 `auto` 는 teleop 이 있으면 `joy`, 없으면 `twist` 다. teleop 과 `command_input:=twist` 는 함께 줄 수 없다.

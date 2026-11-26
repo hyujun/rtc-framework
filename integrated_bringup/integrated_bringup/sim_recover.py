@@ -44,7 +44,7 @@ from pathlib import Path
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import JointState
@@ -124,7 +124,10 @@ class SimRecover(Node):
         self._lock = threading.Lock()
         self._active: str | None = None
         self._estop: bool | None = None
-        self._positions: dict[str, float] = {}
+        # the latest JointState as received; read into names only when needed
+        # (it arrives at the controller's state rate)
+        self._joints: JointState | None = None
+        self._stopping = threading.Event()  # set by stop(): the wait gives up
         self._busy = False
         self._sim_time: float | None = None
 
@@ -182,7 +185,20 @@ class SimRecover(Node):
 
     def _on_joints(self, msg: JointState) -> None:
         with self._lock:
-            self._positions = dict(zip(msg.name, msg.position, strict=False))
+            self._joints = msg
+
+    def _positions_locked(self) -> list[float] | None:
+        """The stand-pose joints' measured positions, or None. Holds ``_lock``."""
+        if self._joints is None:
+            return None
+        positions = dict(zip(self._joints.name, self._joints.position, strict=False))
+        if not all(n in positions for n in self._names):
+            return None
+        return [positions[n] for n in self._names]
+
+    def stop(self) -> None:
+        """Ends a running wait (shutdown): it fails without a reset."""
+        self._stopping.set()
 
     def _on_sim_time(self, msg: Float64) -> None:
         with self._lock:
@@ -194,9 +210,7 @@ class SimRecover(Node):
 
     def _measured(self) -> list[float] | None:
         with self._lock:
-            if not all(n in self._positions for n in self._names):
-                return None
-            return [self._positions[n] for n in self._names]
+            return self._positions_locked()
 
     def _abort_reason(self) -> str | None:
         with self._lock:
@@ -209,7 +223,7 @@ class SimRecover(Node):
     # ── service ────────────────────────────────────────────────────────────
     def _on_recover(self, _req: Trigger.Request, res: Trigger.Response) -> Trigger.Response:
         with self._lock:
-            have = all(n in self._positions for n in self._names)
+            have = self._positions_locked() is not None
             why = refusal(
                 active=self._active,
                 estop=self._estop,
@@ -253,8 +267,9 @@ class SimRecover(Node):
 
         t_end = self._now_sim() + wait_s
         wall_limit = time.monotonic() + max(_WALL_GUARD_MIN_S, _WALL_GUARD_FACTOR * wait_s)
-        gate = threading.Event()  # never set: a cancellable sleep that costs no CPU
         while True:
+            if self._stopping.is_set():
+                return False, "sim_recover is shutting down; /sim/reset not called"
             why = self._abort_reason()
             if why:
                 return False, why
@@ -266,7 +281,7 @@ class SimRecover(Node):
                     f"sim time did not advance {wait_s:.2f} s within the wall guard "
                     f"(reached {sim_now - t_end + wait_s:.2f} s); /sim/reset not called"
                 )
-            gate.wait(_POLL_S)
+            self._stopping.wait(_POLL_S)
 
         now = self._measured()
         residual = float("inf") if now is None else max_abs_diff(now, self._pose)
@@ -308,9 +323,10 @@ def main(args=None) -> None:
     executor.add_node(node)
     try:
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        node.stop()  # a running recovery's handler returns instead of holding shutdown
         executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
