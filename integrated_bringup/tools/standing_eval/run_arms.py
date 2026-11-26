@@ -117,6 +117,7 @@ from pathlib import Path
 
 import yaml
 
+from integrated_bringup.stand_pose import stand_pose
 from rtc_tools.analysis import stance_metrics as sm, walk_metrics as wm
 from rtc_tools.analysis.weight_overlay import WeightOverlayError, merge_overlay_files
 from rtc_tools.launch.cpu_shield import mpc_solver_threads
@@ -448,27 +449,7 @@ def stand_goal(
     Both files are the profile's own, found from the runtime fragment's place
     (``config/<profile>/controllers/locomotion/runtime.yaml``).
     """
-    profile = runtime_yaml.resolve().parents[2]
-    ctrl = yaml.safe_load((profile / "controllers" / f"{joint_controller}.yaml").read_text())
-    pose = [float(x) for x in ctrl[joint_controller]["estop"]["arm_safe_position"]]
-
-    def find_devices(node):
-        if isinstance(node, dict):
-            if isinstance(node.get("devices"), dict) and group in node["devices"]:
-                return node["devices"][group]
-            for v in node.values():
-                found = find_devices(v)
-                if found is not None:
-                    return found
-        return None
-
-    device = find_devices(yaml.safe_load((profile / "_base.yaml").read_text()))
-    if device is None:
-        raise ValueError(f"{profile}/_base.yaml has no devices.{group}")
-    names = [str(n) for n in device["joint_state_names"]]
-    if len(names) != len(pose):
-        raise ValueError(f"{len(pose)} stand-pose values for {len(names)} joints of {group}")
-    return names, pose
+    return stand_pose(runtime_yaml.resolve().parents[2], joint_controller, group)
 
 
 def _stand_goal(args: argparse.Namespace) -> tuple[bool, dict, str]:

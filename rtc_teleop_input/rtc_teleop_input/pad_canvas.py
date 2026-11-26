@@ -8,7 +8,7 @@ are drawn from code. Mirrors a ``sensor_msgs/Joy`` in the SDL GameController lay
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from python_qt_binding.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from python_qt_binding.QtGui import (
@@ -21,27 +21,16 @@ from python_qt_binding.QtGui import (
 )
 from python_qt_binding.QtWidgets import QSizePolicy, QWidget
 
-from rtc_teleop_input.model import SKINS
+from rtc_teleop_input.model import DRAWN_BUTTONS, SKINS
 
 __all__ = ["BUTTON_NAMES", "SKINS", "TRIGGER_NAMES", "PadCanvas"]
-BUTTON_NAMES = (
-    "a",
-    "b",
-    "x",
-    "y",
-    "back",
-    "guide",
-    "start",
-    "leftstick",
-    "rightstick",
-    "leftshoulder",
-    "rightshoulder",
-    "dpad_up",
-    "dpad_down",
-    "dpad_left",
-    "dpad_right",
-)
+BUTTON_NAMES = DRAWN_BUTTONS
 TRIGGER_NAMES = ("triggerleft", "triggerright")
+# Help badges (logical units): radius, and the gap to a stick's base for the
+# badge of one of its axes, placed on that axis's side of the stick.
+_BADGE_R = 13.0
+_BADGE_GAP = 4.0
+_AXIS_SIDE = {"leftx": (-1, 0), "lefty": (0, -1), "rightx": (1, 0), "righty": (0, -1)}
 
 # Logical drawing space; everything below is in these units and scaled to the widget.
 _W, _H = 800.0, 500.0
@@ -193,6 +182,7 @@ class PadCanvas(QWidget):
         self._buttons: dict[str, int] = {}
         self._interactive = True
         self._active: tuple[str, str] | None = None  # ("stick"|"button", name)
+        self._help: list[tuple[int, tuple[str, ...]]] = []
         # The main window owns the keyboard.
         self.setFocusPolicy(Qt.NoFocus)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -227,6 +217,45 @@ class PadCanvas(QWidget):
         if new_axes != self._axes or new_buttons != self._buttons:
             self._axes, self._buttons = new_axes, new_buttons
             self.update()
+
+    def set_help(self, badges: Sequence[tuple[int, Sequence[str]]]) -> None:
+        """Numbered badges on controls (layout names); empty hides them."""
+        new = [(number, tuple(controls)) for number, controls in badges]
+        if new != self._help:
+            self._help = new
+            self.update()
+
+    def help_badges(self) -> list[tuple[int, QPointF, float]]:
+        """(number, centre, radius) of every badge drawn, in widget pixels."""
+        s = self._scale()[0]
+        return [
+            (number, self._to_widget(x, y), _BADGE_R * s)
+            for number, (x, y) in self._badge_layout()
+        ]
+
+    def _badge_anchor(self, name: str) -> tuple[float, float]:
+        g = _GEOM[self._skin]
+        side = _AXIS_SIDE.get(name)
+        if side is not None:
+            (cx, cy), base_r, _, _ = g["sticks"]["left" if name.startswith("left") else "right"]
+            reach = base_r + _BADGE_GAP + _BADGE_R
+            return cx + side[0] * reach, cy + side[1] * reach
+        if name in ("leftstick", "rightstick"):
+            return g["sticks"]["left" if name == "leftstick" else "right"][0]
+        _, cx, cy, _, _ = g["buttons"][name]
+        return cx, cy
+
+    def _badge_layout(self) -> list[tuple[int, tuple[float, float]]]:
+        """Logical badge centres; a second badge on one control goes beside the first."""
+        placed: list[tuple[int, tuple[float, float]]] = []
+        count: dict[str, int] = {}
+        for number, controls in self._help:
+            for name in controls:
+                x, y = self._badge_anchor(name)
+                k = count.get(name, 0)
+                count[name] = k + 1
+                placed.append((number, (x + k * (2 * _BADGE_R + 2), y)))
+        return placed
 
     # -- geometry ------------------------------------------------------------------
     def _scale(self) -> tuple[float, float, float]:
@@ -368,7 +397,18 @@ class PadCanvas(QWidget):
         self._paint_center(p, g, xbox, edge, text)
         for side in ("left", "right"):
             self._paint_stick(p, g, side, xbox, edge)
+        self._paint_help(p)
         p.end()
+
+    def _paint_help(self, p):
+        for number, (x, y) in self._badge_layout():
+            p.setPen(QPen(QColor("#ffffff"), 2))
+            p.setBrush(QColor("#1565c0"))
+            p.drawEllipse(QPointF(x, y), _BADGE_R, _BADGE_R)
+            p.setPen(QColor("#ffffff"))
+            p.setFont(self._font(14, bold=True))
+            box = QRectF(x - _BADGE_R, y - _BADGE_R, 2 * _BADGE_R, 2 * _BADGE_R)
+            p.drawText(box, Qt.AlignCenter, str(number))
 
     def _paint_body(self, p, xbox, edge):
         body = _body_path(self._skin)

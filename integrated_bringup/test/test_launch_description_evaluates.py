@@ -1075,3 +1075,71 @@ def test_robot_p2_empty_enable_logging_keeps_a_yaml_that_turned_it_off(monkeypat
     driver = _override_values(nodes["udp_hand_node"], context)
     assert controller.get("enable_logging") is False, controller
     assert driver.get("enable_timing_log") is False, driver
+
+
+def _teleop_include(filename: str, overrides: dict[str, str]):
+    from launch.actions import IncludeLaunchDescription
+
+    description = _load_launch_module(filename).generate_launch_description()
+    context = _seeded_context(description, overrides)
+    includes = [
+        e for e in _walk(description.entities, context) if isinstance(e, IncludeLaunchDescription)
+    ]
+    return includes, context
+
+
+@pytest.mark.parametrize(
+    ("filename", "profile", "group"),
+    [(G1_LOCO_SIM, "g1_loco", "g1"), (B7_LOCO_SIM, "b7_loco", "b7")],
+)
+@pytest.mark.parametrize("teleop", ["virtual", "pad"])
+def test_teleop_adds_the_teleop_launch_and_sim_recover(filename, profile, group, teleop):
+    overrides = {"use_cpu_affinity": "false", "teleop": teleop}
+    includes, context = _teleop_include(filename, overrides)
+    assert len(includes) == 1, includes
+
+    def resolve(value):
+        return value if isinstance(value, str) else perform_substitutions(context, list(value))
+
+    arguments = {resolve(k): resolve(v) for k, v in includes[0].launch_arguments}
+    assert arguments["input"] == teleop
+    assert arguments["joy_topic"] == f"/locomotion_controller/{group}/joy"
+    assert arguments["params_file"].endswith(f"/config/{profile}/teleop_input.yaml")
+    assert os.path.isfile(arguments["params_file"])
+    nodes, context = _nodes_by_name(overrides, filename)
+    assert _override_values(nodes["sim_recover"], context) == {"profile": profile, "group": group}
+
+
+@pytest.mark.parametrize("filename", [G1_LOCO_SIM, B7_LOCO_SIM])
+def test_no_teleop_by_default(filename):
+    includes, _ = _teleop_include(filename, {"use_cpu_affinity": "false"})
+    assert includes == []
+    nodes, _ = _nodes_by_name({"use_cpu_affinity": "false"}, filename)
+    assert "sim_recover" not in nodes
+
+
+@pytest.mark.parametrize(
+    ("overrides", "joy"),
+    [
+        ({}, False),  # auto without a teleop: twist, as before the argument existed
+        ({"teleop": "virtual"}, True),  # auto with a teleop: joy
+        ({"teleop": "pad", "command_input": "joy"}, True),
+        ({"command_input": "joy"}, True),
+        ({"command_input": "twist"}, False),
+    ],
+)
+def test_g1_loco_command_input_follows_the_teleop(overrides, joy):
+    nodes, context = _nodes_by_name({"use_cpu_affinity": "false", **overrides}, G1_LOCO_SIM)
+    sources = _node_parameter_sources(nodes["integrated_rt_controller"], context)
+    has_joy = any(
+        isinstance(s, str) and s.endswith("/sim_overlays/joy_command.yaml") for s in sources
+    )
+    assert has_joy is joy, sources
+
+
+def test_g1_loco_refuses_twist_with_a_teleop():
+    with pytest.raises(ValueError, match="command_input:=twist"):
+        _nodes_by_name(
+            {"use_cpu_affinity": "false", "teleop": "virtual", "command_input": "twist"},
+            G1_LOCO_SIM,
+        )

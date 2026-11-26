@@ -107,3 +107,65 @@ def test_status_goes_stale_after_two_seconds():
     entry = StatusEntry("s", "n", 0, "", (), received_s=10.0)
     assert not entry.is_stale(12.0)
     assert entry.is_stale(12.001)
+
+
+ROLES = {
+    "switch_buttons": ("y:ctrl_a", "a:ctrl_b"),
+    "clear_estop_button": "start",
+    "clear_estop_reason": "reason",
+    "trigger_buttons": ("x:/svc",),
+}
+
+
+def test_new_role_defaults_are_off():
+    config = TeleopConfig()
+    assert config.switch_buttons == () and config.trigger_buttons == ()
+    assert config.clear_estop_button == "" and config.clear_estop_reason == ""
+    assert config.hold_s == 1.0
+    assert config.switch_service == "/rtc_cm/switch_controller"
+    assert config.clear_estop_service == "/rtc_cm/clear_estop"
+    assert config.active_controller_topic == "/rtc_cm/active_controller_name"
+    assert config.estop_status_topic == "/system/estop_status"
+    # help: the key is on; the combination and labels are the consumer's
+    assert (config.help_key, config.help_combo, config.help_labels) == ("F1", (), ())
+    check(**ROLES, help_combo=("triggerleft", "triggerright"), help_labels=("lefty:fwd",))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"hold_s": 0.0},
+        {"hold_s": math.nan},
+        {"switch_buttons": ("y",)},
+        {"switch_buttons": ("y:",)},
+        {"switch_buttons": (":ctrl",)},
+        {"switch_buttons": ("y:a", "y:b")},  # one button twice
+        {"switch_buttons": ("b:ctrl",)},  # the E-STOP button
+        {"switch_buttons": ("leftshoulder:ctrl",)},  # the deadman
+        {"switch_buttons": ("back:ctrl",)},  # the reset button
+        {"switch_buttons": ("paddle1:ctrl",)},  # not drawn: cannot be seen or clicked
+        {"switch_buttons": ("lefty:ctrl",)},  # an axis
+        {"switch_buttons": ("y:ctrl",), "switch_service": ""},
+        {"trigger_buttons": ("y:/svc",), "switch_buttons": ("y:ctrl",)},
+        {"trigger_buttons": ("touchpad:/svc",)},
+        {"clear_estop_button": "start"},  # no reason: it could clear nothing
+        {"clear_estop_button": "start", "clear_estop_reason": "r", "clear_estop_service": ""},
+        {"clear_estop_button": "x", "clear_estop_reason": "r", "trigger_buttons": ("x:/svc",)},
+        {"clear_estop_button": "misc1", "clear_estop_reason": "r"},
+        {"estop_button": "misc1"},
+        {"help_key": "Space"},  # bound to the deadman
+        {"help_key": "Escape"},
+        {"help_combo": ("triggerleft", "triggerleft")},
+        {"help_combo": ("nope",)},
+        {"help_combo": ("b",)},  # a role button
+        {"help_combo": ("paddle2",)},
+        {"help_labels": ("lefty",)},
+        {"help_labels": ("lefty: ",)},
+        {"help_labels": ("nope:x",)},
+        {"help_labels": ("lefty:a", "lefty:b")},
+        {"help_labels": ("misc1:x",)},
+    ],
+)
+def test_bad_roles_are_refused(overrides):
+    with pytest.raises(ConfigError):
+        check(**overrides)

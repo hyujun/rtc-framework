@@ -3,8 +3,8 @@
 ``input:=virtual`` draws a pad driven by keyboard and mouse; ``input:=pad``
 relays a real pad (joy's ``game_controller_node``) and mirrors it. Either
 way one Joy goes out every ``1 / rate_hz`` s with ``header.frame_id`` = the
-input, and the pad's buttons call the controller manager's E-STOP and
-reset_fault services. Parameters: ``model.TeleopConfig``; threading:
+input, and the pad's buttons call services (E-STOP, and the hold buttons:
+reset_fault, switch, clear E-STOP, Trigger). Parameters: ``model.TeleopConfig``; threading:
 ``teleop_ros``; window: ``teleop_view``.
 
 Usage::
@@ -65,7 +65,9 @@ def main(args=None) -> int:
     node = None
     try:
         node = TeleopInputNode(
-            on_status=bridge.status.emit, on_service_result=bridge.service_result.emit
+            on_status=bridge.status.emit,
+            on_service_result=bridge.service_result.emit,
+            on_cm_state=bridge.cm_state.emit,
         )
         window = TeleopWindow(node, bridge)
     except (ConfigError, ParameterException, NameValidationException) as exc:

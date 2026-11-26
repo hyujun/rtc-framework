@@ -26,6 +26,10 @@ Usage:
   # Velocity command from a gamepad (sensor_msgs/Joy on /locomotion_controller/g1/joy)
   ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true command_input:=joy
 
+  # Operate from a pad or the keyboard alone: rtc_teleop_input (virtual pad GUI,
+  # or pad for a real pad) + sim_recover; command_input follows (joy)
+  ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true teleop:=virtual
+
   # MPC on a 2-thread solve: the worker profile seats the second thread
   ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true layout_profile:=mpc_par_sim mpc_threads:=2
 
@@ -49,9 +53,12 @@ controller holds the latched pose. A `sim_overlay:=` file applies after it, so
 an overlay can turn the MPC off again under the MPC layout. `layout_profile`
 names the profile instead (a worker profile seats a pooled solve) and
 `mpc_threads` sets the solver's thread count, checked against that profile.
-`command_input` (twist, the default | joy) picks the velocity command's
+`command_input` (auto, the default | twist | joy) picks the velocity command's
 message: joy adds the shipped `sim_overlays/joy_command.yaml` after the
-enable_mpc mapping and before `sim_overlay:=`.
+enable_mpc mapping and before `sim_overlay:=`; auto is joy with a `teleop` and
+twist without. `teleop` (none, the default | virtual | pad) adds
+rtc_teleop_input with `config/g1_loco/teleop_input.yaml` and the sim_recover
+node (integrated_bringup.teleop_launch).
 
 The robot model (URDF + MJCF) is `robot_descriptions`' public G1 with the
 synthetic hand of `robots/p1b_surrogate` — no private package is needed.
@@ -86,6 +93,12 @@ from integrated_bringup.sim_lanes import sim_lane_overrides, sim_lanes_argument_
 from integrated_bringup.sim_overlay import (
     resolve_sim_overlay,
     sim_overlay_argument_description,
+)
+from integrated_bringup.teleop_launch import (
+    COMMAND_AUTO,
+    TELEOP_MODES,
+    resolve_command_input,
+    teleop_actions,
 )
 from rtc_tools.launch import cpu_shield as shield
 from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slot
@@ -261,7 +274,13 @@ def launch_setup(context, *args, **kwargs):
         ctrl_config,
         sim_config,
         shield.mpc_enabled_choice(enable_mpc),
-        command_input_overlay(LaunchConfiguration("command_input").perform(context), PROFILE),
+        command_input_overlay(
+            resolve_command_input(
+                LaunchConfiguration("command_input").perform(context),
+                LaunchConfiguration("teleop").perform(context),
+            ),
+            PROFILE,
+        ),
         sim_overlay,
     )
     ctrl_overrides = {}
@@ -526,6 +545,8 @@ def launch_setup(context, *args, **kwargs):
         actions.extend(post_shield)
 
     actions.extend(make_trace_action(context, session_dir=session_dir))
+    # Not RT: off the shield like any user process, started with the launch.
+    actions.extend(teleop_actions(LaunchConfiguration("teleop").perform(context), PROFILE, "g1"))
 
     return actions
 
@@ -673,13 +694,23 @@ def generate_launch_description():
 
     command_input_arg = DeclareLaunchArgument(
         "command_input",
-        default_value="twist",
-        choices=list(COMMAND_INPUTS),
+        default_value=COMMAND_AUTO,
+        choices=[COMMAND_AUTO, *COMMAND_INPUTS],
         description=(
             "locomotion_controller's velocity command: twist (geometry_msgs/Twist on "
-            "<controller>/g1/cmd_vel, the default) or joy (sensor_msgs/Joy on "
-            "<controller>/g1/joy, the standard gamepad layout — rtc_teleop_input "
-            "publishes it)."
+            "<controller>/g1/cmd_vel) or joy (sensor_msgs/Joy on <controller>/g1/joy, "
+            "the standard gamepad layout — rtc_teleop_input publishes it); auto (the "
+            "default) is joy with a teleop and twist without."
+        ),
+    )
+
+    teleop_arg = DeclareLaunchArgument(
+        "teleop",
+        default_value="none",
+        choices=list(TELEOP_MODES),
+        description=(
+            "none (the default), or operate from rtc_teleop_input: virtual (pad GUI, "
+            "keyboard and mouse) or pad (a real pad); also starts sim_recover."
         ),
     )
 
@@ -770,6 +801,7 @@ def generate_launch_description():
             initial_controller_arg,
             enable_mpc_arg,
             command_input_arg,
+            teleop_arg,
             layout_profile_arg,
             mpc_sync_arg,
             mpc_threads_arg,

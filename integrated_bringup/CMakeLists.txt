@@ -261,6 +261,12 @@ install(
 )
 
 install(
+  PROGRAMS scripts/sim_recover.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME sim_recover
+)
+
+install(
   PROGRAMS scripts/motion_editor_gui.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME motion_editor_gui
@@ -2725,6 +2731,10 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_launch_shield_wiring test/test_launch_shield_wiring.py)
   # command_input:= (sim_g1_loco): the controller parameter layers, the joy overlay's place.
   ament_add_pytest_test(test_command_input test/test_command_input.py)
+  # teleop:= of the humanoid sims (integrated_bringup.teleop_launch) and the
+  # shipped config/<profile>/teleop_input.yaml: they start the teleop node, clear
+  # only the CM's operator E-STOP reason, and agree with the Joy overlay.
+  ament_add_pytest_test(test_teleop_profiles test/test_teleop_profiles.py)
   ament_add_pytest_test(test_launch_hand_affinity_wiring
     test/test_launch_hand_affinity_wiring.py)
   # Every topic udp_hand_node declares is set to /<robot>/... in each overlay: a
@@ -2829,6 +2839,12 @@ if(BUILD_TESTING)
   # tools/standing_eval/run_arms.py (same: read from the source tree): each
   # arm's launch arguments, with and without a pooled MPC solve.
   ament_add_pytest_test(test_standing_eval_run_arms test/test_standing_eval_run_arms.py)
+  # integrated_bringup/stand_pose.py + sim_recover: the stand pose of the shipped
+  # g1_loco / b7_loco profiles, DemoJointController's duration rule, the
+  # refusals, and the node against fake peers (one process, domain 52).
+  ament_add_pytest_test(test_sim_recover test/test_sim_recover.py)
+  ament_add_pytest_test(test_sim_recover_ros test/test_sim_recover_ros.py
+    ENV ROS_DOMAIN_ID=52)
   # tools/standing_eval/walk_gate.py (read from the source tree): the counter line,
   # the CM's refusals, the gait order and the E-STOP edge it judges.
   ament_add_pytest_test(test_standing_eval_walk_gate test/test_standing_eval_walk_gate.py)
@@ -2905,6 +2921,7 @@ if(BUILD_TESTING)
     test_locomotion_truth_log
     test_locomotion_diag_contract
     test_demo_sequence_ros
+    test_sim_recover_ros
     test_estimator_replay
     test_cm_sim_time_sync
     PROPERTIES RESOURCE_LOCK ros_domain_52)

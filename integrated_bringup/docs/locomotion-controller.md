@@ -27,13 +27,12 @@ ros2 topic pub -r 20 /locomotion_controller/g1/cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.3, y: 0.0, z: 0.0}, angular: {z: 0.0}}"       # v_x · v_y · 높이 rate · yaw rate
 ros2 topic echo /locomotion_controller/g1/locomotion_status      # level · source · plan · 명령
 
-# 게임패드로 (sim 을 command_input:=joy 로 띄운 뒤): LB 를 누른 동안만 움직인다
-ros2 launch rtc_teleop_input teleop_input.launch.py joy_topic:=/locomotion_controller/g1/joy \
-  controller_name:=locomotion_controller status_topics:=/locomotion_controller/g1/locomotion_status
+# 패드 · 키보드만으로 (teleop 이 command_input 을 joy 로): LB · Space 를 누른 동안만 움직인다
+ros2 launch integrated_bringup sim_g1_loco.launch.py enable_mpc:=true teleop:=virtual   # 실물 패드: pad
 ```
 
 - `runtime.yaml` 의 `velocity_command: {topic}` 가 Twist 토픽이다 (출하 `g1/cmd_vel`, 컨트롤러 네임스페이스 아래). `linear.x` / `linear.y` / `angular.z` = v_x / v_y / yaw rate, `linear.z` = pelvis 높이 **rate** — `command.yaml` 의 필터 (clamp · Bessel · 적분, `rtc_mpc` `reference/command_filter.hpp`) 를 지나 planner 의 stage reference 가 된다. 구독은 depth 1 · reliability 기본 (reliable) 이라 best_effort 발행자는 연결되지 않는다. 키가 없으면 명령 경로가 없고 MPC 는 제자리에 선다; `mpc.enabled` 가 아니면 키는 받되 비활성이다.
-- `velocity_command.type: joy` (기본 `twist`, configure 때 하나) 면 같은 키의 `topic` 이 `sensor_msgs/Joy` (표준 게임패드 배치, [rtc_teleop_input](../../rtc_teleop_input/README.md)) 이고 `joy: {linear_x, linear_y, angular_z, height_rate?, deadman}` 가 배치 이름으로 축을 고른다 — 축 [−1, 1] × `command.v_max` (높이는 `hdot_max`). deadman 버튼이 정확히 1 일 때만 움직이고, 놓으면 0 (stale 이 아닌 새 명령), 배열이 짧거나 매핑한 축이 비유한이면 메시지 전체가 0 이고 `cmd_joy_rejects` 가 는다. 그 뒤는 Twist 와 같은 필터 · stale 경로다. g1_loco 의 출하 매핑은 sim launch `command_input:=joy` (`sim_overlays/joy_command.yaml`): 왼스틱 = v_x · v_y, 오른스틱 X = yaw, LB = deadman, 높이 없음. 스키마: `controllers/locomotion/joy_command.hpp`.
+- `velocity_command.type: joy` (기본 `twist`, configure 때 하나) 면 같은 키의 `topic` 이 `sensor_msgs/Joy` (표준 게임패드 배치, [rtc_teleop_input](../../rtc_teleop_input/README.md)) 이고 `joy: {linear_x, linear_y, angular_z, height_rate?, deadman}` 가 배치 이름으로 축을 고른다 — 축 [−1, 1] × `command.v_max` (높이는 `hdot_max`). deadman 버튼이 정확히 1 일 때만 움직이고, 놓으면 0 (stale 이 아닌 새 명령), 배열이 짧거나 매핑한 축이 비유한이면 메시지 전체가 0 이고 `cmd_joy_rejects` 가 는다. 그 뒤는 Twist 와 같은 필터 · stale 경로다. g1_loco 의 출하 매핑은 sim launch `command_input:=joy` (`sim_overlays/joy_command.yaml`): 왼스틱 = v_x · v_y, 오른스틱 X = yaw, 오른스틱 Y = pelvis 높이 rate, LB = deadman. 트리거는 매핑하지 않는다 (teleop 의 help combo). 스키마: `controllers/locomotion/joy_command.hpp`.
 - 명령은 `command.t_stale` (0.5 s) 동안 새 메시지가 없으면 0 으로 돌아간다 (높이는 유지) — 발행자는 **주기적으로** 보낸다. 비유한 축은 직전 값을 유지한다. 활성화마다 필터가 리셋되어 높이는 `command.base_height` 로 돌아간다. `mpc.activation_height: measured` 면 그 활성화의 첫 reference latch 에서 측정한 base 높이 (`[h_min, h_max]` 로 clamp) 로 한 번 더 리셋된다 — 앞 컨트롤러가 세워 둔 높이를 그대로 잇고, 그 뒤의 latch (fault reset · E-STOP · plan 상실) 는 명령 높이를 건드리지 않는다. 이 모드에서는 명령 토픽이 없어도 필터 timer 가 돈다. 필터는 활성 동안만 돈다 (`command.sample_rate_hz`).
 - 지금의 FSM 은 **모든 접촉이 지지일 때만** stand 로 들어간다 — 속도 명령으로 gait 가 걸음으로 바뀌면 plan 의 mask 에 swing 이 생겨 walk 로 표시된다. 출하값의 보행은 sim 판정을 아직 통과하지 못했다 — 첫 걸음 전후에 plan 을 잃고, 로봇이 움직이는 중이라 plan-loss fault 로 멈춘다 (아래 평가 도구의 `walk` arm 이 재현한다). 명령은 sim 에서만 쓴다.
 - `<body group>/locomotion_status` (`diagnostic_msgs/DiagnosticStatus`, ≈ 50 Hz, MPC 없이도 발행) — `level`: OK (stand · walk, 또는 MPC 없이 nominal) · WARN (waiting · degraded · MPC 가 있는데 idle) · ERROR (fault · E-STOP); `message` = reference 출처; `values` 는 고정 키 (순서 · 이름은 `controllers/locomotion/locomotion_status.hpp` 의 `LocomotionStatusKey`): source · mode · fault_cause · estop · tick_count · plan_id · policy_age_ms · converged · contact_mask · schedule_epoch · state_epoch · plausibility_rejects · plan_holds · solves · failed_solves · deadline_miss · withheld · overrun · wbc_tick_us · qp_iterations · cmd_vx · cmd_vy · cmd_wz · cmd_height · cmd_valid · cmd_fresh · cmd_stale_ticks · cmd_nonfinite_ticks · cmd_ignored_axis_ticks (필터 tick 수) · source_status (상태 source 판정 이름) · estimator_resets · estimator_reset_reason · estimator_contact_mask (아래 §상태 source; truth 에서는 0) · cmd_input (0 twist · 1 joy) · cmd_deadman (joy 1 / 0 / 읽지 못함 −1, twist −1) · cmd_joy_rejects. MPC 카운터는 1 Hz 로 갱신된다. GUI (W8) 는 키로 읽는다.
@@ -63,6 +62,35 @@ ros2 launch rtc_teleop_input teleop_input.launch.py joy_topic:=/locomotion_contr
 - 모든 solve 는 한 예산이다 (standing 전용 예산 없음). 첫 (cold) solve 는 보통 publish 되지 않고 (미수렴), 그 다음 solve 가 첫 plan 이 된다 — 그때까지 idle (latch 자세). publish deadline 을 못 맞추는 호스트에서는 stand 에 이르지 못한다 — 예산은 제어 PC 의 soak 가 정한다.
 
 latch 는 `/rtc_cm/reset_fault` 나 **재활성화**로 풀린다 (다음 tick 에 reference 를 다시 잡는다). 원인이 남아 있으면 다시 latch 된다. E-STOP 의 두 edge 도 reference 를 다시 잡는다.
+
+## 패드 · 키보드로 운영 (`teleop:=`)
+
+`sim_g1_loco` · `sim_b7_loco` 의 `teleop:=virtual|pad` (기본 `none`) 은 [rtc_teleop_input](../../rtc_teleop_input/README.md) 을 `config/<profile>/teleop_input.yaml` 로 띄우고 아래의 `sim_recover` 도 띄운다. 터미널 없이 도는 루프: 전환 → 이동 · 높이 → E-STOP → 해제 → (fault 면 reset) → 넘어졌으면 복구 → 다시 전환.
+
+| 기능 | 패드 | 키보드 |
+|---|---|---|
+| v_x · v_y / yaw rate / 높이 rate (g1 만) | 왼스틱 / 오른 X / 오른 Y + LB | WASD / ←→ / ↑↓ + Space |
+| → `locomotion_controller` / → `demo_joint_controller` | Y / A 1 s | 1 / 2 1 s |
+| E-STOP | B | Esc |
+| E-STOP 해제 (운영자 E-STOP 만) | START 1 s | Return 1 s |
+| `reset_fault` (`locomotion_controller`) | BACK 1 s | Backspace 1 s |
+| sim 복구 | X 1 s | R 1 s |
+| help | LT+RT (`teleop:=pad`) | F1 |
+
+- 1 s 버튼은 deadman 을 놓고 누른다. 버튼을 둘 이상 함께 누르면 처음부터 다시 세고, 누르는 중에 E-STOP 을 누르면 그 버튼은 놓았다 다시 눌러야 한다 (규칙: rtc_teleop_input README).
+- 해제는 `operator_request` (운영자 `trigger_estop`) 만 내린다. 검출기 E-STOP 은 사유를 직접 echo 한다. 해제 뒤에는 CM 의 `estop_on_clear` 대로 `demo_joint_controller` 가 활성이다 — 복구 버튼은 이 상태에서만 받는다.
+- 걷는 중 A (→ demo_joint) 를 막지 않는다: 그 자리에서 관절 hold 로 바뀌므로 걸음 중이면 넘어질 수 있다. 서서 바꾼다.
+- `command_input` 의 기본 `auto` 는 teleop 이 있으면 `joy`, 없으면 `twist` 다. teleop 과 `command_input:=twist` 는 함께 줄 수 없다.
+- b7_loco 는 아직 속도 명령이 없어 스틱이 아무것도 움직이지 않는다.
+
+## sim 복구 (`sim_recover`)
+
+넘어진 sim humanoid (`g1_loco` · `b7_loco`) 를 패드 한 번으로 세우는 노드 — `run_arms.py` 의 `reentry` 가 E-STOP 해제 뒤에 하는 일을 한 service 로 묶은 것이다. `/sim_recover/recover` (`std_srvs/Trigger`) 는 (1) `/<joint_controller>/<group>/joint_goal` 에 `estop.arm_safe_position` (서 있는 자세) 을 publish 하고 (2) `demo_joint_controller` 의 궤적 시간 — 측정 자세에서 `max(0.01, Δq_max / robot_trajectory_speed, 1.875 · Δq_max / robot_max_traj_velocity)` — 에 `margin_s` 를 더해 **sim 시간** (`/sim/time`) 으로 기다린 뒤 (3) `/sim/reset` 을 부른다. 궤적은 컨트롤러 tick 마다 진행하므로 lock-step 에서 rtf < 1 이면 wall 시간으로는 모자라고, sim 은 `/clock` 을 내지 않는다.
+
+- 거절 (`success=false` + 사유): 활성 컨트롤러가 `joint_controller` 가 아님 · E-STOP 래치 · 두 상태 (`/rtc_cm/active_controller_name` · `/system/estop_status`) 가 아직 안 옴 · 관절 상태 없음 · `/sim/time` 표본 없음 · 이미 복구 중. 기다리는 동안 E-STOP 이 걸리거나 컨트롤러가 바뀌면 중단한다. sim 이 멈춰 시간이 안 가면 wall 시간 `max(10 s, 10 × 대기)` 를 넘기는 순간 reset 없이 실패한다.
+- 남은 오차 `max|q − goal|` 는 기본으로 판정하지 않고 성공 메시지에만 싣는다 (`residual_tol` = 0). 넘어진 로봇의 관절은 바닥에 막혀 목표에 못 닿을 수 있고, 궤적이 끝나면 컨트롤러의 목표는 이미 서 있는 자세라 teleport 는 안전하다. `residual_tol` > 0 이면 그 값을 넘는 오차에서 reset 하지 않는다.
+- 실행: `ros2 run integrated_bringup sim_recover --ros-args -p profile:=g1_loco -p group:=g1` (기본값). `b7_loco` 는 `profile:=b7_loco -p group:=b7`. 파라미터: `profile` · `profile_dir` (설정 디렉토리 직접 지정) · `joint_controller` (`demo_joint_controller`) · `group` · `margin_s` (0.5) · `residual_tol` (0) · `sim_reset_service` (`/sim/reset`) · `sim_time_topic` (`/sim/time`).
+- 궤적 속도는 컨트롤러 YAML 값을 읽는다 — 실행 중 `robot_trajectory_speed` 를 바꾸면 대기가 어긋난다.
 
 ## E-STOP 과 자세 가드
 

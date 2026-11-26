@@ -8,8 +8,11 @@ node, a fake clock in the tests).
 - ``PadRelay`` holds the latest Joy of a real pad. Its writer is the rclpy
   executor thread and its reader the publish tick, so it locks.
 - ``ButtonActions`` decides the service calls from the frames: one E-STOP per
-  press of the E-STOP button, one reset per continuous hold of the reset
-  button while the deadman stays released.
+  press of the E-STOP button, one call per continuous hold of a hold button
+  (reset, switch, clear E-STOP, trigger) while the deadman stays released.
+- ``HelpCombo`` and ``help_entries`` drive the help view: which control does
+  what, toggled by a button combination of the real pad (or a key, in the
+  window).
 
 A ``PadFrame`` is what one publish tick sends; the GUI draws the same frame,
 so the window never shows a state that was not published.
@@ -24,6 +27,12 @@ Safety rules (each one has a test):
   release inside one tick still counts once.
 - In ``pad`` mode, a silent upstream (``pad_timeout_s``) or a Joy of the wrong
   size publishes the released state, never the last value.
+- A hold starts again (sends nothing) while the deadman is held and while
+  two or more hold buttons are held.
+- An E-STOP press (pad, key or window) cancels every hold running then: that
+  button sends nothing until it is released and pressed again. A clear held
+  through an E-STOP must not lower that E-STOP, not even after the E-STOP
+  button is let go. The clear hold also needs the E-STOP button released.
 """
 
 from __future__ import annotations
@@ -44,6 +53,28 @@ STICK_SIDES = ("left", "right")
 _STICK_AXES = {"left": ("leftx", "lefty"), "right": ("rightx", "righty")}
 # A trigger rests at 0 and reads -1 fully pressed (same source convention).
 TRIGGER_PRESSED = -1.0
+# An axis in help_combo counts as pressed at or below this (half a trigger).
+HELP_AXIS_PRESSED = -0.5
+# Buttons of the layout the window draws; the others (misc1, paddles,
+# touchpad) cannot be seen or clicked, so no role may use them.
+DRAWN_BUTTONS = (
+    "a",
+    "b",
+    "x",
+    "y",
+    "back",
+    "guide",
+    "start",
+    "leftstick",
+    "rightstick",
+    "leftshoulder",
+    "rightshoulder",
+    "dpad_up",
+    "dpad_down",
+    "dpad_left",
+    "dpad_right",
+)
+HOLD_KINDS = ("reset", "switch", "clear", "trigger")
 
 
 class ConfigError(ValueError):
@@ -81,10 +112,72 @@ class TeleopConfig:
     # Empty: the reset button does nothing (reset_fault refuses an empty name).
     reset_controller_name: str = ""
     status_topics: tuple[str, ...] = ()
+    # The other hold buttons (one call per hold of hold_s, deadman released).
+    # Empty lists / names: no such button.
+    hold_s: float = 1.0
+    # "<button>:<controller>" -> switch_controller activating that controller.
+    switch_buttons: tuple[str, ...] = ()
+    switch_service: str = "/rtc_cm/switch_controller"
+    # Lowers the global E-STOP only when its latched reason is
+    # clear_estop_reason (the service makes the caller echo it).
+    clear_estop_button: str = ""
+    clear_estop_service: str = "/rtc_cm/clear_estop"
+    clear_estop_reason: str = ""
+    # "<button>:<service>" -> one std_srvs/Trigger call.
+    trigger_buttons: tuple[str, ...] = ()
+    # Latched state shown in the window; empty: not shown.
+    active_controller_topic: str = "/rtc_cm/active_controller_name"
+    estop_status_topic: str = "/system/estop_status"
+    # Help: a key of the window, and a pad combination (layout axis or button
+    # names, all pressed at once; an axis counts at <= HELP_AXIS_PRESSED).
+    help_key: str = "F1"
+    help_combo: tuple[str, ...] = ()
+    # "<axis or button>:<text>": what a control does for the consumer.
+    help_labels: tuple[str, ...] = ()
 
     @property
     def reset_enabled(self) -> bool:
         return bool(self.reset_controller_name)
+
+
+@dataclass(frozen=True)
+class HoldEntry:
+    """One hold button and the call it sends."""
+
+    kind: str  # one of HOLD_KINDS
+    button: str
+    # reset / switch: the controller; trigger: the service; clear: ""
+    target: str
+    enabled: bool = True
+
+    @property
+    def key(self) -> str:
+        """Names the call in replies and counters ("reset", "clear", "switch:<c>", ...)."""
+        return f"{self.kind}:{self.target}" if self.kind in ("switch", "trigger") else self.kind
+
+
+def _split_targets(entries: Sequence[str], param: str, what: str) -> list[tuple[str, str]]:
+    pairs = []
+    for entry in entries:
+        button, sep, target = entry.partition(":")
+        if not sep or not button or not target:
+            raise ConfigError(f"{param} entry '{entry}' is not '<button>:<{what}>'")
+        pairs.append((button, target))
+    return pairs
+
+
+def hold_entries(config: TeleopConfig) -> tuple[HoldEntry, ...]:
+    """Every hold button in a fixed order: reset, switches, clear, triggers."""
+    holds = [
+        HoldEntry("reset", config.reset_button, config.reset_controller_name, config.reset_enabled)
+    ]
+    for button, target in _split_targets(config.switch_buttons, "switch_buttons", "controller"):
+        holds.append(HoldEntry("switch", button, target))
+    if config.clear_estop_button:
+        holds.append(HoldEntry("clear", config.clear_estop_button, ""))
+    for button, target in _split_targets(config.trigger_buttons, "trigger_buttons", "service"):
+        holds.append(HoldEntry("trigger", button, target))
+    return tuple(holds)
 
 
 @dataclass(frozen=True)
@@ -158,21 +251,69 @@ def validate_config(config: TeleopConfig, layout: GamepadLayout) -> KeyBindings:
         raise ConfigError(f"pad_timeout_s must be in (0, 10], got {config.pad_timeout_s}")
     if not _finite_in(config.reset_hold_s, 0.0, 10.0):
         raise ConfigError(f"reset_hold_s must be in (0, 10], got {config.reset_hold_s}")
+    if not _finite_in(config.hold_s, 0.0, 10.0):
+        raise ConfigError(f"hold_s must be in (0, 10], got {config.hold_s}")
     if config.input == "pad" and not config.pad_topic:
         raise ConfigError("pad_topic is required for input 'pad'")
     if not config.estop_service or not config.reset_service:
         raise ConfigError("estop_service and reset_service must not be empty")
-    roles = (config.estop_button, config.reset_button, config.deadman_button)
+    holds = hold_entries(config)
+    if config.switch_buttons and not config.switch_service:
+        raise ConfigError("switch_service must not be empty when switch_buttons are set")
+    if config.clear_estop_button and not (
+        config.clear_estop_service and config.clear_estop_reason
+    ):
+        raise ConfigError(
+            "clear_estop_button needs clear_estop_service and clear_estop_reason (the "
+            "latched reason this button may clear)"
+        )
+    roles = (config.estop_button, config.deadman_button, *(h.button for h in holds))
     try:
         for name in roles:
             layout.button_index(name)
     except LayoutError as exc:
         raise ConfigError(str(exc)) from exc
+    undrawn = sorted({name for name in roles if name not in DRAWN_BUTTONS})
+    if undrawn:
+        raise ConfigError(f"button roles must be drawn buttons, not {', '.join(undrawn)}")
     if len(set(roles)) != len(roles):
-        raise ConfigError("estop_button, reset_button and deadman_button must differ")
+        raise ConfigError(
+            "estop_button, deadman_button, reset_button and every switch, clear and "
+            "trigger button must differ"
+        )
     if len(set(config.status_topics)) != len(config.status_topics) or "" in config.status_topics:
         raise ConfigError("status_topics must be distinct, non-empty topic names")
-    return parse_bindings(config, layout)
+    _check_help(config, layout, set(roles))
+    bindings = parse_bindings(config, layout)
+    if config.help_key in (*bindings.axes, *bindings.buttons):
+        raise ConfigError(f"help_key '{config.help_key}' is also bound in key_axes / key_buttons")
+    return bindings
+
+
+def _check_help(config: TeleopConfig, layout: GamepadLayout, roles: set[str]) -> None:
+    every = set(layout.axes) | set(layout.buttons)
+    combo = config.help_combo
+    if len(set(combo)) != len(combo):
+        raise ConfigError("help_combo names a control twice")
+    for name in combo:
+        if name not in every:
+            raise ConfigError(f"help_combo: unknown control '{name}'")
+        if name in roles:
+            raise ConfigError(f"help_combo: '{name}' already has a button role")
+        if name in layout.buttons and name not in DRAWN_BUTTONS:
+            raise ConfigError(f"help_combo: '{name}' is not a drawn button")
+    seen = set()
+    for entry in config.help_labels:
+        name, sep, text = entry.partition(":")
+        if not sep or not name or not text.strip():
+            raise ConfigError(f"help_labels entry '{entry}' is not '<control>:<text>'")
+        if name not in every:
+            raise ConfigError(f"help_labels: unknown control '{name}'")
+        if name in layout.buttons and name not in DRAWN_BUTTONS:
+            raise ConfigError(f"help_labels: '{name}' is not a drawn button")
+        if name in seen:
+            raise ConfigError(f"help_labels labels '{name}' twice")
+        seen.add(name)
 
 
 @dataclass(frozen=True)
@@ -377,59 +518,174 @@ class PadRelay:
 @dataclass(frozen=True)
 class Actions:
     estop_calls: int = 0
-    reset_call: bool = False
+    # the holds completed this tick (enabled ones only), in hold_entries order
+    fired: tuple[HoldEntry, ...] = ()
+
+    @property
+    def reset_call(self) -> bool:
+        return any(h.kind == "reset" for h in self.fired)
 
 
 class ButtonActions:
-    """Service calls from the frames. Runs on the tick (GUI) thread."""
+    """Service calls from the frames. Runs on the tick (GUI) thread.
+
+    One hold state per hold button. Each one starts again while the deadman is
+    held and while two or more hold buttons are held; the clear hold also while
+    the E-STOP button is held. An E-STOP press spends every hold held then
+    (sent nothing, and nothing more until its button is released). A hold
+    sends once.
+    """
 
     def __init__(self, layout: GamepadLayout, config: TeleopConfig) -> None:
         self._estop = layout.button_index(config.estop_button)
-        self._reset = layout.button_index(config.reset_button)
         self._deadman = layout.button_index(config.deadman_button)
-        self._hold_s = config.reset_hold_s
-        self._reset_enabled = config.reset_enabled
+        self.holds = hold_entries(config)
+        self._index = tuple(layout.button_index(h.button) for h in self.holds)
+        self._hold_s = tuple(
+            config.reset_hold_s if h.kind == "reset" else config.hold_s for h in self.holds
+        )
         self._gui_estops = 0
-        self._hold_start: float | None = None
-        self._fired = False
+        self._start: list[float | None] = [None] * len(self.holds)
+        self._fired = [False] * len(self.holds)
 
     def request_estop(self) -> None:
         """The window's E-STOP button: one call at the next tick."""
         self._gui_estops += 1
 
+    def progress(self, entry: int, now: float) -> float | None:
+        """Fraction of hold ``entry`` done, None when no hold is running."""
+        start = self._start[entry]
+        if start is None or self._fired[entry] or not self.holds[entry].enabled:
+            return None
+        return min(1.0, (now - start) / self._hold_s[entry])
+
     def reset_progress(self, now: float) -> float | None:
         """Fraction of the reset hold done, None when no hold is running."""
-        if self._hold_start is None or self._fired or not self._reset_enabled:
-            return None
-        return min(1.0, (now - self._hold_start) / self._hold_s)
+        return self.progress(0, now)  # hold_entries puts reset first
 
     def step(self, frame: PadFrame, now: float) -> Actions:
         estops = frame.presses[self._estop] + self._gui_estops
         self._gui_estops = 0
-        return Actions(estop_calls=estops, reset_call=self._step_reset(frame, now))
+        held = sum(1 for i in self._index if frame.buttons[i])
+        # the deadman must stay released for the whole hold (a tap inside one
+        # tick is latched into buttons, so it shows here); an E-STOP press or
+        # a second hold button also starts every hold again
+        restart = bool(frame.buttons[self._deadman]) or held > 1
+        if estops:
+            # spent, not restarted: a hold kept through the E-STOP would
+            # otherwise send hold_s after the E-STOP button is let go
+            for entry, index in enumerate(self._index):
+                if frame.buttons[index]:
+                    self._start[entry] = None
+                    self._fired[entry] = True
+            restart = True
+        fired = []
+        for entry, hold in enumerate(self.holds):
+            blocked = restart or (hold.kind == "clear" and bool(frame.buttons[self._estop]))
+            if self._step_hold(entry, frame, now, blocked):
+                fired.append(hold)
+        return Actions(estop_calls=estops, fired=tuple(fired))
 
-    def _step_reset(self, frame: PadFrame, now: float) -> bool:
-        if not frame.buttons[self._reset]:
-            self._hold_start = None
-            self._fired = False
+    def _step_hold(self, entry: int, frame: PadFrame, now: float, blocked: bool) -> bool:
+        index = self._index[entry]
+        if not frame.buttons[index]:
+            self._start[entry] = None
+            self._fired[entry] = False
             return False
-        if frame.buttons[self._deadman]:
-            # the deadman must stay released for the whole hold: start again
-            # (a tap inside one tick is latched into buttons, so it shows here)
-            self._hold_start = None
+        if blocked:
+            self._start[entry] = None
             return False
-        if frame.presses[self._reset]:
+        if frame.presses[index]:
             # released and pressed again since the last tick: a new hold
-            self._hold_start = now
-            self._fired = False
+            self._start[entry] = now
+            self._fired[entry] = False
             return False
-        if self._hold_start is None:
-            self._hold_start = now
+        if self._start[entry] is None:
+            self._start[entry] = now
             return False
-        if self._fired or now - self._hold_start < self._hold_s:
+        if self._fired[entry] or now - self._start[entry] < self._hold_s[entry]:
             return False
-        self._fired = True
-        return self._reset_enabled
+        self._fired[entry] = True
+        return self.holds[entry].enabled
+
+
+class HelpCombo:
+    """Edge detector of ``help_combo``: True on the tick all its controls become pressed."""
+
+    def __init__(self, layout: GamepadLayout, controls: Sequence[str]) -> None:
+        self._axes = tuple(layout.axis_index(n) for n in controls if n in layout.axes)
+        self._buttons = tuple(layout.button_index(n) for n in controls if n in layout.buttons)
+        self._enabled = bool(controls)
+        self._was_on = False
+
+    def step(self, frame: PadFrame) -> bool:
+        if not self._enabled:
+            return False
+        on = all(frame.axes[i] <= HELP_AXIS_PRESSED for i in self._axes) and all(
+            frame.buttons[i] for i in self._buttons
+        )
+        edge = on and not self._was_on
+        self._was_on = on
+        return edge
+
+
+@dataclass(frozen=True)
+class HelpEntry:
+    """One row of the help: the controls (layout names), what they do, the keys."""
+
+    controls: tuple[str, ...]
+    function: str
+    keys: str = ""
+
+
+def help_entries(config: TeleopConfig) -> tuple[HelpEntry, ...]:
+    """The help rows: labelled controls, then the button roles, then help itself.
+
+    Role texts come from the config; a control's consumer meaning only from
+    ``help_labels`` (no label, no row). ``keys`` are the virtual pad's keys.
+    """
+    button_keys: dict[str, list[str]] = {}
+    for entry in config.key_buttons:
+        target, _, key = entry.partition(":")
+        button_keys.setdefault(target, []).append(key)
+    axis_keys: dict[str, list[str]] = {}
+    for entry in config.key_axes:
+        target, _, key = entry.partition(":")
+        axis_keys.setdefault(target[:-1], []).append(f"{key} ({target[-1]})")
+
+    def keys_of(name: str) -> str:
+        return " / ".join(button_keys.get(name, []) + axis_keys.get(name, []))
+
+    rows = []
+    for entry in config.help_labels:
+        name, _, text = entry.partition(":")
+        rows.append(HelpEntry((name,), text.strip(), keys_of(name)))
+    rows.append(
+        HelpEntry(
+            (config.deadman_button,),
+            "deadman: hold to command; the hold buttons need it released",
+            keys_of(config.deadman_button),
+        )
+    )
+    rows.append(HelpEntry((config.estop_button,), "E-STOP", keys_of(config.estop_button)))
+    for hold in hold_entries(config):
+        seconds = config.reset_hold_s if hold.kind == "reset" else config.hold_s
+        if hold.kind == "reset":
+            if not hold.enabled:
+                continue
+            text = f"reset_fault of {hold.target}"
+        elif hold.kind == "switch":
+            text = f"switch to {hold.target}"
+        elif hold.kind == "clear":
+            text = f"clear E-STOP ({config.clear_estop_reason} only; E-STOP released)"
+        else:
+            text = f"call {hold.target}"
+        rows.append(
+            HelpEntry((hold.button,), f"{text} — hold {seconds:g} s", keys_of(hold.button))
+        )
+    if config.help_combo or config.help_key:
+        rows.append(HelpEntry(tuple(config.help_combo), "show / hide this help", config.help_key))
+    return tuple(rows)
 
 
 LEVEL_NAMES = {0: "OK", 1: "WARN", 2: "ERROR", 3: "STALE"}
