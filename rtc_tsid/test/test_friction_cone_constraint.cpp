@@ -1012,5 +1012,189 @@ TEST_F(FrictionConeTest, NormalForceBoundsAreCheckedOnLoad) {
   EXPECT_TRUE(std::isinf(mgr.contacts[0].normal_force_max));
 }
 
+// ── zero_torsion_equality ───────────────────────────────────────────────────
+
+// A point contact, a zero-torsion surface contact and one with μ_τ > 0, all
+// active, the surface contacts' frames in the cache rotated about z (the
+// equality row reads the normal, not the frame's tangent axes).
+class ZeroTorsionEqualityTest : public FrictionConeTest {
+ protected:
+  void SetUp() override {
+    FrictionConeTest::SetUp();
+    mgr_.contacts.resize(3);
+    mgr_.contacts[0].contact_dim = 3;
+    mgr_.contacts[0].friction_faces = 4;
+    for (int c : {1, 2}) {
+      mgr_.contacts[c].contact_dim = 6;
+      mgr_.contacts[c].friction_coeff = 0.4;
+      mgr_.contacts[c].friction_faces = 4;
+      mgr_.contacts[c].patch_half_length_x = 0.08;
+      mgr_.contacts[c].patch_half_length_y = 0.025;
+    }
+    mgr_.contacts[1].torsional_friction_coeff = 0.0;
+    mgr_.contacts[2].torsional_friction_coeff = 0.05;
+    mgr_.max_contacts = 3;
+    mgr_.max_contact_vars = 15;
+    cs_.Init(3);
+    for (auto& c : cs_.contacts) {
+      c.active = true;
+    }
+    // A tilted normal of length 2 (the rows use it normalised).
+    cs_.contacts[1].normal = Eigen::Vector3d(0.2, -0.1, 1.0).normalized() * 2.0;
+    cs_.RecomputeActive(mgr_);
+    cache_.Init(model_, rtc::tsid::ContactFrameIds(mgr_));
+    for (std::size_t c = 0; c < cache_.contact_frames.size(); ++c) {
+      cache_.contact_frames[c].oMf = pinocchio::SE3(
+          Eigen::AngleAxisd(0.3 * static_cast<double>(c + 1), Eigen::Vector3d::UnitZ())
+              .toRotationMatrix(),
+          Eigen::Vector3d::Zero());
+    }
+  }
+
+  void Make(FrictionConeConstraint& fc, const char* yaml) {
+    fc.Init(*model_, info_, cache_, YAML::Load(yaml));
+    fc.SetContactManager(&mgr_);
+  }
+
+  [[nodiscard]] int NVars() const { return info_.nv + mgr_.max_contact_vars; }
+
+  ContactManagerConfig mgr_;
+  ContactState cs_;
+  PinocchioCache cache_;
+};
+
+TEST_F(ZeroTorsionEqualityTest, TheKeyIsOptInAndABoolean) {
+  FrictionConeConstraint absent;
+  Make(absent, "{}");
+  EXPECT_FALSE(absent.ZeroTorsionEquality());
+  FrictionConeConstraint on;
+  Make(on, "{zero_torsion_equality: true}");
+  EXPECT_TRUE(on.ZeroTorsionEquality());
+  FrictionConeConstraint off;
+  Make(off, "{zero_torsion_equality: false}");
+  EXPECT_FALSE(off.ZeroTorsionEquality());
+  for (const char* bad : {"{zero_torsion_equality: maybe}", "{zero_torsion_equality: [true]}",
+                          "{zero_torsion_equality: 1.5}"}) {
+    FrictionConeConstraint fc;
+    EXPECT_THROW(Make(fc, bad), std::invalid_argument) << bad;
+  }
+}
+
+TEST_F(ZeroTorsionEqualityTest, OnlyTheZeroTorsionSurfaceTradesItsPairForOneRow) {
+  FrictionConeConstraint off;
+  Make(off, "{}");
+  FrictionConeConstraint on;
+  Make(on, "{zero_torsion_equality: true}");
+  // Point 4 + 1, surfaces 4 + 1 + 6 each.
+  EXPECT_EQ(off.EqDim(cs_), 0);
+  EXPECT_EQ(off.IneqDim(cs_), 27);
+  EXPECT_EQ(off.MaxEqDim(mgr_), 0);
+  EXPECT_EQ(off.MaxIneqDim(mgr_), 27);
+  EXPECT_EQ(on.EqDim(cs_), 1);
+  EXPECT_EQ(on.IneqDim(cs_), 25);
+  EXPECT_EQ(on.MaxEqDim(mgr_), 1);
+  EXPECT_EQ(on.MaxIneqDim(mgr_), 25);
+  cs_.contacts[1].active = false;
+  cs_.RecomputeActive(mgr_);
+  EXPECT_EQ(on.EqDim(cs_), 0);
+  EXPECT_EQ(on.IneqDim(cs_), 16);
+  EXPECT_EQ(on.MaxEqDim(mgr_), 1) << "the budget is the contacts', active or not";
+}
+
+// The equality row is n·m = 0 on the zero-torsion contact's moment columns;
+// the inequality rows are the pair version's without its two yaw rows, bit
+// for bit; and a wrench is feasible for one exactly when it is for the other.
+TEST_F(ZeroTorsionEqualityTest, TheRowsAreThePairsWithTheYawAsAnEquality) {
+  FrictionConeConstraint off;
+  Make(off, "{}");
+  FrictionConeConstraint on;
+  Make(on, "{zero_torsion_equality: true}");
+  const int nv = info_.nv;
+  const int n = NVars();
+  Eigen::MatrixXd C_off = Eigen::MatrixXd::Zero(27, n);
+  Eigen::VectorXd l_off = Eigen::VectorXd::Zero(27);
+  Eigen::VectorXd u_off = Eigen::VectorXd::Zero(27);
+  off.ComputeInequality(cache_, cs_, info_, n, C_off, l_off, u_off);
+  Eigen::MatrixXd C_on = Eigen::MatrixXd::Zero(25, n);
+  Eigen::VectorXd l_on = Eigen::VectorXd::Zero(25);
+  Eigen::VectorXd u_on = Eigen::VectorXd::Zero(25);
+  on.ComputeInequality(cache_, cs_, info_, n, C_on, l_on, u_on);
+  Eigen::MatrixXd A = Eigen::MatrixXd::Zero(1, n);
+  Eigen::VectorXd b = Eigen::VectorXd::Constant(1, 7.0);
+  on.ComputeEquality(cache_, cs_, info_, n, A, b);
+
+  // Rows: point 0–4, surface 1 5–15 (yaw 14, 15), surface 2 16–26.
+  std::vector<int> kept;
+  for (int r = 0; r < 27; ++r) {
+    if (r != 14 && r != 15) {
+      kept.push_back(r);
+    }
+  }
+  ASSERT_EQ(kept.size(), 25U);
+  for (int k = 0; k < 25; ++k) {
+    const int r = kept[static_cast<std::size_t>(k)];
+    EXPECT_TRUE(C_on.row(k) == C_off.row(r)) << k;
+    EXPECT_EQ(l_on(k), l_off(r)) << k;
+    EXPECT_EQ(u_on(k), u_off(r)) << k;
+  }
+
+  const Eigen::Vector3d nrm = cs_.contacts[1].normal.normalized();
+  const int col = nv + 3 + 3;  // after the point contact's λ, the moment block
+  EXPECT_EQ(b(0), 0.0);
+  EXPECT_NEAR((A.row(0).segment<3>(col).transpose() - nrm).norm(), 0.0, 1e-15);
+  EXPECT_EQ(A.row(0).head(col).norm() + A.row(0).tail(n - col - 3).norm(), 0.0);
+  // The pair's rows are ±(the equality row) when μ_τ = 0.
+  EXPECT_NEAR((C_off.row(14).segment<3>(col) - A.row(0).segment<3>(col)).norm(), 0.0, 1e-15);
+  EXPECT_NEAR((C_off.row(15).segment<3>(col) + A.row(0).segment<3>(col)).norm(), 0.0, 1e-15);
+
+  // Wrenches inside the cone and the rectangle, with and without torsion.
+  for (const double mz_off : {0.0, 1e-3, -0.5}) {
+    Eigen::VectorXd x = Eigen::VectorXd::Zero(n);
+    x.segment<3>(nv) << 0.0, 0.0, 50.0;
+    x.segment<6>(nv + 3) << 0.0, 0.0, 200.0, 0.5, -1.0, 0.0;
+    x.segment<6>(nv + 9) << 1.0, 0.0, 150.0, 0.0, 0.0, 2.0;
+    // m on surface 1 with n·m = mz_off.
+    x.segment<3>(col) += mz_off * nrm;
+    const auto excess = [](const Eigen::MatrixXd& C, const Eigen::VectorXd& l,
+                           const Eigen::VectorXd& u, const Eigen::VectorXd& z) {
+      const Eigen::VectorXd r = C * z;
+      return std::max((r - u).maxCoeff(), (l - r).maxCoeff());
+    };
+    const double pair = excess(C_off, l_off, u_off, x);
+    const double eq = std::max(excess(C_on, l_on, u_on, x), std::abs((A * x - b)(0)));
+    EXPECT_NEAR(pair, eq, 1e-12) << mz_off;
+
+    // The yaw margin: the pair's smaller slack, −|n·m|.
+    WbcMargins m_off;
+    off.MinSlack(cs_, C_off, l_off, u_off, x, m_off);
+    WbcMargins m_on;
+    on.MinSlack(cs_, C_on, l_on, u_on, x, m_on);
+    EXPECT_NEAR(m_on.yaw_nm, m_off.yaw_nm, 1e-12) << mz_off;
+    EXPECT_EQ(m_on.friction_n, m_off.friction_n) << mz_off;
+    EXPECT_EQ(m_on.cop_nm, m_off.cop_nm) << mz_off;
+  }
+}
+
+// A non-finite frame or normal makes the equality row non-finite, as it made
+// the pair: the solve fails on it instead of reading a made-up normal.
+TEST_F(ZeroTorsionEqualityTest, ANonFiniteFrameOrNormalLeavesANonFiniteRow) {
+  FrictionConeConstraint on;
+  Make(on, "{zero_torsion_equality: true}");
+  const int n = NVars();
+  for (const int which : {0, 1}) {
+    SetUp();
+    Make(on, "{zero_torsion_equality: true}");
+    if (which == 0) {
+      cache_.contact_frames[1].oMf.rotation()(0, 0) = std::numeric_limits<double>::quiet_NaN();
+    } else {
+      cs_.contacts[1].normal.x() = std::numeric_limits<double>::infinity();
+    }
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(1, n);
+    Eigen::VectorXd b = Eigen::VectorXd::Zero(1);
+    on.ComputeEquality(cache_, cs_, info_, n, A, b);
+    EXPECT_FALSE(A.allFinite()) << which;
+  }
+}
+
 }  // namespace
 }  // namespace rtc::tsid
