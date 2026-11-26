@@ -204,6 +204,10 @@ if(BUILD_TESTING)
   # inactive forces against the defaults and a cold reference.
   add_tsid_gtest(test_locomotion_gait)
 
+  # The assembled QP against the dense assembly it replaces
+  # (TaskBase::AccumulateCost, the torque limit's row copies), byte for byte.
+  add_tsid_gtest(test_qp_assembly)
+
   # Row-slack margins (WbcMargins) and the fail-safe classification
   # (SolveHealth) of the same QP.
   add_tsid_gtest(test_wbc_health)

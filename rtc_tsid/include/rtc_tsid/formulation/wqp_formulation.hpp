@@ -48,6 +48,15 @@ class WQPFormulation final : public FormulationBase {
 
   [[nodiscard]] const QPSolverWrapper& SolverForTesting() const noexcept { return qp_solver_; }
 
+  // Tests: the tasks in the order Solve() walks them, and the inequality rows
+  // {first row, count} the named constraint wrote on the last Solve() — count
+  // 0 when it wrote none or no constraint has that name.
+  [[nodiscard]] const std::vector<std::unique_ptr<TaskBase>>& TasksForTesting() const noexcept {
+    return tasks_;
+  }
+
+  [[nodiscard]] std::pair<int, int> IneqRowsForTesting(std::string_view name) const noexcept;
+
  private:
   // (Re)allocate the QP data and solver at the current row budget (init only).
   void ResizeQp();

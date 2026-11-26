@@ -38,6 +38,43 @@ class TaskBase {
                                Eigen::Ref<Eigen::MatrixXd> J_block,
                                Eigen::Ref<Eigen::VectorXd> r_block) noexcept = 0;
 
+  /// @brief Add this task's weighted cost straight into the WQP cost, without
+  /// the dense (J, r) round trip: H += w·JᵀJ, g −= w·Jᵀr.
+  ///
+  /// Optional. The default returns false and touches nothing — the caller then
+  /// takes the dense path (ComputeResidual + the two products). A task whose J
+  /// has at most one non-zero entry per column (a selection of QP variables,
+  /// possibly scaled) can override it and return true.
+  ///
+  /// Contract of an override:
+  ///  - the H and g it leaves are the ones the dense path would have left, as
+  ///    the same doubles (on a build that does not fuse a multiply into an
+  ///    add; with FMA the last bit may differ): per touched column c with the entry d and the
+  ///    residual r, `H(c,c) += w * (d * d)` and `g(c) -= w * (d * r)` — the
+  ///    weight multiplies the finished product, as the dense product does (a
+  ///    `(w * d) * d` differs in the last bit for d ≠ 1). Other entries are
+  ///    left alone;
+  ///  - it has every side effect and early return of ComputeResidual (a
+  ///    residual dimension it updates, a reference it ignores);
+  ///  - RT-safe: no allocation, no throw.
+  /// A non-finite r, w or d must leave a non-finite entry in g (the formulas
+  /// above do: the three are multiplied together). The dense product spreads
+  /// it over all of g (0 × NaN) and the solve is refused; the caller spreads
+  /// what an override leaves in one column, to the same refusal — left there,
+  /// the solver can return its previous iterate as solved.
+  ///
+  /// @param n_vars  QP variable count (H is n_vars × n_vars, g is n_vars)
+  /// @param w       the task weight the caller read (Weight())
+  /// @return true when the cost was added, false when the caller must take the
+  ///         dense path
+  [[nodiscard]] virtual bool AccumulateCost(const PinocchioCache& /*cache*/,
+                                            const ControlReference& /*ref*/,
+                                            const ContactState& /*contacts*/, int /*n_vars*/,
+                                            double /*w*/, Eigen::Ref<Eigen::MatrixXd> /*H*/,
+                                            Eigen::Ref<Eigen::VectorXd> /*g*/) noexcept {
+    return false;
+  }
+
   // Weight (WQP 사용, HQP 동일 level 내 상대 비중)
   void SetWeight(double w) noexcept { weight_ = w; }
 

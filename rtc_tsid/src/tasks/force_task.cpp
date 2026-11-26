@@ -81,6 +81,49 @@ void ForceTask::ComputeResidual(const PinocchioCache& /*cache*/, const ControlRe
   }
 }
 
+bool ForceTask::AccumulateCost(const PinocchioCache& /*cache*/, const ControlReference& ref,
+                               const ContactState& contacts, int /*n_vars*/, double w,
+                               Eigen::Ref<Eigen::MatrixXd> H,
+                               Eigen::Ref<Eigen::VectorXd> g) noexcept {
+  // The same walk as ComputeResidual, with its early returns and its update of
+  // the residual dimension. The dense caller sizes J by the dimension it read
+  // BEFORE that update, so rows at or past it never reached the product —
+  // `rows_in` keeps that.
+  if (!manager_)
+    return true;
+  const int rows_in = current_residual_dim_;
+  current_residual_dim_ = contacts.active_contact_vars;
+  if (current_residual_dim_ == 0)
+    return true;
+
+  const auto& lambda_ref = has_local_ref_ ? lambda_des_ : ref.lambda_des;
+
+  int row = 0;
+  int lambda_offset_in_z = nv_;
+  int lambda_offset_in_ref = 0;
+  for (size_t i = 0; i < contacts.contacts.size(); ++i) {
+    const int cdim = manager_->contacts[i].contact_dim;
+    if (!contacts.contacts[i].active) {
+      lambda_offset_in_z += cdim;
+      lambda_offset_in_ref += cdim;
+      continue;
+    }
+    const double sqrt_s = std::sqrt(contacts.contacts[i].activation);
+    const bool has_ref = lambda_offset_in_ref + cdim <= lambda_ref.size();
+    for (int d = 0; d < cdim && row + d < rows_in; ++d) {
+      const int c = lambda_offset_in_z + d;
+      // r as ComputeResidual leaves it: √s·λ_ref, or the caller's 0.
+      const double r = has_ref ? sqrt_s * lambda_ref(lambda_offset_in_ref + d) : 0.0;
+      H(c, c) += w * (sqrt_s * sqrt_s);
+      g(c) -= w * (sqrt_s * r);
+    }
+    row += cdim;
+    lambda_offset_in_z += cdim;
+    lambda_offset_in_ref += cdim;
+  }
+  return true;
+}
+
 void ForceTask::SetForceReference(int contact_index, const Eigen::VectorXd& lambda_des) noexcept {
   if (!manager_)
     return;

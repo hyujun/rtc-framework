@@ -52,6 +52,13 @@ void TorqueLimitConstraint::Init(const pinocchio::Model& /*model*/,
 
   SM_.setZero(na_, nv_);
   Sh_.setZero(na_);
+
+  // S = [0 | I] (the actuated DoFs are the last na — a free-flyer root, or
+  // none before them on a fixed base): S·X is then the bottom rows of X.
+  const int nb = nv_ - na_;
+  selects_tail_ = nb >= 0 && robot_info.S.rows() == na_ && robot_info.S.cols() == nv_ &&
+                  robot_info.S.leftCols(nb).isZero(0.0) &&
+                  robot_info.S.rightCols(na_).isApprox(Eigen::MatrixXd::Identity(na_, na_), 0.0);
 }
 
 void TorqueLimitConstraint::OnTorqueApplied(const Eigen::VectorXd& tau) noexcept {
@@ -102,8 +109,16 @@ void TorqueLimitConstraint::ComputeInequality(const PinocchioCache& cache,
   // u = τ_max - S·h
 
   // C[:, 0:nv] = S·M
-  SM_.noalias() = robot_info.S * cache.M;
-  C_block.leftCols(nv_) = SM_;
+  // On the selection path the rows are copied. `+ 0.0` turns a −0 into the +0
+  // the product leaves (it accumulates from +0), so the block is the same
+  // doubles as S·M.
+  const int nb = nv_ - na_;
+  if (selects_tail_) {
+    C_block.leftCols(nv_) = cache.M.bottomRows(na_).array() + 0.0;
+  } else {
+    SM_.noalias() = robot_info.S * cache.M;
+    C_block.leftCols(nv_) = SM_;
+  }
 
   // Stage A-5a: fixed-dim QP — every contact slot's λ columns are written
   // (active: -S·Jc_iᵀ, inactive: zero left from caller's zero-init). Offset
@@ -122,8 +137,14 @@ void TorqueLimitConstraint::ComputeInequality(const PinocchioCache& cache,
 
       // −S·Jcᵀ, not −(S·Jcᵀ): a negated product is evaluated into a heap
       // temporary, a negated factor is folded into the GEMM (same bits).
-      C_block.block(0, nv_ + lambda_offset, na_, cdim).noalias() =
-          -robot_info.S * Jc.topRows(cdim).transpose();
+      if (selects_tail_) {
+        // 0 − Jcᵀ, not −Jcᵀ: a zero entry is +0 as from the product.
+        C_block.block(0, nv_ + lambda_offset, na_, cdim).setZero();
+        C_block.block(0, nv_ + lambda_offset, na_, cdim) -= Jc.block(0, nb, cdim, na_).transpose();
+      } else {
+        C_block.block(0, nv_ + lambda_offset, na_, cdim).noalias() =
+            -robot_info.S * Jc.topRows(cdim).transpose();
+      }
 
       lambda_offset += cdim;
     }
@@ -131,7 +152,11 @@ void TorqueLimitConstraint::ComputeInequality(const PinocchioCache& cache,
 
   // l = tau_scale·τ_min - S·h,  u = tau_scale·τ_max - S·h
   // tau_scale=1.0 (default) 면 기존 raw URDF effort_limit 사용.
-  Sh_.noalias() = robot_info.S * cache.h;
+  if (selects_tail_) {
+    Sh_ = cache.h.tail(na_).array() + 0.0;
+  } else {
+    Sh_.noalias() = robot_info.S * cache.h;
+  }
   l_block.head(na_) = tau_scale_ * robot_info.tau_min - Sh_;
   u_block.head(na_) = tau_scale_ * robot_info.tau_max - Sh_;
 

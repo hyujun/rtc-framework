@@ -37,6 +37,12 @@ class PostureTask final : public TaskBase {
                        Eigen::Ref<Eigen::MatrixXd> J_block,
                        Eigen::Ref<Eigen::VectorXd> r_block) noexcept override;
 
+  // The same cost, added without the dense J (TaskBase::AccumulateCost).
+  [[nodiscard]] bool AccumulateCost(const PinocchioCache& cache, const ControlReference& ref,
+                                    const ContactState& contacts, int n_vars, double w,
+                                    Eigen::Ref<Eigen::MatrixXd> H,
+                                    Eigen::Ref<Eigen::VectorXd> g) noexcept override;
+
   // Per-task reference 설정 (external에서 호출). Sizes nq / nv / nv and finite
   // values, or it is refused (false) and the previous reference stays. Copies
   // into the buffers Init sized — no allocation.
@@ -48,6 +54,10 @@ class PostureTask final : public TaskBase {
   [[nodiscard]] bool SetGains(const Eigen::VectorXd& kp, const Eigen::VectorXd& kd) noexcept;
 
  private:
+  // r = a_des, shared by ComputeResidual and AccumulateCost.
+  void FillResidual(const PinocchioCache& cache, const ControlReference& ref,
+                    Eigen::Ref<Eigen::VectorXd> r) const noexcept;
+
   int nv_{0};
   int n_base_{0};  // rows without a position error: 6 on a floating base, else 0
   // q.tail(nv − n_base) and v.tail(nv − n_base) pair up joint by joint (every
@@ -64,6 +74,8 @@ class PostureTask final : public TaskBase {
   Eigen::VectorXd local_q_des_;
   Eigen::VectorXd local_v_des_;
   Eigen::VectorXd local_a_ff_;
+
+  Eigen::VectorXd r_buf_;  // [nv] AccumulateCost workspace
 };
 
 }  // namespace rtc::tsid

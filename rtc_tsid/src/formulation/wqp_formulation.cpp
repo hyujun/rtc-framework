@@ -78,6 +78,15 @@ ConstraintBase* WQPFormulation::GetConstraint(std::string_view name) {
   return nullptr;
 }
 
+std::pair<int, int> WQPFormulation::IneqRowsForTesting(std::string_view name) const noexcept {
+  for (std::size_t k = 0; k < constraints_.size() && k < ineq_rows_.size(); ++k) {
+    if (constraints_[k]->Name() == name) {
+      return ineq_rows_[k];
+    }
+  }
+  return {0, 0};
+}
+
 void WQPFormulation::ApplyPreset(const PhasePreset& preset) noexcept {
   for (const auto& tp : preset.task_presets) {
     if (auto* t = GetTask(tp.task_name)) {
@@ -109,9 +118,21 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
   H.setZero();
   g_vec.setZero();
 
+  bool cost_non_finite = false;
   for (const auto& task : tasks_) {
     if (!task->IsActive())
       continue;
+
+    // A task that can add its cost without the dense J does (bit-identical,
+    // TaskBase::AccumulateCost); the others take the products below.
+    const double w = task->Weight();
+    if (task->AccumulateCost(cache, ref, contacts, n_vars, w, H, g_vec)) {
+      // A shortcut that wrote no row (no active contact) leaves no trace of a
+      // non-finite weight; the products would have (w × 0) wherever the task
+      // had a row.
+      cost_non_finite = cost_non_finite || !std::isfinite(w);
+      continue;
+    }
 
     const int rdim = task->ResidualDim();
     auto J_view = J_workspace_.topLeftCorner(rdim, n_vars);
@@ -121,9 +142,17 @@ const SolveResult& WQPFormulation::Solve(const PinocchioCache& cache, const Cont
 
     task->ComputeResidual(cache, ref, contacts, n_vars, J_view, r_view);
 
-    const double w = task->Weight();
     H.noalias() += w * J_view.transpose() * J_view;
     g_vec.noalias() -= w * J_view.transpose() * r_view;
+  }
+
+  // A non-finite reference, weight or activation made every entry of g NaN
+  // when all tasks went through the products (0 × NaN), and the solver's
+  // iterates then went non-finite: the tick was refused. A shortcut leaves it
+  // in its own columns, where ProxQP can return its previous iterate as
+  // solved — so it is spread here, to the same refusal.
+  if (cost_non_finite || !g_vec.allFinite()) {
+    g_vec.setConstant(std::numeric_limits<double>::quiet_NaN());
   }
 
   // Small regularization for numerical stability

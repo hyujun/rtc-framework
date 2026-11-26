@@ -83,6 +83,8 @@ YAML 항목 (`type:`) 으로 태스크·제약을 짓는 dispatch 는 `formulati
 
 `TaskBase` 를 상속하며 `compute_residual()` 이 잔차와 Jacobian 을 낸다. 각 태스크는 `weight` · `priority` 를 갖는다.
 
+선택 행렬 태스크는 `AccumulateCost()` 로 WQP cost 에 바로 더한다 (계약: `task_base.hpp`).
+
 | 태스크 | 설명 | residual_dim |
 |---|---|---|
 | `PostureTask` | 관절 자세 추종 | nv |

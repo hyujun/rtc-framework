@@ -66,6 +66,7 @@ void PostureTask::Init(const pinocchio::Model& model, const RobotModelInfo& robo
   local_v_des_.setZero(nv_);
   local_a_ff_.setZero(nv_);
   has_local_ref_ = false;
+  r_buf_.setZero(nv_);
 }
 
 void PostureTask::ComputeResidual(const PinocchioCache& cache, const ControlReference& ref,
@@ -78,6 +79,25 @@ void PostureTask::ComputeResidual(const PinocchioCache& cache, const ControlRefe
     J_block(i, i) = 1.0;
   }
 
+  FillResidual(cache, ref, r_block);
+}
+
+bool PostureTask::AccumulateCost(const PinocchioCache& cache, const ControlReference& ref,
+                                 const ContactState& /*contacts*/, int /*n_vars*/, double w,
+                                 Eigen::Ref<Eigen::MatrixXd> H,
+                                 Eigen::Ref<Eigen::VectorXd> g) noexcept {
+  FillResidual(cache, ref, r_buf_);
+  // J = [I | 0]: column i holds the single entry 1, so w·JᵀJ adds w·(1·1) = w
+  // on the diagonal and w·Jᵀr adds w·(1·r_i) = w·r_i.
+  for (int i = 0; i < nv_; ++i) {
+    H(i, i) += w;
+    g(i) -= w * r_buf_(i);
+  }
+  return true;
+}
+
+void PostureTask::FillResidual(const PinocchioCache& cache, const ControlReference& ref,
+                               Eigen::Ref<Eigen::VectorXd> r_block) const noexcept {
   // Reference 선택: local이 설정됐으면 local, 아니면 ControlReference
   const auto& q_des = has_local_ref_ ? local_q_des_ : ref.q_des;
   const auto& v_des = has_local_ref_ ? local_v_des_ : ref.v_des;
