@@ -27,6 +27,10 @@ Usage:
   # <session>/sim/{clock_lane,ball_contact_lane}.csv
   ros2 launch integrated_bringup sim_b7_loco.launch.py sim_lanes:=true
 
+  # Operate from a pad or the keyboard alone (switch, E-STOP and its clear,
+  # reset_fault, sim_recover): rtc_teleop_input with config/b7_loco/teleop_input.yaml
+  ros2 launch integrated_bringup sim_b7_loco.launch.py teleop:=virtual   # or pad
+
 Nodes launched:
   1. mujoco_simulator_node     — MuJoCo physics simulator
   2. integrated_rt_controller  — 500Hz controller (CV-based wakeup in sim mode)
@@ -71,6 +75,7 @@ from integrated_bringup.sim_overlay import (
     resolve_sim_overlay,
     sim_overlay_argument_description,
 )
+from integrated_bringup.teleop_launch import TELEOP_MODES, teleop_actions
 from rtc_tools.launch import cpu_shield as shield
 from rtc_tools.launch.pinning import pin_dds_threads_to_slot, pin_process_to_slot
 from rtc_tools.launch.session import max_log_sessions_from_yaml, open_session
@@ -388,6 +393,8 @@ def launch_setup(context, *args, **kwargs):
         actions.extend(post_shield)
 
     actions.extend(make_trace_action(context, session_dir=session_dir))
+    # Not RT: off the shield like any user process, started with the launch.
+    actions.extend(teleop_actions(LaunchConfiguration("teleop").perform(context), PROFILE, "b7"))
 
     return actions
 
@@ -534,6 +541,17 @@ def generate_launch_description():
         ),
     )
 
+    teleop_arg = DeclareLaunchArgument(
+        "teleop",
+        default_value="none",
+        choices=list(TELEOP_MODES),
+        description=(
+            "none (the default), or operate from rtc_teleop_input: virtual (pad GUI, "
+            "keyboard and mouse) or pad (a real pad); also starts sim_recover. The "
+            "sticks drive nothing yet (this profile's controller reads no command)."
+        ),
+    )
+
     layout_profile_arg = shield.layout_profile_argument()
 
     enable_tracing_arg = DeclareLaunchArgument(
@@ -594,6 +612,7 @@ def generate_launch_description():
             use_cpu_affinity_arg,
             initial_controller_arg,
             enable_mpc_arg,
+            teleop_arg,
             layout_profile_arg,
             enable_tracing_arg,
             trace_session_name_arg,

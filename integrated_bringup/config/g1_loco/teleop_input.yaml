@@ -1,0 +1,52 @@
+# rtc_teleop_input parameters for sim_g1_loco.launch.py teleop:=virtual|pad
+#
+# The launch passes this file as the teleop node's params_file; input,
+# output_topic and pad_topic are launch arguments (the teleop launch refuses
+# them here). The sticks drive locomotion_controller through
+# sim_overlays/joy_command.yaml (the axis meanings below must match it); the
+# buttons run the operation loop without a terminal:
+#
+#   Y / 1   hold 1 s  switch to locomotion_controller
+#   A / 2   hold 1 s  switch to demo_joint_controller
+#   B / Esc           E-STOP
+#   START / Return    hold 1 s  clear an operator E-STOP (E-STOP released)
+#   BACK / Backspace  hold 1 s  reset_fault of locomotion_controller
+#   X / R   hold 1 s  sim_recover: stand goal, then /sim/reset
+#   LT+RT (pad) / F1  help
+#
+# Every hold needs the deadman (LB / Space) released. clear_estop_reason is
+# the controller manager's reason for /rtc_cm/trigger_estop
+# (kOperatorEstopReason, rt_controller_node.hpp; a test keeps them equal), so
+# the pad lowers only an E-STOP an operator raised — a detector's E-STOP
+# (watchdog, overrun, ...) still needs its own reason echoed by hand.
+teleop_input:
+  ros__parameters:
+    reset_controller_name: "locomotion_controller"
+    status_topics: ["/locomotion_controller/g1/locomotion_status"]
+    key_axes:
+      - "lefty+:W"
+      - "lefty-:S"
+      - "leftx+:A"
+      - "leftx-:D"
+      - "rightx+:Left"
+      - "rightx-:Right"
+      - "righty+:Up"
+      - "righty-:Down"
+    key_buttons:
+      - "leftshoulder:Space"
+      - "b:Escape"
+      - "back:Backspace"
+      - "y:1"
+      - "a:2"
+      - "start:Return"
+      - "x:R"
+    switch_buttons: ["y:locomotion_controller", "a:demo_joint_controller"]
+    clear_estop_button: "start"
+    clear_estop_reason: "operator_request"
+    trigger_buttons: ["x:/sim_recover/recover"]
+    help_combo: ["triggerleft", "triggerright"]
+    help_labels:
+      - "lefty:v_x (forward +)"
+      - "leftx:v_y (left +)"
+      - "rightx:yaw rate (left +)"
+      - "righty:pelvis height rate (up +)"

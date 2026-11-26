@@ -115,7 +115,8 @@ GUI 의 컨트롤러 라디오에서 컨트롤러를 고르고 `Switch Controlle
 | `initial_controller` | `""` (YAML) | 시작 컨트롤러. 기본은 profile 의 `sim.yaml` (`ur5e_p1a` · `iiwa7_leap` 은 wbc, `p2` · `p2_left` 는 `hand_joint_controller`, 나머지는 `demo_joint_controller`). 기동 완료 신호는 `RtControllerNode reached Active state` 로그 |
 | `enable_mpc` | `""` (YAML) | `mpc.enabled` 를 launch 시점에 덮는다 — `sim_iiwa7_leap` 은 `demo_wbc_controller` 의 것 (YAML 기본 `false`), `sim_g1_loco` 는 `locomotion_controller` 의 것, 나머지 sim 은 CPU layout 만 (기본 `false`) |
 | `layout_profile` | `""` (`enable_mpc`) | CPU layout profile 이름. `mpc_par_sim` 은 sim 에 없는 driver 의 slot 을 MPC worker 로 쓴다. 모르는 이름은 거부 |
-| `command_input` | `twist` | `locomotion_controller` 의 속도 명령 메시지: `twist` (`g1/cmd_vel`) 또는 `joy` (`g1/joy`, `sensor_msgs/Joy` — [rtc_teleop_input](../rtc_teleop_input/README.md) 이 낸다). `sim_g1_loco` 만 |
+| `command_input` | `auto` | 속도 명령: `twist` (`g1/cmd_vel`) · `joy` (`g1/joy`). `auto` = `teleop` 이 있으면 `joy`. `sim_g1_loco` 만 |
+| `teleop` | `none` | `virtual` · `pad`: 패드 · 키보드 운영 ([쓰는 법](docs/locomotion-controller.md#패드--키보드로-운영-teleop)). 두 loco sim |
 | `mpc_threads` | `""` (YAML 1) | `locomotion_controller` 의 `mpc.solver.num_threads`. profile 의 worker 가 N − 1 개 미만이면 거부 (`sim_g1_loco` 만) |
 | `mpc_sync` | `lockstep` | `locomotion_controller` 의 `mpc.sync.mode`: `lockstep` (RT tick 이 solve 를 trigger · 대기, sim 의 `sync_timeout_armed_ms` 4000 을 함께 둔다) 또는 `free_run` (실기의 벽시계). overlay 로는 못 바꾼다 (`sim_g1_loco` 만) |
 | `mpc_engine` | `""` (YAML) | `mock` / `handler` (`demo_wbc_controller` 의 MPC 엔진). `sim_g1_p1b` · `sim_g1_loco` · `sim_b7_loco` · `sim_p2` 에는 없다 |

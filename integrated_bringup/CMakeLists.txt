@@ -2731,6 +2731,10 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_launch_shield_wiring test/test_launch_shield_wiring.py)
   # command_input:= (sim_g1_loco): the controller parameter layers, the joy overlay's place.
   ament_add_pytest_test(test_command_input test/test_command_input.py)
+  # teleop:= of the humanoid sims (integrated_bringup.teleop_launch) and the
+  # shipped config/<profile>/teleop_input.yaml: they start the teleop node, clear
+  # only the CM's operator E-STOP reason, and agree with the Joy overlay.
+  ament_add_pytest_test(test_teleop_profiles test/test_teleop_profiles.py)
   ament_add_pytest_test(test_launch_hand_affinity_wiring
     test/test_launch_hand_affinity_wiring.py)
   # Every topic udp_hand_node declares is set to /<robot>/... in each overlay: a
