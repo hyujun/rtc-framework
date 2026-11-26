@@ -254,7 +254,7 @@ TEST(JoyCommandOverlay, TheShippedOverlayParses) {
   EXPECT_EQ(m.linear_x, 1) << "lefty";
   EXPECT_EQ(m.linear_y, 0) << "leftx";
   EXPECT_EQ(m.angular_z, 2) << "rightx";
-  EXPECT_EQ(m.height_rate, -1) << "the height is not mapped";
+  EXPECT_EQ(m.height_rate, 3) << "righty";
   EXPECT_EQ(m.deadman, 9) << "leftshoulder (LB)";
 }
 
