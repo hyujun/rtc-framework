@@ -202,7 +202,7 @@ rtc_tsid/
 | 태스크가 reference 를 못 받고 identity 를 추종 | `name` 이 YAML key 와 다르다 | `name` 을 key 와 같게 |
 | `SE3Task` init 이 locked 로 throw | 캐시의 첫 `Update` 뒤에 지었다 | 첫 `Update` 전에 짓는다 |
 | `qp_converged == false` | 해가 비유한이다 (ProxQP 가 SOLVED 여도 그렇게 보고하고, 다음 solve 는 warm start 없이 시작한다) | 입력 (`M` · `h` · `q` · `v` · 목표) 의 유한성 확인 |
-| `tau_valid == false` | 그 tick 의 solve 가 비수렴 (`qp_status` 1 · 2 · −2) 또는 τ 비유한 — `tau` · `a_opt` · `lambda_opt` 는 직전 valid 값 | `qp_status` · `rows_dropped` · `n_eq_used` · `n_ineq_used` 로 분류, 소비자가 fallback |
+| `tau_valid == false` | 그 tick 의 solve 가 비수렴 (`qp_status` 1 · 2 · −2 · −3) 또는 τ 비유한 — `tau` · `a_opt` · `lambda_opt` 는 직전 valid 값 | `qp_status` · `rows_dropped` · `n_eq_used` · `n_ineq_used` 로 분류, 소비자가 fallback |
 | 부동 모델 init throw | YAML `floating_base`·`n_actuated` 가 모델과 다름, root 뒤 관절이 1-DoF 아님, posture `kp`/`kd` 목록 길이 | 키를 맞추거나 지운다 |
 | 거짓 `PRIMAL_INFEASIBLE` | 전처리기가 placeholder 스케일 | `QPSolverConfig::update_preconditioner` (헤더 주석) |
 
