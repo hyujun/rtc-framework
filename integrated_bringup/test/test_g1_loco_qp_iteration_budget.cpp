@@ -11,10 +11,11 @@
 //     of them and the solve health faults. Under caps no cold start fits in
 //     (1 × 1) the same sequence never solves and faults — a cold start is the
 //     first tick's start too, so no caps separate the two;
-//   - a contradictory QP every tick: refused before the caps, and the health
-//     reaches Fault after health.max_invalid_ticks + 1 of them. (What the caps
-//     cut short is a QP ProxQP can neither solve nor refuse, which no input
-//     of this rig produces — the measurements are in the YAML's header);
+//   - a contradictory QP every tick: no solution is taken, it ends inside the
+//     caps, and the health reaches Fault after health.max_invalid_ticks + 1 of
+//     them. Whether ProxQP refuses it before the caps depends on the form of
+//     the constraints (with friction_cone.zero_torsion_equality it runs to
+//     them) — the time it costs is in the YAML's header;
 //   - 300 states off the nominal trace: every tick that solves under caps of
 //     200 × 500 solves under the installed ones.
 //
@@ -324,7 +325,8 @@ TEST(G1LocoQpIterationBudget, AContradictoryQpEndsInsideTheCapsAndFaults) {
     const CommandOutput& out = rig.Solve();
     EXPECT_FALSE(out.tau_valid) << k;
     EXPECT_GT(out.qp_status, 0) << k << ": the solver ran and gave up";
-    EXPECT_LT(out.outer_iterations, rig.max_iter) << k << ": refused, not cut off by the cap";
+    EXPECT_LE(out.outer_iterations, rig.max_iter) << k;
+    EXPECT_LE(out.qp_iterations, rig.max_iter * rig.max_iter_in) << k;
     cost.outer = std::max(cost.outer, out.outer_iterations);
     cost.inner = std::max(cost.inner, out.qp_iterations);
     cost.solve_us = std::max(cost.solve_us, out.solve_time_us);
