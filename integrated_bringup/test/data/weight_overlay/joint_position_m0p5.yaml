@@ -7,13 +7,13 @@ integrated_rt_controller:
             joints:
               left_hip_pitch_joint: 0.017708754896942926
               left_hip_roll_joint: 0.017708754896942926
-              left_hip_yaw_joint: 0.017708754896942926
+              left_hip_yaw_joint: 0.17708754896942927
               left_knee_joint: 0.017708754896942926
               left_ankle_pitch_joint: 0.017708754896942926
               left_ankle_roll_joint: 0.017708754896942926
               right_hip_pitch_joint: 0.017708754896942926
               right_hip_roll_joint: 0.017708754896942926
-              right_hip_yaw_joint: 0.017708754896942926
+              right_hip_yaw_joint: 0.17708754896942927
               right_knee_joint: 0.017708754896942926
               right_ankle_pitch_joint: 0.017708754896942926
               right_ankle_roll_joint: 0.017708754896942926
@@ -32,13 +32,13 @@ integrated_rt_controller:
             joints:
               left_hip_pitch_joint: 0.005312626469082877
               left_hip_roll_joint: 0.005312626469082877
-              left_hip_yaw_joint: 0.005312626469082877
+              left_hip_yaw_joint: 0.053126264690828776
               left_knee_joint: 0.005312626469082877
               left_ankle_pitch_joint: 0.005312626469082877
               left_ankle_roll_joint: 0.005312626469082877
               right_hip_pitch_joint: 0.005312626469082877
               right_hip_roll_joint: 0.005312626469082877
-              right_hip_yaw_joint: 0.005312626469082877
+              right_hip_yaw_joint: 0.053126264690828776
               right_knee_joint: 0.005312626469082877
               right_ankle_pitch_joint: 0.005312626469082877
               right_ankle_roll_joint: 0.005312626469082877

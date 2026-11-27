@@ -74,8 +74,14 @@
 # q_default against the height) and keep the stance width while stepping
 # (0.21 m of 0.24 after 23 s; the reference's 0.11). Their absolute size is
 # tied to the solver's constants (AL μ, barriers, tolerances): the same ratios
-# a factor 10 lower never produced a publishable plan. Walking is not judged
-# with them yet.
+# a factor 10 lower never produced a publishable plan.
+#   - hip_yaw (running and terminal) is ten times the other leg joints'. In
+#     single support the stance foot's yaw rate is held by the contact
+#     equality, so the plan turns the body through the stance hip yaw; at the
+#     common weight a yaw-rate command wound the hips, and the stop that
+#     followed unwound them, turning the body on the fixed feet. At ten times
+#     the drift at the stop stays small, for a yaw-rate tracking about 0.02
+#     lower (sim walk evaluation, 2026-11-28).
 #   - state / terminal: the base orientation is in this OCP's tangent order
 #     (roll, pitch, yaw); the base angular entries weigh the LOCAL angular
 #     velocity. terminal_scaling 1: the terminal weights are written out.
@@ -96,7 +102,14 @@
 # those two stall a walking window: the solver drops the rear foot's normal
 # force of a double-support node to zero. The joint-limit and foot / knee
 # collision barriers are the reference's (its code's piecewise-polynomial
-# form; mu, delta from its task). The 16 sphere pairs are its foot centre, the
+# form; mu from its task). Collision delta is 0.06 (the reference's 0.04):
+# nothing else in either layer holds the feet apart, and a planned pair
+# settles about 0.015 – 0.02 m inside delta, so the barrier's reach sets the
+# planned touchdown spacing — at 0.04 straight walking stepped 0.10 m apart
+# (standing 0.24) and the touchdowns just after a yaw-rate step came close to
+# crossing; 0.06 steps about 0.13 apart. 0.08 widened more but, with the
+# hip_yaw weight, drifted backwards in stepping in place past its gate (sim
+# walk evaluation, 2026-11-28). The 16 sphere pairs are its foot centre, the
 # two points ±0.054 (0.6 of its half length) along the sole and the ankle (r 0.05), and the knees
 # (r 0.075), in the ankle-roll / knee joint frames; collision ships on (W8-F05).
 #
@@ -150,13 +163,13 @@ locomotion_controller:
         joints:
           left_hip_pitch_joint: 0.056
           left_hip_roll_joint: 0.056
-          left_hip_yaw_joint: 0.056
+          left_hip_yaw_joint: 0.56
           left_knee_joint: 0.056
           left_ankle_pitch_joint: 0.056
           left_ankle_roll_joint: 0.056
           right_hip_pitch_joint: 0.056
           right_hip_roll_joint: 0.056
-          right_hip_yaw_joint: 0.056
+          right_hip_yaw_joint: 0.56
           right_knee_joint: 0.056
           right_ankle_pitch_joint: 0.056
           right_ankle_roll_joint: 0.056
@@ -203,13 +216,13 @@ locomotion_controller:
         joints:
           left_hip_pitch_joint: 0.0168
           left_hip_roll_joint: 0.0168
-          left_hip_yaw_joint: 0.0168
+          left_hip_yaw_joint: 0.168
           left_knee_joint: 0.0168
           left_ankle_pitch_joint: 0.0168
           left_ankle_roll_joint: 0.0168
           right_hip_pitch_joint: 0.0168
           right_hip_roll_joint: 0.0168
-          right_hip_yaw_joint: 0.0168
+          right_hip_yaw_joint: 0.168
           right_knee_joint: 0.0168
           right_ankle_pitch_joint: 0.0168
           right_ankle_roll_joint: 0.0168
@@ -311,7 +324,7 @@ locomotion_controller:
         collision:
           enabled: true
           mu: 1500.0
-          delta: 0.04                # [m]
+          delta: 0.06                # [m] (the reference's 0.04; see the header)
           pairs:
           - {frame_a: left_ankle_roll_joint, offset_a: [0.089, 0.0, -0.035], radius_a: 0.05,
              frame_b: right_ankle_roll_joint, offset_b: [0.089, 0.0, -0.035], radius_b: 0.05}
