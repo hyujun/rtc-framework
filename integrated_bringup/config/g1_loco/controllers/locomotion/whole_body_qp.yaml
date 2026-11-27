@@ -34,27 +34,35 @@
 # a few percent of the ticks of a gait, in chains, and can return SOLVED at a
 # non-optimal point on a support change.
 #
+# constraints.friction_cone.zero_torsion_equality: with torsional_friction_coeff
+# 0 each sole's yaw moment is held at 0 by one equality row instead of the pair
+# ±m_z ≤ 0 (rtc_tsid friction_cone_constraint.hpp) — the same QP, fewer
+# iterations. On the sim (lock-step, the matched plant, stand / height / step /
+# walk × 4 against the pair at 25 × 25, 2026-11-27, 230 k ticks each) every
+# unit finished as the pair's did, with no failed solve; the inner iterations
+# of a step / walk tick fell from a median of 5 to 4 and the solve's median
+# from 121 to 97 µs. The most a solve took was 13 inner iterations (pair: 14).
+#
 # solver.max_iter / max_iter_in bound what a miss costs, not what a solve
-# needs. On a walking trace of this QP (5500 ticks, without and with 1e-3
-# state noise, dev PC, 2026-11-27) a solve took at most 9 outer steps and 11
-# inner iterations in all (6 in one outer step), and 9 / 9 from the
-# equality-constrained start after a miss; on the sim (lock-step, stand /
-# height / step / walk × 4, 230 k ticks) a solve took at most 15 inner
-# iterations, with either pair of caps, and none missed. 25 × 25 leaves twice
-# the trace's need and changed no solve of it. What it changes is the tick
-# that cannot be solved. Two made for the measurement — the cones' normal-force
-# rows pinned outside the cone, and a tolerance out of reach — ended after
-# 3.6 ms and 0.4 ms, against 36 ms and 2.9 ms at ProxQP-sized caps
-# (200 × 500). That is still more than a control period: the caps shorten a
-# miss, they do not fit it into the tick.
+# needs. With the equality, on a stand / release / return trace of this QP a
+# solve took at most 5 outer steps and 6 inner iterations in one of them, the
+# tick after a forced miss solved from the equality-constrained start, and all
+# 390 of 600 off-nominal ticks that solve under 200 × 500 solved (at most 13
+# outer steps). 20 × 20 leaves twice the trace's need. What it changes is the
+# tick that cannot be solved: a QP contradictory through the dynamics runs to
+# the caps with the equality (ProxQP's approximate infeasibility certificate
+# does not fire on it, rtc_tsid friction_cone_constraint.hpp) and ended after
+# 3.4 – 3.8 ms (the pair refused it in 8 outer steps, 1.2 ms); a tolerance out
+# of reach ended after 0.2 ms (dev PC). That is still more than a control
+# period: the caps shorten a miss, they do not fit it into the tick.
 # A non-finite reference or state is refused before the solver (qp_status −3).
 locomotion_controller:
   whole_body_qp:
     formulation_type: wqp
     solver:
       eps_abs: 1.0e-6
-      max_iter: 25                     # outer (proximal) steps
-      max_iter_in: 25                  # inner iterations of one outer step
+      max_iter: 20                     # outer (proximal) steps
+      max_iter_in: 20                  # inner iterations of one outer step
       dense_backend: PrimalDualLDLT
       warm_start: previous_result_reset_mu
     contact:
@@ -86,7 +94,7 @@ locomotion_controller:
       contact:                         # Baumgarte on the stance feet, [lin; ang]
         baumgarte: {kp: [0, 0, 100, 100, 100, 100], kd: [20, 20, 20, 20, 20, 20]}
         inactive_lambda: zero
-      friction_cone: {}
+      friction_cone: {zero_torsion_equality: true}
       joint_limit: {position_margin: 0.05, velocity_margin: 0.1}
       torque_limit: {tau_scale: 1.0}
     # Solve health: a run of more than 5 ticks without a valid torque (or with
