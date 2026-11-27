@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
+#include <string>
 
 namespace rtc::tsid {
 
@@ -100,31 +102,71 @@ inline void BuildSurfaceBasis(const Eigen::Vector3d& n_in, const Eigen::Matrix3d
 }
 
 // Point contact (cdim=3): n_faces + 1 (cone faces + unilateral -fz ≤ 0)
-// Surface contact (cdim=6): + 4 (CoP rectangle) + 2 (yaw moment) = n_faces + 7.
+// Surface contact (cdim=6): + 4 (CoP rectangle) + 2 (yaw moment) = n_faces + 7,
+// or n_faces + 5 when the yaw is an equality row (`yaw_as_equality`).
 // patch=0 / μ_τ=0 인 surface 라도 trivial 행 (0 ≤ 0) 으로 유지 — ineq_dim 일관.
-int RowsPerContact(const ContactConfig& cfg) noexcept {
+int RowsPerContact(const ContactConfig& cfg, bool yaw_as_equality) noexcept {
   int per_contact = cfg.friction_faces + 1;
   if (cfg.contact_dim == 6) {
-    per_contact += 6;
+    per_contact += yaw_as_equality ? 4 : 6;
   }
   return per_contact;
+}
+
+// The unit normal a surface contact's rows use (BuildSurfaceBasis's n, or
+// BuildContactBasis's when the contact has no frame in the cache): NaN when
+// the frame or the normal is not finite, so the row fails like the pair would.
+Eigen::Vector3d YawRowNormal(const ContactState::Entry& contact, const PinocchioCache& cache,
+                             std::size_t i) noexcept {
+  if (i < cache.contact_frames.size()) {
+    const double nn = contact.normal.norm();
+    if (!std::isfinite(nn) || !cache.contact_frames[i].oMf.rotation().allFinite()) {
+      return Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN());
+    }
+    return nn > 1e-9 ? Eigen::Vector3d(contact.normal / nn) : Eigen::Vector3d::UnitZ();
+  }
+  Eigen::Matrix3d R_c;
+  static_cast<void>(BuildContactBasis(contact.normal, R_c));
+  return R_c.col(2);
 }
 
 }  // namespace
 
 void FrictionConeConstraint::SetContactManager(const ContactManagerConfig* manager) {
   manager_ = manager;
-  surface_branch_.assign(manager != nullptr ? manager->contacts.size() : 0, kBranchNone);
+  const std::size_t n = manager != nullptr ? manager->contacts.size() : 0;
+  surface_branch_.assign(n, kBranchNone);
+  yaw_normal_.assign(n, Eigen::Vector3d::UnitZ());
 }
 
 void FrictionConeConstraint::Init(const pinocchio::Model& /*model*/,
                                   const RobotModelInfo& robot_info, PinocchioCache& /*cache*/,
-                                  const YAML::Node& /*constraint_config*/) {
+                                  const YAML::Node& constraint_config) {
   nv_ = robot_info.nv;
+  zero_torsion_equality_ = false;
+  if (constraint_config && constraint_config.IsMap()) {
+    const YAML::Node key = constraint_config["zero_torsion_equality"];
+    if (key) {
+      bool value = false;
+      if (!key.IsScalar() || !YAML::convert<bool>::decode(key, value)) {
+        throw std::invalid_argument("friction_cone.zero_torsion_equality: expected true or false");
+      }
+      zero_torsion_equality_ = value;
+    }
+  }
 }
 
-int FrictionConeConstraint::EqDim(const ContactState& /*contacts*/) const noexcept {
-  return 0;
+int FrictionConeConstraint::EqDim(const ContactState& contacts) const noexcept {
+  if (!manager_ || !zero_torsion_equality_) {
+    return 0;
+  }
+  int total = 0;
+  for (std::size_t i = 0; i < contacts.contacts.size() && i < manager_->contacts.size(); ++i) {
+    if (contacts.contacts[i].active && YawAsEquality(manager_->contacts[i])) {
+      ++total;
+    }
+  }
+  return total;
 }
 
 int FrictionConeConstraint::IneqDim(const ContactState& contacts) const noexcept {
@@ -135,28 +177,55 @@ int FrictionConeConstraint::IneqDim(const ContactState& contacts) const noexcept
   for (size_t i = 0; i < contacts.contacts.size(); ++i) {
     if (!contacts.contacts[i].active)
       continue;
-    total += RowsPerContact(manager_->contacts[i]);
+    const auto& cfg = manager_->contacts[i];
+    total += RowsPerContact(cfg, YawAsEquality(cfg));
   }
   return total;
 }
 
-int FrictionConeConstraint::MaxEqDim(const ContactManagerConfig& /*contacts*/) const noexcept {
-  return 0;
+int FrictionConeConstraint::MaxEqDim(const ContactManagerConfig& contacts) const noexcept {
+  int total = 0;
+  for (const auto& cfg : contacts.contacts) {
+    total += YawAsEquality(cfg) ? 1 : 0;
+  }
+  return total;
 }
 
 int FrictionConeConstraint::MaxIneqDim(const ContactManagerConfig& contacts) const noexcept {
   int total = 0;
   for (const auto& cfg : contacts.contacts) {
-    total += RowsPerContact(cfg);
+    total += RowsPerContact(cfg, YawAsEquality(cfg));
   }
   return total;
 }
 
-void FrictionConeConstraint::ComputeEquality(const PinocchioCache& /*cache*/,
-                                             const ContactState& /*contacts*/,
+void FrictionConeConstraint::ComputeEquality(const PinocchioCache& cache,
+                                             const ContactState& contacts,
                                              const RobotModelInfo& /*robot_info*/, int /*n_vars*/,
-                                             Eigen::Ref<Eigen::MatrixXd> /*A_block*/,
-                                             Eigen::Ref<Eigen::VectorXd> /*b_block*/) noexcept {}
+                                             Eigen::Ref<Eigen::MatrixXd> A_block,
+                                             Eigen::Ref<Eigen::VectorXd> b_block) noexcept {
+  if (!manager_ || !zero_torsion_equality_) {
+    return;
+  }
+  // One row per active zero-torsion surface contact, in contact order:
+  // n·m = 0 on the contact's moment columns (λ_i = [f; m], world axes).
+  int row = 0;
+  int lambda_offset = 0;
+  for (std::size_t i = 0; i < contacts.contacts.size() && i < manager_->contacts.size(); ++i) {
+    const auto& cfg = manager_->contacts[i];
+    if (contacts.contacts[i].active && YawAsEquality(cfg) && row < A_block.rows()) {
+      const Eigen::Vector3d n = YawRowNormal(contacts.contacts[i], cache, i);
+      yaw_normal_[i] = n;
+      const int col = nv_ + lambda_offset + 3;
+      A_block(row, col + 0) = n.x();
+      A_block(row, col + 1) = n.y();
+      A_block(row, col + 2) = n.z();
+      b_block(row) = 0.0;
+      ++row;
+    }
+    lambda_offset += cfg.contact_dim;
+  }
+}
 
 void FrictionConeConstraint::ComputeInequality(const PinocchioCache& cache,
                                                const ContactState& contacts,
@@ -301,8 +370,10 @@ void FrictionConeConstraint::ComputeInequality(const PinocchioCache& cache,
       write_surface_row({0.0, 0.0, -lx}, {0.0, -1.0, 0.0});
       write_surface_row({0.0, 0.0, -ly}, {1.0, 0.0, 0.0});
       write_surface_row({0.0, 0.0, -ly}, {-1.0, 0.0, 0.0});
-      write_surface_row({0.0, 0.0, -mu_tau}, {0.0, 0.0, 1.0});
-      write_surface_row({0.0, 0.0, -mu_tau}, {0.0, 0.0, -1.0});
+      if (!YawAsEquality(cfg)) {  // else the equality row (ComputeEquality)
+        write_surface_row({0.0, 0.0, -mu_tau}, {0.0, 0.0, 1.0});
+        write_surface_row({0.0, 0.0, -mu_tau}, {0.0, 0.0, -1.0});
+      }
     }
 
     lambda_offset += cdim;
@@ -319,23 +390,35 @@ void FrictionConeConstraint::MinSlack(const ContactState& contacts,
     return;
   }
   // The row order of ComputeInequality: per active contact the n_faces face
-  // rows and the unilateral row, then (surface) four CoP rows and two yaw rows.
+  // rows and the unilateral row, then (surface) four CoP rows and two yaw rows
+  // — or, yaw as an equality, the value −|n·m| of that row (the smaller slack
+  // of the pair it replaces).
   const Eigen::Index n_rows = C_block.rows();
   Eigen::Index row = 0;
+  int lambda_offset = 0;
   const auto lower = [&](double& margin, int count) {
     for (int k = 0; k < count && row < n_rows; ++k, ++row) {
       LowerTo(margin, RowSlack(C_block, l_block, u_block, x, row));
     }
   };
   for (std::size_t i = 0; i < contacts.contacts.size() && i < manager_->contacts.size(); ++i) {
+    const auto& cfg = manager_->contacts[i];
+    const int offset = lambda_offset;
+    lambda_offset += cfg.contact_dim;
     if (!contacts.contacts[i].active) {
       continue;
     }
-    const auto& cfg = manager_->contacts[i];
     lower(margins.friction_n, cfg.friction_faces + 1);
     if (cfg.contact_dim == 6) {
       lower(margins.cop_nm, 4);
-      lower(margins.yaw_nm, 2);
+      if (YawAsEquality(cfg)) {
+        const Eigen::Index col = nv_ + offset + 3;
+        if (col + 3 <= x.size()) {
+          LowerTo(margins.yaw_nm, -std::abs(yaw_normal_[i].dot(x.segment<3>(col))));
+        }
+      } else {
+        lower(margins.yaw_nm, 2);
+      }
     }
   }
 }

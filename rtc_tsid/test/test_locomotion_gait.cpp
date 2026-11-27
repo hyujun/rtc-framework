@@ -12,7 +12,10 @@
 //     tick but a few, never twice in a row, settles a support change in a few
 //     iterations, and its solution is the reference's optimum — no multiplier
 //     on a row whose bound is slack, the same torque, the same objective. The
-//     control group shows each of those failing, on the same ticks.
+//     control group shows each of those failing, on the same ticks;
+//   * the same treatment with the zero-torsion yaw rows as one equality
+//     (friction_cone.zero_torsion_equality): the pair's solution, in fewer
+//     iterations.
 
 #include "loco_gait.hpp"
 #include "loco_wbc_fixture.hpp"
@@ -341,6 +344,137 @@ TEST(LocomotionGaitTest, TheResetMuWarmStartWithZeroInactiveForcesSolvesEveryTic
 
 TEST(LocomotionGaitTest, TheResetMuWarmStartStaysOptimalUnderStateNoise) {
   RunGaitGates(1e-3, "noise1e-3");
+}
+
+// ── The zero-torsion yaw as an equality (#1201) ─────────────────────────────
+
+// The treatment above with friction_cone.zero_torsion_equality: the same
+// feasible set, so the same solution, in fewer iterations — the pair's two
+// always-active rows with non-unique multipliers are gone.
+YAML::Node YawEqualityYaml() {
+  YAML::Node n = TreatmentYaml();
+  n["constraints"]["friction_cone"]["zero_torsion_equality"] = true;
+  return n;
+}
+
+struct IterationStats {
+  std::vector<double> steady;
+  int transition_max{0};
+  int misses{0};
+  int miss_pairs{0};
+  bool last_missed{false};
+
+  void Count(const CommandOutput& out, bool transition) {
+    const bool miss = !out.tau_valid;
+    misses += miss ? 1 : 0;
+    miss_pairs += (miss && last_missed) ? 1 : 0;
+    last_missed = miss;
+    if (transition) {
+      transition_max = std::max(transition_max, out.qp_iterations);
+    } else if (!miss) {
+      steady.push_back(static_cast<double>(out.qp_iterations));
+    }
+  }
+};
+
+void RunYawEquality(double noise_q, const std::string& run) {
+  constexpr int kCycles = 6;
+  test::LocoRig pair(TreatmentYaml());
+  test::LocoRig eq(YawEqualityYaml());
+  test::LocoGait gait_p(*pair.model, noise_q);
+  test::LocoGait gait_e(*eq.model, noise_q);
+  // The rows moved: two contacts × (2 inequality → 1 equality).
+  const QPData& qp_p = Wqp(pair).LastQpForTesting();
+  const QPData& qp_e = Wqp(eq).LastQpForTesting();
+  ASSERT_EQ(qp_e.A.rows(), qp_p.A.rows() + 2);
+  ASSERT_EQ(qp_e.C.rows(), qp_p.C.rows() - 4);
+
+  IterationStats sp;
+  IterationStats se;
+  int graded = 0;
+  int compared = 0;
+  double max_dtau = 0.0;
+  double max_da = 0.0;
+  double max_dlambda = 0.0;
+  double max_yaw_e = 0.0;
+  for (int k = 0; k < kCycles * test::LocoGait::kCycle; ++k) {
+    const bool transition = test::LocoGait::IsTransition(k);
+    gait_p.Apply(k, pair);
+    const CommandOutput& out_p = pair.Solve();
+    gait_e.Apply(k, eq);
+    const CommandOutput& out_e = eq.Solve();
+    if (k < test::LocoGait::kCycle) {
+      continue;
+    }
+    ++graded;
+    sp.Count(out_p, transition);
+    se.Count(out_e, transition);
+    if (!out_p.tau_valid || !out_e.tau_valid) {
+      continue;
+    }
+    ++compared;
+    max_dtau = std::max(max_dtau, (out_e.tau - out_p.tau).lpNorm<Eigen::Infinity>());
+    max_da = std::max(max_da, (out_e.a_opt - out_p.a_opt).lpNorm<Eigen::Infinity>());
+    max_dlambda =
+        std::max(max_dlambda, (out_e.lambda_opt - out_p.lambda_opt).lpNorm<Eigen::Infinity>());
+    // The equality holds: the torsion of every standing foot is 0 to the tolerance.
+    max_yaw_e = std::max(max_yaw_e, -eq.b.Margins().yaw_nm);
+  }
+  const double p50_p = Percentile(sp.steady, 0.5);
+  const double p50_e = Percentile(se.steady, 0.5);
+  const double p99_p = Percentile(sp.steady, 0.99);
+  const double p99_e = Percentile(se.steady, 0.99);
+  const auto mean = [](const std::vector<double>& v) {
+    double sum = 0.0;
+    for (const double x : v) {
+      sum += x;
+    }
+    return v.empty() ? std::numeric_limits<double>::quiet_NaN()
+                     : sum / static_cast<double>(v.size());
+  };
+  const double mean_p = mean(sp.steady);
+  const double mean_e = mean(se.steady);
+  ::testing::Test::RecordProperty(run + "_pair_inner_mean", Fmt(mean_p));
+  ::testing::Test::RecordProperty(run + "_eq_inner_mean", Fmt(mean_e));
+  ::testing::Test::RecordProperty(run + "_pair_inner_p50", Fmt(p50_p));
+  ::testing::Test::RecordProperty(run + "_pair_inner_p99", Fmt(p99_p));
+  ::testing::Test::RecordProperty(run + "_pair_transition_max", std::to_string(sp.transition_max));
+  ::testing::Test::RecordProperty(run + "_pair_misses", std::to_string(sp.misses));
+  ::testing::Test::RecordProperty(run + "_eq_inner_p50", Fmt(p50_e));
+  ::testing::Test::RecordProperty(run + "_eq_inner_p99", Fmt(p99_e));
+  ::testing::Test::RecordProperty(run + "_eq_transition_max", std::to_string(se.transition_max));
+  ::testing::Test::RecordProperty(run + "_eq_misses", std::to_string(se.misses));
+  ::testing::Test::RecordProperty(run + "_dtau_max", Fmt(max_dtau));
+  ::testing::Test::RecordProperty(run + "_da_max", Fmt(max_da));
+  ::testing::Test::RecordProperty(run + "_dlambda_max", Fmt(max_dlambda));
+  ::testing::Test::RecordProperty(run + "_eq_torsion_max", Fmt(max_yaw_e));
+
+  ASSERT_EQ(graded, 5 * test::LocoGait::kCycle);
+  // Convergence no worse than the pair's: at most 2 misses, never two in a row.
+  EXPECT_LE(se.misses, std::max(sp.misses, 2));
+  EXPECT_EQ(se.miss_pairs, 0);
+  EXPECT_GE(compared, graded - 4);
+  // The same solution, to the treatment's own optimality bounds.
+  EXPECT_LE(max_dtau, 1e-3);
+  EXPECT_LE(max_da, 1e-4);
+  EXPECT_LE(max_dlambda, 1e-2);
+  EXPECT_LE(max_yaw_e, 1e-5);
+  // Fewer iterations: on average, and no more in the median, the tail or the
+  // support changes. (This rig's QP needs 3 – 4 inner iterations with the
+  // pair, so a median one lower is not asked here; on the shipped profile's QP
+  // — 5 – 7 — the sim's qp_iterations judge that, #1201.)
+  EXPECT_LT(mean_e, mean_p);
+  EXPECT_LE(p50_e, p50_p);
+  EXPECT_LE(p99_e, p99_p);
+  EXPECT_LE(se.transition_max, sp.transition_max);
+}
+
+TEST(LocomotionGaitTest, TheZeroTorsionEqualitySolvesTheSameQpInFewerIterations) {
+  RunYawEquality(0.0, "yaw_eq_noise0");
+}
+
+TEST(LocomotionGaitTest, TheZeroTorsionEqualityHoldsUnderStateNoise) {
+  RunYawEquality(1e-3, "yaw_eq_noise1e-3");
 }
 
 }  // namespace

@@ -52,8 +52,8 @@ namespace rtc::tsid {
 //             normal_force_min, normal_force_max, t_ramp}   # every contact
 //   contact_overrides: {<contact name>: {…same keys but t_ramp}}  # optional
 //   tasks:       {posture: {…}, feet: {…}, torso: {…}, force: {…}, com: {…}?}
-//   constraints: {eom: {}, contact: {…}, friction_cone: {}, joint_limit: {…},
-//                 torque_limit: {…}}
+//   constraints: {eom: {}, contact: {…}, friction_cone: {zero_torsion_equality?},
+//                 joint_limit: {…}, torque_limit: {…}}
 //   health: {…}                       # ParseSolveHealthConfig keys, optional
 // Each task / constraint map takes its rtc_tsid keys (kp, kd, weight,
 // priority, mask; baumgarte, terrain_height, inactive_lambda; position_margin,
