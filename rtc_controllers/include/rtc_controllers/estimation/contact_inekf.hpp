@@ -153,6 +153,34 @@
 // N is block diagonal: contacts driven by shared joints are treated as
 // independent (their encoder-noise cross terms are not modelled).
 //
+// ### Support height on flat known ground (optional)
+//
+// Where the ground is flat and its height h in W is known (an environment
+// assumption, not a sensor — off unless the caller asks), an active anchor's
+// height can be held to it with one scalar measurement y = e_zᵀ d_i − h = n,
+// n ~ N(0, σ²). With d = exp(ξ_φ) d̂ + J_l ξ_d ≈ d̂ + ξ_φ × d̂ + ξ_d:
+//
+//   ν = h − e_zᵀ d̂_i = H e,   H = [(d̂_i × e_z)ᵀ  0  0 … e_zᵀ(d_i) … 0  0],
+//   d̂ × e_z = (d̂_y, −d̂_x, 0)
+//
+// H has no yaw entry and H u = 0 for a horizontal translation u: the update
+// makes z observable and leaves x, y and yaw unobserved (under a horizontal
+// gauge change He is invariant). The linearisation's second-order term is
+// ½ ψ (θ · d̂_h) for a yaw error ψ and a tilt error θ — it grows with the
+// anchor's horizontal distance from the world origin.
+//
+//   s = H P Hᵀ + σ²,   NIS = ν² / s
+//   NIS > gate → not applied, reported (the state is untouched)
+//   inflate     → applied with σ² + ν² in place of σ² and no gate: a
+//                 partial step back to the plane after a run of gated pins
+//   K = P Hᵀ / s,   X̂⁺ = Exp(δ_X) X̂ and θ̂⁺ = θ̂ + δ_θ with δ = K ν,
+//   P⁺ = P − K (P Hᵀ)ᵀ − (P Hᵀ) Kᵀ + s K Kᵀ   (the Joseph form expanded for
+//        one row: a rounding error δ in K enters as s δ δᵀ only)
+//
+// The caller chooses when — one draw of the ground's error per anchor life;
+// repeating a white measurement of a static anchor height would be
+// over-confident.
+//
 // ### IMU → base
 //
 // BaseFromImu() turns the IMU state into the base pose and world velocity of a
@@ -211,6 +239,9 @@ enum class InekfStatus : std::uint8_t {
   kSlotActive = 16,           ///< InsertContact on a slot that is already active.
   kSlotInactive = 17,         ///< RemoveContact, or a requested update, on an inactive slot.
   kSizeMismatch = 18,         ///< UpdateContacts spans not num_slots() long.
+  /// UpdateGroundHeight: height non-finite, σ not > 0 or σ² not finite and
+  /// normal, or gate not > 0 (+∞ is a gate that never refuses).
+  kBadGroundModel = 19,
 };
 
 /// Γ_M(φ) = Σ_k [φ]×ᵏ/(k+M)! for M ∈ {0, 1, 2}, by its power series. Valid
@@ -275,6 +306,21 @@ struct ContactUpdateReport {
   Eigen::Vector3d innovation{Eigen::Vector3d::Zero()};  ///< R̂ᵀ z_i [m], requested slots
   double mahalanobis2{0.0};  ///< m_i² before the update, requested slots
   ContactUpdateResult result{ContactUpdateResult::kInactive};
+};
+
+/// What UpdateGroundHeight() did; written only when it returns kOk.
+enum class GroundUpdateResult : std::uint8_t {
+  kNone = 0,      ///< No ground update.
+  kUsed = 1,      ///< Applied with σ².
+  kGated = 2,     ///< NIS above the gate: not applied.
+  kInflated = 3,  ///< Applied with σ² + ν², ungated (re-acquisition).
+};
+
+/// Outcome of one UpdateGroundHeight().
+struct GroundUpdateReport {
+  double innovation{0.0};  ///< ν = h − e_zᵀ d̂_i [m], before the update
+  double nis{0.0};         ///< ν² / (H P Hᵀ + σ²), on the prior P
+  GroundUpdateResult result{GroundUpdateResult::kNone};
 };
 
 /// Base pose and world velocity derived from the IMU state.
@@ -355,6 +401,15 @@ class ContactInekf {
   /// state is unchanged and the call still returns kOk.
   [[nodiscard]] InekfStatus UpdateContacts(std::span<const ContactKinematics> kinematics,
                                            std::span<ContactUpdateReport> report) noexcept;
+
+  /// Hold active slot `slot`'s anchor height to the ground height `height` [m,
+  /// W] with standard deviation `sigma` [m] (preamble §Support height):
+  /// gated by NIS ≤ `gate_chi2` unless `inflate`, which applies it with
+  /// σ² + ν² instead. Writes `report` on kOk; a gated update leaves the state
+  /// untouched and still returns kOk.
+  [[nodiscard]] InekfStatus UpdateGroundHeight(int slot, double height, double sigma,
+                                               double gate_chi2, bool inflate,
+                                               GroundUpdateReport& report) noexcept;
 
   /// Drop the state, slot mask and noise scales; keep the configuration.
   void Reset() noexcept;
@@ -439,6 +494,22 @@ class ContactInekf {
                CovMatrix& out) const noexcept;
   /// Cholesky test of the active rows/columns of `P`.
   [[nodiscard]] bool ActiveBlockPositiveDefinite(const CovMatrix& P) noexcept;
+
+  struct Updated {  // a candidate state after an update's injection
+    Eigen::Matrix3d R;
+    Eigen::Vector3d v;
+    Eigen::Vector3d p;
+    std::array<Eigen::Vector3d, kInekfMaxContacts> d;
+    Eigen::Vector3d bg;
+    Eigen::Vector3d ba;
+  };
+
+  /// X̂⁺ = Exp(δ_X) X̂ (global exp3 / left Jacobian), θ̂⁺ = θ̂ + δ_θ; `finite`
+  /// says whether every member came out finite.
+  template <typename Delta>
+  [[nodiscard]] Updated Inject(const Delta& delta, bool& finite) const noexcept;
+  /// Commit `u` and `P` (both already checked).
+  void Commit(const Updated& u, const CovMatrix& P) noexcept;
   /// Inactive slot rows/columns → +0.0, then exact symmetrisation.
   void Tidy(CovMatrix& P) const noexcept;
 

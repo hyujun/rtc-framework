@@ -136,11 +136,18 @@ TEST(ContactInekfAlloc, ContactOperationsAllocateNothing) {
       }
       ok += f.UpdateContacts(kin, rep) == InekfStatus::kOk ? 1 : 0;
       (void)f.UpdateContacts(std::span<const ContactKinematics>(kin.data(), 3), rep);  // refused
+      if (k % 100 == 25) {  // the support-height pin: applied, inflated, gated, refused
+        GroundUpdateReport g;
+        ok += f.UpdateGroundHeight(0, 0.0, 2e-3, 10.83, false, g) == InekfStatus::kOk ? 1 : 0;
+        ok += f.UpdateGroundHeight(1, 0.0, 2e-3, 10.83, true, g) == InekfStatus::kOk ? 1 : 0;
+        ok += f.UpdateGroundHeight(1, 1.0, 2e-3, 10.83, false, g) == InekfStatus::kOk ? 1 : 0;
+        (void)f.UpdateGroundHeight(0, 0.0, 0.0, 10.83, false, g);  // refused
+      }
     }
     news = new_gate.count();
     mallocs = malloc_gate.count();
   }
-  EXPECT_EQ(ok, 2010);
+  EXPECT_EQ(ok, 2040);
   EXPECT_EQ(news, 0U);
   EXPECT_EQ(mallocs, 0U);
 }

@@ -377,6 +377,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_contact_inekf_slots rtc_controllers)
   ament_add_gtest(test_contact_inekf_update test/test_contact_inekf_update.cpp TIMEOUT 600)
   target_link_libraries(test_contact_inekf_update rtc_controllers)
+  # Support height on flat known ground: H by finite differences, a dense
+  # textbook Kalman step, the yaw + horizontal-translation gauge, the declared
+  # second-order term, gate and refusals bit-identical.
+  ament_add_gtest(test_contact_inekf_ground test/test_contact_inekf_ground.cpp)
+  target_link_libraries(test_contact_inekf_ground rtc_controllers)
   # RT allocation gate: operator-new counting (${rtc_controllers_test_include})
   # plus the executable-wide C allocator gate (${rtc_base_test_include}), which
   # is what sees Eigen inside the static library. Same program-wide

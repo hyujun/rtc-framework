@@ -663,23 +663,8 @@ InekfStatus ContactInekf::UpdateContacts(std::span<const ContactKinematics> kine
   DiagVector delta(D);
   delta.noalias() = gain_ * z_;
 
-  // X̂⁺ = Exp(δ_X) X̂ (global exp3 / left Jacobian), θ̂⁺ = θ̂ + δ_θ.
-  const Vec3 dphi = delta.head<3>();
-  const Mat3 dR = rtc::math::se3::exp3(dphi);
-  const Mat3 J = rtc::math::se3::leftJacobian(dphi);
-  const Mat3 R1 = dR * R_;
-  const Vec3 v1 = dR * v_ + J * delta.segment<3>(3);
-  const Vec3 p1 = dR * p_ + J * delta.segment<3>(6);
-  std::array<Vec3, kInekfMaxContacts> d1 = d_;
-  for (int i = 0; i < num_slots_; ++i) {
-    const auto si = static_cast<std::size_t>(i);
-    if (active_[si]) {
-      d1[si] = dR * d_[si] + J * delta.segment<3>(SlotOffset(i));
-    }
-  }
-  const int bg = BiasOffset();
-  const Vec3 bg1 = bg_ + delta.segment<3>(bg);
-  const Vec3 ba1 = ba_ + delta.segment<3>(bg + 3);
+  bool finite = false;
+  const Updated next = Inject(delta, finite);
 
   // Joseph form.
   work_.setIdentity(D, D);
@@ -692,27 +677,128 @@ InekfStatus ContactInekf::UpdateContacts(std::span<const ContactKinematics> kine
   // Defensive: with S finite and positive definite P⁺ ⪯ P and every gated
   // innovation is bounded by S, so this needs P within rounding of the
   // double range.
-  bool finite = left_.allFinite() && R1.allFinite() && v1.allFinite() && p1.allFinite() &&
-                bg1.allFinite() && ba1.allFinite();
-  for (const Vec3& x : d1) {
-    finite = finite && x.allFinite();
-  }
-  if (!finite) {
+  if (!finite || !left_.allFinite()) {
     return InekfStatus::kNonFiniteResult;
   }
   if (!ActiveBlockPositiveDefinite(left_)) {
     return InekfStatus::kNotPositiveDefinite;
   }
-
-  R_ = R1;
-  v_ = v1;
-  p_ = p1;
-  d_ = d1;
-  bg_ = bg1;
-  ba_ = ba1;
-  P_ = left_;
+  Commit(next, left_);
   publish();
   return InekfStatus::kOk;
+}
+
+InekfStatus ContactInekf::UpdateGroundHeight(int slot, double height, double sigma,
+                                             double gate_chi2, bool inflate,
+                                             GroundUpdateReport& report) noexcept {
+  if (!configured()) {
+    return InekfStatus::kNotConfigured;
+  }
+  if (!initialized_) {
+    return InekfStatus::kNotInitialized;
+  }
+  if (!SlotInRange(slot)) {
+    return InekfStatus::kBadSlot;
+  }
+  const auto si = static_cast<std::size_t>(slot);
+  if (!active_[si]) {
+    return InekfStatus::kSlotInactive;
+  }
+  const double var0 = sigma * sigma;
+  if (!std::isfinite(height) || !std::isfinite(sigma) || !(sigma > 0.0) || !std::isfinite(var0) ||
+      !std::isnormal(var0) || !(gate_chi2 > 0.0)) {
+    return InekfStatus::kBadGroundModel;
+  }
+
+  // H = [(d̂ × e_z)ᵀ 0 0 … e_zᵀ(d_i) … 0]: P Hᵀ from two column blocks.
+  const Vec3& d = d_[si];
+  const Vec3 h_phi(d.y(), -d.x(), 0.0);
+  const int zi = SlotOffset(slot) + 2;
+  const int D = dim();
+  DiagVector ph(D);
+  ph.noalias() = P_.leftCols<3>() * h_phi;
+  ph += P_.col(zi);
+  const double hph = h_phi.dot(ph.head<3>()) + ph(zi);
+  const double nu = height - d.z();
+  const double s0 = hph + var0;
+  if (!std::isfinite(hph) || !std::isfinite(nu) || !std::isfinite(s0)) {
+    return InekfStatus::kNonFiniteResult;
+  }
+  if (!(s0 > 0.0)) {  // H P Hᵀ ≥ 0 for a positive definite P; σ² > 0
+    return InekfStatus::kNotPositiveDefinite;
+  }
+  GroundUpdateReport out;
+  out.innovation = nu;
+  out.nis = nu * nu / s0;
+  if (!inflate && !(out.nis <= gate_chi2)) {
+    out.result = GroundUpdateResult::kGated;
+    report = out;
+    return InekfStatus::kOk;
+  }
+  const double s = inflate ? s0 + nu * nu : s0;
+  if (!std::isfinite(s)) {
+    return InekfStatus::kNonFiniteResult;
+  }
+  DiagVector gain(D);
+  gain.noalias() = ph / s;
+  DiagVector delta(D);
+  delta.noalias() = gain * nu;
+  bool finite = false;
+  const Updated next = Inject(delta, finite);
+
+  // Rank-1 Joseph form: P − K phᵀ − ph Kᵀ + s K Kᵀ.
+  left_ = P_;
+  left_.noalias() -= gain * ph.transpose();
+  left_.noalias() -= ph * gain.transpose();
+  left_.noalias() += (s * gain) * gain.transpose();
+  Tidy(left_);
+  if (!finite || !left_.allFinite()) {
+    return InekfStatus::kNonFiniteResult;
+  }
+  if (!ActiveBlockPositiveDefinite(left_)) {
+    return InekfStatus::kNotPositiveDefinite;
+  }
+  Commit(next, left_);
+  out.result = inflate ? GroundUpdateResult::kInflated : GroundUpdateResult::kUsed;
+  report = out;
+  return InekfStatus::kOk;
+}
+
+template <typename Delta>
+ContactInekf::Updated ContactInekf::Inject(const Delta& delta, bool& finite) const noexcept {
+  const Vec3 dphi = delta.template head<3>();
+  const Mat3 dR = rtc::math::se3::exp3(dphi);
+  const Mat3 J = rtc::math::se3::leftJacobian(dphi);
+  Updated u;
+  u.R = dR * R_;
+  u.v = dR * v_ + J * delta.template segment<3>(3);
+  u.p = dR * p_ + J * delta.template segment<3>(6);
+  u.d = d_;
+  for (int i = 0; i < num_slots_; ++i) {
+    const auto si = static_cast<std::size_t>(i);
+    if (active_[si]) {
+      u.d[si] = dR * d_[si] + J * delta.template segment<3>(SlotOffset(i));
+    }
+  }
+  const int bg = BiasOffset();
+  u.bg = bg_ + delta.template segment<3>(bg);
+  u.ba = ba_ + delta.template segment<3>(bg + 3);
+  finite =
+      u.R.allFinite() && u.v.allFinite() && u.p.allFinite() && u.bg.allFinite() && u.ba.allFinite();
+  for (const Vec3& x : u.d) {
+    finite = finite && x.allFinite();
+  }
+  return u;
+}
+
+void ContactInekf::Commit(const Updated& u, const CovMatrix& P) noexcept {
+  R_ = u.R;
+  v_ = u.v;
+  p_ = u.p;
+  d_ = u.d;
+  bg_ = u.bg;
+  ba_ = u.ba;
+  P_ = P;
 }
 
 // ── ContactInekf: covariance hygiene ──────────────────────────────────────────
