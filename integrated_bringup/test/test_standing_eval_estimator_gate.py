@@ -342,6 +342,10 @@ def batch(stand_over=None, walk_v=0.2, k=24):
 
 def test_a_good_batch_passes():
     scripts, stand = batch()
+    # A batch on the registered condition: its walking ANEES is the registered baseline's
+    # (G1 is a same-condition regression bar, so a batch far from it is not "good").
+    for r in scripts["walk"]["arms"]["truth"]:
+        r["replay"]["nees_walk_mean_per_dof_truth"] = gate.ANEES_WALK_BASELINE
     thresholds = gate.derive_thresholds(
         [r["replay"] for r in scripts["walk"]["arms"]["truth"]],
         [r["replay"] for r in stand["truth"]],
@@ -382,7 +386,7 @@ def test_arm_groups_are_the_name_before_the_dot():
 def test_g1_is_judged_only_with_the_registered_thresholds():
     scripts, stand = batch()
     for r in scripts["walk"]["arms"]["truth"]:
-        r["replay"]["nees_walk_mean_per_dof_truth"] = 3.0  # above 1.5 × the registered 1.591
+        r["replay"]["nees_walk_mean_per_dof_truth"] = 3.0  # above 1.5 × the registered baseline
     thresholds = gate.derive_thresholds(
         [r["replay"] for r in scripts["walk"]["arms"]["truth"]],
         [r["replay"] for r in stand["truth"]],
@@ -479,8 +483,8 @@ def test_g1_fails_a_walking_anees_above_the_registered_bound():
 def test_the_registered_walking_anees_baseline_was_outside_its_band():
     from rtc_tools.analysis import estimator_metrics as em
 
-    # The WE-F06 baseline's 41 walking replays (#1150): G1 exists only for an out-of-band one.
-    lo, hi = em.mean_band(41 * em.NEES_DOF)
+    # The registered baseline's 42 walking replays: G1 exists only for an out-of-band one.
+    lo, hi = em.mean_band(42 * em.NEES_DOF)
     assert not lo <= gate.ANEES_WALK_BASELINE <= hi
 
 
