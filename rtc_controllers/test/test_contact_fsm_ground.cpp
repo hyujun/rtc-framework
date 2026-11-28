@@ -215,6 +215,63 @@ TEST(ContactFsmGround, ALifeThatEndsBeforeSettlingHasNoPin) {
   }
 }
 
+TEST(ContactFsmGround, AnAnchorStillACandidateWhenSettledWaitsForItsConfirmation) {
+  // Confirmation slower than the settle time: at 80 ms every new anchor is still
+  // a candidate; its pin comes on its first stance tick, not before.
+  const Scenario sc{World::kGait, Shift::kNone, 8.0};
+  const Stream s = MakeStream(sc, kSeed + 26);
+  ContactFsm::Config fsm = FsmFixture();
+  fsm.confirm_dwell = 0.2;
+  ContactInekfSequencer seq;
+  seq.Init(CoreFixture(), fsm, 2, Ground());
+  Start(seq, s);
+  LifeTracker lt;
+  int candidates_past_settle = 0;
+  for (std::size_t k = kInitTicks; k < s.samples.size(); ++k) {
+    ASSERT_EQ(Step(seq, s.samples[k]), ContactFsmStatus::kOk);
+    lt.Tick(seq);
+    for (int i = 0; i < 2; ++i) {
+      const auto si = static_cast<std::size_t>(i);
+      candidates_past_settle +=
+          lt.live[si] && lt.age[si] == kSettleTicks && seq.fsm().mode(i) == ContactMode::kCandidate
+              ? 1
+              : 0;
+    }
+  }
+  EXPECT_GT(candidates_past_settle, 5);  // the case was reached
+  EXPECT_EQ(lt.violations, 0);
+  EXPECT_GT(lt.lives_pinned, 5);
+}
+
+TEST(ContactFsmGround, AMismatchedStepPinsNothing) {
+  // The tick the first pin is due on (a dry run), then the same stream with the
+  // core desynchronised on that tick: kStateMismatch and no pin.
+  const Scenario sc{World::kStatic, Shift::kNone, 3.0};
+  const Stream s = MakeStream(sc, kSeed + 27);
+  std::size_t due = 0;
+  {
+    ContactInekfSequencer dry;
+    dry.Init(CoreFixture(), FsmFixture(), 2, Ground());
+    Start(dry, s);
+    for (std::size_t k = kInitTicks; k < s.samples.size() && due == 0; ++k) {
+      ASSERT_EQ(Step(dry, s.samples[k]), ContactFsmStatus::kOk);
+      due = dry.ground_report(0).result != GroundUpdateResult::kNone ? k : 0;
+    }
+  }
+  ASSERT_GT(due, 0U);
+  ContactInekfSequencer seq;
+  seq.Init(CoreFixture(), FsmFixture(), 2, Ground());
+  Start(seq, s);
+  for (std::size_t k = kInitTicks; k < due; ++k) {
+    ASSERT_EQ(Step(seq, s.samples[k]), ContactFsmStatus::kOk);
+  }
+  ASSERT_EQ(Access::Core(seq).RemoveContact(1), InekfStatus::kOk);  // FSM still holds it
+  EXPECT_EQ(Step(seq, s.samples[due]), ContactFsmStatus::kStateMismatch);
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_EQ(seq.ground_report(i).result, GroundUpdateResult::kNone) << i;
+  }
+}
+
 TEST(ContactFsmGround, GatedPinsInflateAfterMaxGatedAndRestart) {
   const Scenario sc{World::kGait, Shift::kNone, 12.0};
   const Stream s = MakeStream(sc, kSeed + 23);
