@@ -67,26 +67,26 @@ locomotion_controller:
       # The gyro and the two bias walks are the simulator's IMU noise
       # (mujoco_simulator.yaml), whose gyro and accelerometer export the mean
       # of each step's motion (imu_rate_export: tick_mean). accel_sigma and
-      # contact_noise_density are fitted together on recorded walks (offline
-      # replays of truth-input walks, state covariance against the truth,
-      # W8-F05 #1155): along five accel : contact ratios the common scale was
-      # set to a walking ANEES of 1 on 24 walks and the point with the best
-      # accuracy kept, then held out on 12 walks, turning in place, walking
-      # with turns and standing. 2.95e-2 is about 3 times the injected
-      # accelerometer noise. The export's own error is the injected noise
-      # (measured against the truth), so the excess stands for what the
-      # filter's model leaves out while walking. Standing it is conservative.
+      # contact_noise_density are fitted together on recorded walks with the
+      # support-height pin on (offline replays of truth-input walks, state
+      # covariance against the truth, WE-F09 #1206): along five accel : contact
+      # ratios the common scale was set to a walking ANEES of 1 over tilt,
+      # velocity and height on 24 walks and the point with the best accuracy
+      # kept, then held out on 12 walks and walks with turns (ANEES 0.96 and
+      # 0.72). 1.40e-2 is about 1.4 times the injected accelerometer noise; the
+      # excess stands for what the filter's model leaves out while walking.
+      # Standing it is conservative.
       imu:
         sample_period_s: 0.002        # = 1 / control_rate
         gyro_sigma: 5.0e-4            # per sample [rad/s]
-        accel_sigma: 2.95e-2          # per sample [m/s^2] (fitted, see above)
+        accel_sigma: 1.398e-2         # per sample [m/s^2] (fitted, see above)
         gyro_bias_walk: 1.0e-5        # [rad/s^2/sqrt(Hz)]
         accel_bias_walk: 1.0e-4       # [m/s^3/sqrt(Hz)]
       core:
         gravity: 9.81
-        # A stance sole's frame origin moves about 4e-3 m/sqrt(s) while
-        # walking (rolling, creep); fitted together with accel_sigma.
-        contact_noise_density: 1.8657e-3  # anchor random walk [m/sqrt(s)]
+        # A stance sole's frame origin moves while walking (the landing's sink
+        # rebounding, rolling, creep); fitted together with accel_sigma.
+        contact_noise_density: 8.841e-4   # anchor random walk [m/sqrt(s)]
         joint_position_sigma: 1.0e-3      # encoder noise in a contact update [rad]
         kinematic_sigma: 2.0e-3           # contact point model error [m]
         contact_gate_chi2: 16.27          # chi2(3), 99.9 %
@@ -110,6 +110,22 @@ locomotion_controller:
         recover_dwell: 0.020
         evidence_time_constant: 0.020
         unknown_noise_scale: 100.0
+      # Support-height pin (rtc_controllers contact_fsm.hpp): on flat ground of
+      # known height, a stance anchor's height is held to the plane of the start's
+      # stance once per anchor life, settle_s after it went in. Without it the
+      # height drifts while walking: the sole lands into the soft contact, the
+      # filter anchors it there, and it rebounds (≈ 60 ms) and unloads under a
+      # held anchor.
+      # The same replays chose when (80 ms after the anchor went in against at
+      # its lift-off: height rms 0.22 against 0.40 mm) and sigma (the pins' NIS
+      # nearest 1 on 0.125 – 1 mm; it stays below 1 — the anchor height's own
+      # variance dominates the innovation's).
+      ground:
+        enabled: true
+        sigma: 1.25e-4                # [m]
+        gate_chi2: 10.83              # chi2(1), 99.9 %
+        max_gated: 3
+        settle_s: 0.08                # past the landing's rebound
       init:
         window_ticks: 1               # the activation tick's sample starts the filter
         timeout_s: 0.5                # not started by then → the source fault

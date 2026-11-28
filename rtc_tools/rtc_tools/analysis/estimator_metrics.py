@@ -9,11 +9,19 @@ contact names, gravity). This module reads the pair and computes, per run:
   every name ends in ``_truth``): the tilt ∠(Rᵀe_z, R̂ᵀe_z), the yaw of
   R R̂ᵀ, the SO(3) geodesic angle, the base-frame velocity error, and the
   horizontal position drift per touchdown / per second (with and without the
-  part the yaw error explains).
+  part the yaw error explains), and the base height error (estimate − truth,
+  on the epoch's gauge): mean, rms, largest, and its least-squares slope over
+  the stepping window (first planned lift-off to the last row with a contact
+  planned off — a standing tail would dilute it), fitted per state epoch and
+  averaged by span.
 * **consistency**: NEES on the observable 5 dof (world tilt x, y and the IMU
   velocity) of the right-invariant error X = Exp(ξ) X̂ — ξ_φ = Log(R R̂ᵀ),
   ξ_v = J_l(ξ_φ)⁻¹ (v − R R̂ᵀ v̂) — against the φ·v block of P; NIS of every
-  requested contact update (used or gated), 3 dof each.
+  requested contact update (used or gated), 3 dof each; with the height,
+  NEES on 6 dof (those 5 and the IMU point's world height error
+  δz = (p̂ × e_z)ᵀ ξ_φ + ξ_p,z, its covariance from the ``Pp_*`` columns) when
+  the replay has them; NIS of every support-height pin (1 dof, applied or
+  gated — an inflated pin is not counted) and the pins' counts.
 * **contact**: the truth contact (the normal force over a fraction of the
   weight, ``walk_metrics.measured_contact`` hysteresis, a dwell) against the
   estimate (``est_mask``: stance ∪ unknown) and the planned mask as a
@@ -83,7 +91,11 @@ UPDATE_USED = 2
 UPDATE_GATED = 3
 
 NEES_DOF = 5
+NEES_Z_DOF = 6
 NIS_DOF = 3
+GROUND_USED = 1  # rtc::estimation::GroundUpdateResult
+GROUND_GATED = 2
+GROUND_INFLATED = 3
 BAND = 0.95
 
 # The truth contact (WE-F03's definition): on above 3 % of the weight, off
@@ -513,6 +525,29 @@ def run_metrics(cols: Table, meta: dict) -> dict:
     out["pos_drift_per_step_truth"] = drift / touchdowns if touchdowns else None
     out["pos_drift_noyaw_per_step_truth"] = drift_noyaw / touchdowns if touchdowns else None
 
+    # ── height ────────────────────────────────────────────────────────────
+    ez_err = p_al[:, 2] - p_true[:, 2]
+    zs = scored & np.isfinite(ez_err)
+    out["z_err_mean_truth"] = float(np.mean(ez_err[zs])) if zs.any() else None
+    out["z_err_rms_truth"] = _rms(ez_err[zs])
+    out["z_err_max_truth"] = float(np.max(np.abs(ez_err[zs]))) if zs.any() else None
+    not_full = np.flatnonzero(~mask_bits(cols["planned_mask"], nc).all(axis=1))
+    stepping = walking & zs
+    if not_full.size:
+        stepping &= np.arange(n) <= not_full[-1]
+    else:
+        stepping[:] = False
+    # Per epoch (each starts the height error over at 0), weighted by its span.
+    slopes, spans = [], []
+    for rows in epoch_rows:
+        r = rows[stepping[rows]]
+        if r.size > 2:
+            slopes.append(float(np.polyfit(t[r], ez_err[r], 1)[0]))
+            spans.append(float(t[r[-1]] - t[r[0]]))
+    out["z_drift_per_s_truth"] = (
+        float(np.average(slopes, weights=spans)) if slopes and sum(spans) > 0 else None
+    )
+
     # ── NEES (IMU point, the filter's own gauge) ──────────────────────────
     r_wi_true = r_true @ r_bi
     v_wi_true = np.einsum("nij,nj->ni", r_true, v_true_b + np.cross(w_true_b, p_bi))
@@ -555,6 +590,9 @@ def run_metrics(cols: Table, meta: dict) -> dict:
         v = nees[rows & np.isfinite(nees)]
         out[f"nees_{part}_ticks"] = int(v.size)
         out[f"nees_{part}_mean_per_dof_truth"] = float(np.mean(v) / NEES_DOF) if v.size else None
+    _height_nees(cols, out, nees_rows, walking, r_t, r_imu, v_t, v_imu, p_al, p_true, rz, r_bi,
+                 p_bi)  # fmt: skip
+    _ground_pins(cols, names, out)
 
     # ── z gyro bias against the run's measured offset (a constant bias) ───
     out["gyro_bias_z_truth"] = out["gyro_bias_z_dev_max_truth"] = None
@@ -711,6 +749,83 @@ def compare_online(cols: Table, meta: dict) -> dict:
     return out
 
 
+def _height_nees(cols, out, nees_rows, walking, r_t, r_imu, v_t, v_imu, p_al, p_true, rz, r_bi,
+                 p_bi) -> None:  # fmt: skip
+    """6-dof NEES (tilt x, y, IMU velocity, IMU world height) when the replay has Pp_*."""
+    for key in ("nees_z_walk_mean_per_dof_truth", "nees_z_mean_per_dof_truth"):
+        out[key] = None
+    if "Pp_0_8" not in cols or not nees_rows.any():
+        return
+    idx = np.flatnonzero(nees_rows & np.isfinite(cols["imu_px"]))
+    if idx.size == 0:
+        return
+    e_r = r_t[idx] @ np.swapaxes(r_imu[idx], 1, 2)
+    xi_phi = so3_log(e_r)
+    xi_v = np.einsum("nij,nj->ni", left_jacobian_inverse(xi_phi),
+                     v_t[idx] - np.einsum("nij,nj->ni", e_r, v_imu[idx]))  # fmt: skip
+    # The IMU point's world height: the base's plus the lever arm, the same on
+    # both gauges (a yaw about z moves no height).
+    lever_t = np.einsum("nij,j->ni", _quat(cols, "truth_")[idx], p_bi)
+    r_al = rz[idx] @ _quat(cols, "base_")[idx]
+    lever_h = np.einsum("nij,j->ni", r_al, p_bi)
+    dz = (p_true[idx, 2] + lever_t[:, 2]) - (p_al[idx, 2] + lever_h[:, 2])
+    e = np.concatenate([xi_phi[:, :2], xi_v, dz[:, None]], axis=1)
+    m = idx.size
+    pfull = np.zeros((m, 9, 9))
+    for i in range(6):
+        for j in range(i, 6):
+            pfull[:, i, j] = pfull[:, j, i] = cols[f"P_{i}_{j}"][idx]
+    for i in range(9):
+        for j in range(max(6, i), 9):
+            pfull[:, i, j] = pfull[:, j, i] = cols[f"Pp_{i}_{j}"][idx]
+    p_hat = _vec(cols, "imu_p")[idx]
+    # δz = h ξ, h = [(p̂ × e_z)ᵀ, 0, e_zᵀ] on (φ, v, p) — the filter's own frame.
+    h = np.zeros((m, 9))
+    h[:, 0] = p_hat[:, 1]
+    h[:, 1] = -p_hat[:, 0]
+    h[:, 8] = 1.0
+    sel = np.zeros((m, 6, 9))
+    for row, col in enumerate((0, 1, 3, 4, 5)):
+        sel[:, row, col] = 1.0
+    sel[:, 5, :] = h
+    s6 = sel @ pfull @ np.swapaxes(sel, 1, 2)
+    spd = np.all(np.isfinite(s6), axis=(1, 2))
+    spd[spd] = np.linalg.eigvalsh(s6[spd]).min(axis=1) > 0.0
+    nees_z = np.full(m, math.nan)
+    nees_z[spd] = np.einsum(
+        "ni,ni->n", e[spd], np.linalg.solve(s6[spd], e[spd][..., None])[..., 0]
+    )
+    ok = np.isfinite(nees_z)
+    if ok.any():
+        out["nees_z_mean_per_dof_truth"] = float(np.mean(nees_z[ok]) / NEES_Z_DOF)
+    w = ok & walking[idx]
+    if w.any():
+        out["nees_z_walk_mean_per_dof_truth"] = float(np.mean(nees_z[w]) / NEES_Z_DOF)
+
+
+def _ground_pins(cols, names, out) -> None:
+    """The support-height pins (ground_<c> columns): counts and the NIS of the plain ones."""
+    out["ground_pins"] = None
+    out["ground_nis_mean"] = None
+    out["ground_nis_count"] = 0
+    if not names or f"ground_{names[0]}" not in cols:
+        return
+    counts = {"used": 0, "gated": 0, "inflated": 0}
+    nis: list[float] = []
+    for c in names:
+        g = cols[f"ground_{c}"]
+        counts["used"] += int(np.sum(g == GROUND_USED))
+        counts["gated"] += int(np.sum(g == GROUND_GATED))
+        counts["inflated"] += int(np.sum(g == GROUND_INFLATED))
+        plain = (g == GROUND_USED) | (g == GROUND_GATED)
+        nis += list(cols[f"ground_nis_{c}"][plain])
+    out["ground_pins"] = counts
+    v = np.asarray(nis, dtype=float)
+    v = v[np.isfinite(v)]
+    out["ground_nis_mean"] = float(np.mean(v)) if v.size else None
+    out["ground_nis_count"] = int(v.size)
+
+
 def aggregate(runs: list[dict]) -> dict:
     """The K-run consistency verdict (module docstring).
 
@@ -722,6 +837,7 @@ def aggregate(runs: list[dict]) -> dict:
     for key, dof, name in (("nees_mean_per_dof_truth", NEES_DOF, "anees_truth"),
                            ("nees_walk_mean_per_dof_truth", NEES_DOF, "anees_walk_truth"),
                            ("nees_stand_mean_per_dof_truth", NEES_DOF, "anees_stand_truth"),
+                           ("nees_z_walk_mean_per_dof_truth", NEES_Z_DOF, "anees_z_walk_truth"),
                            ("nis_mean_per_dof", NIS_DOF, "anis")):  # fmt: skip
         vals = [r[key] for r in runs if r.get(key) is not None]
         if not vals:
@@ -732,9 +848,22 @@ def aggregate(runs: list[dict]) -> dict:
         mean = float(np.mean(vals))
         out[name] = {"value": mean, "band": [lo, hi], "k": k, "pass": bool(lo <= mean <= hi),
                      "below_upper": bool(mean <= hi)}  # fmt: skip
+    # The pins' NIS pooled: N pins of χ²(1) — the band of χ²(N)/N.
+    pins = [(r["ground_nis_mean"], r["ground_nis_count"]) for r in runs
+            if r.get("ground_nis_mean") is not None]  # fmt: skip
+    total = sum(k for _, k in pins)
+    if total:
+        mean = float(sum(m * k for m, k in pins) / total)
+        lo, hi = mean_band(total)
+        out["ground_nis"] = {"value": mean, "band": [lo, hi], "k": total,
+                             "pass": bool(lo <= mean <= hi),
+                             "below_upper": bool(mean <= hi)}  # fmt: skip
+    else:
+        out["ground_nis"] = None
     out["runs_cycling"] = sum(bool((r.get("slip_cycle") or {}).get("feet_cycling")) for r in runs)
     for key in ("tilt_rms_truth", "yaw_rms_truth", "vel_err_rms_truth", "pos_drift_per_step_truth",
-                "pos_drift_per_s_truth"):  # fmt: skip
+                "pos_drift_per_s_truth", "z_err_rms_truth", "z_err_max_truth",
+                "z_drift_per_s_truth"):  # fmt: skip
         vals = [r[key] for r in runs if r.get(key) is not None]
         out[key] = {"mean": float(np.mean(vals)), "max": float(np.max(vals))} if vals else None
     return out

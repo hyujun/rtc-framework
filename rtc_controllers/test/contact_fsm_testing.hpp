@@ -56,6 +56,11 @@ struct ContactFsmTestAccess {
     std::vector<double> out = SlotState(s.fsm_);
     out.push_back(static_cast<double>(s.no_anchor_ticks_));
     out.push_back(static_cast<double>(s.gated_ticks_));
+    out.push_back(static_cast<double>(s.gated_pins_));
+    for (std::size_t i = 0; i < kInekfMaxContacts; ++i) {
+      out.push_back(static_cast<double>(s.anchor_age_[i]));
+      out.push_back(static_cast<double>(s.pinned_[i]));
+    }
     return out;  // core_status_ / report_valid_ / actions are per-tick outputs, checked apart
   }
 };
@@ -135,12 +140,17 @@ struct Scenario {
   double duration{0.3};    // all-off duration [s]
   double tilt{0.0};        // contact plane about world x [rad]
   bool foot_speed{false};  // record the true contact-point speeds (RunLog::foot_speed)
+  // Gait worlds: a stance point lands `stance_rise` [m] below the ground and
+  // rises back to it linearly over the first kRiseTime of stance (an impact
+  // sink that rebounds) — slower than v_enter, so the FSM anchors it mid-rise.
+  double stance_rise{0.0};
 };
 
 inline constexpr double kShiftD = 0.04;
 inline constexpr double kCycle = 0.8;
 inline constexpr double kStride = 0.24;
-inline constexpr double kApproach = 0.3;  // [m/s] vertical approach speed at touchdown
+inline constexpr double kApproach = 0.3;   // [m/s] vertical approach speed at touchdown
+inline constexpr double kRiseTime = 0.06;  // [s] Scenario::stance_rise's rebound
 inline constexpr double kEventStart = 2.0;
 inline constexpr double kEventEvery = 1.5;
 inline constexpr double kEventWindow = 1.4;
@@ -263,6 +273,8 @@ inline Vec3 Foot(int i, double t, const Scenario& sc) {
       const double u = s * swing_t;
       f.x() += kStride * (10 * s * s * s - 15 * s * s * s * s + 6 * s * s * s * s * s);
       f.z() = (kApproach / swing_t) * u * u * (1.0 - u / swing_t);
+    } else if (sc.stance_rise != 0.0) {
+      f.z() -= sc.stance_rise * std::max(0.0, 1.0 - fr * kCycle / kRiseTime);
     }
   }
   if (sc.world == World::kSlip && i == 0) {

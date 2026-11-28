@@ -303,7 +303,33 @@ void ContactInekfSequencer::Init(const ContactInekf::Config& core, const Contact
   }
   core_.Init(core, num_slots);
   fsm_ = checked;
+  ground_ = GroundConfig{};
+  settle_ticks_ = 1;
   Reset();
+}
+
+void ContactInekfSequencer::Init(const ContactInekf::Config& core, const ContactFsm::Config& fsm,
+                                 int num_slots, const GroundConfig& ground) {
+  if (ground.enabled) {
+    ContactFsm checked;  // the FSM first: settle_s is counted in its periods
+    checked.Init(fsm, num_slots);
+    const double var = ground.sigma * ground.sigma;
+    const double periods = ground.settle_s / fsm.period;
+    if (!std::isfinite(ground.height) || !std::isfinite(ground.sigma) || !(ground.sigma > 0.0) ||
+        !std::isfinite(var) || !std::isnormal(var) || !(ground.gate_chi2 > 0.0) ||
+        ground.max_gated < 1 || !(ground.settle_s > 0.0) || !(periods <= 1e6)) {
+      throw std::invalid_argument(
+          "ContactInekfSequencer::Init: ground needs a finite height, sigma > 0 with a finite "
+          "normal square, gate_chi2 > 0, max_gated >= 1 and 0 < settle_s <= 1e6 periods");
+    }
+  }
+  Init(core, fsm, num_slots);
+  ground_ = ground;
+  if (ground.enabled) {
+    // The dwells' rounding: ⌈d / T⌉ with a 1e-12 relative allowance, at least 1.
+    settle_ticks_ =
+        std::max(1, static_cast<int>(std::ceil(ground.settle_s / fsm.period * (1.0 - 1e-12))));
+  }
 }
 
 void ContactInekfSequencer::Reset() noexcept {
@@ -313,8 +339,12 @@ void ContactInekfSequencer::Reset() noexcept {
   report_valid_ = false;
   no_anchor_ticks_ = 0;
   gated_ticks_ = 0;
+  gated_pins_ = 0;
   for (std::size_t i = 0; i < kInekfMaxContacts; ++i) {
     report_[i] = ContactUpdateReport{};
+    ground_report_[i] = GroundUpdateReport{};
+    anchor_age_[i] = 0;
+    pinned_[i] = false;
     actions_[i] = ContactFsm::SlotAction{};
     velocity_[i].setZero();
     kin_[i].use = false;
@@ -334,6 +364,10 @@ const ContactUpdateReport& ContactInekfSequencer::report(int slot) const noexcep
   return report_[Index(slot)];
 }
 
+const GroundUpdateReport& ContactInekfSequencer::ground_report(int slot) const noexcept {
+  return ground_report_[Index(slot)];
+}
+
 const ContactFsm::SlotAction& ContactInekfSequencer::action(int slot) const noexcept {
   return actions_[Index(slot)];
 }
@@ -343,6 +377,9 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
   report_valid_ = false;
   for (ContactFsm::SlotAction& a : actions_) {
     a = ContactFsm::SlotAction{};
+  }
+  for (GroundUpdateReport& g : ground_report_) {
+    g = GroundUpdateReport{};
   }
   if (!fsm_.configured()) {
     return ContactFsmStatus::kNotConfigured;
@@ -385,6 +422,7 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
   }
 
   bool consistent = true;
+  std::array<bool, kInekfMaxContacts> pin_now{};
   for (std::size_t i = 0; i < n; ++i) {
     const int slot = static_cast<int>(i);
     ContactFsm::SlotAction& a = actions_[i];
@@ -415,10 +453,27 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
         consistent = false;
       }
     }
+    if (a.insert) {
+      anchor_age_[i] = 0;
+      pinned_[i] = false;
+    } else if (core_.contact_active(slot)) {
+      anchor_age_[i] = SaturatingAdd(anchor_age_[i], in.periods);
+      pin_now[i] = ground_.enabled && !pinned_[i] && anchor_age_[i] >= settle_ticks_ &&
+                   fsm_.mode(slot) == ContactMode::kStance;
+    }
     if (ContactFsm::HoldsAnchor(fsm_.mode(slot)) != core_.contact_active(slot)) {
       consistent = false;
     }
     kin_[i].use = a.use;
+  }
+
+  // The pins, once every slot's core action is done and the anchors agree: a
+  // mismatched Step pins nothing, and no slot's action sees another's pin.
+  for (std::size_t i = 0; consistent && i < n; ++i) {
+    if (pin_now[i]) {
+      Pin(static_cast<int>(i));
+      pinned_[i] = true;
+    }
   }
 
   const std::span<ContactUpdateReport> report(report_.data(), n);
@@ -437,6 +492,19 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
   fsm_.PostUpdate(report, report_valid_);
   FinishTick(in.periods);
   return out;
+}
+
+void ContactInekfSequencer::Pin(int slot) noexcept {
+  const bool inflate = gated_pins_ >= ground_.max_gated;
+  GroundUpdateReport g;
+  const InekfStatus st =
+      core_.UpdateGroundHeight(slot, ground_.height, ground_.sigma, ground_.gate_chi2, inflate, g);
+  if (st != InekfStatus::kOk) {
+    core_status_ = st;  // no pin on this release; the gated count is left as it was
+    return;
+  }
+  ground_report_[Index(slot)] = g;
+  gated_pins_ = g.result == GroundUpdateResult::kGated ? SaturatingAdd(gated_pins_, 1) : 0;
 }
 
 void ContactInekfSequencer::FinishTick(int periods) noexcept {

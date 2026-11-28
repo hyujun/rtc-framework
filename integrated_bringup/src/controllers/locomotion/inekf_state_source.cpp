@@ -96,6 +96,17 @@ int ReadInt(const YAML::Node& map, const char* key, int lo, const std::string& w
   return static_cast<int>(n);
 }
 
+bool ReadBool(const YAML::Node& map, const char* key, const std::string& where) {
+  const YAML::Node v = map[key];
+  try {
+    if (v.IsScalar()) {
+      return v.as<bool>();
+    }
+  } catch (const YAML::Exception&) {
+  }
+  Refuse(where + "." + key, "expected true or false, got " + Spelling(v));
+}
+
 // ⌈d / T⌉ ≥ 1, with the FSM's 1e-12 relative allowance so d = mT gives m.
 int TicksOf(double d, double period) {
   const double n = std::ceil(d / period * (1.0 - 1e-12));
@@ -107,7 +118,7 @@ int TicksOf(double d, double period) {
 // ── estimator.inekf ─────────────────────────────────────────────────────────
 
 InekfSourceConfig ParseInekfSourceConfig(const YAML::Node& inekf, const std::string& context) {
-  CheckSection(inekf, {"imu_frame", "imu", "core", "fsm", "init", "policy"}, context);
+  CheckSection(inekf, {"imu_frame", "imu", "core", "fsm", "ground", "init", "policy"}, context);
   InekfSourceConfig cfg;
   const YAML::Node frame = inekf["imu_frame"];
   if (!frame.IsScalar() || frame.Scalar().empty()) {
@@ -185,6 +196,18 @@ InekfSourceConfig ParseInekfSourceConfig(const YAML::Node& inekf, const std::str
     Refuse(fsm_at + ".unknown_noise_scale", "must be >= 1");
   }
 
+  // The plane is where Initialize() puts the stance: height 0 in the estimate's
+  // world. The fields are checked whether or not the pin is on.
+  const std::string ground_at = context + ".ground";
+  const YAML::Node ground = CheckSection(
+      inekf["ground"], {"enabled", "sigma", "gate_chi2", "max_gated", "settle_s"}, ground_at);
+  cfg.ground.enabled = ReadBool(ground, "enabled", ground_at);
+  cfg.ground.height = 0.0;
+  cfg.ground.sigma = ReadPositive(ground, "sigma", ground_at);
+  cfg.ground.gate_chi2 = ReadPositive(ground, "gate_chi2", ground_at);
+  cfg.ground.max_gated = ReadInt(ground, "max_gated", 1, ground_at);
+  cfg.ground.settle_s = ReadPositive(ground, "settle_s", ground_at);
+
   const std::string init_at = context + ".init";
   const YAML::Node init = CheckSection(
       inekf["init"], {"window_ticks", "timeout_s", "yaw", "joint_speed_tolerance"}, init_at);
@@ -216,7 +239,9 @@ InekfSourceConfig ParseInekfSourceConfig(const YAML::Node& inekf, const std::str
   // The core and FSM keep the rest of their contracts (step range, dwell bounds).
   try {
     est::ContactInekfSequencer probe;
-    probe.Init(cfg.core, cfg.fsm, 1);
+    est::ContactInekfSequencer::GroundConfig checked = cfg.ground;
+    checked.enabled = true;  // its fields are checked even while it is off
+    probe.Init(cfg.core, cfg.fsm, 1, checked);
   } catch (const std::invalid_argument& e) {
     Refuse(context, e.what());
   }
@@ -324,7 +349,7 @@ InekfStateSource::InekfStateSource(const Params& params,
   }
   const InekfSourceConfig& cfg = params_.config;
   num_slots_ = kin_model_->num_slots();
-  seq_.Init(cfg.core, cfg.fsm, num_slots_);
+  seq_.Init(cfg.core, cfg.fsm, num_slots_, cfg.ground);
   slot_mask_ = (1U << static_cast<uint32_t>(num_slots_)) - 1U;
   period_s_ = cfg.imu.sample_period_s;
   const double t_ns = period_s_ * 1e9;
@@ -618,6 +643,7 @@ void InekfStateSource::FillTelemetry(MeasuredRobotState& out, bool stepped) noex
   tel.report_valid = stepped && seq_.report_valid();
   tel.no_anchor_ticks = seq_.ticks_without_confirmed_anchor();
   tel.gated_ticks = seq_.consecutive_gated_ticks();
+  tel.gated_pins = seq_.consecutive_gated_pins();
   tel.estimated_mask = 0;
   const est::ContactFsm& fsm = seq_.fsm();
   for (int c = 0; c < num_slots_; ++c) {
@@ -630,6 +656,12 @@ void InekfStateSource::FillTelemetry(MeasuredRobotState& out, bool stepped) noex
     const est::ContactUpdateReport& r = seq_.report(c);
     tel.update[uc] = tel.report_valid ? static_cast<uint8_t>(r.result) : 0;
     tel.m2[uc] = tel.report_valid ? r.mahalanobis2 : 0.0;
+    // A pin is this Step's (a held tick steps nothing).
+    const est::GroundUpdateReport& g = seq_.ground_report(c);
+    const bool pinned = stepped && g.result != est::GroundUpdateResult::kNone;
+    tel.ground[uc] = pinned ? static_cast<uint8_t>(g.result) : 0;
+    tel.ground_innovation[uc] = pinned ? g.innovation : 0.0;
+    tel.ground_nis[uc] = pinned ? g.nis : 0.0;
     if (est::ContactFsm::Confirmed(m)) {
       tel.estimated_mask |= 1U << static_cast<uint32_t>(c);
     }

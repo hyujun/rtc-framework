@@ -701,3 +701,139 @@ def test_the_k_run_verdict_has_the_walking_and_standing_parts():
     assert agg["anees_walk_truth"]["below_upper"] is True  # inside the band: under its upper end
     assert agg["anees_truth"] is None
     assert agg["runs_cycling"] == 1
+
+
+# ── height ─────────────────────────────────────────────────────────────────
+
+
+def test_the_height_error_and_its_slope_over_the_stepping_window_only():
+    n = 1001
+    t, rots, pos, vel_w, v_b, w_b = walking_truth(n, yaw_rate=0.0)
+    cols = base_table(n)
+    put_truth(cols, rots, pos, v_b, w_b)
+    rate = -1e-3  # m/s while stepping (rows 100 – 700), then a standing tail
+    dz = np.zeros(n)
+    dz[100:701] = rate * (t[100:701] - t[100])
+    dz[701:] = dz[700]
+    est = pos + np.stack([np.zeros(n), np.zeros(n), dz], axis=1)
+    put_pose(cols, "base_", rots, est)
+    put_vec(cols, "base_v", v_b)
+    put_imu_state(cols, rots, pos, vel_w)
+    planned = np.full(n, 3.0)
+    planned[100:701:50] = 1.0  # a lift-off now and then; full stance after row 700
+    cols["planned_mask"] = planned
+    m = em.run_metrics(cols, META)
+    assert m["z_err_mean_truth"] == pytest.approx(float(np.mean(dz)), abs=1e-12)
+    assert m["z_err_rms_truth"] == pytest.approx(float(np.sqrt(np.mean(dz**2))), abs=1e-12)
+    assert m["z_err_max_truth"] == pytest.approx(float(np.max(np.abs(dz))), abs=1e-12)
+    # The slope of the stepping window (lift-off at row 100 to the last partial
+    # stance at row 700) — the tail does not dilute it.
+    assert m["z_drift_per_s_truth"] == pytest.approx(rate, rel=1e-6)
+    whole = float(np.polyfit(t[100:], dz[100:], 1)[0])
+    assert abs(whole) < 0.8 * abs(rate)  # what the tail would have made of it
+
+
+def test_the_height_nees_adds_the_imu_heights_error_with_its_tilt_coupling():
+    n = 40
+    t, rots, pos, vel_w, v_b, w_b = walking_truth(n)
+    cols = base_table(n)
+    put_truth(cols, rots, pos, v_b, w_b)
+    dz = 1e-3 * np.arange(n)  # the estimate rises: truth − estimate = −dz
+    put_pose(cols, "base_", rots, pos + np.stack([np.zeros(n), np.zeros(n), dz], axis=1))
+    put_vec(cols, "base_v", v_b)
+    vel_wi = np.einsum("nij,nj->ni", rots, v_b + np.cross(w_b, P_BI))
+    xi_phi = np.array([0.01, -0.02, 0.0])
+    xi_v = np.array([0.05, 0.02, -0.01])
+    put_imu_state(cols, rots, pos, vel_wi, np.eye(3), xi_phi, xi_v)
+    p = np.diag([4e-4, 1e-4, 9.0, 1e-3, 2e-3, 4e-3, 1.0, 1.0, 2e-4])
+    p[0, 8] = p[8, 0] = 2e-6  # tilt x ↔ height of the IMU point
+    p[4, 8] = p[8, 4] = 1e-5
+    for i in range(6):
+        for j in range(i, 6):
+            cols[f"P_{i}_{j}"] = np.full(n, p[i, j])
+    for i in range(9):
+        for j in range(max(6, i), 9):
+            cols[f"Pp_{i}_{j}"] = np.full(n, p[i, j])
+    cols["planned_mask"][5] = 1.0  # walking from row 5
+    m = em.run_metrics(cols, META)
+    want = []
+    for k in range(n):
+        ph = np.array([cols["imu_px"][k], cols["imu_py"][k], cols["imu_pz"][k]])
+        h = np.zeros(9)
+        h[0], h[1], h[8] = ph[1], -ph[0], 1.0
+        sel = np.zeros((6, 9))
+        for row, col in enumerate((0, 1, 3, 4, 5)):
+            sel[row, col] = 1.0
+        sel[5] = h
+        e = np.array([xi_phi[0], xi_phi[1], *xi_v, -(dz[k] - dz[0])])
+        want.append(float(e @ np.linalg.solve(sel @ p @ sel.T, e)))
+    assert m["nees_z_mean_per_dof_truth"] == pytest.approx(np.mean(want) / 6, rel=1e-6)
+    assert m["nees_z_walk_mean_per_dof_truth"] == pytest.approx(np.mean(want[5:]) / 6, rel=1e-6)
+    # A replay without the position columns has no height NEES.
+    for key in [k for k in cols if k.startswith("Pp_")]:
+        del cols[key]
+    assert em.run_metrics(cols, META)["nees_z_mean_per_dof_truth"] is None
+
+
+def test_the_pins_are_counted_and_their_nis_pooled_against_the_band():
+    n = 20
+    t, rots, pos, vel_w, v_b, w_b = walking_truth(n)
+    cols = base_table(n)
+    put_truth(cols, rots, pos, v_b, w_b)
+    put_pose(cols, "base_", rots, pos)
+    put_vec(cols, "base_v", v_b)
+    put_imu_state(cols, rots, pos, vel_w)
+    for c in NAMES:
+        cols[f"ground_{c}"] = np.zeros(n)
+        cols[f"ground_nis_{c}"] = np.zeros(n)
+        cols[f"ground_nu_{c}"] = np.zeros(n)
+    cols["ground_left_foot"][[2, 9]] = em.GROUND_USED
+    cols["ground_nis_left_foot"][[2, 9]] = [0.5, 1.5]
+    cols["ground_right_foot"][4] = em.GROUND_GATED
+    cols["ground_nis_right_foot"][4] = 12.0
+    cols["ground_right_foot"][6] = em.GROUND_INFLATED  # re-acquisition: not a χ² sample
+    cols["ground_nis_right_foot"][6] = 40.0
+    m = em.run_metrics(cols, META)
+    assert m["ground_pins"] == {"used": 2, "gated": 1, "inflated": 1}
+    assert m["ground_nis_count"] == 3
+    assert m["ground_nis_mean"] == pytest.approx((0.5 + 1.5 + 12.0) / 3)
+    agg = em.aggregate([m, dict(m)])
+    assert agg["ground_nis"]["k"] == 6
+    lo, hi = em.mean_band(6)
+    assert agg["ground_nis"]["band"] == [lo, hi]
+    assert agg["ground_nis"]["pass"] is bool(lo <= m["ground_nis_mean"] <= hi)
+    # A replay without the pin columns reports none.
+    assert em.run_metrics(base_table_with_truth(), META)["ground_pins"] is None
+
+
+def base_table_with_truth():
+    n = 10
+    _, rots, pos, vel_w, v_b, w_b = walking_truth(n)
+    cols = base_table(n)
+    put_truth(cols, rots, pos, v_b, w_b)
+    put_pose(cols, "base_", rots, pos)
+    put_vec(cols, "base_v", v_b)
+    put_imu_state(cols, rots, pos, vel_w)
+    return cols
+
+
+def test_the_height_slope_is_fitted_per_epoch():
+    # Two epochs drifting at the same rate: each starts the error over at 0, so a
+    # single fit across the reset would see a sawtooth, not the rate.
+    n = 1001
+    t, rots, pos, vel_w, v_b, w_b = walking_truth(n, yaw_rate=0.0)
+    cols = base_table(n)
+    put_truth(cols, rots, pos, v_b, w_b)
+    rate = -2e-3
+    cols["state_epoch"][500:] = 2.0
+    k0 = np.where(np.arange(n) < 500, 0, 500)
+    dz = rate * (t - t[k0])
+    put_pose(cols, "base_", rots, pos + np.stack([np.zeros(n), np.zeros(n), dz], axis=1))
+    put_vec(cols, "base_v", v_b)
+    put_imu_state(cols, rots, pos, vel_w)
+    planned = np.full(n, 3.0)
+    planned[10:1000:40] = 1.0
+    cols["planned_mask"] = planned
+    m = em.run_metrics(cols, META)
+    assert m["z_drift_per_s_truth"] == pytest.approx(rate, rel=1e-6)
+    assert m["ground_nis_count"] == 0  # no pin columns: the count is there, 0

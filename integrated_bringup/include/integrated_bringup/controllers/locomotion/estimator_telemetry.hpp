@@ -80,6 +80,12 @@ struct EstimatorTelemetry {
   /// now − the site's receipt [ns]; 0 for a receipt stamped after now, −1 when
   /// the site never reported or is not in the state.
   std::int64_t imu_age_ns{-1};
+  /// This tick's support-height pin per slot (estimator.inekf.ground): its
+  /// rtc::estimation::GroundUpdateResult (0 = none), innovation ν [m] and NIS.
+  std::array<std::uint8_t, kMaxEstimatorSlots> ground{};
+  std::array<double, kMaxEstimatorSlots> ground_innovation{};
+  std::array<double, kMaxEstimatorSlots> ground_nis{};
+  std::int32_t gated_pins{0};  ///< consecutive gated pins since the last applied one
 };
 
 static_assert(std::is_trivially_copyable_v<EstimatorTelemetry>,

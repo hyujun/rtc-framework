@@ -609,6 +609,19 @@ void WriteReplayHeader(std::ostream& os, const std::vector<std::string>& contact
       os << ",truth_v_" << c << '_' << a;
     }
   }
+  for (const char* field : {"ground", "ground_nu", "ground_nis"}) {
+    for (const auto& c : contact_names) {
+      os << ',' << field << '_' << c;
+    }
+  }
+  os << ",gated_pins";
+  // The position columns of P (rows φ, v, p; upper triangle in the p block),
+  // for the height's NEES: var(δp_z) = h P hᵀ, h = [(p̂ × e_z)ᵀ, 0, e_zᵀ].
+  for (int i = 0; i < 9; ++i) {
+    for (int j = std::max(6, i); j < 9; ++j) {
+      os << ",Pp_" << i << '_' << j;
+    }
+  }
 }
 
 void WriteReplayRow(std::ostream& os, const ReplayInput& in, const ReplayTruth* truth,
@@ -696,6 +709,20 @@ void WriteReplayRow(std::ostream& os, const ReplayInput& in, const ReplayTruth* 
   for (std::size_t c = 0; c < nc; ++c) {
     for (std::size_t a = 0; a < 3; ++a) {
       os << ',' << vel[c][a];
+    }
+  }
+  for (std::size_t c = 0; c < nc; ++c) {
+    os << ',' << static_cast<unsigned>(e.ground[c]);
+  }
+  for (const auto* field : {&e.ground_innovation, &e.ground_nis}) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      os << ',' << (*field)[c];
+    }
+  }
+  os << ',' << e.gated_pins;
+  for (int i = 0; i < 9; ++i) {
+    for (int j = std::max(6, i); j < 9; ++j) {
+      os << ',' << (on ? P(i, j) : kNaN);
     }
   }
 }
