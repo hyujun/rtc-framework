@@ -202,7 +202,7 @@ ros2 run rtc_tools plot_locomotion_diag <session> --z-ref 0.764431 --stance-csv 
     - rig 의 CSV 왕복은 base 차 ≤ 1e-6 이다.
   - `--joint-sigma σ [--joint-seed n]` 은 source 가 읽는 관절 위치에 seed 고정 white noise N(0, σ²) 를 더한다 (sim 의 encoder 는 정확하다). truth 접촉 속도는 기록된 관절로 계산한다. 기본 0 은 bit 동일이고, 값은 sidecar 에 남는다. 그 재생의 NIS 는 보고만 한다.
   - 지표는 `rtc_tools` `estimator_metrics` 가 계산한다.
-  - `g1_loco` 의 `estimator.inekf` noise 값은 이 재생으로 맞춘 것이다. `imu.accel_sigma` 와 `core.contact_noise_density` 는 sim 이 넣는 noise 가 아니라 기록된 보행에서 상태 공분산이 참값 오차와 맞도록 고른 값이다 (W8-F05 #1155 재적합, 근거는 `runtime.yaml` 의 주석).
+  - `g1_loco` 의 `estimator.inekf` noise 값은 이 재생으로 맞춘 것이다. `imu.accel_sigma` 와 `core.contact_noise_density` 는 sim 이 넣는 noise 가 아니라 기록된 보행에서 상태 공분산이 참값 오차와 맞도록 고른 값이다 (지지 높이 pin 을 켠 재생으로 WE-F09 #1206 재적합 — tilt · 속도 · 높이의 보행 ANEES 1, 근거는 `runtime.yaml` 의 주석).
     - 맞춘 녹음의 sim 은 IMU 의 step 평균을 낸다 (`imu_rate_export: tick_mean`). 순간값 export (`sample`) 의 녹음이면 가속도계 오차가 보행 중 주입 noise 의 수십 배라 같은 값이 맞지 않는다.
     - 값을 바꿀 때는 `--overlay` 로 같은 세션들을 다시 재생해 truth run 의 NEES 를 본다. 정지에서는 이 값이 보수적이다 (NEES 가 1 보다 작다).
   - 점 접촉에서 base 높이는 관측되지 않는다. 그래서 착지 뒤 접촉점이 올라가면 (sim 의 착지 침투가 반동하고 하중이 빠진다) 추정 높이가 걸음마다 같은 쪽으로 drift 한다. `estimator.inekf.ground` 는 평탄 · 기지 지면에서만 그 높이를 시작 stance 의 평면에 묶는다 (헤더 `contact_inekf.hpp` §Support height, `contact_fsm.hpp`). 재생 지표 `z_err_*` · `z_drift_per_s_truth` · `nees_z_*` · `ground_*` 가 그것을 본다.
