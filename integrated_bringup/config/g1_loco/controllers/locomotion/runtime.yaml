@@ -110,6 +110,14 @@ locomotion_controller:
         recover_dwell: 0.020
         evidence_time_constant: 0.020
         unknown_noise_scale: 100.0
+      # Support-height pin (rtc_controllers contact_fsm.hpp): on flat ground of
+      # known height, a stance anchor's height is held to the plane of the start's
+      # stance once, at its lift-off. Without it the height drifts while walking.
+      ground:
+        enabled: false
+        sigma: 1.0e-3                 # [m]
+        gate_chi2: 10.83              # chi2(1), 99.9 %
+        max_gated: 3
       init:
         window_ticks: 1               # the activation tick's sample starts the filter
         timeout_s: 0.5                # not started by then → the source fault

@@ -1091,6 +1091,21 @@ TEST_F(InekfSourceTest, TheSectionRefusesEveryMalformedValueAndPassesItsNeighbou
        set("policy", "max_refused_ticks", YAML::Node(1))},
       {"policy.max_no_anchor_s 0", set("policy", "max_no_anchor_s", YAML::Node(0.0)), none},
       {"imu_frame empty", set("", "imu_frame", YAML::Node("")), none},
+      {"ground missing", [](YAML::Node& n) { n.remove("ground"); }, none},
+      {"ground.max_gated missing", drop("ground", "max_gated"), none},
+      {"ground unknown key", set("ground", "height", YAML::Node(0.0)), none},
+      {"ground.enabled not a bool", set("ground", "enabled", YAML::Node("maybe")),
+       set("ground", "enabled", YAML::Node(false))},
+      {"ground.sigma 0", set("ground", "sigma", YAML::Node(0.0)),
+       set("ground", "sigma", YAML::Node(1e-9))},
+      // Checked while the pin is off too: its square underflows.
+      {"ground.sigma 1e-170", set("ground", "sigma", YAML::Node(1e-170)),
+       set("ground", "sigma", YAML::Node(1e-150))},
+      {"ground.gate_chi2 nan", set("ground", "gate_chi2", YAML::Load(".nan")),
+       set("ground", "gate_chi2", YAML::Node(10.83))},
+      {"ground.max_gated 0", set("ground", "max_gated", YAML::Node(0)),
+       set("ground", "max_gated", YAML::Node(1))},
+      {"ground.max_gated not an integer", set("ground", "max_gated", YAML::Node(1.5)), none},
   };
   ASSERT_GE(cases.size(), 20U);
   EXPECT_NO_THROW(static_cast<void>(loco::ParseInekfSourceConfig(base, "inekf")));

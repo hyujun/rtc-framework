@@ -20,6 +20,11 @@
 //         enter_speed, slip_speed, nis_low, nis_high, enter_dwell, confirm_dwell,
 //         release_dwell, slip_dwell, nis_dwell, recover_dwell,
 //         evidence_time_constant, unknown_noise_scale
+//       ground:                      # the support-height pin (ContactInekfSequencer::GroundConfig)
+//         enabled: bool              # only on flat ground: the plane is the stance at the start
+//         sigma: σ                   # > 0, the plane's error at a lift-off [m]
+//         gate_chi2: χ²              # > 0, the pin's NIS gate (1 dof)
+//         max_gated: n               # ≥ 1 gated pins in a row before an inflated one
 //       init:
 //         window_ticks: N            # ≥ 1 consecutive still samples start the filter
 //         timeout_s: s               # > 0: no start within it → the controller faults
@@ -79,8 +84,9 @@ struct InekfPolicyConfig {
 struct InekfSourceConfig {
   std::string imu_frame;
   InekfImuNoise imu;
-  rtc::estimation::ContactInekf::Config core;  ///< densities already σ·√T
-  rtc::estimation::ContactFsm::Config fsm;     ///< period = imu.sample_period_s
+  rtc::estimation::ContactInekf::Config core;                   ///< densities already σ·√T
+  rtc::estimation::ContactFsm::Config fsm;                      ///< period = imu.sample_period_s
+  rtc::estimation::ContactInekfSequencer::GroundConfig ground;  ///< height 0: the start's stance
   InekfInitConfig init;
   InekfPolicyConfig policy;
 };

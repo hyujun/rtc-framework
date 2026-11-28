@@ -206,6 +206,8 @@ struct LocomotionDiagLogPod {
   double mpc_wait_us{0.0};                  ///< this tick's wait for a solve [µs] (not in tick_us)
   std::uint64_t mpc_wait_count{0};          ///< ticks that waited, this activation
   std::uint64_t mpc_pending_superseded{0};  ///< plans published behind a pending one
+  // ── Appended: the support-height pin, from `estimator` above
+  // (est_ground_<c>, est_ground_nu_<c>, est_ground_nis_<c>, est_gated_pins).
 };
 
 static_assert(locomotion::kMaxEstimatorSlots == LocomotionDiagLogPod::kMaxContacts,
@@ -292,6 +294,12 @@ inline void WriteLocomotionDiagLogHeader(std::ostream& os,
   os << ",cmd_input,cmd_deadman";
   os << ",est_imu_valid,est_imu_age_us";
   os << ",mpc_sync_lockstep,mpc_trigger_tick,mpc_wait_us,mpc_wait_count,mpc_pending_superseded";
+  for (const char* field : {"ground", "ground_nu", "ground_nis"}) {
+    for (std::size_t c = 0; c < cols.contacts; ++c) {
+      os << ",est_" << field << '_' << contact_names[c];
+    }
+  }
+  os << ",est_gated_pins";
 }
 
 inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogPod& p,
@@ -400,6 +408,15 @@ inline void WriteLocomotionDiagLogRow(std::ostream& os, const LocomotionDiagLogP
      << (e.imu_age_ns < 0 ? -1.0 : static_cast<double>(e.imu_age_ns) * 1e-3);
   os << ',' << (p.mpc_sync_lockstep ? 1 : 0) << ',' << p.mpc_trigger_tick << ',' << p.mpc_wait_us
      << ',' << p.mpc_wait_count << ',' << p.mpc_pending_superseded;
+  for (std::size_t c = 0; c < nc; ++c) {
+    os << ',' << static_cast<unsigned>(e.ground[c]);
+  }
+  for (const auto* field : {&e.ground_innovation, &e.ground_nis}) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      os << ',' << (*field)[c];
+    }
+  }
+  os << ',' << e.gated_pins;
 }
 
 }  // namespace integrated_bringup
