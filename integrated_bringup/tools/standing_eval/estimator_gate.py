@@ -22,14 +22,15 @@ Only runs valid by walk_eval (standing: recorder · switch · overlay ·
 provenance) count, and each must have its replay.
 
 Open loop (WD-360) — on the truth runs' replays (``estimator_metrics``)
-    The rules are fixed here; the numbers they give on the WE-F06 baseline are
+    The rules are fixed here; the numbers they give on the registered baseline are
     :data:`REGISTERED` and :data:`ANEES_WALK_BASELINE` (``--derive`` computes
     them; a registered judge reports whether they equal this batch's — true on
     the baseline itself). A continuous threshold is
     ⌈:data:`SCALE` × the baseline statistic⌉ on :data:`STEP`: a regression bar
     for later batches under the same condition (the baseline passes its own by
     construction). Gates on the baseline: walking-part ANEES inside its χ² band
-    (recorded, not failed — outside it, the later G1 is the inekf replay ANEES
+    (recorded, not failed — outside it, the later G1 is the estimator replay ANEES
+    of the later batch's truth runs
     ≤ :data:`ANEES_RATIO` × the baseline's, judged with the registered
     thresholds), standing ANEES and every ANIS
     under the band's upper end, every run's tilt · yaw · velocity rms and drift
@@ -117,8 +118,11 @@ RECALL_FAR_MIN = 0.90  # G6
 PRECISION_FAR_MIN = 0.99  # G7
 SLIP_FP_MAX = 0.005
 ANEES_RATIO = 1.5
-# The numbers the rules give on the WE-F06 baseline (#1150: the replays of the batch's
-# 41 walking and 5 standing truth runs).
+# The numbers the rules give on the registered baseline: the replays of 42 walking
+# (walk 36 · turn_slow 3 · curve 3) and 5 standing truth runs on the shipped values of
+# 2026-11-28 (matched plant, MPC lock-step, kit driver commands on sim time, a cell per
+# run: start, yaw-step shift ±0.5 s, command scale 0.97 – 1.03). A regression bar for that
+# condition; another condition (noise values, gait, plant) needs its own baseline.
 THRESHOLD_KEYS = (
     "walk_vel_rms_median",
     "walk_vel_rms_max",
@@ -128,17 +132,18 @@ THRESHOLD_KEYS = (
     "stand_vel_rms_max",
 )
 REGISTERED: dict | None = {
-    "walk_vel_rms_median": 0.006,  # [m/s]
-    "walk_vel_rms_max": 0.016,  # [m/s]
-    "walk_tilt_rms_max": 0.012,  # [rad]
-    "walk_yaw_rms_max": 0.030,  # [rad]
+    "walk_vel_rms_median": 0.003,  # [m/s]
+    "walk_vel_rms_max": 0.004,  # [m/s]
+    "walk_tilt_rms_max": 0.007,  # [rad]
+    "walk_yaw_rms_max": 0.041,  # [rad]
     "walk_drift_per_step_max": 0.004,  # [m]
     "stand_vel_rms_max": 0.002,  # [m/s]
 }
-# Its walking-part ANEES, outside the χ² band (recorded): G1 — a later batch's walking
-# replay ANEES ≤ ANEES_RATIO × this — is judged with the registered thresholds. None
-# (REGISTERED too) is the state before a (re-)registration: --derive only.
-ANEES_WALK_BASELINE: float | None = 1.591
+# Its walking-part ANEES, outside the χ² band (recorded; below it — the covariance is about
+# four times the error): G1 — a later batch's walking replay ANEES ≤ ANEES_RATIO × this —
+# is judged with the registered thresholds. None (REGISTERED too) is the state before a
+# (re-)registration: --derive only.
+ANEES_WALK_BASELINE: float | None = 0.257
 ANEES_WALK_BASELINE_TOL = 5e-4  # its rounding
 
 # ── closed loop (WD-358) ──────────────────────────────────────────────────
