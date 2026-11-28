@@ -57,7 +57,8 @@ Validity (:func:`run_validity`)
     A run counts only if the recorder exited cleanly, the simulator held the
     asked real-time factor, the command had the registered shape (up to a
     fault: a transition the run did not reach is not judged), the gait's
-    single support had the registered length, the run carried the arm's overlay
+    single support had the registered length (a run that faulted before it
+    closed one has none to hold to it), the run carried the arm's overlay
     and — for runs that record it — the build, the installed configuration and
     the plant model are consistent: a clean checkout, an installed
     configuration equal to it, a plant that matches the controller's model
@@ -1030,7 +1031,10 @@ def run_validity(
     support = _single_support(run, TIER_NONE)
     if spec.single_support_s is not None:
         lo, hi = spec.single_support_s
-        checks["single_support"] = support is not None and lo <= support <= hi
+        # A run that fell before it closed a single support has none to measure — that
+        # is its outcome, not a broken condition (as log_spans_script spares it). A
+        # measured support out of range still fails, faulted or not.
+        checks["single_support"] = run.faulted if support is None else lo <= support <= hi
     rates = {
         event: command_rate(run, column, run.crossings[event])
         for event, column in (
