@@ -199,13 +199,14 @@ InekfSourceConfig ParseInekfSourceConfig(const YAML::Node& inekf, const std::str
   // The plane is where Initialize() puts the stance: height 0 in the estimate's
   // world. The fields are checked whether or not the pin is on.
   const std::string ground_at = context + ".ground";
-  const YAML::Node ground =
-      CheckSection(inekf["ground"], {"enabled", "sigma", "gate_chi2", "max_gated"}, ground_at);
+  const YAML::Node ground = CheckSection(
+      inekf["ground"], {"enabled", "sigma", "gate_chi2", "max_gated", "settle_s"}, ground_at);
   cfg.ground.enabled = ReadBool(ground, "enabled", ground_at);
   cfg.ground.height = 0.0;
   cfg.ground.sigma = ReadPositive(ground, "sigma", ground_at);
   cfg.ground.gate_chi2 = ReadPositive(ground, "gate_chi2", ground_at);
   cfg.ground.max_gated = ReadInt(ground, "max_gated", 1, ground_at);
+  cfg.ground.settle_s = ReadPositive(ground, "settle_s", ground_at);
 
   const std::string init_at = context + ".init";
   const YAML::Node init = CheckSection(

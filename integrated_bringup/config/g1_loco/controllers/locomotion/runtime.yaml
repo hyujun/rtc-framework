@@ -112,12 +112,16 @@ locomotion_controller:
         unknown_noise_scale: 100.0
       # Support-height pin (rtc_controllers contact_fsm.hpp): on flat ground of
       # known height, a stance anchor's height is held to the plane of the start's
-      # stance once, at its lift-off. Without it the height drifts while walking.
+      # stance once per anchor life, settle_s after it went in. Without it the
+      # height drifts while walking: the sole lands into the soft contact, the
+      # filter anchors it there, and it rebounds (≈ 60 ms) and unloads under a
+      # held anchor.
       ground:
         enabled: false
         sigma: 1.0e-3                 # [m]
         gate_chi2: 10.83              # chi2(1), 99.9 %
         max_gated: 3
+        settle_s: 0.08                # past the landing's rebound
       init:
         window_ticks: 1               # the activation tick's sample starts the filter
         timeout_s: 0.5                # not started by then → the source fault

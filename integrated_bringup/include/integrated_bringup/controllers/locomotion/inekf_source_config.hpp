@@ -25,6 +25,7 @@
 //         sigma: σ                   # > 0, the plane's error at a lift-off [m]
 //         gate_chi2: χ²              # > 0, the pin's NIS gate (1 dof)
 //         max_gated: n               # ≥ 1 gated pins in a row before an inflated one
+//         settle_s: s                # > 0 after an anchor's insertion: its pin, once in stance
 //       init:
 //         window_ticks: N            # ≥ 1 consecutive still samples start the filter
 //         timeout_s: s               # > 0: no start within it → the controller faults

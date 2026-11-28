@@ -114,15 +114,15 @@
 //   3. PreUpdate: every transition and core action of this tick, decided from
 //      the PREVIOUS tick's reports only.
 //   4. Core actions per slot: RemoveContact, InsertContact (refused → the slot
-//      reverts to swing, kInsertRefused), SetContactNoiseScale. With the
-//      support-height pin enabled, a slot RELEASED FROM STANCE (stance → swing,
-//      kReleased) is first pinned — UpdateGroundHeight on its anchor — then
-//      removed: once per anchor life, at lift-off. Candidate, unknown and slip
-//      exits are not pinned, nor is a recovery. A refused pin is recorded in
-//      core_status() and the removal goes on.
+//      reverts to swing, kInsertRefused), SetContactNoiseScale.
 //   5. Check anchor-holding mode ⇔ core contact_active for every slot. A
-//      mismatch, or a refused Remove / scale, returns kStateMismatch without an
-//      update; recovery is Reset() and a new Initialize().
+//      mismatch, or a refused Remove / scale, returns kStateMismatch without a
+//      pin or an update; recovery is Reset() and a new Initialize().
+//   5½. With the support-height pin enabled, the pins: an anchor is pinned —
+//      UpdateGroundHeight — once per life, on the first tick it is in stance
+//      at least settle_s after its insertion (the landing has settled; a life
+//      that ends sooner, in candidate, unknown or slip, is not pinned). A
+//      refused pin is recorded in core_status() and counts as the life's pin.
 //   6. UpdateContacts with use_i. Refused → no report this tick, kUpdateRefused.
 //   7. PostUpdate stores the reports for the NEXT tick's PreUpdate. Nothing in
 //      this tick's decision can depend on this tick's update.
@@ -362,6 +362,7 @@ class ContactInekfSequencer {
     double sigma{0.0};      ///< σ [m], > 0
     double gate_chi2{0.0};  ///< χ²(1) gate on the pin's NIS, > 0
     int max_gated{0};       ///< consecutive gated pins before an inflated one, ≥ 1
+    double settle_s{0.0};   ///< [s] > 0 after an anchor's insertion before it is pinned
   };
 
   /// Validate both configurations and size for `num_slots` slots (non-RT).
@@ -372,7 +373,7 @@ class ContactInekfSequencer {
   /// As above, with the support-height pin of `ground`.
   /// @throws std::invalid_argument also when `ground` is enabled with a height
   ///         not finite, σ not > 0 or σ² not finite and normal, a gate not > 0,
-  ///         or max_gated < 1.
+  ///         max_gated < 1, or settle_s not > 0 or above 10⁶ periods.
   void Init(const ContactInekf::Config& core, const ContactFsm::Config& fsm, int num_slots,
             const GroundConfig& ground);
 
@@ -438,8 +439,10 @@ class ContactInekfSequencer {
   int gated_ticks_{0};
   int gated_pins_{0};
   GroundConfig ground_{};
-  std::array<ContactMode, kInekfMaxContacts> before_{};
   std::array<GroundUpdateReport, kInekfMaxContacts> ground_report_{};
+  int settle_ticks_{1};                              // ⌈settle_s / T⌉
+  std::array<int, kInekfMaxContacts> anchor_age_{};  // ticks since the slot's insertion
+  std::array<bool, kInekfMaxContacts> pinned_{};     // this anchor life has had its pin
   std::array<ContactKinematics, kInekfMaxContacts> kin_{};
   std::array<ContactUpdateReport, kInekfMaxContacts> report_{};
   std::array<ContactFsm::SlotAction, kInekfMaxContacts> actions_{};

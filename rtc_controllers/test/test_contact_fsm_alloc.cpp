@@ -59,13 +59,14 @@ TEST(ContactFsmAlloc, EveryPathAllocatesNothing) {
   const std::array<Vec3, 2> pts{samples[kInitTicks - 1].kin[0].position,
                                 samples[kInitTicks - 1].kin[1].position};
   ContactInekfSequencer seq;
-  // With the support-height pin on, every release also runs it (applied, gated
-  // or — max_gated 1 — inflated).
+  // With the support-height pin on, every settled anchor also runs it (applied,
+  // gated or — max_gated 1 — inflated).
   ContactInekfSequencer::GroundConfig ground;
   ground.enabled = true;
   ground.sigma = 1e-3;
   ground.gate_chi2 = 10.83;
   ground.max_gated = 1;
+  ground.settle_s = 0.02;
   seq.Init(CoreFixture(), FsmFixture(), 2, ground);
   ContactFsm fsm;
   fsm.Init(FsmFixture(), 2);

@@ -1106,6 +1106,8 @@ TEST_F(InekfSourceTest, TheSectionRefusesEveryMalformedValueAndPassesItsNeighbou
       {"ground.max_gated 0", set("ground", "max_gated", YAML::Node(0)),
        set("ground", "max_gated", YAML::Node(1))},
       {"ground.max_gated not an integer", set("ground", "max_gated", YAML::Node(1.5)), none},
+      {"ground.settle_s 0", set("ground", "settle_s", YAML::Node(0.0)),
+       set("ground", "settle_s", YAML::Node(0.002))},
   };
   ASSERT_GE(cases.size(), 20U);
   EXPECT_NO_THROW(static_cast<void>(loco::ParseInekfSourceConfig(base, "inekf")));

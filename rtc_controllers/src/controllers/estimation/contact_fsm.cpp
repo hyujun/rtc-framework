@@ -304,23 +304,32 @@ void ContactInekfSequencer::Init(const ContactInekf::Config& core, const Contact
   core_.Init(core, num_slots);
   fsm_ = checked;
   ground_ = GroundConfig{};
+  settle_ticks_ = 1;
   Reset();
 }
 
 void ContactInekfSequencer::Init(const ContactInekf::Config& core, const ContactFsm::Config& fsm,
                                  int num_slots, const GroundConfig& ground) {
   if (ground.enabled) {
+    ContactFsm checked;  // the FSM first: settle_s is counted in its periods
+    checked.Init(fsm, num_slots);
     const double var = ground.sigma * ground.sigma;
+    const double periods = ground.settle_s / fsm.period;
     if (!std::isfinite(ground.height) || !std::isfinite(ground.sigma) || !(ground.sigma > 0.0) ||
         !std::isfinite(var) || !std::isnormal(var) || !(ground.gate_chi2 > 0.0) ||
-        ground.max_gated < 1) {
+        ground.max_gated < 1 || !(ground.settle_s > 0.0) || !(periods <= 1e6)) {
       throw std::invalid_argument(
           "ContactInekfSequencer::Init: ground needs a finite height, sigma > 0 with a finite "
-          "normal square, gate_chi2 > 0 and max_gated >= 1");
+          "normal square, gate_chi2 > 0, max_gated >= 1 and 0 < settle_s <= 1e6 periods");
     }
   }
   Init(core, fsm, num_slots);
   ground_ = ground;
+  if (ground.enabled) {
+    // The dwells' rounding: ⌈d / T⌉ with a 1e-12 relative allowance, at least 1.
+    settle_ticks_ =
+        std::max(1, static_cast<int>(std::ceil(ground.settle_s / fsm.period * (1.0 - 1e-12))));
+  }
 }
 
 void ContactInekfSequencer::Reset() noexcept {
@@ -334,7 +343,8 @@ void ContactInekfSequencer::Reset() noexcept {
   for (std::size_t i = 0; i < kInekfMaxContacts; ++i) {
     report_[i] = ContactUpdateReport{};
     ground_report_[i] = GroundUpdateReport{};
-    before_[i] = ContactMode::kSwing;
+    anchor_age_[i] = 0;
+    pinned_[i] = false;
     actions_[i] = ContactFsm::SlotAction{};
     velocity_[i].setZero();
     kin_[i].use = false;
@@ -407,14 +417,12 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
   }
   const std::span<const Eigen::Vector3d> velocity(velocity_.data(), n);
   const std::span<ContactFsm::SlotAction> actions(actions_.data(), n);
-  for (std::size_t i = 0; i < n; ++i) {
-    before_[i] = fsm_.mode(static_cast<int>(i));
-  }
   if (fsm_.PreUpdate(in.periods, in.planned_mask, velocity, actions) != ContactFsmStatus::kOk) {
     return ContactFsmStatus::kSizeMismatch;  // unreachable: sizes checked above
   }
 
   bool consistent = true;
+  std::array<bool, kInekfMaxContacts> pin_now{};
   for (std::size_t i = 0; i < n; ++i) {
     const int slot = static_cast<int>(i);
     ContactFsm::SlotAction& a = actions_[i];
@@ -423,11 +431,6 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
       kin_[i].jacobian = in.kinematics[i].jacobian;
     }
     if (a.remove) {
-      // stance → swing is a release (the table's only such row): lift-off.
-      if (ground_.enabled && before_[i] == ContactMode::kStance &&
-          fsm_.mode(slot) == ContactMode::kSwing) {
-        Pin(slot);
-      }
       const InekfStatus st = core_.RemoveContact(slot);
       if (st != InekfStatus::kOk) {
         core_status_ = st;
@@ -450,10 +453,27 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
         consistent = false;
       }
     }
+    if (a.insert) {
+      anchor_age_[i] = 0;
+      pinned_[i] = false;
+    } else if (core_.contact_active(slot)) {
+      anchor_age_[i] = SaturatingAdd(anchor_age_[i], in.periods);
+      pin_now[i] = ground_.enabled && !pinned_[i] && anchor_age_[i] >= settle_ticks_ &&
+                   fsm_.mode(slot) == ContactMode::kStance;
+    }
     if (ContactFsm::HoldsAnchor(fsm_.mode(slot)) != core_.contact_active(slot)) {
       consistent = false;
     }
     kin_[i].use = a.use;
+  }
+
+  // The pins, once every slot's core action is done and the anchors agree: a
+  // mismatched Step pins nothing, and no slot's action sees another's pin.
+  for (std::size_t i = 0; consistent && i < n; ++i) {
+    if (pin_now[i]) {
+      Pin(static_cast<int>(i));
+      pinned_[i] = true;
+    }
   }
 
   const std::span<ContactUpdateReport> report(report_.data(), n);

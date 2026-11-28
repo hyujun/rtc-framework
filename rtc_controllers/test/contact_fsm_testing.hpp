@@ -57,6 +57,10 @@ struct ContactFsmTestAccess {
     out.push_back(static_cast<double>(s.no_anchor_ticks_));
     out.push_back(static_cast<double>(s.gated_ticks_));
     out.push_back(static_cast<double>(s.gated_pins_));
+    for (std::size_t i = 0; i < kInekfMaxContacts; ++i) {
+      out.push_back(static_cast<double>(s.anchor_age_[i]));
+      out.push_back(static_cast<double>(s.pinned_[i]));
+    }
     return out;  // core_status_ / report_valid_ / actions are per-tick outputs, checked apart
   }
 };

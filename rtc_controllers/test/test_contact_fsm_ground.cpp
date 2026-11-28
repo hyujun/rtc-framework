@@ -3,8 +3,9 @@
 //   off          Init without a ground and with a disabled one: FSM + counters +
 //                core bit-equal to each other over a gait (the pin is the only
 //                difference the option makes)
-//   when         one pin per stance release, on the removal tick, none on any
-//                other exit (slip; a candidate's and an unknown's release) or tick
+//   when         one pin per anchor life, on its first stance tick settle_s
+//                after the insertion; a life that ends sooner (a candidate
+//                released, an unknown one) has none
 //   gate         a plane far from every anchor: max_gated gated pins, then an
 //                inflated one, and the count restarts
 //   Init         every refused ground field; a disabled ground is not checked
@@ -24,6 +25,8 @@ namespace rtc::estimation::testing {
 namespace {
 
 using Access = ContactFsmTestAccess;
+constexpr double kSettle = 0.08;  // [s]
+constexpr int kSettleTicks = 40;  // ⌈kSettle / kPeriod⌉
 
 ContactInekfSequencer::GroundConfig Ground(double sigma = 1e-3, double height = 0.0,
                                            int max_gated = 3) {
@@ -33,6 +36,7 @@ ContactInekfSequencer::GroundConfig Ground(double sigma = 1e-3, double height = 
   g.sigma = sigma;
   g.gate_chi2 = 10.83;
   g.max_gated = max_gated;
+  g.settle_s = kSettle;
   return g;
 }
 
@@ -104,50 +108,78 @@ TEST(ContactFsmGround, ADisabledGroundChangesNothing) {
   }
 }
 
-TEST(ContactFsmGround, OnePinPerStanceReleaseAndNoOther) {
+/// Per slot and anchor life: ticks since insertion, pins, and whether it was
+/// ever in stance once settled. Checks each tick's pin against the rule.
+struct LifeTracker {
+  std::array<int, 2> age{};
+  std::array<int, 2> pins{};
+  std::array<bool, 2> live{};
+  std::array<bool, 2> due{};  // reached stance with age ≥ settle this life
+  int lives_pinned = 0;
+  int lives_due = 0;
+  int violations = 0;
+
+  void Close(int i) {
+    const auto si = static_cast<std::size_t>(i);
+    if (live[si]) {
+      lives_pinned += pins[si] > 0 ? 1 : 0;
+      lives_due += due[si] ? 1 : 0;
+      violations += (pins[si] > 1 || (pins[si] == 1) != due[si]) ? 1 : 0;
+    }
+    live[si] = false;
+  }
+
+  void Tick(const ContactInekfSequencer& seq) {
+    for (int i = 0; i < 2; ++i) {
+      const auto si = static_cast<std::size_t>(i);
+      if (seq.action(i).insert) {
+        Close(i);
+        live[si] = true;
+        age[si] = 0;
+        pins[si] = 0;
+        due[si] = false;
+      } else if (live[si] && seq.core().contact_active(i)) {
+        ++age[si];
+      }
+      const bool stance = seq.fsm().mode(i) == ContactMode::kStance;
+      const bool pinned = seq.ground_report(i).result != GroundUpdateResult::kNone;
+      if (pinned) {
+        ++pins[si];
+        // On the first tick the rule allows: in stance, settled, none before.
+        violations += (!live[si] || !stance || age[si] < kSettleTicks || due[si]) ? 1 : 0;
+      }
+      if (live[si] && stance && age[si] >= kSettleTicks) {
+        due[si] = true;
+      }
+      if (live[si] && !seq.core().contact_active(i)) {
+        Close(i);
+      }
+    }
+  }
+};
+
+TEST(ContactFsmGround, OnePinPerAnchorLifeOnceSettled) {
   for (const Shift shift : {Shift::kNone, Shift::kPlannedOffEarly, Shift::kPlannedOffLate}) {
     const Scenario sc{World::kGait, shift, 12.0};
     const Stream s = MakeStream(sc, kSeed + 22);
     ContactInekfSequencer seq;
     seq.Init(CoreFixture(), FsmFixture(), 2, Ground());
     Start(seq, s);
-    int releases = 0;
-    int pins = 0;
-    int other_exits = 0;
+    LifeTracker lt;
     for (std::size_t k = kInitTicks; k < s.samples.size(); ++k) {
-      std::array<ContactMode, 2> before{seq.fsm().mode(0), seq.fsm().mode(1)};
       ASSERT_EQ(Step(seq, s.samples[k]), ContactFsmStatus::kOk);
-      for (int i = 0; i < 2; ++i) {
-        const auto si = static_cast<std::size_t>(i);
-        const bool released = before[si] == ContactMode::kStance &&
-                              seq.fsm().mode(i) == ContactMode::kSwing &&
-                              seq.fsm().reason(i) == ContactReason::kReleased;
-        const bool pinned = seq.ground_report(i).result != GroundUpdateResult::kNone;
-        releases += released ? 1 : 0;
-        pins += pinned ? 1 : 0;
-        EXPECT_EQ(pinned, released) << k << ' ' << i;
-        EXPECT_TRUE(!pinned || seq.action(i).remove);
-        other_exits +=
-            !released && ContactFsm::HoldsAnchor(before[si]) && seq.action(i).remove ? 1 : 0;
-      }
+      lt.Tick(seq);
     }
-    if (shift == Shift::kPlannedOffLate) {
-      // The foot lifts before its plan bit drops: every exit is a slip, never pinned.
-      EXPECT_EQ(releases, 0);
-      EXPECT_GT(other_exits, 20);
-    } else {
-      EXPECT_GT(releases, 20);  // ≈ 2 per 0.8 s cycle over 11 s
-    }
-    EXPECT_EQ(pins, releases);
-    std::printf("shift %d: releases %d, other anchor exits %d\n", static_cast<int>(shift), releases,
-                other_exits);
+    EXPECT_EQ(lt.violations, 0) << static_cast<int>(shift);
+    EXPECT_GT(lt.lives_pinned, 20) << static_cast<int>(shift);  // ≈ 2 per 0.8 s cycle
+    EXPECT_EQ(lt.lives_pinned, lt.lives_due) << static_cast<int>(shift);
   }
 }
 
-TEST(ContactFsmGround, NoPinOnACandidateOrUnknownRelease) {
+TEST(ContactFsmGround, ALifeThatEndsBeforeSettlingHasNoPin) {
   // Candidate: drop slot 0's plan bit right after its insertion, before it can
   // be confirmed. Unknown: a 2 cm kinematic step (kFkStep) sends slot 0 to
-  // unknown; drop its plan bit there.
+  // unknown long after its pin; drop its plan bit there — no second pin.
   for (const World w : {World::kStatic, World::kFkStep}) {
     const Scenario sc{w, Shift::kNone, 4.0};
     const Stream s = MakeStream(sc, kSeed + 25);
@@ -156,8 +188,10 @@ TEST(ContactFsmGround, NoPinOnACandidateOrUnknownRelease) {
     Start(seq, s);
     const ContactMode target =
         w == World::kStatic ? ContactMode::kCandidate : ContactMode::kUnknown;
+    LifeTracker lt;
     bool dropping = false;
     int exits = 0;
+    int pins_slot0 = 0;
     for (std::size_t k = kInitTicks; k < s.samples.size() && exits == 0; ++k) {
       Sample x = s.samples[k];
       const ContactMode before = seq.fsm().mode(0);
@@ -166,16 +200,18 @@ TEST(ContactFsmGround, NoPinOnACandidateOrUnknownRelease) {
         x.planned &= ~1U;
       }
       ASSERT_EQ(Step(seq, x), ContactFsmStatus::kOk);
+      lt.Tick(seq);
+      pins_slot0 += seq.ground_report(0).result != GroundUpdateResult::kNone ? 1 : 0;
       if (before == target && seq.fsm().mode(0) == ContactMode::kSwing) {
         ++exits;
         EXPECT_EQ(seq.fsm().reason(0), ContactReason::kReleased);
         EXPECT_TRUE(seq.action(0).remove);
       }
-      for (int i = 0; i < 2; ++i) {
-        EXPECT_EQ(seq.ground_report(i).result, GroundUpdateResult::kNone) << k << ' ' << i;
-      }
     }
     EXPECT_EQ(exits, 1) << static_cast<int>(w);  // the case was reached
+    EXPECT_EQ(lt.violations, 0) << static_cast<int>(w);
+    // The candidate never settled; the unknown one was pinned once, before.
+    EXPECT_EQ(pins_slot0, w == World::kStatic ? 0 : 1) << static_cast<int>(w);
   }
 }
 
@@ -189,13 +225,17 @@ TEST(ContactFsmGround, GatedPinsInflateAfterMaxGatedAndRestart) {
   std::vector<GroundUpdateResult> results;
   for (std::size_t k = kInitTicks; k < s.samples.size(); ++k) {
     ASSERT_EQ(Step(seq, s.samples[k]), ContactFsmStatus::kOk);
-    for (int i = 0; i < 2; ++i) {
+    bool any = false;
+    for (int i = 0; i < 2; ++i) {  // both feet can settle on one tick (the start's stance)
       if (seq.ground_report(i).result != GroundUpdateResult::kNone) {
         results.push_back(seq.ground_report(i).result);
-        const int want =
-            results.back() == GroundUpdateResult::kGated ? static_cast<int>(results.size() % 4) : 0;
-        EXPECT_EQ(seq.consecutive_gated_pins(), want);
+        any = true;
       }
+    }
+    if (any) {  // the count after this tick's pins: gated ones since the last inflated
+      const int want =
+          results.back() == GroundUpdateResult::kGated ? static_cast<int>(results.size() % 4) : 0;
+      EXPECT_EQ(seq.consecutive_gated_pins(), want) << k;
     }
   }
   ASSERT_GE(results.size(), 12U);
@@ -230,6 +270,11 @@ TEST(ContactFsmGround, InitRefusesABadGroundAndChecksNoDisabledOne) {
     EXPECT_TRUE(refused(g));
   }
   EXPECT_TRUE(refused(Ground(1e-3, 0.0, 0)));
+  for (double settle : {0.0, -0.1, nan, inf, 1e6 * kPeriod * 1.001}) {
+    ContactInekfSequencer::GroundConfig g = Ground();
+    g.settle_s = settle;
+    EXPECT_TRUE(refused(g)) << settle;
+  }
   ContactInekfSequencer::GroundConfig off = Ground(nan, nan, 0);
   off.enabled = false;
   EXPECT_FALSE(refused(off));
