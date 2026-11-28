@@ -55,7 +55,8 @@ Run metrics (:data:`METRICS`)
 
 Validity (:func:`run_validity`)
     A run counts only if the recorder exited cleanly, the simulator held the
-    asked real-time factor, the command had the registered shape, the gait's
+    asked real-time factor, the command had the registered shape (up to a
+    fault: a transition the run did not reach is not judged), the gait's
     single support had the registered length, the run carried the arm's overlay
     and — for runs that record it — the build, the installed configuration and
     the plant model are consistent: a clean checkout, an installed
@@ -972,6 +973,37 @@ CORE_METRICS = (
 )
 
 
+COMMAND_EVENTS = ("turn_start", "turn_end", "stop")  # the script's order
+
+
+def command_shape_ok(run: Run, rates: Mapping[str, float | None], spec: ValiditySpec) -> bool:
+    """Every registered transition the run reached has its registered rate.
+
+    The controller stops logging the command at a fault, so a run that ends at a
+    fault before a transition has none to measure there: that transition, and every
+    later one, is not judged (as ``log_spans_script`` does not hold a faulted run to
+    the script's length). A missing transition before a measured one, or any missing
+    transition on a run without a fault, is a command that was not delivered.
+    """
+    if set(spec.command_rate) - set(COMMAND_EVENTS):
+        return False  # a transition this module does not measure cannot be checked
+    reached_all = True
+    for event in COMMAND_EVENTS:
+        if event not in spec.command_rate:
+            continue
+        rate = rates.get(event)
+        if rate is None:
+            if not run.faulted:
+                return False
+            reached_all = False
+            continue
+        if not reached_all:
+            return False
+        if abs(rate / spec.command_rate[event] - 1.0) > spec.command_rate_tol:
+            return False
+    return True
+
+
 def run_validity(
     run: Run, run_dir: Path, note: Mapping, spec: ValiditySpec, overlay: str | None
 ) -> dict:
@@ -1008,11 +1040,7 @@ def run_validity(
         )
     }
     if spec.command_rate is not None:
-        checks["command_shape"] = all(
-            rates.get(event) is not None
-            and abs(rates[event] / want - 1.0) <= spec.command_rate_tol
-            for event, want in spec.command_rate.items()
-        )
+        checks["command_shape"] = command_shape_ok(run, rates, spec)
     for column in spec.zero_columns:
         checks[f"zero_{column}"] = column in run.log.diag and bool(
             np.all(run.log.diag[column] == 0.0)

@@ -30,12 +30,18 @@ OTHER_FAULT = next(i for i in range(1, len(ld.FAULT_CAUSE_NAMES)) if i != PLAN_L
 
 def synthetic(
     ratio=0.4, truth_ratio=None, fault_at=None, fault_code=OTHER_FAULT, length=30.0,
-    script=wm.WALK_SCRIPT,
+    script=wm.WALK_SCRIPT, freeze_after_fault=False,
 ):  # fmt: skip
-    """(diag, truth) tables; the base advances at `ratio` (T: `truth_ratio`) of the command."""
+    """(diag, truth) tables; the base advances at `ratio` (T: `truth_ratio`) of the command.
+
+    `freeze_after_fault`: the logged command holds its value from the fault on, as the
+    controller logs it (the command is no longer recorded once it latched a fault).
+    """
     n = int(round(length / DT)) + 1
     t = np.arange(n) * DT
     cmd = np.array([wm.command_at(script, x - START) for x in t])
+    if freeze_after_fault and fault_at is not None:
+        cmd[t >= fault_at] = cmd[np.searchsorted(t, fault_at)]
     stepping = (t >= START + 0.5) & (t < START + 16.5)
     phase = np.mod(t - (START + 0.5), 2 * STEP)
     mask = np.full(n, 3)
@@ -341,8 +347,8 @@ def coarse(table):
     return {k: np.asarray(v)[::10] for k, v in table.items()}
 
 
-def validity_of(tmp_path, spec, overlay=None, **kw):
-    diag, truth = synthetic()
+def validity_of(tmp_path, spec, overlay=None, run=None, **kw):
+    diag, truth = run if run is not None else synthetic()
     write_run(tmp_path, diag, truth, **kw)
     note = json.loads((tmp_path / "run.json").read_text())
     run = we.Run(we.load_run(tmp_path / we.CONTROLLER_DIR), wm.WALK_SCRIPT)
@@ -412,6 +418,41 @@ def test_the_registered_shape_and_support_are_checked(tmp_path):
     v = validity_of(tmp_path, spec)
     assert not v["checks"]["single_support"] and not v["checks"]["command_shape"]
     assert "commit_clean" not in v["checks"]  # switched off, not passed
+
+
+SHAPE_SPEC = we.ValiditySpec(command_rate=SHAPE, provenance=False)
+
+
+def test_a_transition_after_the_fault_is_not_judged(tmp_path):
+    # A fault in the yaw step (script 10 – 14 s): the controller logs no turn end or stop.
+    run = synthetic(fault_at=START + 12.0, freeze_after_fault=True)
+    v = validity_of(tmp_path, SHAPE_SPEC, run=run)
+    assert v["measured"]["command_rate"]["turn_end"] is None
+    assert v["checks"]["command_shape"], v["measured"]
+
+
+def test_a_reached_transition_is_still_held_to_its_rate(tmp_path):
+    run = synthetic(fault_at=START + 12.0, freeze_after_fault=True)
+    spec = we.ValiditySpec(command_rate={**SHAPE, "turn_start": 3.0}, provenance=False)
+    assert not validity_of(tmp_path, spec, run=run)["checks"]["command_shape"]
+
+
+def test_a_missing_transition_without_a_fault_fails(tmp_path):
+    diag, truth = synthetic()
+    diag["cmd_wz"] = np.zeros_like(diag["cmd_wz"])  # the yaw step never came
+    assert not validity_of(tmp_path, SHAPE_SPEC, run=(diag, truth))["checks"]["command_shape"]
+
+
+def test_a_missing_transition_before_a_measured_one_fails(tmp_path):
+    # Faulted after the stop, but the yaw step never came: not explained by the fault.
+    diag, truth = synthetic(fault_at=START + 17.0, freeze_after_fault=True)
+    diag["cmd_wz"] = np.zeros_like(diag["cmd_wz"])
+    assert not validity_of(tmp_path, SHAPE_SPEC, run=(diag, truth))["checks"]["command_shape"]
+
+
+def test_an_unknown_registered_transition_fails(tmp_path):
+    spec = we.ValiditySpec(command_rate={**SHAPE, "jump": 1.0}, provenance=False)
+    assert not validity_of(tmp_path, spec)["checks"]["command_shape"]
 
 
 def test_the_overlay_is_matched_by_suffix_or_hash():
