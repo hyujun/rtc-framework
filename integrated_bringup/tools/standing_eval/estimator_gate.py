@@ -121,9 +121,10 @@ SLIP_FP_MAX = 0.005
 ANEES_RATIO = 1.5
 # The numbers the rules give on the registered baseline: the replays of 42 walking
 # (walk 36 · turn_slow 3 · curve 3) and 5 standing truth runs on the shipped values of
-# 2026-11-28 (matched plant, MPC lock-step, commands on sim time, a cell per run: start
+# 2026-11-28 with the support-height pin on and the noise refit to it (WE-F09 #1206,
+# WD-450; matched plant, MPC lock-step, commands on sim time, a cell per run: start
 # 3.0 – 3.7 s, yaw-step shift ±0.5 s, command scale 0.97 – 1.03). A regression bar for that
-# condition; another condition (noise values, gait, plant) needs its own baseline.
+# condition; another condition (noise values, gait, plant, pin) needs its own baseline.
 THRESHOLD_KEYS = (
     "walk_vel_rms_median",
     "walk_vel_rms_max",
@@ -134,17 +135,17 @@ THRESHOLD_KEYS = (
 )
 REGISTERED: dict | None = {
     "walk_vel_rms_median": 0.003,  # [m/s]
-    "walk_vel_rms_max": 0.004,  # [m/s]
-    "walk_tilt_rms_max": 0.007,  # [rad]
-    "walk_yaw_rms_max": 0.041,  # [rad]
-    "walk_drift_per_step_max": 0.004,  # [m]
+    "walk_vel_rms_max": 0.003,  # [m/s]
+    "walk_tilt_rms_max": 0.003,  # [rad]
+    "walk_yaw_rms_max": 0.032,  # [rad]
+    "walk_drift_per_step_max": 0.003,  # [m]
     "stand_vel_rms_max": 0.002,  # [m/s]
 }
 # Its walking-part ANEES, outside the χ² band (recorded; below it — the covariance is about
-# four times the error): G1 — a later batch's walking replay ANEES ≤ ANEES_RATIO × this —
+# 1.5 times the error): G1 — a later batch's walking replay ANEES ≤ ANEES_RATIO × this —
 # is judged with the registered thresholds. None (REGISTERED too) is the state before a
 # (re-)registration: --derive only.
-ANEES_WALK_BASELINE: float | None = 0.257
+ANEES_WALK_BASELINE: float | None = 0.662
 ANEES_WALK_BASELINE_TOL = 5e-4  # its rounding
 
 # ── closed loop (WD-358) ──────────────────────────────────────────────────
