@@ -29,11 +29,12 @@ Open loop (WD-360) — on the truth runs' replays (``estimator_metrics``)
     ⌈:data:`SCALE` × the baseline statistic⌉ on :data:`STEP`: a regression bar
     for later batches under the same condition (the baseline passes its own by
     construction). Gates on the baseline: walking-part ANEES inside its χ² band
-    (recorded, not failed — outside it, the later G1 is the estimator replay ANEES
-    of the later batch's truth runs
-    ≤ :data:`ANEES_RATIO` × the baseline's, judged with the registered
-    thresholds), standing ANEES and every ANIS
-    under the band's upper end, every run's tilt · yaw · velocity rms and drift
+    (recorded, not failed — outside it, the later G1 is the estimator replay
+    ANEES of the later batch's truth runs ≤ :data:`ANEES_RATIO` × the
+    baseline's, judged with the registered thresholds; an upper bound only, it
+    catches error growth under the same noise values and not a covariance that
+    grows more conservative), standing ANEES and every ANIS under the band's
+    upper end, every run's tilt · yaw · velocity rms and drift
     per step under :data:`ABS_CAP`, on walking runs the z gyro bias error, the
     far-from-edge recall and precision of the worse foot and its slip false
     positives, and no slip cycle on any run.
@@ -120,8 +121,8 @@ SLIP_FP_MAX = 0.005
 ANEES_RATIO = 1.5
 # The numbers the rules give on the registered baseline: the replays of 42 walking
 # (walk 36 · turn_slow 3 · curve 3) and 5 standing truth runs on the shipped values of
-# 2026-11-28 (matched plant, MPC lock-step, kit driver commands on sim time, a cell per
-# run: start, yaw-step shift ±0.5 s, command scale 0.97 – 1.03). A regression bar for that
+# 2026-11-28 (matched plant, MPC lock-step, commands on sim time, a cell per run: start
+# 3.0 – 3.7 s, yaw-step shift ±0.5 s, command scale 0.97 – 1.03). A regression bar for that
 # condition; another condition (noise values, gait, plant) needs its own baseline.
 THRESHOLD_KEYS = (
     "walk_vel_rms_median",
