@@ -420,6 +420,43 @@ def test_the_registered_shape_and_support_are_checked(tmp_path):
     assert "commit_clean" not in v["checks"]  # switched off, not passed
 
 
+SUPPORT_SPEC = we.ValiditySpec(single_support_s=(0.40, 0.50), provenance=False)
+
+
+def _touchdown_times():
+    run = run_of(*synthetic())
+    return run.t[run.touchdown_rows]
+
+
+@pytest.mark.parametrize("touchdowns", [0, 2])
+def test_a_run_that_faulted_before_its_first_single_support_is_valid(tmp_path, touchdowns):
+    # Falling that early is the outcome the arm counts, not a run that failed its
+    # conditions — the same as log_spans_script holds no faulted run to the script.
+    downs = _touchdown_times()
+    fault_at = downs[0] - 0.1 if touchdowns == 0 else downs[1] + DOUBLE + 0.05
+    run = synthetic(fault_at=fault_at)
+    v = validity_of(tmp_path, SUPPORT_SPEC, run=run)
+    assert v["measured"]["single_support_s"] is None
+    assert int(np.sum(run_of(*run).touchdown_rows <= run_of(*run).end)) == touchdowns
+    assert v["checks"]["single_support"] and v["valid"], v["checks"]
+
+
+def test_a_run_without_a_single_support_and_without_a_fault_is_invalid(tmp_path):
+    diag, truth = synthetic()
+    diag["contact_mask"] = np.full_like(diag["contact_mask"], 3.0)  # never stepped
+    v = validity_of(tmp_path, SUPPORT_SPEC, run=(diag, truth))
+    assert v["measured"]["single_support_s"] is None
+    assert not v["checks"]["single_support"]
+
+
+def test_a_faulted_run_with_its_support_out_of_range_is_still_invalid(tmp_path):
+    # The exemption is for a support that could not be measured, not for a wrong one.
+    spec = we.ValiditySpec(single_support_s=(0.30, 0.40), provenance=False)
+    v = validity_of(tmp_path, spec, run=synthetic(fault_at=START + 12.0))
+    assert v["measured"]["single_support_s"] is not None
+    assert not v["checks"]["single_support"]
+
+
 SHAPE_SPEC = we.ValiditySpec(command_rate=SHAPE, provenance=False)
 
 
