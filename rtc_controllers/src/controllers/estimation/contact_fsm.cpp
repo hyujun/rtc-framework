@@ -303,7 +303,24 @@ void ContactInekfSequencer::Init(const ContactInekf::Config& core, const Contact
   }
   core_.Init(core, num_slots);
   fsm_ = checked;
+  ground_ = GroundConfig{};
   Reset();
+}
+
+void ContactInekfSequencer::Init(const ContactInekf::Config& core, const ContactFsm::Config& fsm,
+                                 int num_slots, const GroundConfig& ground) {
+  if (ground.enabled) {
+    const double var = ground.sigma * ground.sigma;
+    if (!std::isfinite(ground.height) || !std::isfinite(ground.sigma) || !(ground.sigma > 0.0) ||
+        !std::isfinite(var) || !std::isnormal(var) || !(ground.gate_chi2 > 0.0) ||
+        ground.max_gated < 1) {
+      throw std::invalid_argument(
+          "ContactInekfSequencer::Init: ground needs a finite height, sigma > 0 with a finite "
+          "normal square, gate_chi2 > 0 and max_gated >= 1");
+    }
+  }
+  Init(core, fsm, num_slots);
+  ground_ = ground;
 }
 
 void ContactInekfSequencer::Reset() noexcept {
@@ -313,8 +330,11 @@ void ContactInekfSequencer::Reset() noexcept {
   report_valid_ = false;
   no_anchor_ticks_ = 0;
   gated_ticks_ = 0;
+  gated_pins_ = 0;
   for (std::size_t i = 0; i < kInekfMaxContacts; ++i) {
     report_[i] = ContactUpdateReport{};
+    ground_report_[i] = GroundUpdateReport{};
+    before_[i] = ContactMode::kSwing;
     actions_[i] = ContactFsm::SlotAction{};
     velocity_[i].setZero();
     kin_[i].use = false;
@@ -334,6 +354,10 @@ const ContactUpdateReport& ContactInekfSequencer::report(int slot) const noexcep
   return report_[Index(slot)];
 }
 
+const GroundUpdateReport& ContactInekfSequencer::ground_report(int slot) const noexcept {
+  return ground_report_[Index(slot)];
+}
+
 const ContactFsm::SlotAction& ContactInekfSequencer::action(int slot) const noexcept {
   return actions_[Index(slot)];
 }
@@ -343,6 +367,9 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
   report_valid_ = false;
   for (ContactFsm::SlotAction& a : actions_) {
     a = ContactFsm::SlotAction{};
+  }
+  for (GroundUpdateReport& g : ground_report_) {
+    g = GroundUpdateReport{};
   }
   if (!fsm_.configured()) {
     return ContactFsmStatus::kNotConfigured;
@@ -380,6 +407,9 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
   }
   const std::span<const Eigen::Vector3d> velocity(velocity_.data(), n);
   const std::span<ContactFsm::SlotAction> actions(actions_.data(), n);
+  for (std::size_t i = 0; i < n; ++i) {
+    before_[i] = fsm_.mode(static_cast<int>(i));
+  }
   if (fsm_.PreUpdate(in.periods, in.planned_mask, velocity, actions) != ContactFsmStatus::kOk) {
     return ContactFsmStatus::kSizeMismatch;  // unreachable: sizes checked above
   }
@@ -393,6 +423,11 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
       kin_[i].jacobian = in.kinematics[i].jacobian;
     }
     if (a.remove) {
+      // stance → swing is a release (the table's only such row): lift-off.
+      if (ground_.enabled && before_[i] == ContactMode::kStance &&
+          fsm_.mode(slot) == ContactMode::kSwing) {
+        Pin(slot);
+      }
       const InekfStatus st = core_.RemoveContact(slot);
       if (st != InekfStatus::kOk) {
         core_status_ = st;
@@ -437,6 +472,19 @@ ContactFsmStatus ContactInekfSequencer::Step(const ContactStepInput& in) noexcep
   fsm_.PostUpdate(report, report_valid_);
   FinishTick(in.periods);
   return out;
+}
+
+void ContactInekfSequencer::Pin(int slot) noexcept {
+  const bool inflate = gated_pins_ >= ground_.max_gated;
+  GroundUpdateReport g;
+  const InekfStatus st =
+      core_.UpdateGroundHeight(slot, ground_.height, ground_.sigma, ground_.gate_chi2, inflate, g);
+  if (st != InekfStatus::kOk) {
+    core_status_ = st;  // no pin on this release; the gated count is left as it was
+    return;
+  }
+  ground_report_[Index(slot)] = g;
+  gated_pins_ = g.result == GroundUpdateResult::kGated ? SaturatingAdd(gated_pins_, 1) : 0;
 }
 
 void ContactInekfSequencer::FinishTick(int periods) noexcept {

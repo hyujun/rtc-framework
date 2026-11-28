@@ -114,13 +114,23 @@
 //   3. PreUpdate: every transition and core action of this tick, decided from
 //      the PREVIOUS tick's reports only.
 //   4. Core actions per slot: RemoveContact, InsertContact (refused → the slot
-//      reverts to swing, kInsertRefused), SetContactNoiseScale.
+//      reverts to swing, kInsertRefused), SetContactNoiseScale. With the
+//      support-height pin enabled, a slot RELEASED FROM STANCE (stance → swing,
+//      kReleased) is first pinned — UpdateGroundHeight on its anchor — then
+//      removed: once per anchor life, at lift-off. Candidate, unknown and slip
+//      exits are not pinned, nor is a recovery. A refused pin is recorded in
+//      core_status() and the removal goes on.
 //   5. Check anchor-holding mode ⇔ core contact_active for every slot. A
 //      mismatch, or a refused Remove / scale, returns kStateMismatch without an
 //      update; recovery is Reset() and a new Initialize().
 //   6. UpdateContacts with use_i. Refused → no report this tick, kUpdateRefused.
 //   7. PostUpdate stores the reports for the NEXT tick's PreUpdate. Nothing in
 //      this tick's decision can depend on this tick's update.
+//
+// The pin's gate: NIS above GroundConfig::gate_chi2 skips it and counts one
+// gated pin; after max_gated consecutive gated pins the next one is applied
+// inflated (σ² + ν², ungated) and the count restarts — a run of skipped pins
+// would otherwise leave the height free for good.
 //
 // Outputs for the caller's recovery policy: ticks since some slot was last in
 // stance or unknown (0 while one is), and consecutive ticks whose update gated
@@ -344,10 +354,27 @@ struct ContactStepInput {
 /// place that order is implemented — online and replay callers both call Step().
 class ContactInekfSequencer {
  public:
+  /// The support-height pin (contact_inekf.hpp §Support height). Off unless
+  /// `enabled`; only for flat ground of known height.
+  struct GroundConfig {
+    bool enabled{false};
+    double height{0.0};     ///< h [m] in W (0 = the plane Initialize() puts the stance at)
+    double sigma{0.0};      ///< σ [m], > 0
+    double gate_chi2{0.0};  ///< χ²(1) gate on the pin's NIS, > 0
+    int max_gated{0};       ///< consecutive gated pins before an inflated one, ≥ 1
+  };
+
   /// Validate both configurations and size for `num_slots` slots (non-RT).
-  /// Leaves the core uninitialised and every slot in swing.
+  /// Leaves the core uninitialised and every slot in swing; no pin.
   /// @throws std::invalid_argument from either Init, or when (s_u·σ_d)² is not finite.
   void Init(const ContactInekf::Config& core, const ContactFsm::Config& fsm, int num_slots);
+
+  /// As above, with the support-height pin of `ground`.
+  /// @throws std::invalid_argument also when `ground` is enabled with a height
+  ///         not finite, σ not > 0 or σ² not finite and normal, a gate not > 0,
+  ///         or max_gated < 1.
+  void Init(const ContactInekf::Config& core, const ContactFsm::Config& fsm, int num_slots,
+            const GroundConfig& ground);
 
   /// Core and FSM back to their post-Init state (configuration kept).
   void Reset() noexcept;
@@ -385,6 +412,14 @@ class ContactInekfSequencer {
   /// Consecutive ticks whose update gated a slot and used none.
   [[nodiscard]] int consecutive_gated_ticks() const noexcept { return gated_ticks_; }
 
+  /// This tick's support-height pin of `slot` (result kNone when it had none).
+  [[nodiscard]] const GroundUpdateReport& ground_report(int slot) const noexcept;
+
+  /// Consecutive gated pins since the last applied one.
+  [[nodiscard]] int consecutive_gated_pins() const noexcept { return gated_pins_; }
+
+  [[nodiscard]] const GroundConfig& ground() const noexcept { return ground_; }
+
  private:
   friend struct ContactFsmTestAccess;
 
@@ -393,6 +428,7 @@ class ContactInekfSequencer {
   }
 
   void FinishTick(int periods) noexcept;
+  void Pin(int slot) noexcept;
 
   ContactInekf core_;
   ContactFsm fsm_;
@@ -400,6 +436,10 @@ class ContactInekfSequencer {
   bool report_valid_{false};
   int no_anchor_ticks_{0};
   int gated_ticks_{0};
+  int gated_pins_{0};
+  GroundConfig ground_{};
+  std::array<ContactMode, kInekfMaxContacts> before_{};
+  std::array<GroundUpdateReport, kInekfMaxContacts> ground_report_{};
   std::array<ContactKinematics, kInekfMaxContacts> kin_{};
   std::array<ContactUpdateReport, kInekfMaxContacts> report_{};
   std::array<ContactFsm::SlotAction, kInekfMaxContacts> actions_{};

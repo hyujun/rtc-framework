@@ -402,6 +402,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_contact_fsm_sequencer rtc_controllers)
   ament_add_gtest(test_contact_fsm_synthetic test/test_contact_fsm_synthetic.cpp TIMEOUT 900)
   target_link_libraries(test_contact_fsm_synthetic rtc_controllers)
+  # The support-height pin: off = bit-identical, one pin per stance release,
+  # the gate's inflated re-acquisition, a rising stance point held.
+  ament_add_gtest(test_contact_fsm_ground test/test_contact_fsm_ground.cpp)
+  target_link_libraries(test_contact_fsm_ground rtc_controllers)
   # Same two allocation sensors as test_contact_inekf_alloc, own binary (the
   # C allocator gate is one TU per executable).
   ament_add_gtest(test_contact_fsm_alloc test/test_contact_fsm_alloc.cpp)

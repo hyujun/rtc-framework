@@ -59,7 +59,14 @@ TEST(ContactFsmAlloc, EveryPathAllocatesNothing) {
   const std::array<Vec3, 2> pts{samples[kInitTicks - 1].kin[0].position,
                                 samples[kInitTicks - 1].kin[1].position};
   ContactInekfSequencer seq;
-  seq.Init(CoreFixture(), FsmFixture(), 2);
+  // With the support-height pin on, every release also runs it (applied, gated
+  // or — max_gated 1 — inflated).
+  ContactInekfSequencer::GroundConfig ground;
+  ground.enabled = true;
+  ground.sigma = 1e-3;
+  ground.gate_chi2 = 10.83;
+  ground.max_gated = 1;
+  seq.Init(CoreFixture(), FsmFixture(), 2, ground);
   ContactFsm fsm;
   fsm.Init(FsmFixture(), 2);
   std::array<ContactFsm::SlotAction, 2> actions{};
@@ -68,6 +75,7 @@ TEST(ContactFsmAlloc, EveryPathAllocatesNothing) {
 
   std::array<bool, 10> reasons{};
   std::array<bool, 8> statuses{};
+  std::array<bool, 4> pins{};
   int inits = 0;
   std::size_t news = 0;
   std::size_t mallocs = 0;
@@ -134,6 +142,7 @@ TEST(ContactFsmAlloc, EveryPathAllocatesNothing) {
       statuses[static_cast<std::size_t>(st)] = true;
       for (int i = 0; i < 2; ++i) {
         reasons[static_cast<std::size_t>(seq.fsm().reason(i))] = true;
+        pins[static_cast<std::size_t>(seq.ground_report(i).result)] = true;
       }
 
       // The FSM alone, with alternating inputs and reports.
@@ -164,6 +173,8 @@ TEST(ContactFsmAlloc, EveryPathAllocatesNothing) {
         ContactFsmStatus::kUpdateRefused, ContactFsmStatus::kStateMismatch}) {
     EXPECT_TRUE(statuses[static_cast<std::size_t>(s)]) << "status " << static_cast<int>(s);
   }
+  EXPECT_TRUE(pins[static_cast<std::size_t>(GroundUpdateResult::kUsed)] ||
+              pins[static_cast<std::size_t>(GroundUpdateResult::kInflated)]);
   EXPECT_EQ(news, 0U);
   EXPECT_EQ(mallocs, 0U);
 }
